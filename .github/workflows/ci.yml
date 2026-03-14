@@ -316,7 +316,7 @@ jobs:
           lfs: true
           show-progress: false
 
-      - uses: Andrew-Chen-Wang/github-wiki-action@b7e552d7cb0fa7f83e459012ffc6840fd87bcb83
+      - uses: Andrew-Chen-Wang/github-wiki-action@64efa0a9436db17670a2259e0ac249d6f08bb352
         with:
           path: docs/wiki/
 
