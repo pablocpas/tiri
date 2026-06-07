@@ -122,7 +122,7 @@ jobs:
           cp target/generate-rpm/*.rpm release-artifacts/
 
       - name: Draft release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           draft: true
           tag_name: tiri-v${{ github.event.inputs.version }}
@@ -189,7 +189,7 @@ jobs:
           tar --zstd -cf "tiri-${{ github.event.inputs.version }}-x86_64-archlinux.tar.zst" -C "$root" usr
 
       - name: Upload Arch Linux binary archive
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: tiri-v${{ github.event.inputs.version }}
           files: tiri-${{ github.event.inputs.version }}-x86_64-archlinux.tar.zst
