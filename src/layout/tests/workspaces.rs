@@ -321,6 +321,47 @@ fn tiling_workspace_context_keeps_root_selection_and_focus_child_returns_to_it()
     );
     assert_eq!(workspace.tiling().selected_path(), vec![1]);
 }
+
+#[test]
+fn adding_window_while_tiling_workspace_context_keeps_the_elevation() {
+    // Regression lock for the focus-context refactor: opening a window while focus is elevated
+    // to the workspace on the tiling side must not silently drop that elevation. The active
+    // layer stays tiling (was not floating), so the tiling workspace context is preserved.
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+    ]);
+
+    for _ in 0..4 {
+        let workspace = layout.active_workspace().expect("active workspace");
+        if workspace.debug_command_target() == "workspace" {
+            break;
+        }
+        check_ops_on_layout(&mut layout, [Op::FocusParent]);
+    }
+
+    {
+        let workspace = layout.active_workspace().expect("active workspace");
+        assert_eq!(workspace.debug_command_target(), "workspace");
+        assert!(workspace.is_tiling_workspace_context_active());
+    }
+
+    check_ops_on_layout(
+        &mut layout,
+        [Op::AddWindow {
+            params: TestWindowParams::new(2),
+        }],
+    );
+
+    let workspace = layout.active_workspace().expect("active workspace");
+    assert!(
+        workspace.is_tiling_workspace_context_active(),
+        "adding a tiling window while tiling-elevated must preserve the workspace context",
+    );
+}
+
 #[test]
 fn primary_active_workspace_idx_not_updated_on_output_add() {
     let ops = [

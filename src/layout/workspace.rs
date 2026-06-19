@@ -57,11 +57,12 @@ pub struct Workspace<W: LayoutElement> {
     /// Whether the floating layout is active instead of the tiling layout.
     floating_is_active: FloatingActive,
 
-    /// Command context can represent focus can be on workspace while the seat is
-    /// still on floating mode (no active floating container target).
-    floating_workspace_context: bool,
-    /// Command context can represent focus can be on workspace while tiling remains active.
-    tiling_workspace_context: bool,
+    /// Whether command focus rests on concrete content or is elevated to the workspace.
+    ///
+    /// The active layer is tracked separately by `floating_is_active`; combined they describe
+    /// the full command context (e.g. elevated + floating-active = "floating workspace
+    /// context"). See [`WorkspaceFocus`].
+    workspace_focus: WorkspaceFocus,
 
     /// seat->focus_stack equivalent for tiling restore targets (MRU at index 0).
     inactive_tiling_focus_stack: Vec<InactiveTilingReference>,
@@ -195,6 +196,22 @@ pub enum ResolvedSize {
     Tile(f64),
     /// Size of the window excluding borders.
     Window(f64),
+}
+
+/// Where command focus sits, independent of which layer is active.
+///
+/// The active *layer* (tiling vs floating) is always given by [`FloatingActive`]; this only
+/// tracks whether focus rests on a concrete window/container or has been elevated to the
+/// workspace itself. Keeping the elevation as a single bit (instead of the old pair of
+/// `floating_workspace_context`/`tiling_workspace_context` booleans) makes the illegal
+/// combinations — both sides elevated at once, or an elevation that disagrees with the active
+/// layer — unrepresentable rather than merely asserted against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkspaceFocus {
+    /// Focus is on a window or container within the active layer.
+    OnContent,
+    /// Focus is elevated to the workspace level (no concrete window/container selected).
+    OnWorkspace,
 }
 
 /// Whether the floating space is active.
@@ -456,8 +473,7 @@ impl<W: LayoutElement> Workspace<W> {
             tiling,
             floating,
             floating_is_active: FloatingActive::No,
-            floating_workspace_context: false,
-            tiling_workspace_context: false,
+            workspace_focus: WorkspaceFocus::OnContent,
             inactive_tiling_focus_stack: Vec::new(),
             original_output,
             scale,
@@ -525,8 +541,7 @@ impl<W: LayoutElement> Workspace<W> {
             tiling,
             floating,
             floating_is_active: FloatingActive::No,
-            floating_workspace_context: false,
-            tiling_workspace_context: false,
+            workspace_focus: WorkspaceFocus::OnContent,
             inactive_tiling_focus_stack: Vec::new(),
             output: None,
             scale,
@@ -762,7 +777,7 @@ impl<W: LayoutElement> Workspace<W> {
         // Command routing: no floating command context exists when there are
         // no floating containers in the workspace.
         if self.floating.is_empty() || !self.floating_is_active.get() {
-            if self.tiling.is_empty() || self.tiling_workspace_context {
+            if self.tiling.is_empty() || self.focus_is_elevated() {
                 return CommandTarget::Workspace;
             }
             return if self.tiling.selected_is_container() {
@@ -772,7 +787,7 @@ impl<W: LayoutElement> Workspace<W> {
             };
         }
 
-        if self.floating_workspace_context {
+        if self.focus_is_elevated() {
             return CommandTarget::Workspace;
         }
 
@@ -1045,8 +1060,7 @@ impl<W: LayoutElement> Workspace<W> {
 
                     if activate || self.tiling.is_empty() {
                         self.floating_is_active = FloatingActive::Yes;
-                        self.tiling_workspace_context = false;
-                        self.floating_workspace_context = false;
+                        self.workspace_focus = WorkspaceFocus::OnContent;
                     }
                 } else {
                     let tiling_was_empty = self.tiling.is_empty();
@@ -1059,8 +1073,7 @@ impl<W: LayoutElement> Workspace<W> {
                             && !wants_floating
                             && !workspace_command_context)
                     {
-                        self.floating_is_active = FloatingActive::No;
-                        self.floating_workspace_context = false;
+                        self.activate_tiling_keeping_tiling_elevation();
                     }
                 }
             }
@@ -1074,8 +1087,7 @@ impl<W: LayoutElement> Workspace<W> {
                     .add_tile(Some(col_idx), tile, activate, width, is_full_width, None);
 
                 if activate {
-                    self.floating_is_active = FloatingActive::No;
-                    self.floating_workspace_context = false;
+                    self.activate_tiling_keeping_tiling_elevation();
                 }
             }
             WorkspaceAddWindowTarget::NextTo(next_to) => {
@@ -1129,16 +1141,14 @@ impl<W: LayoutElement> Workspace<W> {
 
                     if activate || self.tiling.is_empty() {
                         self.floating_is_active = FloatingActive::Yes;
-                        self.tiling_workspace_context = false;
-                        self.floating_workspace_context = false;
+                        self.workspace_focus = WorkspaceFocus::OnContent;
                     }
                 } else if floating_has_window {
                     self.tiling
                         .add_tile(None, tile, activate, width, is_full_width, None);
 
                     if activate {
-                        self.floating_is_active = FloatingActive::No;
-                        self.floating_workspace_context = false;
+                        self.activate_tiling_keeping_tiling_elevation();
                     }
                 } else {
                     if self
@@ -1161,7 +1171,6 @@ impl<W: LayoutElement> Workspace<W> {
 
                     if activate {
                         self.floating_is_active = FloatingActive::No;
-                        self.floating_workspace_context = false;
                         self.sync_tiling_focus_context_from_tiling();
                     }
                 }
@@ -1321,8 +1330,7 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     fn sync_tiling_focus_context_from_tiling(&mut self) {
-        self.tiling_workspace_context = false;
-        self.floating_workspace_context = false;
+        self.workspace_focus = WorkspaceFocus::OnContent;
         self.remember_current_tiling_reference();
     }
 
@@ -1349,7 +1357,6 @@ impl<W: LayoutElement> Workspace<W> {
             .focus_inactive_tiling_reference(reference, strict);
         if focused {
             self.floating_is_active = FloatingActive::No;
-            self.floating_workspace_context = false;
             self.sync_tiling_focus_context_from_tiling();
         }
         focused
@@ -1386,8 +1393,7 @@ impl<W: LayoutElement> Workspace<W> {
         };
         if focused {
             self.floating_is_active = FloatingActive::Yes;
-            self.tiling_workspace_context = false;
-            self.floating_workspace_context = false;
+            self.workspace_focus = WorkspaceFocus::OnContent;
         }
         focused
     }
@@ -1489,13 +1495,19 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     fn update_focus_floating_tiling_after_removing(&mut self, removed_from_floating: bool) {
+        // An elevation can only belong to the active layer (the inactive layer's elevation is
+        // already dropped by construction), so clear it when that active layer empties out.
         if self.tiling.is_empty() {
             self.tiling.clear_selection_context();
-            self.tiling_workspace_context = false;
+            if !self.floating_is_active.get() {
+                self.workspace_focus = WorkspaceFocus::OnContent;
+            }
         }
         if self.floating.is_empty() {
             self.floating.clear_selection_context();
-            self.floating_workspace_context = false;
+            if self.floating_is_active.get() {
+                self.workspace_focus = WorkspaceFocus::OnContent;
+            }
         }
 
         if removed_from_floating {
@@ -1989,32 +2001,47 @@ impl<W: LayoutElement> Workspace<W> {
     pub(super) fn focus_workspace_node(&mut self) {
         self.tiling.clear_selection_context();
         self.floating.clear_selection_context();
-        self.tiling_workspace_context = false;
         if self.floating.is_empty() {
             self.floating_is_active = FloatingActive::No;
-            self.floating_workspace_context = false;
+            self.workspace_focus = WorkspaceFocus::OnContent;
             return;
         }
 
         // The workspace becomes command context while floating mode stays active.
         self.floating_is_active = FloatingActive::Yes;
-        self.floating_workspace_context = true;
+        self.workspace_focus = WorkspaceFocus::OnWorkspace;
+    }
+
+    fn focus_is_elevated(&self) -> bool {
+        self.workspace_focus == WorkspaceFocus::OnWorkspace
+    }
+
+    /// Switch the active layer to tiling while preserving an existing tiling-side workspace
+    /// elevation (focus-parent intent), but dropping a floating-side one.
+    ///
+    /// This mirrors the historical behavior of the add/activate paths, which cleared the
+    /// floating workspace context but left the tiling workspace context untouched.
+    fn activate_tiling_keeping_tiling_elevation(&mut self) {
+        let was_floating = self.floating_is_active.get();
+        self.floating_is_active = FloatingActive::No;
+        if was_floating {
+            self.workspace_focus = WorkspaceFocus::OnContent;
+        }
     }
 
     pub(super) fn is_floating_workspace_context_active(&self) -> bool {
-        self.floating_is_active.get() && self.floating_workspace_context
+        self.floating_is_active.get() && self.focus_is_elevated()
     }
 
     pub(super) fn is_tiling_workspace_context_active(&self) -> bool {
-        !self.floating_is_active.get() && self.tiling_workspace_context
+        !self.floating_is_active.get() && self.focus_is_elevated()
     }
 
     pub fn focus_window_by_id(&mut self, id: &W::Id) -> bool {
         if self.floating.has_window(id) {
             if self.floating.focus_window_by_id(id) {
                 self.floating_is_active = FloatingActive::Yes;
-                self.tiling_workspace_context = false;
-                self.floating_workspace_context = false;
+                self.workspace_focus = WorkspaceFocus::OnContent;
                 return true;
             }
         }
@@ -2301,12 +2328,16 @@ impl<W: LayoutElement> Workspace<W> {
             CommandTarget::FloatingWindow | CommandTarget::FloatingContainer => {
                 // Model rule: when floating focus reaches above the floating container,
                 // command context moves to workspace while floating mode remains active.
-                self.floating_workspace_context = !self.floating.focus_parent();
+                self.workspace_focus = if self.floating.focus_parent() {
+                    WorkspaceFocus::OnContent
+                } else {
+                    WorkspaceFocus::OnWorkspace
+                };
             }
             CommandTarget::TilingWindow | CommandTarget::TilingContainer => {
                 if self.tiling.focus_parent_targets_workspace() {
                     let _ = self.tiling.select_root_container();
-                    self.tiling_workspace_context = true;
+                    self.workspace_focus = WorkspaceFocus::OnWorkspace;
                 } else {
                     self.tiling.focus_parent();
                     self.sync_tiling_focus_context_from_tiling();
@@ -2327,12 +2358,12 @@ impl<W: LayoutElement> Workspace<W> {
             }
             CommandTarget::Workspace => {
                 if self.floating_is_active.get() {
-                    if self.floating_workspace_context && self.floating.focus_child() {
-                        self.floating_workspace_context = false;
+                    if self.focus_is_elevated() && self.floating.focus_child() {
+                        self.workspace_focus = WorkspaceFocus::OnContent;
                     }
                     return;
                 }
-                if self.tiling_workspace_context && !self.tiling.is_empty() {
+                if self.focus_is_elevated() && !self.tiling.is_empty() {
                     let _ = self.tiling.focus_child();
                     self.sync_tiling_focus_context_from_tiling();
                 }
@@ -2347,7 +2378,7 @@ impl<W: LayoutElement> Workspace<W> {
             RouteDomain::Tiling => self.tiling.split_horizontal(),
             RouteDomain::Floating => {
                 if !self.preserves_floating_workspace_context_for_family(CommandFamily::Split) {
-                    self.floating_workspace_context = false;
+                    self.workspace_focus = WorkspaceFocus::OnContent;
                 }
                 self.floating.split_horizontal();
             }
@@ -2361,7 +2392,7 @@ impl<W: LayoutElement> Workspace<W> {
             RouteDomain::Tiling => self.tiling.split_vertical(),
             RouteDomain::Floating => {
                 if !self.preserves_floating_workspace_context_for_family(CommandFamily::Split) {
-                    self.floating_workspace_context = false;
+                    self.workspace_focus = WorkspaceFocus::OnContent;
                 }
                 self.floating.split_vertical();
             }
@@ -2374,7 +2405,7 @@ impl<W: LayoutElement> Workspace<W> {
             RouteDomain::Tiling => self.tiling.set_layout_mode(layout),
             RouteDomain::Floating => {
                 if !self.preserves_floating_workspace_context_for_family(CommandFamily::Layout) {
-                    self.floating_workspace_context = false;
+                    self.workspace_focus = WorkspaceFocus::OnContent;
                 }
                 self.floating.set_layout_mode(layout);
             }
@@ -2387,7 +2418,7 @@ impl<W: LayoutElement> Workspace<W> {
             RouteDomain::Tiling => self.tiling.toggle_split_layout(),
             RouteDomain::Floating => {
                 if !self.preserves_floating_workspace_context_for_family(CommandFamily::Layout) {
-                    self.floating_workspace_context = false;
+                    self.workspace_focus = WorkspaceFocus::OnContent;
                 }
                 self.floating.toggle_split_layout();
             }
@@ -2401,7 +2432,7 @@ impl<W: LayoutElement> Workspace<W> {
                 self.tiling.toggle_layout_all()
             }
             CommandTarget::FloatingWindow | CommandTarget::FloatingContainer => {
-                self.floating_workspace_context = false;
+                self.workspace_focus = WorkspaceFocus::OnContent;
                 self.floating.toggle_layout_all();
             }
         }
@@ -2587,8 +2618,7 @@ impl<W: LayoutElement> Workspace<W> {
                     self.floating.select_wrapper_for_window(focus_id);
                 }
                 self.floating_is_active = FloatingActive::Yes;
-                self.tiling_workspace_context = false;
-                self.floating_workspace_context = false;
+                self.workspace_focus = WorkspaceFocus::OnContent;
             }
             return;
         }
@@ -2632,8 +2662,11 @@ impl<W: LayoutElement> Workspace<W> {
                         self.floating.select_wrapper_for_window(focus_id);
                     }
                     self.floating_is_active = FloatingActive::Yes;
-                    self.tiling_workspace_context = false;
-                    self.floating_workspace_context = self.tiling.is_empty();
+                    self.workspace_focus = if self.tiling.is_empty() {
+                        WorkspaceFocus::OnWorkspace
+                    } else {
+                        WorkspaceFocus::OnContent
+                    };
                 }
             }
             return;
@@ -2680,10 +2713,9 @@ impl<W: LayoutElement> Workspace<W> {
                             }
                         }
                         self.floating_is_active = FloatingActive::No;
-                        self.tiling_workspace_context =
-                            preserve_workspace_context_on_unfloat && !self.tiling.is_empty();
-                        self.floating_workspace_context = false;
-                        if !self.tiling_workspace_context {
+                        if preserve_workspace_context_on_unfloat && !self.tiling.is_empty() {
+                            self.workspace_focus = WorkspaceFocus::OnWorkspace;
+                        } else {
                             self.sync_tiling_focus_context_from_tiling();
                         }
                     }
@@ -2719,10 +2751,9 @@ impl<W: LayoutElement> Workspace<W> {
             }
             if target_is_active {
                 self.floating_is_active = FloatingActive::No;
-                self.tiling_workspace_context =
-                    preserve_workspace_context_on_unfloat && !self.tiling.is_empty();
-                self.floating_workspace_context = false;
-                if !self.tiling_workspace_context {
+                if preserve_workspace_context_on_unfloat && !self.tiling.is_empty() {
+                    self.workspace_focus = WorkspaceFocus::OnWorkspace;
+                } else {
                     self.sync_tiling_focus_context_from_tiling();
                 }
             }
@@ -2761,8 +2792,7 @@ impl<W: LayoutElement> Workspace<W> {
                 .add_tile_with_restore_hint(removed.tile, target_is_active);
             if target_is_active {
                 self.floating_is_active = FloatingActive::Yes;
-                self.tiling_workspace_context = false;
-                self.floating_workspace_context = false;
+                self.workspace_focus = WorkspaceFocus::OnContent;
                 if !remembered_old_parent_ref && !self.tiling.is_empty() {
                     self.remember_current_tiling_focused_leaf_reference();
                 }
@@ -2829,8 +2859,7 @@ impl<W: LayoutElement> Workspace<W> {
 
         if activate || self.tiling.is_empty() {
             self.floating_is_active = FloatingActive::Yes;
-            self.tiling_workspace_context = false;
-            self.floating_workspace_context = false;
+            self.workspace_focus = WorkspaceFocus::OnContent;
         }
     }
 
@@ -2866,13 +2895,11 @@ impl<W: LayoutElement> Workspace<W> {
         if !self.floating_is_active.get() {
             self.remember_current_tiling_reference();
         }
-        self.floating_workspace_context = false;
+        self.workspace_focus = WorkspaceFocus::OnContent;
         let was_floating_active = self.floating_is_active.get();
         self.floating_is_active = if was_floating_active {
-            self.tiling_workspace_context = false;
             FloatingActive::No
         } else {
-            self.tiling_workspace_context = false;
             FloatingActive::Yes
         };
         if !self.floating_is_active.get() {
@@ -2883,8 +2910,7 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn clear_selection_context(&mut self) {
         self.tiling.clear_selection_context();
         self.floating.clear_selection_context();
-        self.floating_workspace_context = false;
-        self.tiling_workspace_context = false;
+        self.workspace_focus = WorkspaceFocus::OnContent;
     }
 
     pub fn move_floating_window(
@@ -3253,12 +3279,10 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn activate_window(&mut self, window: &W::Id) -> bool {
         if self.floating.activate_window(window) {
             self.floating_is_active = FloatingActive::Yes;
-            self.tiling_workspace_context = false;
-            self.floating_workspace_context = false;
+            self.workspace_focus = WorkspaceFocus::OnContent;
             true
         } else if self.tiling.activate_window(window) {
             self.floating_is_active = FloatingActive::No;
-            self.floating_workspace_context = false;
             self.sync_tiling_focus_context_from_tiling();
             true
         } else {
@@ -3269,8 +3293,7 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn activate_window_without_raising(&mut self, window: &W::Id) -> bool {
         if self.floating.activate_window_without_raising(window) {
             self.floating_is_active = FloatingActive::Yes;
-            self.tiling_workspace_context = false;
-            self.floating_workspace_context = false;
+            self.workspace_focus = WorkspaceFocus::OnContent;
             true
         } else if self.tiling.activate_window(window) {
             self.floating_is_active = match self.floating_is_active {
@@ -3278,7 +3301,6 @@ impl<W: LayoutElement> Workspace<W> {
                 FloatingActive::NoButRaised => FloatingActive::NoButRaised,
                 FloatingActive::Yes => FloatingActive::NoButRaised,
             };
-            self.floating_workspace_context = false;
             self.sync_tiling_focus_context_from_tiling();
             true
         } else {
@@ -3496,7 +3518,7 @@ impl<W: LayoutElement> Workspace<W> {
 
     #[cfg(test)]
     pub fn debug_floating_workspace_context(&self) -> bool {
-        self.floating_workspace_context
+        self.is_floating_workspace_context_active()
     }
 
     #[cfg(test)]
@@ -3535,18 +3557,10 @@ impl<W: LayoutElement> Workspace<W> {
             options.layout.background_color.to_array_unpremul(),
         );
 
-        assert!(
-            !(self.floating_workspace_context && self.tiling_workspace_context),
-            "workspace command context cannot be both floating and tiling"
-        );
-        assert!(
-            !self.floating_workspace_context || self.floating_is_active.get(),
-            "floating workspace command context requires floating focus mode"
-        );
-        assert!(
-            !self.tiling_workspace_context || !self.floating_is_active.get(),
-            "tiling workspace command context requires tiling focus mode"
-        );
+        // The workspace command context invariants that used to be asserted here — never both
+        // floating and tiling elevated, and elevation matching the active focus mode — are now
+        // enforced by construction: `workspace_focus` is a single elevation bit and the active
+        // layer is always derived from `floating_is_active`. See `WorkspaceFocus`.
 
         assert_eq!(self.view_size, self.tiling.view_size());
         assert_eq!(self.working_area, self.tiling.parent_area());
