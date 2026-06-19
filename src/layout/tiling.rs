@@ -913,29 +913,6 @@ impl<W: LayoutElement> TilingSpace<W> {
         self.tree.select_container_at_path(path)
     }
 
-    // Window management using ContainerTree
-    pub fn add_window(
-        &mut self,
-        window: W,
-        _rules: ResolvedWindowRules,
-        _width: ColumnWidth,
-        _height: WindowHeight,
-    ) {
-        // Create a tile for the window
-        let tile = Tile::new(
-            window,
-            self.view_size,
-            self.scale,
-            self.clock.clone(),
-            self.options.clone(),
-        );
-        // Insert into container tree
-        self.tree.insert_window(tile);
-        self.sync_fullscreen_window();
-        // Recalculate layout
-        self.tree.layout();
-    }
-
     pub fn remove_window(&mut self, window: &W) -> Option<RemovedTile<W>> {
         let window_id = window.id();
         let tile = self.tree.remove_window(&window_id)?;
@@ -973,12 +950,6 @@ impl<W: LayoutElement> TilingSpace<W> {
         tile.update_window();
     }
 
-    pub fn find_window(&self, window: &W) -> Option<(usize, usize)> {
-        // Return dummy indices for compatibility
-        // In i3 model, we don't use column/tile indices
-        let window_id = window.id();
-        self.tree.find_window(&window_id).map(|_| (0, 0))
-    }
 
     pub fn render_elements<R: NiriRenderer>(
         &self,
