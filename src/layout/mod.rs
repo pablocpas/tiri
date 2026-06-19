@@ -1039,7 +1039,7 @@ impl<W: LayoutElement> Layout<W> {
             ..
         } = &mut self.monitor_set
         else {
-            panic!()
+            panic!("add_root_tiling_subtree_by_idx requires connected outputs")
         };
 
         monitors[monitor_idx].add_root_tiling_subtree(workspace_idx, subtree, activate);
@@ -1183,7 +1183,9 @@ impl<W: LayoutElement> Layout<W> {
 
                         (0, WorkspaceAddWindowTarget::Auto)
                     }
-                    AddWindowTarget::Output(_) => panic!(),
+                    AddWindowTarget::Output(_) => {
+                        panic!("cannot target an output for a new window when none are connected")
+                    }
                     AddWindowTarget::Workspace(ws_id) => {
                         let ws_idx = workspaces.iter().position(|ws| ws.id() == ws_id).unwrap();
                         (ws_idx, WorkspaceAddWindowTarget::Auto)
@@ -2089,7 +2091,7 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn windows_for_output(&self, output: &Output) -> impl Iterator<Item = &W> + '_ {
         let MonitorSet::Normal { monitors, .. } = &self.monitor_set else {
-            panic!()
+            panic!("windows_for_output requires connected outputs")
         };
 
         let moving_window = self
@@ -2109,7 +2111,7 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn windows_for_output_mut(&mut self, output: &Output) -> impl Iterator<Item = &mut W> + '_ {
         let MonitorSet::Normal { monitors, .. } = &mut self.monitor_set else {
-            panic!()
+            panic!("windows_for_output_mut requires connected outputs")
         };
 
         let moving_window = self

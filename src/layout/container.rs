@@ -1212,6 +1212,20 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.root.is_none()
     }
 
+    /// The root key, asserting the tree is non-empty.
+    ///
+    /// Callers must have already established that the tree has a root (typically via an
+    /// `is_none()` early return). Use this instead of `self.root.unwrap()` so the precondition
+    /// is named at the panic site.
+    fn expect_root(&self) -> NodeKey {
+        self.root.expect("container tree root must exist here")
+    }
+
+    /// Take the root key out, asserting the tree is non-empty. See [`Self::expect_root`].
+    fn take_root(&mut self) -> NodeKey {
+        self.root.take().expect("container tree root must exist here")
+    }
+
     pub fn root_is_synthetic_workspace_container(&self) -> bool {
         self.root
             .is_some_and(|root_key| self.is_synthetic_root_container_key(root_key))
@@ -1270,10 +1284,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         // Ensure the root is a container so we can insert siblings easily
-        let root_key = self.root.unwrap();
+        let root_key = self.expect_root();
         if matches!(self.get_node(root_key), Some(NodeData::Leaf(_))) {
             // Convert the root leaf into a container
-            let old_root_key = self.root.take().unwrap();
+            let old_root_key = self.take_root();
             let layout = self.pending_layout.take().unwrap_or(Layout::SplitH);
             self.pending_layout_wrap_on_split = false;
             let mut container = ContainerData::new(layout);
@@ -1392,9 +1406,9 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         // Ensure the root is a container so we can insert siblings easily.
-        let root_key = self.root.unwrap();
+        let root_key = self.expect_root();
         if matches!(self.get_node(root_key), Some(NodeData::Leaf(_))) {
-            let old_root_key = self.root.take().unwrap();
+            let old_root_key = self.take_root();
             let layout = self.pending_layout.take().unwrap_or(Layout::SplitH);
             self.pending_layout_wrap_on_split = false;
             let mut container = ContainerData::new(layout);
@@ -2930,7 +2944,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     fn ensure_root_container_with_layout(&mut self, layout: Layout) -> bool {
         if let Some(root_key) = self.root {
             if matches!(self.get_node(root_key), Some(NodeData::Leaf(_))) {
-                let old_root_key = self.root.take().unwrap();
+                let old_root_key = self.take_root();
                 let mut container = ContainerData::new(layout);
                 container.mark_preserve_on_single();
                 container.add_child(old_root_key);
@@ -5433,11 +5447,11 @@ impl<W: LayoutElement> ContainerTree<W> {
             return container_key;
         }
 
-        let root_key = self.root.unwrap();
+        let root_key = self.expect_root();
         let needs_conversion = matches!(self.get_node(root_key), Some(NodeData::Leaf(_)));
 
         if needs_conversion {
-            let old_root_key = self.root.take().unwrap();
+            let old_root_key = self.take_root();
             let mut container = ContainerData::new(Layout::SplitH);
             container.add_child(old_root_key);
             let container_key = self.insert_node(NodeData::Container(container));
