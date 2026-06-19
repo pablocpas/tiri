@@ -814,6 +814,56 @@ impl<W: LayoutElement> Workspace<W> {
             .preserves_floating_workspace_context_for_family(family)
     }
 
+    /// Route a focus command to the active layer.
+    ///
+    /// Centralizes the tiling-side `sync_tiling_focus_context_from_tiling()` follow-up so it
+    /// can never be forgotten by an individual focus method — the historical source of stale
+    /// workspace-context bugs.
+    fn dispatch_focus(
+        &mut self,
+        floating: impl FnOnce(&mut FloatingSpace<W>) -> bool,
+        tiling: impl FnOnce(&mut TilingSpace<W>) -> bool,
+    ) -> bool {
+        match self.route_domain_for_family(CommandFamily::Focus) {
+            RouteDomain::Workspace => false,
+            RouteDomain::Floating => floating(&mut self.floating),
+            RouteDomain::Tiling => {
+                let moved = tiling(&mut self.tiling);
+                self.sync_tiling_focus_context_from_tiling();
+                moved
+            }
+        }
+    }
+
+    /// Route a directional move to the active layer. The floating layer always reports the move
+    /// as handled; the tiling layer reports whether it actually moved.
+    fn dispatch_move_directional(
+        &mut self,
+        floating: impl FnOnce(&mut FloatingSpace<W>),
+        tiling: impl FnOnce(&mut TilingSpace<W>) -> bool,
+    ) -> bool {
+        match self.route_domain_for_family(CommandFamily::MoveDirectional) {
+            RouteDomain::Workspace => false,
+            RouteDomain::Floating => {
+                floating(&mut self.floating);
+                true
+            }
+            RouteDomain::Tiling => tiling(&mut self.tiling),
+        }
+    }
+
+    /// Route a container move. Only the tiling layer reorders containers; the floating layer and
+    /// the workspace itself ignore it.
+    fn dispatch_move_container<R: Default>(
+        &mut self,
+        tiling: impl FnOnce(&mut TilingSpace<W>) -> R,
+    ) -> R {
+        match self.route_domain_for_family(CommandFamily::MoveContainer) {
+            RouteDomain::Tiling => tiling(&mut self.tiling),
+            RouteDomain::Workspace | RouteDomain::Floating => R::default(),
+        }
+    }
+
     pub fn focus_mode_toggle_targets_floating(&self) -> bool {
         match self.resolved_command_route().command_target {
             CommandTarget::Workspace => true,
@@ -1700,51 +1750,19 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn focus_left(&mut self) -> bool {
-        match self.route_domain_for_family(CommandFamily::Focus) {
-            RouteDomain::Workspace => false,
-            RouteDomain::Floating => self.floating.focus_left(),
-            RouteDomain::Tiling => {
-                let moved = self.tiling.focus_left();
-                self.sync_tiling_focus_context_from_tiling();
-                moved
-            }
-        }
+        self.dispatch_focus(|f| f.focus_left(), |t| t.focus_left())
     }
 
     pub fn focus_left_no_wrap(&mut self) -> bool {
-        match self.route_domain_for_family(CommandFamily::Focus) {
-            RouteDomain::Workspace => false,
-            RouteDomain::Floating => self.floating.focus_left_no_wrap(),
-            RouteDomain::Tiling => {
-                let moved = self.tiling.focus_left_no_wrap();
-                self.sync_tiling_focus_context_from_tiling();
-                moved
-            }
-        }
+        self.dispatch_focus(|f| f.focus_left_no_wrap(), |t| t.focus_left_no_wrap())
     }
 
     pub fn focus_right(&mut self) -> bool {
-        match self.route_domain_for_family(CommandFamily::Focus) {
-            RouteDomain::Workspace => false,
-            RouteDomain::Floating => self.floating.focus_right(),
-            RouteDomain::Tiling => {
-                let moved = self.tiling.focus_right();
-                self.sync_tiling_focus_context_from_tiling();
-                moved
-            }
-        }
+        self.dispatch_focus(|f| f.focus_right(), |t| t.focus_right())
     }
 
     pub fn focus_right_no_wrap(&mut self) -> bool {
-        match self.route_domain_for_family(CommandFamily::Focus) {
-            RouteDomain::Workspace => false,
-            RouteDomain::Floating => self.floating.focus_right_no_wrap(),
-            RouteDomain::Tiling => {
-                let moved = self.tiling.focus_right_no_wrap();
-                self.sync_tiling_focus_context_from_tiling();
-                moved
-            }
-        }
+        self.dispatch_focus(|f| f.focus_right_no_wrap(), |t| t.focus_right_no_wrap())
     }
 
     pub fn focus_root_container_first(&mut self) {
@@ -1818,27 +1836,11 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn focus_down(&mut self) -> bool {
-        match self.route_domain_for_family(CommandFamily::Focus) {
-            RouteDomain::Workspace => false,
-            RouteDomain::Floating => self.floating.focus_down(),
-            RouteDomain::Tiling => {
-                let moved = self.tiling.focus_down();
-                self.sync_tiling_focus_context_from_tiling();
-                moved
-            }
-        }
+        self.dispatch_focus(|f| f.focus_down(), |t| t.focus_down())
     }
 
     pub fn focus_up(&mut self) -> bool {
-        match self.route_domain_for_family(CommandFamily::Focus) {
-            RouteDomain::Workspace => false,
-            RouteDomain::Floating => self.floating.focus_up(),
-            RouteDomain::Tiling => {
-                let moved = self.tiling.focus_up();
-                self.sync_tiling_focus_context_from_tiling();
-                moved
-            }
-        }
+        self.dispatch_focus(|f| f.focus_up(), |t| t.focus_up())
     }
 
     pub fn focus_down_or_left(&mut self) {
@@ -1932,27 +1934,11 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn focus_up_no_wrap(&mut self) -> bool {
-        match self.route_domain_for_family(CommandFamily::Focus) {
-            RouteDomain::Workspace => false,
-            RouteDomain::Floating => self.floating.focus_up_no_wrap(),
-            RouteDomain::Tiling => {
-                let moved = self.tiling.focus_up_no_wrap();
-                self.sync_tiling_focus_context_from_tiling();
-                moved
-            }
-        }
+        self.dispatch_focus(|f| f.focus_up_no_wrap(), |t| t.focus_up_no_wrap())
     }
 
     pub fn focus_down_no_wrap(&mut self) -> bool {
-        match self.route_domain_for_family(CommandFamily::Focus) {
-            RouteDomain::Workspace => false,
-            RouteDomain::Floating => self.floating.focus_down_no_wrap(),
-            RouteDomain::Tiling => {
-                let moved = self.tiling.focus_down_no_wrap();
-                self.sync_tiling_focus_context_from_tiling();
-                moved
-            }
-        }
+        self.dispatch_focus(|f| f.focus_down_no_wrap(), |t| t.focus_down_no_wrap())
     }
 
     pub(super) fn focus_entry_from_output_direction(&mut self, direction: Direction) -> bool {
@@ -2056,33 +2042,15 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn move_left(&mut self) -> bool {
-        match self.route_domain_for_family(CommandFamily::MoveDirectional) {
-            RouteDomain::Workspace => false,
-            RouteDomain::Floating => {
-                self.floating.move_left();
-                true
-            }
-            RouteDomain::Tiling => self.tiling.move_left(),
-        }
+        self.dispatch_move_directional(|f| f.move_left(), |t| t.move_left())
     }
 
     pub fn move_right(&mut self) -> bool {
-        match self.route_domain_for_family(CommandFamily::MoveDirectional) {
-            RouteDomain::Workspace => false,
-            RouteDomain::Floating => {
-                self.floating.move_right();
-                true
-            }
-            RouteDomain::Tiling => self.tiling.move_right(),
-        }
+        self.dispatch_move_directional(|f| f.move_right(), |t| t.move_right())
     }
 
     pub fn move_container_left(&mut self) -> bool {
-        match self.route_domain_for_family(CommandFamily::MoveContainer) {
-            RouteDomain::Workspace => false,
-            RouteDomain::Tiling => self.tiling.move_left(),
-            RouteDomain::Floating => false,
-        }
+        self.dispatch_move_container(|t| t.move_left())
     }
 
     pub fn move_column_left(&mut self) -> bool {
@@ -2090,11 +2058,7 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn move_container_right(&mut self) -> bool {
-        match self.route_domain_for_family(CommandFamily::MoveContainer) {
-            RouteDomain::Workspace => false,
-            RouteDomain::Tiling => self.tiling.move_right(),
-            RouteDomain::Floating => false,
-        }
+        self.dispatch_move_container(|t| t.move_right())
     }
 
     pub fn move_column_right(&mut self) -> bool {
@@ -2102,11 +2066,7 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn move_container_to_first(&mut self) {
-        match self.route_domain_for_family(CommandFamily::MoveContainer) {
-            RouteDomain::Workspace => {}
-            RouteDomain::Tiling => self.tiling.move_root_container_to_first(),
-            RouteDomain::Floating => {}
-        }
+        self.dispatch_move_container(|t| t.move_root_container_to_first())
     }
 
     pub fn move_column_to_first(&mut self) {
@@ -2114,11 +2074,7 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn move_container_to_last(&mut self) {
-        match self.route_domain_for_family(CommandFamily::MoveContainer) {
-            RouteDomain::Workspace => {}
-            RouteDomain::Tiling => self.tiling.move_root_container_to_last(),
-            RouteDomain::Floating => {}
-        }
+        self.dispatch_move_container(|t| t.move_root_container_to_last())
     }
 
     pub fn move_column_to_last(&mut self) {
@@ -2126,13 +2082,7 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn move_container_to_index(&mut self, index: usize) {
-        match self.route_domain_for_family(CommandFamily::MoveContainer) {
-            RouteDomain::Workspace => {}
-            RouteDomain::Tiling => {
-                self.tiling.move_root_container_to_index(index);
-            }
-            RouteDomain::Floating => {}
-        }
+        self.dispatch_move_container(|t| t.move_root_container_to_index(index))
     }
 
     pub fn move_column_to_index(&mut self, index: usize) {
@@ -2140,25 +2090,11 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn move_down(&mut self) -> bool {
-        match self.route_domain_for_family(CommandFamily::MoveDirectional) {
-            RouteDomain::Workspace => false,
-            RouteDomain::Floating => {
-                self.floating.move_down();
-                true
-            }
-            RouteDomain::Tiling => self.tiling.move_down(),
-        }
+        self.dispatch_move_directional(|f| f.move_down(), |t| t.move_down())
     }
 
     pub fn move_up(&mut self) -> bool {
-        match self.route_domain_for_family(CommandFamily::MoveDirectional) {
-            RouteDomain::Workspace => false,
-            RouteDomain::Floating => {
-                self.floating.move_up();
-                true
-            }
-            RouteDomain::Tiling => self.tiling.move_up(),
-        }
+        self.dispatch_move_directional(|f| f.move_up(), |t| t.move_up())
     }
 
     pub fn consume_or_expel_window_left(&mut self, window: Option<&W::Id>) {
