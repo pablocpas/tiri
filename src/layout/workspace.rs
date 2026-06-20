@@ -3082,6 +3082,7 @@ impl<W: LayoutElement> Workspace<W> {
                 tile.update_render_elements(
                     false,
                     false,
+                    false,
                     crate::layout::focus_ring::FocusRingEdges::all(),
                     None,
                     view_rect,

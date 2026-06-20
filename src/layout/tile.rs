@@ -645,6 +645,7 @@ impl<W: LayoutElement> Tile<W> {
         &mut self,
         is_active_workspace: bool,
         is_focused: bool,
+        is_focus_head: bool,
         edges: FocusRingEdges,
         indicator_edge: Option<FocusRingIndicatorEdge>,
         view_rect: Rectangle<f64, Logical>,
@@ -653,11 +654,15 @@ impl<W: LayoutElement> Tile<W> {
         let rules = self.window.rules();
         let animated_tile_size = self.animated_tile_size();
         let expanded_progress = self.expanded_progress();
+        // i3/sway decoration states: `focused` is the single globally focused
+        // window; `focused_inactive` is the focused leaf of a container that is
+        // not itself focused (its parent's focus head); everything else is
+        // `unfocused`. See `ContainerTree::path_is_parent_focus_head`.
         let state = if self.window.is_urgent() {
             FocusRingState::Urgent
         } else if is_focused {
             FocusRingState::Focused
-        } else if is_active_workspace {
+        } else if is_focus_head {
             FocusRingState::FocusedInactive
         } else {
             FocusRingState::Unfocused

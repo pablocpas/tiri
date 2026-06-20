@@ -1306,6 +1306,8 @@ impl<W: LayoutElement> TilingSpace<W> {
         }
 
         for (info, (edges, indicator_edge)) in render_layouts.into_iter().zip(render_edges) {
+            // Computed before the mutable tile borrow below (immutable tree access).
+            let is_focus_head = self.tree.path_is_parent_focus_head(&info.path);
             // Use O(1) key lookup instead of O(depth) path lookup.
             if let Some(tile) = self.tree.get_tile_mut(info.key) {
                 let is_fullscreen_tile = visual_fullscreen_id
@@ -1340,6 +1342,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                     tile.update_render_elements(
                         is_active,
                         is_focused,
+                        is_focus_head,
                         edges,
                         indicator_edge,
                         tile_view_rect,

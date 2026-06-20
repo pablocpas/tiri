@@ -333,6 +333,39 @@ fn focus_descends_into_last_focused_child() {
     );
 }
 #[test]
+fn focused_inactive_is_focus_head_of_non_focused_container() {
+    // Reproduce: SplitH[ SplitV[win1, win3], win2 ], focus on win3.
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+    harness.add_window(2);
+    assert!(harness.tree.focus_in_direction(Direction::Left));
+    harness.tree.split_focused(ContainerLayout::SplitV);
+    harness.add_window(3);
+    assert_snapshot!(
+        harness.tree.debug_tree().as_str(),
+        @"
+    SplitH
+      SplitV
+        Window 1
+        Window 3 *
+      Window 2
+    "
+    );
+
+    // Focus the top-level sibling. The SplitV container is now unfocused but
+    // keeps win3 as its focus head.
+    assert!(harness.tree.focus_window_by_id(&2));
+    assert_eq!(harness.tree.focus_path(), vec![1]);
+
+    // win2: globally focused leaf (also its parent's focus head) -> `focused`.
+    assert!(harness.tree.path_is_parent_focus_head(&[1]));
+    // win3: focus head of the non-focused SplitV -> `focused_inactive`. This is
+    // the i3/sway case that the flat active-workspace model got wrong.
+    assert!(harness.tree.path_is_parent_focus_head(&[0, 1]));
+    // win1: not its parent's focus head -> `unfocused`.
+    assert!(!harness.tree.path_is_parent_focus_head(&[0, 0]));
+}
+#[test]
 fn preserve_explicit_same_layout_container_on_cleanup() {
     let mut harness = TreeHarness::new();
     harness.add_window(1);

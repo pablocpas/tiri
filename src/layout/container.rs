@@ -3891,6 +3891,29 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.get_container_mut(key)
     }
 
+    /// Whether the leaf at `path` is the focused child (i3 `focus_head`) of its
+    /// parent container.
+    ///
+    /// This drives the `focused_inactive` decoration state: matching i3/sway, a
+    /// window is `focused_inactive` when it is the focused leaf of a container
+    /// that is not itself globally focused (e.g. the active window of a sibling
+    /// split). The rule is purely local — only the immediate parent's focus head
+    /// matters — so a non-focused sibling that is *not* its parent's focus head
+    /// stays `unfocused`. The root leaf (empty path) counts as its workspace's
+    /// focus head.
+    pub fn path_is_parent_focus_head(&self, path: &[usize]) -> bool {
+        let Some((&child_idx, parent_path)) = path.split_last() else {
+            return true;
+        };
+        let Some(parent_key) = self.get_node_key_at_path(parent_path) else {
+            return false;
+        };
+        let Some(parent) = self.get_container(parent_key) else {
+            return false;
+        };
+        parent.focused_child_index() == Some(child_idx)
+    }
+
     // ========================================================================
     // Root-level methods
     // ========================================================================

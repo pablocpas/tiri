@@ -442,7 +442,16 @@ impl<W: LayoutElement> FloatingSpace<W> {
             }
 
             let layouts = Self::display_layouts(&container.tree).to_vec();
+            // Match sway (`container_get_current_colors`): a top-level floating
+            // window is never `focused_inactive` — sway compares it against the
+            // workspace's *tiling* focus-inactive child, which a float can never
+            // equal. Only leaves inside a floating group that holds a real
+            // multi-window sub-layout have a true parent container to compare
+            // against, so only those can be `focused_inactive`.
+            let floating_has_sublayout = container.tree.window_count() > 1;
             for info in layouts {
+                let is_focus_head = floating_has_sublayout
+                    && container.tree.path_is_parent_focus_head(&info.path);
                 if let Some(tile) = container.tree.get_tile_mut(info.key) {
                     let is_fullscreen_tile = self
                         .fullscreen_window
@@ -470,6 +479,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                     tile.update_render_elements(
                         is_active,
                         is_focused,
+                        is_focus_head,
                         FocusRingEdges::all(),
                         None,
                         tile_view_rect,
