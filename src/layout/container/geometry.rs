@@ -549,11 +549,13 @@ impl<W: LayoutElement> ContainerTree<W> {
             return (0.0, false);
         }
 
-        let is_leaf = matches!(self.get_node(child_key), Some(NodeData::Leaf(_)));
-        if is_leaf {
-            (split_bar_height, true)
-        } else {
-            (0.0, false)
+        // CSD-aware (like the border's `draw_border_with_background = !has_ssd()`):
+        // only draw the WM per-tile titlebar for windows we decorate (SSD). A CSD
+        // window draws its own headerbar, so a WM titlebar would double up. The
+        // tabbed/stacked tab bar is handled separately and stays always-on.
+        match self.get_node(child_key) {
+            Some(NodeData::Leaf(tile)) if tile.window().has_ssd() => (split_bar_height, true),
+            _ => (0.0, false),
         }
     }
 
