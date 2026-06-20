@@ -2387,7 +2387,6 @@ mod tests {
                 enable_overlay_planes: false,
                 disable_cursor_plane: false,
                 disable_direct_scanout: false,
-                keep_max_bpc_unchanged: false,
                 restrict_primary_scanout_to_matching_format: false,
                 force_disable_connectors_on_resume: false,
                 render_drm_device: Some(

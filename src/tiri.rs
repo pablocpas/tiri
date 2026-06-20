@@ -133,7 +133,7 @@ use crate::input::scroll_swipe_gesture::ScrollSwipeGesture;
 use crate::input::scroll_tracker::ScrollTracker;
 use crate::input::{
     apply_libinput_settings, mods_with_finger_scroll_binds, mods_with_mouse_binds,
-    mods_with_wheel_binds, TabletData,
+    mods_with_tablet_stylus_binds, mods_with_wheel_binds, TabletData,
 };
 use crate::ipc::server::IpcServer;
 use crate::layer::mapped::LayerSurfaceRenderElement;
@@ -378,6 +378,7 @@ pub struct Niri {
     pub horizontal_wheel_tracker: ScrollTracker,
     pub mods_with_mouse_binds: HashSet<Modifiers>,
     pub mods_with_wheel_binds: HashSet<Modifiers>,
+    pub mods_with_tablet_stylus_binds: HashSet<Modifiers>,
     pub vertical_finger_scroll_tracker: ScrollTracker,
     pub horizontal_finger_scroll_tracker: ScrollTracker,
     pub mods_with_finger_scroll_binds: HashSet<Modifiers>,
@@ -1127,6 +1128,7 @@ impl State {
 
     pub fn confirm_mru(&mut self) {
         if let Some(window) = self.niri.close_mru(MruCloseRequest::Confirm) {
+            self.update_keyboard_focus();
             self.focus_window(&window);
         }
     }
@@ -1691,6 +1693,8 @@ impl State {
             let active_binds = crate::input::binds_for_mode(&config, &self.niri.binding_mode);
             self.niri.mods_with_mouse_binds = mods_with_mouse_binds(new_mod_key, active_binds);
             self.niri.mods_with_wheel_binds = mods_with_wheel_binds(new_mod_key, active_binds);
+            self.niri.mods_with_tablet_stylus_binds =
+                mods_with_tablet_stylus_binds(new_mod_key, active_binds);
             self.niri.mods_with_finger_scroll_binds =
                 mods_with_finger_scroll_binds(new_mod_key, active_binds);
         }
@@ -2094,6 +2098,9 @@ impl State {
                 } else {
                     None
                 }
+            }
+            tiri_ipc::OutputAction::MaxBpc { max_bpc } => {
+                config.max_bpc = Some(tiri_config::output::MaxBpc(max_bpc));
             }
         });
 
@@ -2585,6 +2592,7 @@ impl Niri {
         let mods_with_mouse_binds = mods_with_mouse_binds(mod_key, active_binds);
         let mods_with_wheel_binds = mods_with_wheel_binds(mod_key, active_binds);
         let mods_with_finger_scroll_binds = mods_with_finger_scroll_binds(mod_key, active_binds);
+        let mods_with_tablet_stylus_binds = mods_with_tablet_stylus_binds(mod_key, active_binds);
 
         let screenshot_ui = ScreenshotUi::new(animation_clock.clone(), config.clone());
         let window_mru_ui = WindowMruUi::new(config.clone());
@@ -2768,6 +2776,7 @@ impl Niri {
             horizontal_wheel_tracker: ScrollTracker::new(120),
             mods_with_mouse_binds,
             mods_with_wheel_binds,
+            mods_with_tablet_stylus_binds,
 
             // 10 is copied from Clutter: DISCRETE_SCROLL_STEP.
             vertical_finger_scroll_tracker: ScrollTracker::new(10),
@@ -6110,6 +6119,7 @@ impl Niri {
         let active_binds = crate::input::binds_for_mode(&config, &self.binding_mode);
         self.mods_with_mouse_binds = mods_with_mouse_binds(mod_key, active_binds);
         self.mods_with_wheel_binds = mods_with_wheel_binds(mod_key, active_binds);
+        self.mods_with_tablet_stylus_binds = mods_with_tablet_stylus_binds(mod_key, active_binds);
         self.mods_with_finger_scroll_binds = mods_with_finger_scroll_binds(mod_key, active_binds);
     }
 

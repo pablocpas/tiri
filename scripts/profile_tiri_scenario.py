@@ -267,9 +267,18 @@ class Runner:
         self.event_monitor.raise_if_failed()
         self.event_monitor.reset_activity()
         start = time.perf_counter()
+        before_ids = {
+            window["id"]
+            for window in previous_snapshot.get("windows", [])
+            if isinstance(window.get("id"), int)
+        }
 
         if step.kind == "spawn_window":
             spawned_processes.append(self._spawn_window())
+            self._wait_for_new_window_id(
+                before_ids,
+                context=f"{step.label} window",
+            )
         elif step.kind == "action":
             assert step.action_name is not None
             self._send_action(step.action_name, step.action_args)

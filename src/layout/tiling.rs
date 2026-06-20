@@ -950,7 +950,6 @@ impl<W: LayoutElement> TilingSpace<W> {
         tile.update_window();
     }
 
-
     pub fn render_elements<R: NiriRenderer>(
         &self,
         mut ctx: RenderCtx<R>,

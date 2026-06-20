@@ -15,6 +15,7 @@ output "eDP-1" {
     variable-refresh-rate // on-demand=true
     focus-at-startup
     backdrop-color "#001100"
+    max-bpc 8
 
     hot-corners {
         // off
@@ -222,6 +223,21 @@ This is helpful to avoid various issues with VRR, since it can be disabled most 
 ```kdl
 output "HDMI-A-1" {
     variable-refresh-rate on-demand=true
+}
+```
+
+### `max-bpc`
+
+<sup>Upstream niri: next release</sup>
+
+Set the maximum bits per channel for this output.
+You usually do not need to set this unless you hit display bandwidth issues or lower-than-expected color depth.
+Valid values are `6`, `8`, `10`, `12`, `14`, and `16`.
+
+```kdl
+// Lower HDMI-A-1 display bandwidth.
+output "HDMI-A-1" {
+    max-bpc 8
 }
 ```
 

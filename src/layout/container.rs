@@ -1223,7 +1223,9 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Take the root key out, asserting the tree is non-empty. See [`Self::expect_root`].
     fn take_root(&mut self) -> NodeKey {
-        self.root.take().expect("container tree root must exist here")
+        self.root
+            .take()
+            .expect("container tree root must exist here")
     }
 
     pub fn root_is_synthetic_workspace_container(&self) -> bool {
