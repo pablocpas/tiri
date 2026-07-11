@@ -10,7 +10,6 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::marker::PhantomData;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -33,7 +32,6 @@ use super::focus_ring::{
 use super::legacy_column::{Column, ColumnWidth};
 use super::monitor::{InsertPosition, SplitIndicator};
 use super::tile::{Tile, TileRenderElement};
-use super::tile::{TilePtrIter, TilePtrIterMut};
 use super::viewport::FixedViewport;
 use super::{
     ConfigureIntent, InteractiveResizeData, LayoutElement, Options, RemovedTile, ResizeHit,
@@ -187,98 +185,19 @@ pub enum WindowHeight {
     Fixed(i32),
 }
 
-struct TileRenderPositions<'a, W: LayoutElement> {
-    entries: Vec<(*const Tile<W>, Point<f64, Logical>, bool)>,
-    index: usize,
-    _marker: PhantomData<&'a Tile<W>>,
-}
-
-impl<'a, W: LayoutElement> TileRenderPositions<'a, W> {
-    fn new(space: &'a TilingSpace<W>) -> Self {
-        let scale = Scale::from(space.scale);
+impl<W: LayoutElement> TilingSpace<W> {
+    fn tile_render_positions(&self) -> Vec<(&Tile<W>, Point<f64, Logical>, bool)> {
+        let scale = Scale::from(self.scale);
         let mut entries = Vec::new();
-        let layouts = space.display_layouts();
+        let layouts = self.display_layouts();
         for info in layouts {
-            // Use O(1) key lookup instead of O(depth) path lookup.
-            if let Some(tile) = space.tree.get_tile(info.key) {
+            if let Some(tile) = self.tree.get_tile(info.key) {
                 let mut pos = info.rect.loc + tile.render_offset();
                 pos = pos.to_physical_precise_round(scale).to_logical(scale);
-                entries.push((tile as *const _, pos, info.visible));
+                entries.push((tile, pos, info.visible));
             }
         }
-
-        Self {
-            entries,
-            index: 0,
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<'a, W: LayoutElement> Iterator for TileRenderPositions<'a, W> {
-    type Item = (&'a Tile<W>, Point<f64, Logical>, bool);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index >= self.entries.len() {
-            return None;
-        }
-
-        let (ptr, pos, visible) = self.entries[self.index];
-        self.index += 1;
-
-        unsafe { ptr.as_ref().map(|tile| (tile, pos, visible)) }
-    }
-}
-
-struct TileRenderPositionsMut<'a, W: LayoutElement> {
-    space: *mut TilingSpace<W>,
-    layouts: Vec<LeafLayoutInfo>,
-    index: usize,
-    round: bool,
-    scale: Scale<f64>,
-    _marker: PhantomData<&'a mut TilingSpace<W>>,
-}
-
-impl<'a, W: LayoutElement> TileRenderPositionsMut<'a, W> {
-    fn new(space: &'a mut TilingSpace<W>, round: bool) -> Self {
-        // Clone layouts here because we need mutable access to space later.
-        // The layouts are small (just NodeKey + rect per tile).
-        let layouts = space.display_layouts().to_vec();
-        Self {
-            space: space as *mut _,
-            layouts,
-            index: 0,
-            round,
-            scale: Scale::from(space.scale),
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<'a, W: LayoutElement> Iterator for TileRenderPositionsMut<'a, W> {
-    type Item = (&'a mut Tile<W>, Point<f64, Logical>);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        while self.index < self.layouts.len() {
-            let info = self.layouts[self.index].clone();
-            self.index += 1;
-
-            unsafe {
-                let space = &mut *self.space;
-                // Use O(1) key lookup instead of O(depth) path lookup.
-                if let Some(tile) = space.tree.get_tile_mut(info.key) {
-                    let mut pos = info.rect.loc + tile.render_offset();
-                    if self.round {
-                        pos = pos
-                            .to_physical_precise_round(self.scale)
-                            .to_logical(self.scale);
-                    }
-                    return Some((tile, pos));
-                }
-            }
-        }
-
-        None
+        entries
     }
 }
 
@@ -298,6 +217,10 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     fn pending_fullscreen_window(&self) -> Option<&W::Id> {
+        self.fullscreen_window.as_ref()
+    }
+
+    pub(super) fn fullscreen_window_id(&self) -> Option<&W::Id> {
         self.fullscreen_window.as_ref()
     }
 
@@ -844,7 +767,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn tiles(&self) -> impl Iterator<Item = &Tile<W>> + '_ {
-        TilePtrIter::new(self.tree.tile_ptrs())
+        self.tree.tiles()
     }
 
     pub fn active_tile(&self) -> Option<&Tile<W>> {
@@ -2679,30 +2602,42 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     // Additional methods needed by workspace.rs
     pub fn tiles_mut(&mut self) -> impl Iterator<Item = &mut Tile<W>> + '_ {
-        TilePtrIterMut::new(self.tree.tile_ptrs_mut())
+        self.tree.tiles_mut()
     }
 
     pub fn tiles_with_render_positions(
         &self,
     ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>, bool)> + '_ {
-        TileRenderPositions::new(self)
+        self.tile_render_positions().into_iter()
     }
 
     pub fn tiles_with_render_positions_mut(
         &mut self,
         round: bool,
     ) -> impl Iterator<Item = (&mut Tile<W>, Point<f64, Logical>)> + '_ {
-        TileRenderPositionsMut::new(self, round)
+        let scale = Scale::from(self.scale);
+        let positions: HashMap<_, _> = self
+            .display_layouts()
+            .iter()
+            .map(|info| (info.key, info.rect.loc))
+            .collect();
+        self.tree.keyed_tiles_mut().filter_map(move |(key, tile)| {
+            let mut pos = *positions.get(&key)? + tile.render_offset();
+            if round {
+                pos = pos.to_physical_precise_round(scale).to_logical(scale);
+            }
+            Some((tile, pos))
+        })
     }
 
     pub fn tiles_with_ipc_layouts(
         &self,
     ) -> impl Iterator<Item = (&Tile<W>, tiri_ipc::WindowLayout)> + '_ {
         let scale = Scale::from(self.scale);
-        let legacy_positions = self.legacy_tiling_positions();
+        let mut leaf_indices_by_root = HashMap::<usize, usize>::new();
 
         self.tree.leaf_layouts().iter().filter_map(move |info| {
-            let tile = self.tree.tile_at_path(&info.path)?;
+            let tile = self.tree.get_tile(info.key)?;
             let mut layout = tile.ipc_layout_template();
             let tile_size = tile.tile_size();
             layout.tile_size = (tile_size.w, tile_size.h);
@@ -2713,35 +2648,12 @@ impl<W: LayoutElement> TilingSpace<W> {
             layout.tile_pos_in_workspace_view = Some((pos.x, pos.y));
             let window_offset = tile.window_loc();
             layout.window_offset_in_tile = (window_offset.x, window_offset.y);
-            layout.pos_in_tiling_layout = legacy_positions.get(&info.path).copied();
+            let root_idx = info.path.first().copied().unwrap_or(0);
+            let leaf_idx = leaf_indices_by_root.entry(root_idx).or_default();
+            *leaf_idx += 1;
+            layout.pos_in_tiling_layout = Some((root_idx + 1, *leaf_idx));
             Some((tile, layout))
         })
-    }
-
-    fn legacy_tiling_positions(&self) -> HashMap<Vec<usize>, (usize, usize)> {
-        let mut positions = HashMap::new();
-
-        if self.tree.root_children_len() == 0 {
-            return positions;
-        }
-
-        if self.tree.root_container().is_none() {
-            positions.insert(Vec::new(), (1, 1));
-            return positions;
-        }
-
-        for root_idx in 0..self.tree.root_children_len() {
-            for (leaf_idx, path) in self
-                .tree
-                .leaf_paths_under(&[root_idx])
-                .into_iter()
-                .enumerate()
-            {
-                positions.insert(path, (root_idx + 1, leaf_idx + 1));
-            }
-        }
-
-        positions
     }
 
     pub fn are_transitions_ongoing(&self) -> bool {
@@ -2779,6 +2691,9 @@ impl<W: LayoutElement> TilingSpace<W> {
         self.tree.focus_path().is_empty()
     }
 
+    // Legacy column width / full-width / window height are intentionally ignored in the
+    // i3/sway-style tree. New tiled nodes inherit their initial size from the parent container's
+    // split policy; explicit resize commands mutate child percentages afterwards.
     pub fn add_tile(
         &mut self,
         col_idx: Option<usize>,
@@ -3053,6 +2968,8 @@ impl<W: LayoutElement> TilingSpace<W> {
         _height: Option<PresetSize>,
         rules: &ResolvedWindowRules,
     ) -> Size<i32, Logical> {
+        // In i3/sway-style tiling, default-column-width/default-window-height are legacy hints.
+        // The initial configure should preview the actual container-tree slot instead.
         let Some(preview) = self.tree.preview_new_leaf_geometry() else {
             return Size::from((800, 600));
         };
@@ -3408,6 +3325,14 @@ impl<W: LayoutElement> TilingSpace<W> {
                 return false;
             }
 
+            // A workspace has one fullscreen owner. Request the previous tile back to its tiled
+            // (or maximized) state before replacing it, matching the floating-space behavior.
+            if let Some(previous) = self.fullscreen_window.clone() {
+                if previous != *window {
+                    self.request_unfullscreen(&previous);
+                }
+            }
+
             if let Some(path) = self.tree.find_window(window) {
                 if let Some(tile) = self.tree.tile_at_path_mut(&path) {
                     tile.pending_maximized |= tile.window().pending_sizing_mode().is_maximized();
@@ -3422,34 +3347,44 @@ impl<W: LayoutElement> TilingSpace<W> {
             }
             true
         } else {
-            let Some(path) = self.tree.find_window(window) else {
-                return false;
-            };
-            let Some(tile) = self.tree.tile_at_path_mut(&path) else {
-                return false;
-            };
-            let is_window_fullscreen = tile.window().pending_sizing_mode().is_fullscreen();
             let fullscreen_matches = self
                 .fullscreen_window
                 .as_ref()
                 .is_some_and(|id| id == window);
-            if !is_window_fullscreen && !fullscreen_matches {
+            if !self.request_unfullscreen(window) && !fullscreen_matches {
                 return false;
             }
 
-            if tile.pending_maximized {
-                tile.request_maximized(self.working_area.size, !self.options.animations.off, None);
-            } else {
-                tile.request_tile_size(self.working_area.size, !self.options.animations.off, None);
+            if fullscreen_matches {
+                self.fullscreen_window = None;
             }
-
-            self.fullscreen_window = None;
             self.tree.layout();
             if let Some(selected_key) = selected_container {
                 self.tree.set_selected_container_key(selected_key);
             }
             true
         }
+    }
+
+    fn request_unfullscreen(&mut self, window: &W::Id) -> bool {
+        let Some(path) = self.tree.find_window(window) else {
+            return false;
+        };
+        let Some(tile) = self.tree.tile_at_path_mut(&path) else {
+            return false;
+        };
+        if !tile.window().pending_sizing_mode().is_fullscreen()
+            && self.fullscreen_window.as_ref() != Some(window)
+        {
+            return false;
+        }
+
+        if tile.pending_maximized {
+            tile.request_maximized(self.working_area.size, !self.options.animations.off, None);
+        } else {
+            tile.request_tile_size(self.working_area.size, !self.options.animations.off, None);
+        }
+        true
     }
 
     fn sync_fullscreen_window(&mut self) {

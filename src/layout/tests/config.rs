@@ -148,6 +148,29 @@ fn set_height_fixed_negative() {
     check_ops(ops);
 }
 #[test]
+fn tiling_ignores_default_open_size_hints() {
+    let make_layout = |width, height| {
+        let mut layout = Layout::default();
+        Op::AddOutput(1).apply(&mut layout);
+        layout.add_window(
+            TestWindow::new(TestWindowParams::new(1)),
+            AddWindowTarget::Auto,
+            width,
+            height,
+            false,
+            false,
+            ActivateWindow::default(),
+        );
+        layout.verify_invariants();
+        requested_size(&layout, 1)
+    };
+
+    let base = make_layout(None, None);
+    let hinted = make_layout(Some(PresetSize::Fixed(1000)), Some(PresetSize::Fixed(123)));
+
+    assert_eq!(hinted, base);
+}
+#[test]
 fn preset_column_width_fixed_correct_with_border() {
     let ops = [
         Op::AddOutput(0),

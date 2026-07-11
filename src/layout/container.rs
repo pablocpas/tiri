@@ -893,6 +893,22 @@ impl<W: LayoutElement> ContainerTree<W> {
             });
         }
 
+        // A selected root container is inserted next to, not into. The real insertion path wraps
+        // the current root in a new split parent; preview that exact topology so the initial
+        // configure already matches the final slot.
+        if self.selected_key == Some(root_key)
+            && matches!(self.get_node(root_key), Some(NodeData::Container(_)))
+        {
+            let layout = self.pending_layout.unwrap_or(Layout::SplitH);
+            let percents = self.preview_inserted_child_percents(&[1.0], 1, 1);
+            let (rect, tab_bar_offset) =
+                self.preview_child_rect(layout, root_rect, 2, &percents, 1, true);
+            return Some(PreviewLeafGeometry {
+                rect,
+                tab_bar_offset,
+            });
+        }
+
         let focus_path = self.selected_path();
         let (parent_path, insert_idx) = if focus_path.is_empty() {
             (Vec::new(), None)
@@ -2325,48 +2341,41 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    /// Collect raw pointers to tiles (immutable) in depth-first order.
-    pub fn tile_ptrs(&self) -> Vec<*const Tile<W>> {
+    /// Iterate tiles in depth-first tree order.
+    pub fn tiles(&self) -> impl Iterator<Item = &Tile<W>> {
         let mut tiles = Vec::new();
         if let Some(root_key) = self.root {
-            self.collect_tile_ptrs(root_key, &mut tiles);
+            self.collect_tile_refs(root_key, &mut tiles);
         }
-        tiles
+        tiles.into_iter()
     }
 
-    fn collect_tile_ptrs(&self, node_key: NodeKey, out: &mut Vec<*const Tile<W>>) {
+    fn collect_tile_refs<'a>(&'a self, node_key: NodeKey, out: &mut Vec<&'a Tile<W>>) {
         match self.get_node(node_key) {
-            Some(NodeData::Leaf(tile)) => out.push(tile as *const _),
+            Some(NodeData::Leaf(tile)) => out.push(tile),
             Some(NodeData::Container(container)) => {
                 for &child_key in &container.children {
-                    self.collect_tile_ptrs(child_key, out);
+                    self.collect_tile_refs(child_key, out);
                 }
             }
             None => {}
         }
     }
 
-    /// Collect raw pointers to tiles (mutable) in depth-first order.
-    pub fn tile_ptrs_mut(&mut self) -> Vec<*mut Tile<W>> {
-        let mut tiles = Vec::new();
-        if let Some(root_key) = self.root {
-            self.collect_tile_ptrs_mut(root_key, &mut tiles);
-        }
-        tiles
+    /// Iterate all tiles mutably. Callers must not rely on traversal order.
+    pub fn tiles_mut(&mut self) -> impl Iterator<Item = &mut Tile<W>> {
+        self.nodes.values_mut().filter_map(|node| match node {
+            NodeData::Leaf(tile) => Some(tile),
+            NodeData::Container(_) => None,
+        })
     }
 
-    fn collect_tile_ptrs_mut(&mut self, node_key: NodeKey, out: &mut Vec<*mut Tile<W>>) {
-        // Safety: We're creating raw pointers, caller must ensure proper usage
-        match self.get_node_mut(node_key) {
-            Some(NodeData::Leaf(tile)) => out.push(tile as *mut _),
-            Some(NodeData::Container(container)) => {
-                let children = container.children.clone();
-                for child_key in children {
-                    self.collect_tile_ptrs_mut(child_key, out);
-                }
-            }
-            None => {}
-        }
+    /// Iterate all tiles mutably together with their stable node keys.
+    pub(super) fn keyed_tiles_mut(&mut self) -> impl Iterator<Item = (NodeKey, &mut Tile<W>)> {
+        self.nodes.iter_mut().filter_map(|(key, node)| match node {
+            NodeData::Leaf(tile) => Some((key, tile)),
+            NodeData::Container(_) => None,
+        })
     }
 
     /// Helper: get tile at a given path (immutable).

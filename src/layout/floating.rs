@@ -21,7 +21,6 @@ use super::focus_ring::{
 };
 use super::legacy_column::ColumnWidth;
 use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
-use super::tile::{TilePtrIter, TilePtrIterMut, TileWithPosIterMut};
 use super::workspace::{InteractiveResize, ResolvedSize};
 use super::{
     resize_edges_for_point, ConfigureIntent, InteractiveResizeData, LayoutElement, Options,
@@ -244,26 +243,6 @@ impl FloatingContainerData {
     }
 }
 
-/// Helper to create tile iterator
-fn floating_tile_iter<'a, W: LayoutElement>(space: &'a FloatingSpace<W>) -> TilePtrIter<'a, W> {
-    let mut tiles = Vec::new();
-    for container in &space.containers {
-        tiles.extend(container.tree.tile_ptrs());
-    }
-    TilePtrIter::new(tiles)
-}
-
-/// Helper to create mutable tile iterator
-fn floating_tile_iter_mut<'a, W: LayoutElement>(
-    space: &'a mut FloatingSpace<W>,
-) -> TilePtrIterMut<'a, W> {
-    let mut tiles = Vec::new();
-    for container in &mut space.containers {
-        tiles.extend(container.tree.tile_ptrs_mut());
-    }
-    TilePtrIterMut::new(tiles)
-}
-
 impl<W: LayoutElement> FloatingSpace<W> {
     fn leaf_point_hits_tab_bar(
         tab_bar_infos: &[TabBarInfo],
@@ -450,8 +429,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
             // against, so only those can be `focused_inactive`.
             let floating_has_sublayout = container.tree.window_count() > 1;
             for info in layouts {
-                let is_focus_head = floating_has_sublayout
-                    && container.tree.path_is_parent_focus_head(&info.path);
+                let is_focus_head =
+                    floating_has_sublayout && container.tree.path_is_parent_focus_head(&info.path);
                 if let Some(tile) = container.tree.get_tile_mut(info.key) {
                     let is_fullscreen_tile = self
                         .fullscreen_window
@@ -490,11 +469,15 @@ impl<W: LayoutElement> FloatingSpace<W> {
     }
 
     pub fn tiles(&self) -> impl Iterator<Item = &Tile<W>> + '_ {
-        floating_tile_iter(self)
+        self.containers
+            .iter()
+            .flat_map(|container| container.tree.tiles())
     }
 
     pub fn tiles_mut(&mut self) -> impl Iterator<Item = &mut Tile<W>> + '_ {
-        floating_tile_iter_mut(self)
+        self.containers
+            .iter_mut()
+            .flat_map(|container| container.tree.tiles_mut())
     }
 
     pub fn tiles_with_offsets(&self) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>)> + '_ {
@@ -609,18 +592,17 @@ impl<W: LayoutElement> FloatingSpace<W> {
     pub fn tiles_with_offsets_mut(
         &mut self,
     ) -> impl Iterator<Item = (&mut Tile<W>, Point<f64, Logical>)> + '_ {
-        let mut tiles = Vec::new();
-        for container in &mut self.containers {
+        self.containers.iter_mut().flat_map(|container| {
             let offset = container.data.logical_pos;
-            let layouts = Self::display_layouts(&container.tree).to_vec();
-            for info in layouts {
-                if let Some(tile) = container.tree.get_tile_mut(info.key) {
-                    tiles.push((tile as *mut Tile<W>, offset + info.rect.loc));
-                }
-            }
-        }
-
-        TileWithPosIterMut::new(tiles)
+            let positions: HashMap<_, _> = Self::display_layouts(&container.tree)
+                .iter()
+                .map(|info| (info.key, offset + info.rect.loc))
+                .collect();
+            container
+                .tree
+                .keyed_tiles_mut()
+                .filter_map(move |(key, tile)| Some((tile, *positions.get(&key)?)))
+        })
     }
 
     pub fn tiles_with_render_positions(
@@ -951,6 +933,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     pub fn has_fullscreen_window(&self) -> bool {
         self.fullscreen_window.is_some()
+    }
+
+    pub(super) fn fullscreen_window_id(&self) -> Option<&W::Id> {
+        self.fullscreen_window.as_ref()
     }
 
     pub fn selected_is_container(&self, id: Option<&W::Id>) -> bool {
@@ -3193,12 +3179,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let diff = prev_pos - new_pos;
         if diff.x * diff.x + diff.y * diff.y > ANIMATION_THRESHOLD_SQ {
             let delta = prev_pos - new_pos;
-            for tile in container.tree.tile_ptrs_mut() {
-                unsafe {
-                    if let Some(tile) = tile.as_mut() {
-                        tile.animate_move_from(delta);
-                    }
-                }
+            for tile in container.tree.tiles_mut() {
+                tile.animate_move_from(delta);
             }
         }
     }

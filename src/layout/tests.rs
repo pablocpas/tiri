@@ -2294,7 +2294,7 @@ fn tiling_focus_parent_once_inserts_as_sibling_of_selected_container() {
 
 #[test]
 fn tiling_focus_parent_on_root_inserts_new_window_as_sibling() {
-    let layout = check_ops([
+    let mut layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow {
             params: TestWindowParams::new(1),
@@ -2308,10 +2308,19 @@ fn tiling_focus_parent_on_root_inserts_new_window_as_sibling() {
         Op::FocusWindow(2),
         Op::SetLayoutStacked,
         Op::FocusParent,
-        Op::AddWindow {
-            params: TestWindowParams::new(4),
-        },
     ]);
+
+    let preview = layout
+        .active_workspace()
+        .expect("active workspace")
+        .tiling()
+        .new_window_size(None, None, &ResolvedWindowRules::default());
+    check_ops_on_layout(
+        &mut layout,
+        [Op::AddWindow {
+            params: TestWindowParams::new(4),
+        }],
+    );
 
     let workspace = layout.active_workspace().expect("active workspace");
     let tree = workspace.tiling().debug_tree().replace(" *", "");
@@ -2321,6 +2330,11 @@ fn tiling_focus_parent_on_root_inserts_new_window_as_sibling() {
                 "SplitH\n  Window 4\n  Stacked\n    Window 1\n    Window 2\n    Window 3"
             ),
         "expected new window to be inserted as sibling of selected root container:\n{tree}"
+    );
+    assert_eq!(
+        requested_size(&layout, 4),
+        preview,
+        "initial size preview must match the real sibling slot"
     );
 }
 

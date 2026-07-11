@@ -50,7 +50,6 @@ fn apply_parity_replay_op(layout: &mut Layout<TestWindow>, op: &str, next_id: &m
     }
 }
 #[test]
-#[ignore = "parity test invalidated by floating-native fullscreen; tree shape changed"]
 fn parity_seed1_step53_replay_includes_floating_roundtrip_shape() {
     let mut layout = Layout::default();
     check_ops_on_layout(

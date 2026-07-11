@@ -2376,8 +2376,19 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn set_fullscreen(&mut self, window: &W::Id, is_fullscreen: bool) {
         if self.floating.has_window(window) {
+            if is_fullscreen {
+                if let Some(previous) = self.tiling.fullscreen_window_id().cloned() {
+                    self.tiling.set_fullscreen(&previous, false);
+                }
+            }
             self.floating.set_fullscreen(window, is_fullscreen);
             return;
+        }
+
+        if is_fullscreen {
+            if let Some(previous) = self.floating.fullscreen_window_id().cloned() {
+                self.floating.set_fullscreen(&previous, false);
+            }
         }
 
         if !is_fullscreen {

@@ -504,6 +504,22 @@ impl Mapped {
         rv
     }
 
+    /// Register deadlines as soon as a transaction participates in a configure cycle.
+    ///
+    /// Waiting until the matching surface commit is too late: a client that never responds to
+    /// the configure would otherwise keep the layout transaction alive indefinitely.
+    pub fn register_transaction_deadlines<T: 'static>(
+        &self,
+        event_loop: &calloop::LoopHandle<'static, T>,
+    ) {
+        if let Some(transaction) = &self.transaction_for_next_configure {
+            transaction.register_deadline_timer(event_loop);
+        }
+        for (_, transaction) in &self.pending_transactions {
+            transaction.register_deadline_timer(event_loop);
+        }
+    }
+
     pub fn last_interactive_resize_start(&self) -> &Cell<Option<(Duration, ResizeEdge)>> {
         &self.last_interactive_resize_start
     }

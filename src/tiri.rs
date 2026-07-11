@@ -918,6 +918,13 @@ impl State {
         {
             let _span = tracy_client::span!("State::refresh::refresh_layout");
             self.niri.refresh_layout();
+
+            // Arm transaction deadlines after refresh_layout() has sent pending configures. A
+            // client that never commits must not be able to freeze atomic layout application.
+            let event_loop = self.niri.event_loop.clone();
+            self.niri.layout.with_windows_mut(|window, _| {
+                window.register_transaction_deadlines(&event_loop);
+            });
         }
 
         {

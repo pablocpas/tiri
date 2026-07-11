@@ -1117,6 +1117,90 @@ fn floating_windowed_fullscreen_replaces_existing_floating_fullscreen() {
     assert!(win4.pending_sizing_mode().is_fullscreen());
     assert!(!win5.pending_sizing_mode().is_fullscreen());
 }
+
+#[test]
+fn tiling_fullscreen_replaces_existing_tiling_fullscreen() {
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::SetFullscreenWindow {
+            window: 1,
+            is_fullscreen: true,
+        },
+        Op::SetFullscreenWindow {
+            window: 2,
+            is_fullscreen: true,
+        },
+    ]);
+
+    let win1 = layout.windows().find(|(_, win)| *win.id() == 1).unwrap().1;
+    let win2 = layout.windows().find(|(_, win)| *win.id() == 2).unwrap().1;
+    assert!(!win1.pending_sizing_mode().is_fullscreen());
+    assert!(win2.pending_sizing_mode().is_fullscreen());
+}
+
+#[test]
+fn floating_fullscreen_replaces_existing_tiling_fullscreen() {
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams {
+                is_floating: true,
+                ..TestWindowParams::new(2)
+            },
+        },
+        Op::SetFullscreenWindow {
+            window: 1,
+            is_fullscreen: true,
+        },
+        Op::SetFullscreenWindow {
+            window: 2,
+            is_fullscreen: true,
+        },
+    ]);
+
+    let win1 = layout.windows().find(|(_, win)| *win.id() == 1).unwrap().1;
+    let win2 = layout.windows().find(|(_, win)| *win.id() == 2).unwrap().1;
+    assert!(!win1.pending_sizing_mode().is_fullscreen());
+    assert!(win2.pending_sizing_mode().is_fullscreen());
+}
+
+#[test]
+fn tiling_fullscreen_replaces_existing_floating_fullscreen() {
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams {
+                is_floating: true,
+                ..TestWindowParams::new(2)
+            },
+        },
+        Op::SetFullscreenWindow {
+            window: 2,
+            is_fullscreen: true,
+        },
+        Op::SetFullscreenWindow {
+            window: 1,
+            is_fullscreen: true,
+        },
+    ]);
+
+    let win1 = layout.windows().find(|(_, win)| *win.id() == 1).unwrap().1;
+    let win2 = layout.windows().find(|(_, win)| *win.id() == 2).unwrap().1;
+    assert!(win1.pending_sizing_mode().is_fullscreen());
+    assert!(!win2.pending_sizing_mode().is_fullscreen());
+}
 #[test]
 fn floating_set_fullscreen_roundtrip_restores_floating() {
     let ops = [

@@ -12,7 +12,7 @@ use async_channel::{Receiver, Sender, TrySendError};
 use calloop::futures::Scheduler;
 use calloop::io::Async;
 use directories::BaseDirs;
-use futures_util::io::{AsyncReadExt, BufReader};
+use futures_util::io::{AsyncBufRead, AsyncReadExt, BufReader};
 use futures_util::{select_biased, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, FutureExt as _};
 use smithay::desktop::layer_map_for_output;
 use smithay::input::pointer::{
@@ -41,6 +41,10 @@ use crate::window::Mapped;
 // If an event stream client fails to read events fast enough that we accumulate more than this
 // number in our buffer, we drop that event stream client.
 const EVENT_STREAM_BUFFER_SIZE: usize = 64;
+
+// IPC is local and line-delimited, but it still needs a hard frame limit: without one, a client
+// can omit the newline and make the compositor grow a Vec until it runs out of memory.
+const MAX_REQUEST_SIZE: usize = 1024 * 1024;
 
 pub struct IpcServer {
     /// Path to the IPC socket.
@@ -192,7 +196,7 @@ async fn handle_client(ctx: ClientCtx, stream: Async<'static, UnixStream>) -> an
     loop {
         // Don't keep buf around to avoid clients wasting RAM by filling it with bogus data.
         let mut buf = Vec::new();
-        let res = read.read_until(b'\n', &mut buf).await;
+        let res = read_request_line(&mut read, &mut buf).await;
         match res {
             Ok(0) => return Ok(()),
             Ok(_) => (),
@@ -266,6 +270,72 @@ async fn handle_client(ctx: ClientCtx, stream: Async<'static, UnixStream>) -> an
 
             return Ok(());
         }
+    }
+}
+
+async fn read_request_line<R: AsyncBufRead + Unpin>(
+    read: &mut R,
+    buf: &mut Vec<u8>,
+) -> io::Result<usize> {
+    read_request_line_with_limit(read, buf, MAX_REQUEST_SIZE).await
+}
+
+async fn read_request_line_with_limit<R: AsyncBufRead + Unpin>(
+    read: &mut R,
+    buf: &mut Vec<u8>,
+    limit: usize,
+) -> io::Result<usize> {
+    loop {
+        let available = read.fill_buf().await?;
+        if available.is_empty() {
+            return Ok(buf.len());
+        }
+
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let consumed = newline.map_or(available.len(), |idx| idx + 1);
+        if buf.len().saturating_add(consumed) > limit {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("IPC request exceeds {limit} bytes"),
+            ));
+        }
+
+        buf.extend_from_slice(&available[..consumed]);
+        read.consume_unpin(consumed);
+        if newline.is_some() {
+            return Ok(buf.len());
+        }
+    }
+}
+
+#[cfg(test)]
+mod request_line_tests {
+    use super::*;
+    use futures_util::io::Cursor;
+
+    #[test]
+    fn request_line_accepts_a_frame_at_the_limit() {
+        async_io::block_on(async {
+            let mut read = Cursor::new(b"abc\nrest".to_vec());
+            let mut buf = Vec::new();
+            let len = read_request_line_with_limit(&mut read, &mut buf, 4)
+                .await
+                .unwrap();
+            assert_eq!(len, 4);
+            assert_eq!(buf, b"abc\n");
+        });
+    }
+
+    #[test]
+    fn request_line_rejects_an_unterminated_oversized_frame() {
+        async_io::block_on(async {
+            let mut read = Cursor::new(b"abcde".to_vec());
+            let mut buf = Vec::new();
+            let err = read_request_line_with_limit(&mut read, &mut buf, 4)
+                .await
+                .unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        });
     }
 }
 

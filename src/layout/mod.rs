@@ -1068,13 +1068,14 @@ impl<W: LayoutElement> Layout<W> {
         window: W,
         target: AddWindowTarget<W>,
         width: Option<PresetSize>,
-        height: Option<PresetSize>,
+        _height: Option<PresetSize>,
         is_full_width: bool,
         is_floating: bool,
         activate: ActivateWindow,
     ) -> Option<&Output> {
-        let tiling_height = height.map(SizeChange::from);
-        let id = window.id().clone();
+        // In i3/sway-style tiling, default-column-width/default-window-height do not size newly
+        // inserted tiled nodes. Split sizes are owned by the container tree and changed by resize
+        // commands. Floating sizing is handled during the initial configure path.
 
         match &mut self.monitor_set {
             MonitorSet::Normal {
@@ -1157,18 +1158,6 @@ impl<W: LayoutElement> Layout<W> {
                     *active_monitor_idx = mon_idx;
                 }
 
-                // Set the default height for tiling windows.
-                if !is_floating {
-                    if let Some(change) = tiling_height {
-                        let ws = mon
-                            .workspaces
-                            .iter_mut()
-                            .find(|ws| ws.has_window(&id))
-                            .unwrap();
-                        ws.set_window_height(Some(&id), change);
-                    }
-                }
-
                 Some(&mon.output)
             }
             MonitorSet::NoOutputs { workspaces } => {
@@ -1236,13 +1225,6 @@ impl<W: LayoutElement> Layout<W> {
                     is_full_width,
                     is_floating,
                 );
-
-                // Set the default height for tiling windows.
-                if !is_floating {
-                    if let Some(change) = tiling_height {
-                        ws.set_window_height(Some(&id), change);
-                    }
-                }
 
                 None
             }
