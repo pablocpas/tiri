@@ -9,12 +9,17 @@ use crate::layout::tile::Tile;
 use crate::utils::transaction::{Transaction, TransactionBlocker};
 
 #[derive(Debug)]
-pub(in crate::layout) struct LayoutData {
-    pub(in crate::layout) leaf_layouts: Vec<LeafLayoutInfo>,
+pub(super) struct LayoutPlan {
+    pub(super) leaves: Vec<PlannedLeaf>,
     container_geometries: HashMap<NodeKey, Rectangle<f64, Logical>>,
-    tab_bar_offsets: HashMap<NodeKey, f64>,
-    titlebar_flags: HashMap<NodeKey, bool>,
-    tabbed_context_flags: HashMap<NodeKey, bool>,
+}
+
+#[derive(Debug)]
+pub(super) struct PlannedLeaf {
+    pub(super) layout: LeafLayoutInfo,
+    tab_bar_offset: f64,
+    draw_titlebar: bool,
+    in_tabbed_context: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -25,8 +30,8 @@ struct LeafLayoutContext {
 }
 
 #[derive(Debug)]
-pub(super) struct PendingLayout {
-    pub(in crate::layout) data: LayoutData,
+pub(super) struct PendingCommit {
+    pub(super) plan: LayoutPlan,
     blocker: TransactionBlocker,
 }
 
@@ -44,25 +49,42 @@ struct LayoutRequest {
 }
 
 impl<W: LayoutElement> ContainerTree<W> {
-    /// Calculate and apply layout to the tree.
+    /// Force a full layout pass and apply it through the transactional pipeline.
     pub fn layout(&mut self) {
-        self.layout_with_resize_animation(true);
+        self.mark_dirty(super::Dirty::Topology);
+        self.apply_with_resize_animation(true);
     }
 
-    /// Calculate and apply layout to the tree, with control over resize animation.
+    /// Force a full layout pass, with control over resize animation.
     pub fn layout_with_resize_animation(&mut self, animate_resize: bool) {
-        let animate = !self.options.animations.off;
-        self.layout_with_animations(animate, animate_resize);
+        self.mark_dirty(super::Dirty::Topology);
+        self.apply_with_resize_animation(animate_resize);
     }
 
-    /// Calculate and apply layout to the tree with explicit animation flags.
+    /// Force and apply a layout pass with explicit animation flags.
     pub fn layout_with_animation_flags(&mut self, animate: bool, animate_resize: bool) {
-        self.layout_with_animations(animate, animate_resize);
+        let _ = animate;
+        self.mark_dirty(super::Dirty::Topology);
+        self.apply_with_resize_animation(animate_resize);
     }
 
-    fn layout_with_animations(&mut self, animate: bool, animate_resize: bool) {
-        self.generation = self.generation.wrapping_add(1);
-        let _ = animate;
+    pub(in crate::layout) fn apply(&mut self) {
+        self.apply_with_resize_animation(true);
+    }
+
+    fn apply_with_resize_animation(&mut self, animate_resize: bool) {
+        if self.pending_commit.is_some() && !self.apply_pending_commit_if_ready() {
+            self.debug_layout_state("layout_atomic_pending");
+            return;
+        }
+
+        let dirty = std::mem::take(&mut self.dirty);
+        if dirty == super::Dirty::Clean {
+            return;
+        }
+        if dirty == super::Dirty::Topology {
+            self.prune_leaf_layouts();
+        }
         self.layout_atomic(animate_resize);
     }
 
@@ -79,64 +101,56 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     fn layout_atomic(&mut self, animate_resize: bool) {
-        if self.pending_layouts.is_some() && !self.apply_pending_layouts_if_ready() {
-            self.pending_relayout = true;
-            self.debug_layout_state("layout_atomic_pending");
-            return;
-        }
-        self.pending_relayout = false;
-
         let Some(root_key) = self.root else {
             self.leaf_layouts.clear();
-            self.pending_layouts = None;
-            self.pending_transaction = None;
-            self.pending_relayout = false;
+            self.pending_commit = None;
+            self.next_transaction = None;
             self.debug_layout_state("layout_atomic_empty");
             return;
         };
 
-        let data = self.collect_layout_data(root_key);
-        let changed = self.changed_layout_keys(&data);
+        let plan = self.collect_layout_plan(root_key);
+        let changed = self.changed_layout_keys(&plan);
         if changed.is_empty() {
-            self.pending_layouts = None;
-            self.pending_transaction = None;
-            self.apply_layout_data(data);
+            self.pending_commit = None;
+            self.next_transaction = None;
+            self.commit_layout_plan(plan);
             self.debug_layout_state("layout_atomic_apply");
             return;
         }
 
         let transaction = self
-            .pending_transaction
+            .next_transaction
             .take()
             .unwrap_or_else(Transaction::new);
-        self.request_sizes_for_layout(&data, &changed, &transaction, animate_resize);
+        self.request_sizes_for_layout(&plan, &changed, &transaction, animate_resize);
         let should_apply_now = transaction.is_last();
-        self.pending_layouts = Some(PendingLayout {
-            data,
+        self.pending_commit = Some(PendingCommit {
+            plan,
             blocker: transaction.blocker(),
         });
         drop(transaction);
-        if should_apply_now && self.apply_pending_layouts_if_ready() {
+        if should_apply_now && self.apply_pending_commit_if_ready() {
             return;
         }
         self.debug_layout_state("layout_atomic_requested");
     }
 
-    pub fn apply_pending_layouts_if_ready(&mut self) -> bool {
-        let Some(pending) = &self.pending_layouts else {
+    fn apply_pending_commit_if_ready(&mut self) -> bool {
+        let Some(pending) = &self.pending_commit else {
             return false;
         };
         if pending.blocker.state() != BlockerState::Released {
             return false;
         }
-        let pending = self.pending_layouts.take().unwrap();
-        self.apply_layout_data(pending.data);
+        let pending = self.pending_commit.take().unwrap();
+        self.commit_layout_plan(pending.plan);
         self.debug_layout_state("layout_atomic_apply_pending");
         true
     }
 
-    pub fn has_pending_layouts(&self) -> bool {
-        self.pending_layouts.is_some()
+    pub(in crate::layout) fn has_pending_commit(&self) -> bool {
+        self.pending_commit.is_some()
     }
 
     fn layout_request_for(
@@ -163,13 +177,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    fn collect_layout_data(&self, root_key: NodeKey) -> LayoutData {
-        let mut data = LayoutData {
-            leaf_layouts: Vec::new(),
+    fn collect_layout_plan(&self, root_key: NodeKey) -> LayoutPlan {
+        let mut plan = LayoutPlan {
+            leaves: Vec::new(),
             container_geometries: HashMap::new(),
-            tab_bar_offsets: HashMap::new(),
-            titlebar_flags: HashMap::new(),
-            tabbed_context_flags: HashMap::new(),
         };
 
         let mut path = Vec::new();
@@ -180,9 +191,9 @@ impl<W: LayoutElement> ContainerTree<W> {
             &mut path,
             true,
             LeafLayoutContext::default(),
-            &mut data,
+            &mut plan,
         );
-        data
+        plan
     }
 
     fn collect_layout_node(
@@ -192,7 +203,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         path: &mut Vec<usize>,
         visible: bool,
         ctx: LeafLayoutContext,
-        data: &mut LayoutData,
+        plan: &mut LayoutPlan,
     ) {
         let (layout, child_count, focused_idx, child_percents_sum) = match self.get_node(node_key) {
             Some(NodeData::Leaf(tile)) => {
@@ -202,20 +213,21 @@ impl<W: LayoutElement> ContainerTree<W> {
                 } else {
                     (ctx.tab_bar_offset, ctx.draw_titlebar)
                 };
-                data.tab_bar_offsets.insert(node_key, offset);
-                data.titlebar_flags.insert(node_key, show_titlebar);
-                data.tabbed_context_flags
-                    .insert(node_key, ctx.in_tabbed_context);
-                data.leaf_layouts.push(LeafLayoutInfo {
-                    key: node_key,
-                    path: path.clone(),
-                    rect,
-                    visible,
+                plan.leaves.push(PlannedLeaf {
+                    layout: LeafLayoutInfo {
+                        key: node_key,
+                        path: path.clone(),
+                        rect,
+                        visible,
+                    },
+                    tab_bar_offset: offset,
+                    draw_titlebar: show_titlebar,
+                    in_tabbed_context: ctx.in_tabbed_context,
                 });
                 return;
             }
             Some(NodeData::Container(container)) => {
-                data.container_geometries.insert(node_key, rect);
+                plan.container_geometries.insert(node_key, rect);
                 let percents = container.child_percents_slice();
                 let sum: f64 = percents.iter().copied().sum();
                 (
@@ -266,7 +278,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                         draw_titlebar: child_titlebar,
                         in_tabbed_context: ctx.in_tabbed_context,
                     };
-                    self.collect_layout_node(child_key, child_rect, path, visible, child_ctx, data);
+                    self.collect_layout_node(child_key, child_rect, path, visible, child_ctx, plan);
                     path.pop();
 
                     if idx + 1 < child_count {
@@ -306,7 +318,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                         draw_titlebar: child_titlebar,
                         in_tabbed_context: ctx.in_tabbed_context,
                     };
-                    self.collect_layout_node(child_key, child_rect, path, visible, child_ctx, data);
+                    self.collect_layout_node(child_key, child_rect, path, visible, child_ctx, plan);
                     path.pop();
 
                     if idx + 1 < child_count {
@@ -354,7 +366,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                         path,
                         child_visible,
                         child_ctx,
-                        data,
+                        plan,
                     );
                     path.pop();
                 }
@@ -362,7 +374,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    fn changed_layout_keys(&self, data: &LayoutData) -> HashSet<NodeKey> {
+    fn changed_layout_keys(&self, plan: &LayoutPlan) -> HashSet<NodeKey> {
         let mut current = HashMap::new();
         for info in &self.leaf_layouts {
             let Some(tile) = self.get_tile(info.key) else {
@@ -373,13 +385,14 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         let mut changed = HashSet::new();
-        for info in &data.leaf_layouts {
-            let offset = data.tab_bar_offsets.get(&info.key).copied().unwrap_or(0.0);
+        for planned in &plan.leaves {
+            let info = &planned.layout;
             let Some(tile) = self.get_tile(info.key) else {
                 changed.insert(info.key);
                 continue;
             };
-            let request = self.layout_request_for(tile, info.rect.size, offset);
+            // Deliberately compare committed Tile state against the proposed plan.
+            let request = self.layout_request_for(tile, info.rect.size, planned.tab_bar_offset);
             if current.get(&info.key).map_or(true, |old| *old != request) {
                 changed.insert(info.key);
             }
@@ -390,28 +403,22 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     fn request_sizes_for_layout(
         &mut self,
-        data: &LayoutData,
+        plan: &LayoutPlan,
         changed: &HashSet<NodeKey>,
         transaction: &Transaction,
         animate_resize: bool,
     ) {
-        for info in &data.leaf_layouts {
+        for planned in &plan.leaves {
+            let info = &planned.layout;
             let Some(tile) = self.get_tile_mut(info.key) else {
                 continue;
             };
-            let offset = data.tab_bar_offsets.get(&info.key).copied().unwrap_or(0.0);
-            let show_titlebar = data.titlebar_flags.get(&info.key).copied().unwrap_or(false);
-            let in_tabbed_context = data
-                .tabbed_context_flags
-                .get(&info.key)
-                .copied()
-                .unwrap_or(false);
             let old_offset = tile.tab_bar_offset();
             let old_titlebar = tile.draw_titlebar();
             let old_tabbed_context = tile.in_tabbed_context();
-            tile.set_tab_bar_offset(offset);
-            tile.set_draw_titlebar(show_titlebar);
-            tile.set_in_tabbed_context(in_tabbed_context);
+            tile.set_tab_bar_offset(planned.tab_bar_offset);
+            tile.set_draw_titlebar(planned.draw_titlebar);
+            tile.set_in_tabbed_context(planned.in_tabbed_context);
 
             let tx = changed.contains(&info.key).then(|| transaction.clone());
             let size = Size::from((info.rect.size.w, info.rect.size.h));
@@ -429,28 +436,22 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    fn apply_layout_data(&mut self, data: LayoutData) {
-        for (key, rect) in data.container_geometries {
+    fn commit_layout_plan(&mut self, plan: LayoutPlan) {
+        for (key, rect) in plan.container_geometries {
             if let Some(NodeData::Container(container)) = self.get_node_mut(key) {
                 container.set_geometry(rect);
             }
         }
-        for (key, offset) in data.tab_bar_offsets {
-            if let Some(tile) = self.get_tile_mut(key) {
-                tile.set_tab_bar_offset(offset);
+        let mut leaf_layouts = Vec::with_capacity(plan.leaves.len());
+        for planned in plan.leaves {
+            if let Some(tile) = self.get_tile_mut(planned.layout.key) {
+                tile.set_tab_bar_offset(planned.tab_bar_offset);
+                tile.set_draw_titlebar(planned.draw_titlebar);
+                tile.set_in_tabbed_context(planned.in_tabbed_context);
+                leaf_layouts.push(planned.layout);
             }
         }
-        for (key, show_titlebar) in data.titlebar_flags {
-            if let Some(tile) = self.get_tile_mut(key) {
-                tile.set_draw_titlebar(show_titlebar);
-            }
-        }
-        for (key, in_tabbed_context) in data.tabbed_context_flags {
-            if let Some(tile) = self.get_tile_mut(key) {
-                tile.set_in_tabbed_context(in_tabbed_context);
-            }
-        }
-        self.leaf_layouts = data.leaf_layouts;
+        self.leaf_layouts = leaf_layouts;
     }
 
     pub(in crate::layout) fn tab_bar_row_height(&self) -> f64 {

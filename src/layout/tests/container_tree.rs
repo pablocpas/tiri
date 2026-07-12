@@ -6,6 +6,59 @@ use super::super::tile::Tile;
 use super::*;
 
 #[test]
+fn topology_mutation_stays_dirty_until_apply() {
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+    harness.add_window(2);
+    harness.tree.layout();
+
+    let width_before = harness.tree.leaf_layouts()[0].rect.size.w;
+    let _tile = harness.tree.remove_window(&2).unwrap();
+    assert!(harness.tree.topology_is_dirty());
+    assert_eq!(harness.tree.leaf_layouts()[0].rect.size.w, width_before);
+
+    harness.tree.apply();
+    assert!(!harness.tree.topology_is_dirty());
+    assert!(harness.tree.leaf_layouts()[0].rect.size.w > width_before);
+}
+
+#[test]
+fn failed_topology_mutation_does_not_mark_tree_dirty() {
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+    harness.tree.layout();
+
+    assert!(harness.tree.remove_window(&99).is_none());
+    assert!(!harness.tree.topology_is_dirty());
+}
+
+#[test]
+fn next_transaction_survives_while_a_commit_is_in_flight() {
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+
+    let first = Transaction::new();
+    harness.tree.set_pending_transaction(first.clone());
+    harness.tree.apply();
+    assert!(harness.tree.has_pending_commit());
+
+    let second = Transaction::new();
+    harness.tree.set_pending_transaction(second.clone());
+    harness.add_window(2);
+
+    drop(first);
+    harness.tree.apply();
+    assert!(
+        harness.tree.has_pending_commit(),
+        "the queued transaction must govern the relayout after the first commit"
+    );
+
+    drop(second);
+    harness.tree.apply();
+    assert!(!harness.tree.has_pending_commit());
+}
+
+#[test]
 fn removing_window_above_preserves_focused_window() {
     let mut harness = TreeHarness::new();
     harness.add_window(1);
@@ -18,7 +71,7 @@ fn removing_window_above_preserves_focused_window() {
     let before = harness.tree.debug_tree();
     assert!(before.contains("Window 2 *"));
 
-    let _ = harness.tree.remove_window(&1);
+    assert!(harness.remove_window(1));
 
     let after = harness.tree.debug_tree();
     assert!(after.contains("Window 2 *"));
@@ -61,6 +114,14 @@ impl TreeHarness {
             self.options.clone(),
         );
         self.tree.insert_window(tile);
+    }
+
+    pub(super) fn remove_window(&mut self, id: usize) -> bool {
+        let Some(_tile) = self.tree.remove_window(&id) else {
+            return false;
+        };
+        self.tree.apply();
+        true
     }
 
     pub(super) fn append_window(&mut self, id: usize) {
@@ -142,7 +203,7 @@ fn apply_tree_random_op(harness: &mut TreeHarness, op: TreeRandomOp, next_window
             let tree = harness.tree.debug_tree();
             let (_, _, focused_id) = parse_debug_tree_windows(&tree);
             if let Some(id) = focused_id {
-                let _ = harness.tree.remove_window(&id);
+                let _ = harness.remove_window(id);
             }
         }
         TreeRandomOp::SplitH => {
@@ -376,7 +437,7 @@ fn preserve_explicit_same_layout_container_on_cleanup() {
     harness.add_window(4);
     assert!(harness.tree.focus_in_direction(Direction::Right));
     assert!(harness.tree.set_focused_layout(ContainerLayout::SplitV));
-    let _ = harness.tree.remove_window(&3);
+    assert!(harness.remove_window(3));
 
     let tree = harness.tree.debug_tree();
     assert_snapshot!(
@@ -395,7 +456,7 @@ fn cleanup_reuses_last_root_layout_after_tree_becomes_empty() {
     let mut harness = TreeHarness::new();
     harness.add_window(1);
     assert!(harness.tree.set_focused_layout(ContainerLayout::Tabbed));
-    let _ = harness.tree.remove_window(&1);
+    assert!(harness.remove_window(1));
 
     harness.add_window(2);
 
@@ -416,7 +477,7 @@ fn cleanup_preserves_single_explicit_split_for_future_inserts() {
     assert!(harness.tree.focus_in_direction(Direction::Left));
     harness.tree.split_focused(ContainerLayout::SplitV);
     harness.add_window(3);
-    let _ = harness.tree.remove_window(&3);
+    assert!(harness.remove_window(3));
 
     harness.add_window(4);
 
@@ -441,7 +502,7 @@ fn keep_tabbed_container_on_cleanup_with_split_parent() {
     harness.tree.split_focused(ContainerLayout::Tabbed);
     harness.add_window(3);
     harness.add_window(4);
-    let _ = harness.tree.remove_window(&4);
+    assert!(harness.remove_window(4));
 
     let tree = harness.tree.debug_tree();
     assert!(
@@ -459,7 +520,7 @@ fn keep_stacked_container_on_cleanup_with_split_parent() {
     harness.tree.split_focused(ContainerLayout::Stacked);
     harness.add_window(3);
     harness.add_window(4);
-    let _ = harness.tree.remove_window(&4);
+    assert!(harness.remove_window(4));
 
     let tree = harness.tree.debug_tree();
     assert!(
@@ -475,7 +536,7 @@ fn move_left_enters_single_child_container() {
     assert!(harness.tree.focus_in_direction(Direction::Left));
     harness.tree.split_focused(ContainerLayout::SplitV);
     harness.add_window(3);
-    let _ = harness.tree.remove_window(&3);
+    assert!(harness.remove_window(3));
     assert!(harness.tree.focus_window_by_id(&2));
     assert!(harness.tree.move_in_direction(Direction::Left));
 
@@ -632,7 +693,7 @@ fn preserve_single_child_container_with_different_layout() {
     assert!(harness.tree.focus_in_direction(Direction::Left));
     harness.tree.split_focused(ContainerLayout::SplitV);
     harness.add_window(3);
-    let _ = harness.tree.remove_window(&3);
+    assert!(harness.remove_window(3));
 
     let tree = harness.tree.debug_tree();
     assert_snapshot!(
@@ -654,7 +715,7 @@ fn replace_single_child_container_with_same_layout() {
     harness.tree.split_focused(ContainerLayout::SplitV);
     harness.add_window(3);
     assert!(harness.tree.set_focused_layout(ContainerLayout::SplitH));
-    let _ = harness.tree.remove_window(&3);
+    assert!(harness.remove_window(3));
 
     let tree = harness.tree.debug_tree();
     assert_snapshot!(
@@ -825,6 +886,58 @@ fn split_only_tiles_do_not_use_tabbed_context() {
             "window {id} should not use tabbed border context in split layout"
         );
     }
+}
+
+#[test]
+fn changing_planned_titlebar_offset_requests_new_committed_size() {
+    let mut harness = TreeHarness::new();
+    let mut options = (*harness.options).clone();
+    options.layout.tab_bar.show_in_split = true;
+    options.layout.tab_bar.height = 24.0;
+    harness.options = Rc::new(options.clone());
+    harness.tree.update_config(
+        harness.view_size,
+        Rectangle::from_size(harness.view_size),
+        harness.scale,
+        harness.options.clone(),
+    );
+
+    let mut first = TestWindowParams::new(1);
+    first.has_ssd = true;
+    let mut second = TestWindowParams::new(2);
+    second.has_ssd = true;
+    harness.add_window_with_params(first);
+    harness.add_window_with_params(second);
+    harness.tree.layout();
+
+    let tile = harness
+        .tree
+        .all_tiles()
+        .into_iter()
+        .find(|tile| tile.window().id() == &1)
+        .unwrap();
+    let with_titlebar = tile.window().requested_size().unwrap();
+    assert!(tile.tab_bar_offset() > 0.0);
+
+    options.layout.tab_bar.show_in_split = false;
+    harness.options = Rc::new(options);
+    harness.tree.update_config(
+        harness.view_size,
+        Rectangle::from_size(harness.view_size),
+        harness.scale,
+        harness.options.clone(),
+    );
+    harness.tree.layout();
+
+    let tile = harness
+        .tree
+        .all_tiles()
+        .into_iter()
+        .find(|tile| tile.window().id() == &1)
+        .unwrap();
+    let without_titlebar = tile.window().requested_size().unwrap();
+    assert_eq!(tile.tab_bar_offset(), 0.0);
+    assert!(without_titlebar.h > with_titlebar.h);
 }
 #[test]
 fn toggle_split_layout_switches_orientation() {
@@ -1002,7 +1115,7 @@ fn layout_persists_after_last_window_closed() {
     let mut harness = TreeHarness::new();
     assert!(harness.tree.split_focused(ContainerLayout::SplitV));
     harness.add_window(1);
-    let _ = harness.tree.remove_window(&1);
+    assert!(harness.remove_window(1));
     harness.add_window(2);
 
     let tree = harness.tree.debug_tree();
@@ -1019,7 +1132,7 @@ fn layout_persists_after_last_window_closed_via_append() {
     let mut harness = TreeHarness::new();
     assert!(harness.tree.split_focused(ContainerLayout::SplitV));
     harness.append_window(1);
-    let _ = harness.tree.remove_window(&1);
+    assert!(harness.remove_window(1));
     harness.append_window(2);
 
     let tree = harness.tree.debug_tree();
@@ -1036,7 +1149,7 @@ fn split_on_single_window_persists_after_close() {
     let mut harness = TreeHarness::new();
     harness.add_window(1);
     assert!(harness.tree.split_focused(ContainerLayout::SplitV));
-    let _ = harness.tree.remove_window(&1);
+    assert!(harness.remove_window(1));
     harness.add_window(2);
 
     let tree = harness.tree.debug_tree();
@@ -1098,7 +1211,7 @@ fn removing_last_sibling_flattens_non_preserved_root_container() {
     assert!(harness.tree.focus_window_by_id(&2));
     assert!(harness.tree.split_focused(ContainerLayout::SplitH));
 
-    let _ = harness.tree.remove_window(&2);
+    assert!(harness.remove_window(2));
 
     let tree = harness.tree.debug_tree();
     assert_snapshot!(
@@ -1134,7 +1247,7 @@ fn move_right_from_single_child_container_is_atomic() {
     assert!(harness.tree.focus_root_child(0));
     assert!(harness.tree.split_focused(ContainerLayout::SplitV));
     harness.add_window(4);
-    let _ = harness.tree.remove_window(&4);
+    assert!(harness.remove_window(4));
 
     assert!(harness.tree.focus_root_child(0));
     assert!(harness.tree.move_in_direction(Direction::Right));
@@ -1160,7 +1273,7 @@ fn move_left_swaps_single_child_container_immediately() {
     assert!(harness.tree.focus_root_child(1));
     assert!(harness.tree.split_focused(ContainerLayout::SplitV));
     harness.add_window(4);
-    let _ = harness.tree.remove_window(&4);
+    assert!(harness.remove_window(4));
     assert!(harness.tree.focus_window_by_id(&2));
 
     assert!(harness.tree.move_in_direction(Direction::Left));

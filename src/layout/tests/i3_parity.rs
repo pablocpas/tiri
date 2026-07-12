@@ -1462,7 +1462,7 @@ fn i3_122_split_on_single_window_persists_after_close() {
     let mut harness = TreeHarness::new();
     harness.add_window(1);
     assert!(harness.tree.split_focused(ContainerLayout::SplitV));
-    let _ = harness.tree.remove_window(&1);
+    assert!(harness.remove_window(1));
     harness.add_window(2);
 
     let tree = harness.tree.debug_tree();
@@ -1804,8 +1804,8 @@ fn i3_130_closing_last_children_removes_empty_split_wrapper() {
     assert!(harness.tree.split_focused(ContainerLayout::SplitV));
     harness.add_window(3);
 
-    let _ = harness.tree.remove_window(&3);
-    let _ = harness.tree.remove_window(&1);
+    assert!(harness.remove_window(3));
+    assert!(harness.remove_window(1));
 
     let tree = harness.tree.debug_tree();
     assert_snapshot!(

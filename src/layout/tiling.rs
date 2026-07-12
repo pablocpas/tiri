@@ -8,6 +8,7 @@
 //!
 //! The implementation uses SlotMap for efficient O(1) node access and safe reference handling.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -186,11 +187,18 @@ pub enum WindowHeight {
 }
 
 impl<W: LayoutElement> TilingSpace<W> {
+    fn apply_tree_changes(&mut self) {
+        if self.tree.topology_is_dirty() {
+            self.sync_fullscreen_window();
+        }
+        self.tree.apply();
+    }
+
     fn tile_render_positions(&self) -> Vec<(&Tile<W>, Point<f64, Logical>, bool)> {
         let scale = Scale::from(self.scale);
         let mut entries = Vec::new();
-        let layouts = self.display_layouts();
-        for info in layouts {
+        let layouts = self.visible_layouts();
+        for info in layouts.iter() {
             if let Some(tile) = self.tree.get_tile(info.key) {
                 let mut pos = info.rect.loc + tile.render_offset();
                 pos = pos.to_physical_precise_round(scale).to_logical(scale);
@@ -225,13 +233,14 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     /// Returns a reference to the current layout information, avoiding clones.
-    fn display_layouts(&self) -> &[LeafLayoutInfo] {
+    fn visible_layouts(&self) -> Cow<'_, [LeafLayoutInfo]> {
         if self.tree.leaf_layouts().is_empty() {
             self.tree
-                .pending_leaf_layouts()
-                .unwrap_or_else(|| self.tree.leaf_layouts())
+                .pending_leaf_layouts_cloned()
+                .map(Cow::Owned)
+                .unwrap_or_else(|| Cow::Borrowed(self.tree.leaf_layouts()))
         } else {
-            self.tree.leaf_layouts()
+            Cow::Borrowed(self.tree.leaf_layouts())
         }
     }
 
@@ -413,17 +422,18 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     fn selected_geometry(&self) -> Option<Rectangle<f64, Logical>> {
-        if self.display_layouts().is_empty() {
+        if self.visible_layouts().is_empty() {
             return None;
         }
         let path = self.tree.selected_path();
 
         if self.tree.is_leaf_at_path(&path) {
-            let info = self
-                .display_layouts()
+            let rect = self
+                .visible_layouts()
                 .iter()
-                .find(|info| info.path == path)?;
-            return Some(info.rect);
+                .find(|info| info.path == path)
+                .map(|info| info.rect)?;
+            return Some(rect);
         }
 
         // For container selection visuals, prefer the on-screen leaf geometry under this
@@ -431,7 +441,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         // container cached geometry is in transition.
         let mut bounds: Option<Rectangle<f64, Logical>> = None;
         for info in self
-            .display_layouts()
+            .visible_layouts()
             .iter()
             .filter(|info| info.path.starts_with(&path))
         {
@@ -479,6 +489,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         let path = self.tree.selected_path();
         let rect = self.selected_geometry()?;
         let (subtree, origin) = self.tree.take_subtree_at_path(&path)?;
+        self.apply_tree_changes();
         Some((subtree, origin, rect))
     }
 
@@ -517,7 +528,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         };
 
         self.sync_fullscreen_window();
-        self.tree.layout();
+        self.tree.apply();
         Some((subtree, rect))
     }
 
@@ -839,6 +850,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     pub fn remove_window(&mut self, window: &W) -> Option<RemovedTile<W>> {
         let window_id = window.id();
         let tile = self.tree.remove_window(&window_id)?;
+        self.apply_tree_changes();
 
         if self
             .fullscreen_window
@@ -911,7 +923,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             if let Some(rect) = self.selected_geometry() {
                 let mut selection_border = self.options.layout.border;
                 if let Some(focus_info) = self
-                    .display_layouts()
+                    .visible_layouts()
                     .iter()
                     .find(|info| info.path == focus_path)
                 {
@@ -935,7 +947,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             }
         }
 
-        let render_layouts = self.display_layouts();
+        let render_layouts = self.visible_layouts();
         for info in render_layouts.iter().rev() {
             // Use O(1) key lookup instead of O(depth) path lookup.
             if let Some(tile) = self.tree.get_tile(info.key) {
@@ -1123,7 +1135,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             .update(view_size, options.layout.background_color);
         self.tree
             .update_config(view_size, working_area, scale, options);
-        self.tree.layout();
+        self.tree.apply();
     }
 
     pub fn set_view_size(
@@ -1136,7 +1148,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         self.overview_background.resize(view_size);
         self.tree.set_view_size(view_size, working_area);
         // Recalculate layout on resize
-        self.tree.layout();
+        self.tree.apply();
     }
 
     pub fn advance_animations(&mut self) {
@@ -1156,11 +1168,8 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     pub fn update_render_elements(&mut self, is_active: bool) {
         self.is_active = is_active;
-        let applied = self.tree.apply_pending_layouts_if_ready();
-        if applied && self.tree.take_pending_relayout() {
-            self.tree.layout();
-        }
-        let has_pending = self.tree.has_pending_layouts();
+        self.tree.apply();
+        let has_pending = self.tree.has_pending_commit();
         let state_layouts = if has_pending {
             self.tree
                 .pending_leaf_layouts_cloned()
@@ -1188,7 +1197,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         let layout_rect = self.tree.layout_area();
         let is_single_window = self.tree.window_count() <= 1;
         // Clone here because we need mutable access to tree in the loop below.
-        let render_layouts = self.display_layouts().to_vec();
+        let render_layouts = self.visible_layouts().to_vec();
         let render_edges: Vec<(FocusRingEdges, Option<FocusRingIndicatorEdge>)> = render_layouts
             .iter()
             .map(|info| {
@@ -1505,7 +1514,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     // Focus operations using ContainerTree
     pub fn activate_window(&mut self, window: &W::Id) -> bool {
         if self.tree.focus_window_by_id(window) {
-            self.tree.layout();
+            self.tree.apply();
             true
         } else {
             false
@@ -1548,12 +1557,12 @@ impl<W: LayoutElement> TilingSpace<W> {
             let escaped_scope = self.tree.focus_path().first().copied() != Some(scope_root_idx);
             if escaped_scope {
                 let _ = self.tree.focus_window_by_id(&fullscreen_id);
-                self.tree.layout();
+                self.tree.apply();
                 return false;
             }
         }
 
-        self.tree.layout();
+        self.tree.apply();
         true
     }
 
@@ -1597,7 +1606,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         let selected = self.tree.select_parent();
         if selected {
             // Force immediate redraw for container-selection visuals.
-            self.tree.layout();
+            self.tree.apply();
         }
         selected
     }
@@ -1605,7 +1614,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     pub fn focus_child(&mut self) -> bool {
         let selected = self.tree.select_child();
         if selected {
-            self.tree.layout();
+            self.tree.apply();
         }
         selected
     }
@@ -1708,7 +1717,11 @@ impl<W: LayoutElement> TilingSpace<W> {
         reference: &super::container::InactiveTilingReference,
         strict: bool,
     ) -> bool {
-        self.tree.focus_inactive_tiling_reference(reference, strict)
+        if !self.tree.focus_inactive_tiling_reference(reference, strict) {
+            return false;
+        }
+        self.apply_tree_changes();
+        true
     }
 
     pub(super) fn window_for_inactive_tiling_reference(
@@ -1723,7 +1736,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     pub fn wrap_root_for_sibling_insert(&mut self) -> bool {
         let changed = self.tree.wrap_root_for_sibling_insert();
         if changed {
-            self.tree.layout();
+            self.tree.apply();
         }
         changed
     }
@@ -1837,11 +1850,11 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     fn move_command_target(&mut self, direction: Direction) -> bool {
         let target = self.tree.command_target(RootPolicy::ImplicitWorkspace);
-        let result = self.tree.move_target_in_direction(direction, target);
-        if result {
-            self.tree.layout();
+        if !self.tree.move_target_in_direction(direction, target) {
+            return false;
         }
-        result
+        self.apply_tree_changes();
+        true
     }
 
     // Move operations using ContainerTree
@@ -1865,28 +1878,28 @@ impl<W: LayoutElement> TilingSpace<W> {
     pub fn consume_into_column(&mut self) {
         // In i3 model: create vertical split
         if self.split_for_active_selection(Layout::SplitV) {
-            self.tree.layout();
+            self.tree.apply();
         }
     }
 
     pub fn expel_from_column(&mut self) {
         // In i3 model: create horizontal split
         if self.split_for_active_selection(Layout::SplitH) {
-            self.tree.layout();
+            self.tree.apply();
         }
     }
 
     /// Split focused window horizontally (i3-style)
     pub fn split_horizontal(&mut self) {
         if self.split_for_active_selection(Layout::SplitH) {
-            self.tree.layout();
+            self.tree.apply();
         }
     }
 
     /// Split focused window vertically (i3-style)
     pub fn split_vertical(&mut self) {
         if self.split_for_active_selection(Layout::SplitV) {
-            self.tree.layout();
+            self.tree.apply();
         }
     }
 
@@ -1915,27 +1928,27 @@ impl<W: LayoutElement> TilingSpace<W> {
             .wrap_synthetic_root_children_for_workspace_layout(layout)
         {
             self.set_workspace_layout_hint(layout);
-            self.tree.layout();
+            self.tree.apply();
             return;
         }
 
         self.tree.set_workspace_layout_hint(layout);
         if self.tree.wrap_root_for_sibling_insert() {
             self.set_workspace_layout_hint(layout);
-            self.tree.layout();
+            self.tree.apply();
             return;
         }
 
         self.set_workspace_layout_hint(layout);
         if self.tree.split_focused(layout) {
-            self.tree.layout();
+            self.tree.apply();
         }
     }
 
     /// Set layout mode for focused container
     pub fn set_layout_mode(&mut self, layout: Layout) {
         if self.set_layout_for_active_selection(layout) {
-            self.tree.layout();
+            self.tree.apply();
         }
     }
 
@@ -1955,27 +1968,27 @@ impl<W: LayoutElement> TilingSpace<W> {
             .wrap_synthetic_root_children_for_workspace_layout(layout)
         {
             self.set_workspace_layout_hint(layout);
-            self.tree.layout();
+            self.tree.apply();
             return;
         }
 
         self.tree.set_workspace_layout_hint(layout);
         if self.tree.wrap_root_for_sibling_insert() {
             self.set_workspace_layout_hint(layout);
-            self.tree.layout();
+            self.tree.apply();
             return;
         }
 
         self.set_workspace_layout_hint(layout);
         if self.tree.set_focused_layout(layout) {
-            self.tree.layout();
+            self.tree.apply();
         }
     }
 
     pub fn set_root_layout_mode(&mut self, layout: Layout) -> bool {
         let changed = self.tree.set_root_container_layout(layout);
         if changed {
-            self.tree.layout();
+            self.tree.apply();
         }
         changed
     }
@@ -1983,7 +1996,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     pub fn collapse_redundant_root_single_child_split(&mut self) -> bool {
         let changed = self.tree.collapse_redundant_root_single_child_split();
         if changed {
-            self.tree.layout();
+            self.tree.apply();
         }
         changed
     }
@@ -1991,7 +2004,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     /// Toggle between horizontal and vertical split for the focused container.
     pub fn toggle_split_layout(&mut self) {
         if self.toggle_split_for_active_selection() {
-            self.tree.layout();
+            self.tree.apply();
         }
     }
 
@@ -2009,7 +2022,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     /// Cycle focused container layout in sway-style order.
     pub fn toggle_layout_all(&mut self) {
         if self.toggle_layout_all_for_active_selection() {
-            self.tree.layout();
+            self.tree.apply();
         }
     }
 
@@ -2044,7 +2057,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             .tree
             .set_child_percent_at(&[], idx, Layout::SplitH, new_percent)
         {
-            self.tree.layout();
+            self.tree.apply();
         }
     }
     pub fn reset_window_height(&mut self, window: Option<&W::Id>) {
@@ -2061,7 +2074,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         if let Some(container) = self.tree.container_at_path_mut(parent_path.as_slice()) {
             if container.layout() == Layout::SplitV {
                 container.recalculate_percentages();
-                self.tree.layout();
+                self.tree.apply();
             }
         }
     }
@@ -2096,7 +2109,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                 .tree
                 .set_child_percent_at(&[], idx, Layout::SplitH, percent)
             {
-                self.tree.layout();
+                self.tree.apply();
             }
         }
     }
@@ -2153,12 +2166,13 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     fn leaf_rect_for_path(&self, path: &[usize]) -> Option<Rectangle<f64, Logical>> {
         let scale = Scale::from(self.scale);
-        let info = self
-            .display_layouts()
+        let (key, rect) = self
+            .visible_layouts()
             .iter()
-            .find(|info| info.path == path)?;
-        let tile = self.tree.get_tile(info.key)?;
-        let mut tile_pos = info.rect.loc + tile.render_offset();
+            .find(|info| info.path == path)
+            .map(|info| (info.key, info.rect))?;
+        let tile = self.tree.get_tile(key)?;
+        let mut tile_pos = rect.loc + tile.render_offset();
         tile_pos = tile_pos.to_physical_precise_round(scale).to_logical(scale);
         Some(Rectangle::new(tile_pos, tile.tile_size()))
     }
@@ -2182,7 +2196,7 @@ impl<W: LayoutElement> TilingSpace<W> {
 
         let mut nearest: Option<(Vec<usize>, Rectangle<f64, Logical>, f64)> = None;
 
-        for info in self.display_layouts() {
+        for info in self.visible_layouts().iter() {
             if let Some(tile) = self.tree.get_tile(info.key) {
                 let is_fullscreen_tile = fullscreen_id
                     .as_ref()
@@ -2510,7 +2524,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             return Some(hit);
         }
 
-        let render_layouts = self.display_layouts();
+        let render_layouts = self.visible_layouts();
         for info in render_layouts.iter().rev() {
             // Use O(1) key lookup instead of O(depth) path lookup.
             if let Some(tile) = self.tree.get_tile(info.key) {
@@ -2548,7 +2562,7 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     pub fn window_loc(&self, window: &W) -> Option<Point<f64, Logical>> {
         let path = self.tree.find_window(window.id())?;
-        let layouts = self.display_layouts();
+        let layouts = self.visible_layouts();
         let info = layouts.iter().find(|layout| layout.path == path)?;
         let tile = self.tree.tile_at_path(&path)?;
         let scale = Scale::from(self.scale);
@@ -2583,7 +2597,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         };
 
         if self.set_layout_for_active_selection(layout) {
-            self.tree.layout();
+            self.tree.apply();
         }
     }
 
@@ -2596,7 +2610,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         };
 
         if self.set_layout_for_active_selection(target) {
-            self.tree.layout();
+            self.tree.apply();
         }
     }
 
@@ -2617,7 +2631,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     ) -> impl Iterator<Item = (&mut Tile<W>, Point<f64, Logical>)> + '_ {
         let scale = Scale::from(self.scale);
         let positions: HashMap<_, _> = self
-            .display_layouts()
+            .visible_layouts()
             .iter()
             .map(|info| (info.key, info.rect.loc))
             .collect();
@@ -2704,12 +2718,11 @@ impl<W: LayoutElement> TilingSpace<W> {
         _height: Option<WindowHeight>,
     ) {
         if let Some(index) = col_idx {
-            self.tree.insert_leaf_at(index, tile, activate);
+            self.tree.insert_leaf_at(index, tile, activate)
         } else {
-            self.tree.insert_window_with_focus(tile, activate);
+            self.tree.insert_window_with_focus(tile, activate)
         }
-        self.sync_fullscreen_window();
-        self.tree.layout();
+        self.apply_tree_changes();
     }
 
     pub fn add_tile_right_of(
@@ -2721,8 +2734,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         _is_full_width: bool,
     ) {
         self.tree.insert_leaf_after(next_to, tile, activate);
-        self.sync_fullscreen_window();
-        self.tree.layout();
+        self.apply_tree_changes();
     }
 
     pub fn add_tile_to_root_container(
@@ -2737,7 +2749,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             .insert_leaf_in_root_container(root_idx, tile_idx, tile, activate)
         {
             self.sync_fullscreen_window();
-            self.tree.layout();
+            self.tree.apply();
         }
     }
 
@@ -2759,18 +2771,17 @@ impl<W: LayoutElement> TilingSpace<W> {
     ) {
         self.tree
             .insert_subtree_with_parent_info(info, subtree, focus);
-        self.tree.layout();
+        self.tree.apply();
     }
 
     pub fn insert_subtree_at_root(&mut self, index: usize, subtree: DetachedNode<W>, focus: bool) {
         self.tree.insert_subtree_at_root(index, subtree, focus);
-        self.tree.layout();
+        self.apply_tree_changes();
     }
 
     pub fn insert_subtree_with_focus(&mut self, subtree: DetachedNode<W>, focus: bool) {
         self.tree.insert_subtree_with_focus(subtree, focus);
-        self.sync_fullscreen_window();
-        self.tree.layout();
+        self.apply_tree_changes();
     }
 
     pub fn add_subtree_as_workspace_tiling_fallback(
@@ -2779,24 +2790,22 @@ impl<W: LayoutElement> TilingSpace<W> {
         focus: bool,
     ) {
         if self.tree.is_empty() {
-            self.tree.insert_subtree_with_focus(subtree, focus);
+            self.tree.insert_subtree_with_focus(subtree, focus)
         } else {
             let index = self.tree.root_children_len();
-            self.tree.insert_subtree_at_root(index, subtree, focus);
+            self.tree.insert_subtree_at_root(index, subtree, focus)
         }
-        self.sync_fullscreen_window();
-        self.tree.layout();
+        self.apply_tree_changes();
     }
 
     pub fn add_tile_as_workspace_tiling_fallback(&mut self, tile: Tile<W>, activate: bool) {
         if self.tree.is_empty() {
-            self.tree.insert_window_with_focus(tile, activate);
+            self.tree.insert_window_with_focus(tile, activate)
         } else {
             let index = self.tree.root_children_len();
-            self.tree.insert_leaf_at(index, tile, activate);
+            self.tree.insert_leaf_at(index, tile, activate)
         }
-        self.sync_fullscreen_window();
-        self.tree.layout();
+        self.apply_tree_changes();
     }
 
     pub(super) fn insert_parent_info_for_window(
@@ -2826,7 +2835,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     ) -> bool {
         if self.tree.insert_leaf_with_parent_info(info, tile, activate) {
             self.sync_fullscreen_window();
-            self.tree.layout();
+            self.tree.apply();
             return true;
         }
 
@@ -2845,7 +2854,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             .insert_leaf_split(target_path, direction, tile, activate)
         {
             self.sync_fullscreen_window();
-            self.tree.layout();
+            self.tree.apply();
             return true;
         }
 
@@ -2860,7 +2869,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     ) -> bool {
         if self.tree.insert_leaf_split_root(direction, tile, activate) {
             self.sync_fullscreen_window();
-            self.tree.layout();
+            self.tree.apply();
             return true;
         }
 
@@ -2896,8 +2905,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         let idx = root_idx.unwrap_or_else(|| self.tree.root_children_len());
         self.tree
             .insert_subtree_at_root(idx, subtree.into_subtree(), activate);
-        self.sync_fullscreen_window();
-        self.tree.layout();
+        self.apply_tree_changes();
     }
 
     pub fn add_column(
@@ -2915,6 +2923,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             .tree
             .remove_window(window)
             .expect("attempted to remove missing window");
+        self.apply_tree_changes();
 
         if self
             .fullscreen_window
@@ -2954,7 +2963,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             }
         }
 
-        self.tree.layout();
+        self.tree.apply();
         Some(subtree)
     }
 
@@ -2996,14 +3005,14 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     pub fn focus_root_container_first(&mut self) {
         self.tree.focus_root_child(0);
-        self.tree.layout();
+        self.tree.apply();
     }
 
     pub fn focus_first_leaf(&mut self) {
         if self.tree.focus_leaf_in_root_child(0, 1) {
-            self.tree.layout();
+            self.tree.apply();
         } else if self.tree.focus_root_child(0) {
-            self.tree.layout();
+            self.tree.apply();
         }
     }
 
@@ -3011,7 +3020,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         let len = self.tree.root_children_len();
         if len > 0 {
             self.tree.focus_root_child(len - 1);
-            self.tree.layout();
+            self.tree.apply();
         }
     }
 
@@ -3021,7 +3030,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             return;
         }
         self.tree.focus_root_child(idx - 1);
-        self.tree.layout();
+        self.tree.apply();
     }
 
     /// Leaves inside the current root container are 1-based.
@@ -3034,7 +3043,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             None => return,
         };
         self.tree.focus_leaf_in_root_child(root_idx, index as usize);
-        self.tree.layout();
+        self.tree.apply();
     }
 
     pub fn focus_column_first(&mut self) {
@@ -3057,7 +3066,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         let focused = self.tree.focus_in_direction(Direction::Down)
             || self.tree.focus_in_direction(Direction::Left);
         if focused {
-            self.tree.layout();
+            self.tree.apply();
         }
     }
 
@@ -3065,7 +3074,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         let focused = self.tree.focus_in_direction(Direction::Down)
             || self.tree.focus_in_direction(Direction::Right);
         if focused {
-            self.tree.layout();
+            self.tree.apply();
         }
     }
 
@@ -3073,7 +3082,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         let focused = self.tree.focus_in_direction(Direction::Up)
             || self.tree.focus_in_direction(Direction::Left);
         if focused {
-            self.tree.layout();
+            self.tree.apply();
         }
     }
 
@@ -3081,7 +3090,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         let focused = self.tree.focus_in_direction(Direction::Up)
             || self.tree.focus_in_direction(Direction::Right);
         if focused {
-            self.tree.layout();
+            self.tree.apply();
         }
     }
 
@@ -3102,7 +3111,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         }
         let moved = self.tree.move_root_child(current, target);
         if moved {
-            self.tree.layout();
+            self.tree.apply();
         }
         moved
     }
@@ -3186,7 +3195,7 @@ impl<W: LayoutElement> TilingSpace<W> {
 
         if !self.move_command_target(direction) {
             self.tree.split_focused(Layout::SplitV);
-            self.tree.layout();
+            self.tree.apply();
         }
     }
 
@@ -3235,7 +3244,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                 .tree
                 .set_child_percent_at(parent_path.as_slice(), child_idx, layout, percent)
             {
-                self.tree.layout();
+                self.tree.apply();
             }
         }
     }
@@ -3272,7 +3281,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             Layout::SplitH,
             percent,
         ) {
-            self.tree.layout();
+            self.tree.apply();
         }
     }
 
@@ -3298,7 +3307,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             Layout::SplitV,
             percent,
         ) {
-            self.tree.layout();
+            self.tree.apply();
         }
     }
 
@@ -3341,7 +3350,8 @@ impl<W: LayoutElement> TilingSpace<W> {
             }
 
             self.fullscreen_window = Some(window.clone());
-            self.tree.layout();
+            self.tree.request_layout();
+            self.tree.apply();
             if let Some(selected_key) = selected_container {
                 self.tree.set_selected_container_key(selected_key);
             }
@@ -3358,7 +3368,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             if fullscreen_matches {
                 self.fullscreen_window = None;
             }
-            self.tree.layout();
+            self.tree.apply();
             if let Some(selected_key) = selected_container {
                 self.tree.set_selected_container_key(selected_key);
             }
@@ -3384,6 +3394,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         } else {
             tile.request_tile_size(self.working_area.size, !self.options.animations.off, None);
         }
+        self.tree.request_layout();
         true
     }
 
@@ -3412,7 +3423,8 @@ impl<W: LayoutElement> TilingSpace<W> {
         };
 
         tile.pending_maximized = maximize;
-        self.tree.layout();
+        self.tree.request_layout();
+        self.tree.apply();
         true
     }
 
@@ -3428,7 +3440,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             .tree
             .set_child_percent_at(&[], idx, Layout::SplitH, 1.0)
         {
-            self.tree.layout();
+            self.tree.apply();
         }
     }
 
@@ -3510,11 +3522,8 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn refresh(&mut self, is_active: bool, is_focused: bool) {
-        let applied = self.tree.apply_pending_layouts_if_ready();
-        if applied && self.tree.take_pending_relayout() {
-            self.tree.layout();
-        }
-        let has_pending = self.tree.has_pending_layouts();
+        self.tree.apply();
+        let has_pending = self.tree.has_pending_commit();
         let layouts = if has_pending {
             self.tree
                 .pending_leaf_layouts_cloned()
@@ -3575,7 +3584,7 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     pub fn popup_target_rect(&self, window: &W::Id) -> Option<Rectangle<f64, Logical>> {
         // Find the tile for this window and return its popup target rectangle
-        for info in self.display_layouts() {
+        for info in self.visible_layouts().iter() {
             if let Some(tile) = self.tree.get_tile(info.key) {
                 if tile.window().id() == window {
                     // Similar to tiling layout: constrain horizontally to window,

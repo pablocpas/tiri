@@ -71,13 +71,9 @@ impl<W: LayoutElement> ContainerTree<W> {
             );
         }
 
-        self.verify_leaf_layout_cache(self.leaf_layouts.as_slice(), &leaves, "leaf_layouts");
-        if let Some(pending) = &self.pending_layouts {
-            self.verify_leaf_layout_cache(
-                pending.data.leaf_layouts.as_slice(),
-                &leaves,
-                "pending leaf_layouts",
-            );
+        self.verify_leaf_layout_cache(&self.leaf_layouts, &leaves, "leaf_layouts");
+        if let Some(pending) = self.pending_leaf_layouts_cloned() {
+            self.verify_leaf_layout_cache(&pending, &leaves, "pending leaf_layouts");
         }
 
         if self.root_is_synthetic_workspace_container() {

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::cmp::max;
 use std::collections::HashMap;
@@ -303,12 +304,13 @@ impl<W: LayoutElement> FloatingSpace<W> {
         external & edges
     }
 
-    fn display_layouts(tree: &ContainerTree<W>) -> &[LeafLayoutInfo] {
+    fn visible_layouts(tree: &ContainerTree<W>) -> Cow<'_, [LeafLayoutInfo]> {
         if tree.leaf_layouts().is_empty() {
-            tree.pending_leaf_layouts()
-                .unwrap_or_else(|| tree.leaf_layouts())
+            tree.pending_leaf_layouts_cloned()
+                .map(Cow::Owned)
+                .unwrap_or_else(|| Cow::Borrowed(tree.leaf_layouts()))
         } else {
-            tree.leaf_layouts()
+            Cow::Borrowed(tree.leaf_layouts())
         }
     }
 
@@ -369,7 +371,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 scale,
                 container_options.clone(),
             );
-            container.tree.layout();
+            container.tree.apply();
         }
 
         for tile in self.tiles_mut() {
@@ -415,12 +417,9 @@ impl<W: LayoutElement> FloatingSpace<W> {
             .is_some_and(|idx| self.selected_is_container_in(idx));
         let scale = self.scale;
         for container in &mut self.containers {
-            let applied = container.tree.apply_pending_layouts_if_ready();
-            if applied && container.tree.take_pending_relayout() {
-                container.tree.layout();
-            }
+            container.tree.apply();
 
-            let layouts = Self::display_layouts(&container.tree).to_vec();
+            let layouts = Self::visible_layouts(&container.tree).to_vec();
             // Match sway (`container_get_current_colors`): a top-level floating
             // window is never `focused_inactive` — sway compares it against the
             // workspace's *tiling* focus-inactive child, which a float can never
@@ -484,7 +483,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let mut tiles = Vec::new();
         for container in &self.containers {
             let offset = container.data.logical_pos;
-            for info in Self::display_layouts(&container.tree) {
+            for info in Self::visible_layouts(&container.tree).iter() {
                 if let Some(tile) = container.tree.get_tile(info.key) {
                     tiles.push((tile, offset + info.rect.loc));
                 }
@@ -504,7 +503,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             let offset = container.data.logical_pos;
             let pos_in_container = pos - offset;
             let tab_bar_infos = container.tree.tab_bar_layouts();
-            for info in Self::display_layouts(&container.tree)
+            for info in Self::visible_layouts(&container.tree)
                 .iter()
                 .filter(|info| info.visible)
             {
@@ -577,7 +576,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let mut tiles = Vec::new();
         for container in &self.containers {
             let offset = container.data.logical_pos;
-            for info in Self::display_layouts(&container.tree)
+            for info in Self::visible_layouts(&container.tree)
                 .iter()
                 .filter(|info| info.visible)
             {
@@ -594,7 +593,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     ) -> impl Iterator<Item = (&mut Tile<W>, Point<f64, Logical>)> + '_ {
         self.containers.iter_mut().flat_map(|container| {
             let offset = container.data.logical_pos;
-            let positions: HashMap<_, _> = Self::display_layouts(&container.tree)
+            let positions: HashMap<_, _> = Self::visible_layouts(&container.tree)
                 .iter()
                 .map(|info| (info.key, offset + info.rect.loc))
                 .collect();
@@ -1115,7 +1114,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         if activate {
             tree.focus_window_by_id(&win_id);
         }
-        tree.layout();
+        tree.apply();
 
         let container = FloatingContainer {
             id: self.next_container_id,
@@ -1157,13 +1156,13 @@ impl<W: LayoutElement> FloatingSpace<W> {
             let insert_idx = self.containers[idx].tree.root_children_len();
             self.containers[idx]
                 .tree
-                .insert_leaf_at(insert_idx, tile, activate);
+                .insert_leaf_at(insert_idx, tile, activate)
         } else {
             self.containers[idx]
                 .tree
-                .insert_window_with_focus(tile, activate);
+                .insert_window_with_focus(tile, activate)
         }
-        self.containers[idx].tree.layout();
+        self.containers[idx].tree.apply();
 
         if activate {
             self.activate_window(&win_id);
@@ -1187,7 +1186,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let _ = self.containers[idx]
             .tree
             .insert_leaf_with_parent_info(info, tile, activate);
-        self.containers[idx].tree.layout();
+        self.containers[idx].tree.apply();
 
         if activate {
             self.activate_window(&win_id);
@@ -1264,7 +1263,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         if let Some(id) = focus {
             tree.focus_window_by_id(id);
         }
-        tree.layout();
+        tree.apply();
 
         let focus_id = focus
             .map(|id| id.clone())
@@ -1379,10 +1378,12 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let insert_hint = self.containers[idx].tree.insert_parent_info_for_window(id);
         let mut tile = {
             let container = &mut self.containers[idx];
-            container
+            let tile = container
                 .tree
                 .remove_window(id)
-                .expect("window must exist in floating container")
+                .expect("window must exist in floating container");
+            container.tree.apply();
+            tile
         };
 
         if Some(tile.window().id()) == self.active_window_id.as_ref() {
@@ -1743,7 +1744,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let rect = Rectangle::from_size(self.containers[idx].data.size);
         self.containers[idx].tree.set_view_size(rect.size, rect);
         if animate {
-            self.containers[idx].tree.layout();
+            self.containers[idx].tree.apply();
         } else {
             self.containers[idx]
                 .tree
@@ -1799,7 +1800,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             percent,
         ) {
             if animate {
-                self.containers[idx].tree.layout();
+                self.containers[idx].tree.apply();
             } else {
                 self.containers[idx]
                     .tree
@@ -1856,7 +1857,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             percent,
         ) {
             if animate {
-                self.containers[idx].tree.layout();
+                self.containers[idx].tree.apply();
             } else {
                 self.containers[idx]
                     .tree
@@ -2293,7 +2294,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
 
         if self.split_for_active_selection(idx, Layout::SplitV) {
-            self.containers[idx].tree.layout();
+            self.containers[idx].tree.apply();
         }
     }
 
@@ -2310,7 +2311,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return;
         };
         if self.split_for_active_selection(idx, Layout::SplitV) {
-            self.containers[idx].tree.layout();
+            self.containers[idx].tree.apply();
         }
     }
 
@@ -2319,7 +2320,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return;
         };
         if self.split_for_active_selection(idx, Layout::SplitH) {
-            self.containers[idx].tree.layout();
+            self.containers[idx].tree.apply();
         }
     }
 
@@ -2335,14 +2336,15 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let target = self.containers[idx]
             .tree
             .command_target(RootPolicy::MaterialContainer);
-        let moved = self.containers[idx]
+        if !self.containers[idx]
             .tree
-            .move_target_in_direction(direction, target);
-        if moved {
-            self.containers[idx].wrapper_selected = false;
-            self.containers[idx].tree.layout();
+            .move_target_in_direction(direction, target)
+        {
+            return false;
         }
-        moved
+        self.containers[idx].wrapper_selected = false;
+        self.containers[idx].tree.apply();
+        true
     }
 
     pub fn set_column_display(&mut self, display: ColumnDisplay) {
@@ -2355,7 +2357,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return;
         };
         if self.set_layout_for_active_selection(idx, target_layout) {
-            self.containers[idx].tree.layout();
+            self.containers[idx].tree.apply();
         }
     }
 
@@ -2368,7 +2370,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             _ => Layout::Tabbed,
         };
         if self.set_layout_for_active_selection(idx, target) {
-            self.containers[idx].tree.layout();
+            self.containers[idx].tree.apply();
         }
     }
 
@@ -2497,7 +2499,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return;
         };
         if self.split_for_active_selection(idx, Layout::SplitH) {
-            self.containers[idx].tree.layout();
+            self.containers[idx].tree.apply();
         }
     }
 
@@ -2506,7 +2508,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return;
         };
         if self.split_for_active_selection(idx, Layout::SplitV) {
-            self.containers[idx].tree.layout();
+            self.containers[idx].tree.apply();
         }
     }
 
@@ -2515,7 +2517,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return;
         };
         if self.set_layout_for_active_selection(idx, layout) {
-            self.containers[idx].tree.layout();
+            self.containers[idx].tree.apply();
         }
     }
 
@@ -2524,7 +2526,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return;
         };
         if self.toggle_split_for_active_selection(idx) {
-            self.containers[idx].tree.layout();
+            self.containers[idx].tree.apply();
         }
     }
 
@@ -2533,7 +2535,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return;
         };
         if self.toggle_layout_all_for_active_selection(idx) {
-            self.containers[idx].tree.layout();
+            self.containers[idx].tree.apply();
         }
     }
 
@@ -2683,7 +2685,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
 
         let container = &mut self.containers[container_idx];
-        container.tree.layout();
+        container.tree.request_layout();
+        container.tree.apply();
 
         if container.tree.window_count() == 1 {
             let Some(path) = container.tree.find_window(id) else {
@@ -2908,7 +2911,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let original_window_size = tile.window_size();
         let original_window_pos = container.data.logical_pos;
         let original_container_size = container.data.size;
-        let resize_container_edges = Self::display_layouts(&container.tree)
+        let resize_container_edges = Self::visible_layouts(&container.tree)
             .iter()
             .find(|info| info.path == path)
             .map(|info| Self::external_edges_for_rect(container.data.size, info.rect, edges))
