@@ -6,7 +6,7 @@ use std::rc::Rc;
 use log::warn;
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Serial, Size};
+use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size};
 use tiri_config::utils::MergeWith as _;
 use tiri_config::{PresetSize, RelativeTo};
 use tiri_ipc::{ColumnDisplay, LayoutTreeNode, PositionChange, SizeChange, WindowLayout};
@@ -28,7 +28,8 @@ use super::{
 };
 use crate::animation::{Animation, Clock};
 use crate::layout::tab_bar::{
-    render_tab_bar, tab_bar_state_from_info, TabBarCacheEntry, TabBarRenderOutput,
+    render_tab_bar, tab_bar_hit_index, tab_bar_state_from_info, TabBarCacheEntry,
+    TabBarRenderOutput,
 };
 use crate::niri_render_elements;
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
@@ -39,7 +40,7 @@ use crate::render_helpers::RenderCtx;
 use crate::utils::transaction::TransactionBlocker;
 use crate::utils::{
     center_preferring_top_left_in_area, clamp_preferring_top_left_in_area,
-    ensure_min_max_size_maybe_zero, to_physical_precise_round, ResizeEdge,
+    ensure_min_max_size_maybe_zero, ResizeEdge,
 };
 use crate::window::{Mapped, ResolvedWindowRules};
 
@@ -324,12 +325,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     }
 
     fn display_layouts(tree: &ContainerTree<W>) -> &[LeafLayoutInfo] {
-        if tree.leaf_layouts().is_empty() {
-            tree.pending_leaf_layouts()
-                .unwrap_or_else(|| tree.leaf_layouts())
-        } else {
-            tree.leaf_layouts()
-        }
+        super::tree_space::display_layouts(tree)
     }
 
     fn container_gap(&self) -> f64 {
@@ -629,104 +625,24 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return None;
         }
 
-        let scale = Scale::from(self.scale);
         let cache = self.tab_bar_cache.borrow();
         let gap = self.container_gap();
 
         for container in &self.containers {
-            for info in container.tree.tab_bar_layouts() {
-                let mut info = info;
+            for mut info in container.tree.tab_bar_layouts() {
                 if gap > 0.0 && info.path.is_empty() {
                     info.rect.loc.x -= gap;
                     info.rect.loc.y -= gap;
                     info.rect.size.w = (info.rect.size.w + gap * 2.0).max(0.0);
                 }
-
                 info.rect.loc += container.data.logical_pos;
 
-                let tab_count = info.tabs.len();
-                if tab_count == 0 {
-                    continue;
-                }
-
-                let bar_loc_px: Point<i32, Physical> =
-                    info.rect.loc.to_physical_precise_round(scale);
-                let pos_px: Point<i32, Physical> =
-                    pos.to_physical_precise_round(scale) - bar_loc_px;
-                let width_px =
-                    to_physical_precise_round::<i32>(self.scale, info.rect.size.w).max(1);
-                let height_px =
-                    to_physical_precise_round::<i32>(self.scale, info.rect.size.h).max(1);
-                let hit_pad_px = 1;
-
-                if pos_px.x < -hit_pad_px
-                    || pos_px.y < -hit_pad_px
-                    || pos_px.x >= width_px + hit_pad_px
-                    || pos_px.y >= height_px + hit_pad_px
-                {
-                    continue;
-                }
-                let pos_px: Point<i32, Physical> = Point::from((
-                    pos_px.x.clamp(0, width_px - 1),
-                    pos_px.y.clamp(0, height_px - 1),
-                ));
-
-                let row_height_px =
-                    to_physical_precise_round::<i32>(self.scale, info.row_height).max(1);
-                let focused_idx = info.tabs.iter().position(|tab| tab.is_focused).unwrap_or(0);
                 let key = (container.id, info.path.clone());
-
-                let tab_idx = match info.layout {
-                    Layout::Tabbed => {
-                        if pos_px.y >= row_height_px {
-                            focused_idx
-                        } else if let Some(widths) = cache.get(&key).and_then(|entry| {
-                            if entry.tab_widths_px.len() == tab_count {
-                                Some(entry.tab_widths_px.as_slice())
-                            } else {
-                                None
-                            }
-                        }) {
-                            let mut cursor = 0;
-                            let mut found = None;
-                            for (idx, width) in widths.iter().enumerate() {
-                                let end = cursor + *width;
-                                if pos_px.x < end {
-                                    found = Some(idx);
-                                    break;
-                                }
-                                cursor = end;
-                            }
-                            found.unwrap_or_else(|| tab_count.saturating_sub(1))
-                        } else {
-                            let base = width_px / tab_count as i32;
-                            let mut cursor = 0;
-                            let mut found = None;
-                            for idx in 0..tab_count {
-                                let mut width = base;
-                                if idx + 1 == tab_count {
-                                    width += width_px - base * tab_count as i32;
-                                }
-                                let end = cursor + width;
-                                if pos_px.x < end {
-                                    found = Some(idx);
-                                    break;
-                                }
-                                cursor = end;
-                            }
-                            found.unwrap_or_else(|| tab_count.saturating_sub(1))
-                        }
-                    }
-                    Layout::Stacked => {
-                        let stack_height_px = row_height_px * tab_count as i32;
-                        if pos_px.y >= stack_height_px {
-                            focused_idx
-                        } else {
-                            let max_idx = tab_count.saturating_sub(1) as i32;
-                            (pos_px.y / row_height_px).min(max_idx) as usize
-                        }
-                    }
-                    _ => continue,
+                let cached_widths = cache.get(&key).map(|entry| entry.tab_widths_px.as_slice());
+                // A 1px pad makes the floating bar's edges forgiving to hit.
+                let Some(tab_idx) = tab_bar_hit_index(&info, pos, self.scale, cached_widths, 1)
+                else {
+                    continue;
                 };
 
                 if let Some(window) = container.tree.window_for_tab(&info.path, tab_idx) {
@@ -1653,11 +1569,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     }
 
     fn available_span(&self, total: f64, child_count: usize) -> f64 {
-        if child_count == 0 {
-            return 0.0;
-        }
-        let gap = self.container_gap();
-        (total - gap * (child_count as f64 - 1.0)).max(0.0)
+        super::tree_space::available_span(self.container_gap(), total, child_count)
     }
 
     fn percent_from_size_change(current_percent: f64, available: f64, change: SizeChange) -> f64 {

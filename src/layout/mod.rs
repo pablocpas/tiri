@@ -93,6 +93,7 @@ pub mod tab_bar;
 pub mod tab_indicator;
 pub mod tile;
 pub mod tiling;
+mod tree_space;
 mod viewport;
 pub mod workspace;
 

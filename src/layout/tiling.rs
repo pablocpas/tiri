@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Size};
+use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
 use tiri_config::utils::MergeWith as _;
 use tiri_config::{Border, HideEdgeBorders, PresetSize, TabBar};
 use tiri_ipc::{ColumnDisplay, LayoutTreeNode, SizeChange};
@@ -38,7 +38,8 @@ use super::{
 };
 use crate::animation::{Animation, Clock};
 use crate::layout::tab_bar::{
-    render_tab_bar, tab_bar_state_from_info, TabBarCacheEntry, TabBarRenderOutput,
+    render_tab_bar, tab_bar_hit_index, tab_bar_state_from_info, TabBarCacheEntry,
+    TabBarRenderOutput,
 };
 use crate::niri_render_elements;
 use crate::render_helpers::offscreen::{OffscreenBuffer, OffscreenRenderElement};
@@ -48,9 +49,9 @@ use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderEleme
 use crate::render_helpers::texture::TextureRenderElement;
 use crate::render_helpers::xray::XrayPos;
 use crate::render_helpers::{RenderCtx, RenderTarget};
+use crate::utils::round_logical_in_physical_max1;
 use crate::utils::transaction::Transaction;
 use crate::utils::ResizeEdge;
-use crate::utils::{round_logical_in_physical_max1, to_physical_precise_round};
 use crate::window::ResolvedWindowRules;
 use log::warn;
 
@@ -220,13 +221,7 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     /// Returns a reference to the current layout information, avoiding clones.
     fn display_layouts(&self) -> &[LeafLayoutInfo] {
-        if self.tree.leaf_layouts().is_empty() {
-            self.tree
-                .pending_leaf_layouts()
-                .unwrap_or_else(|| self.tree.leaf_layouts())
-        } else {
-            self.tree.leaf_layouts()
-        }
+        super::tree_space::display_layouts(&self.tree)
     }
 
     fn effective_tab_bar_config(&self) -> TabBar {
@@ -283,11 +278,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     fn available_span(&self, total: f64, child_count: usize) -> f64 {
-        if child_count == 0 {
-            return 0.0;
-        }
-        let gap = self.options.layout.gaps;
-        (total - gap * (child_count as f64 - 1.0)).max(0.0)
+        super::tree_space::available_span(self.options.layout.gaps, total, child_count)
     }
 
     fn percent_from_size_change(current_percent: f64, available: f64, change: SizeChange) -> f64 {
@@ -1735,13 +1726,37 @@ impl<W: LayoutElement> TilingSpace<W> {
         }
     }
 
-    fn toggle_split_for_active_selection(&mut self) -> bool {
-        if matches!(
+    /// Whether layout commands currently target the workspace layout itself rather than a
+    /// container inside the tree.
+    fn targets_workspace_layout(&self) -> bool {
+        matches!(
             self.workspace_layout_target_kind(),
             WorkspaceLayoutTargetKind::RootLeaf
                 | WorkspaceLayoutTargetKind::SyntheticRootContainer
                 | WorkspaceLayoutTargetKind::SelectedRootContainer
-        ) {
+        )
+    }
+
+    /// If a container is selected (focus-parent semantics), set its layout to
+    /// `next(current)` and report the result; None when no container is selected.
+    fn set_selected_container_layout(
+        &mut self,
+        next: impl FnOnce(Layout) -> Layout,
+    ) -> Option<bool> {
+        if !self.tree.selected_is_container() {
+            return None;
+        }
+        let path = self.tree.selected_path();
+        let (current, _, _) = self.tree.container_info(&path)?;
+        let target = self.tree.command_target(RootPolicy::ImplicitWorkspace);
+        Some(
+            self.tree
+                .set_layout_for_target(next(current), target, RootPolicy::ImplicitWorkspace),
+        )
+    }
+
+    fn toggle_split_for_active_selection(&mut self) -> bool {
+        if self.targets_workspace_layout() {
             let next = match self.workspace_layout {
                 Layout::SplitH => Layout::SplitV,
                 Layout::SplitV => Layout::SplitH,
@@ -1752,21 +1767,12 @@ impl<W: LayoutElement> TilingSpace<W> {
             return self.apply_workspace_layout_target(next);
         }
 
-        if self.tree.selected_is_container() {
-            let path = self.tree.selected_path();
-            if let Some((current, _, _)) = self.tree.container_info(&path) {
-                let next = match current {
-                    Layout::SplitH => Layout::SplitV,
-                    Layout::SplitV => Layout::SplitH,
-                    Layout::Tabbed | Layout::Stacked => Layout::SplitH,
-                };
-                let target = self.tree.command_target(RootPolicy::ImplicitWorkspace);
-                return self.tree.set_layout_for_target(
-                    next,
-                    target,
-                    RootPolicy::ImplicitWorkspace,
-                );
-            }
+        if let Some(result) = self.set_selected_container_layout(|current| match current {
+            Layout::SplitH => Layout::SplitV,
+            Layout::SplitV => Layout::SplitH,
+            Layout::Tabbed | Layout::Stacked => Layout::SplitH,
+        }) {
+            return result;
         }
 
         let target = self.tree.command_target(RootPolicy::ImplicitWorkspace);
@@ -1775,27 +1781,13 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     fn toggle_layout_all_for_active_selection(&mut self) -> bool {
-        if matches!(
-            self.workspace_layout_target_kind(),
-            WorkspaceLayoutTargetKind::RootLeaf
-                | WorkspaceLayoutTargetKind::SyntheticRootContainer
-                | WorkspaceLayoutTargetKind::SelectedRootContainer
-        ) {
+        if self.targets_workspace_layout() {
             let next = self.workspace_layout.next_in_cycle();
             return self.apply_workspace_layout_target(next);
         }
 
-        if self.tree.selected_is_container() {
-            let path = self.tree.selected_path();
-            if let Some((current, _, _)) = self.tree.container_info(&path) {
-                let next = current.next_in_cycle();
-                let target = self.tree.command_target(RootPolicy::ImplicitWorkspace);
-                return self.tree.set_layout_for_target(
-                    next,
-                    target,
-                    RootPolicy::ImplicitWorkspace,
-                );
-            }
+        if let Some(result) = self.set_selected_container_layout(Layout::next_in_cycle) {
+            return result;
         }
 
         let target = self.tree.command_target(RootPolicy::ImplicitWorkspace);
@@ -1999,8 +1991,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             return;
         }
 
-        let gaps = self.options.layout.gaps;
-        let available_width = (rect.size.w - gaps * (child_count as f64 - 1.0)).max(1.0);
+        let available_width = self.available_span(rect.size.w, child_count);
         if available_width <= 0.0 {
             return;
         }
@@ -2368,83 +2359,13 @@ impl<W: LayoutElement> TilingSpace<W> {
             return None;
         }
 
-        let scale = Scale::from(self.scale);
-        let tab_bar_infos = self.tree.tab_bar_layouts();
-        if tab_bar_infos.is_empty() {
-            return None;
-        }
-
         let cache = self.tab_bar_cache.borrow();
-        for info in tab_bar_infos {
-            let tab_count = info.tabs.len();
-            if tab_count == 0 {
+        for info in self.tree.tab_bar_layouts() {
+            let cached_widths = cache
+                .get(&info.path)
+                .map(|entry| entry.tab_widths_px.as_slice());
+            let Some(tab_idx) = tab_bar_hit_index(&info, pos, self.scale, cached_widths, 0) else {
                 continue;
-            }
-
-            let bar_loc_px: Point<i32, Physical> = info.rect.loc.to_physical_precise_round(scale);
-            let pos_px: Point<i32, Physical> = pos.to_physical_precise_round(scale) - bar_loc_px;
-            let width_px = to_physical_precise_round::<i32>(self.scale, info.rect.size.w).max(1);
-            let height_px = to_physical_precise_round::<i32>(self.scale, info.rect.size.h).max(1);
-
-            if pos_px.x < 0 || pos_px.y < 0 || pos_px.x >= width_px || pos_px.y >= height_px {
-                continue;
-            }
-
-            let row_height_px =
-                to_physical_precise_round::<i32>(self.scale, info.row_height).max(1);
-            let focused_idx = info.tabs.iter().position(|tab| tab.is_focused).unwrap_or(0);
-
-            let tab_idx = match info.layout {
-                Layout::Tabbed => {
-                    if pos_px.y >= row_height_px {
-                        focused_idx
-                    } else if let Some(widths) = cache.get(&info.path).and_then(|entry| {
-                        if entry.tab_widths_px.len() == tab_count {
-                            Some(entry.tab_widths_px.as_slice())
-                        } else {
-                            None
-                        }
-                    }) {
-                        let mut cursor = 0;
-                        let mut found = None;
-                        for (idx, width) in widths.iter().enumerate() {
-                            let end = cursor + *width;
-                            if pos_px.x < end {
-                                found = Some(idx);
-                                break;
-                            }
-                            cursor = end;
-                        }
-                        found.unwrap_or_else(|| tab_count.saturating_sub(1))
-                    } else {
-                        let base = width_px / tab_count as i32;
-                        let mut cursor = 0;
-                        let mut found = None;
-                        for idx in 0..tab_count {
-                            let mut width = base;
-                            if idx + 1 == tab_count {
-                                width += width_px - base * tab_count as i32;
-                            }
-                            let end = cursor + width;
-                            if pos_px.x < end {
-                                found = Some(idx);
-                                break;
-                            }
-                            cursor = end;
-                        }
-                        found.unwrap_or_else(|| tab_count.saturating_sub(1))
-                    }
-                }
-                Layout::Stacked => {
-                    let stack_height_px = row_height_px * tab_count as i32;
-                    if pos_px.y >= stack_height_px {
-                        focused_idx
-                    } else {
-                        let max_idx = tab_count.saturating_sub(1) as i32;
-                        (pos_px.y / row_height_px).min(max_idx) as usize
-                    }
-                }
-                _ => continue,
             };
 
             if let Some(window) = self.tree.window_for_tab(&info.path, tab_idx) {
@@ -3243,37 +3164,20 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn set_window_width(&mut self, window: Option<&W::Id>, change: SizeChange) {
-        let Some(path) = self.window_path(window) else {
-            return;
-        };
-        let Some((parent_path, child_idx, available, _, _)) =
-            self.window_container_metrics(&path, Layout::SplitH)
-        else {
-            return;
-        };
-
-        let current_percent = self
-            .tree
-            .child_percent_at(parent_path.as_slice(), child_idx)
-            .unwrap_or(1.0);
-        let percent = Self::percent_from_size_change(current_percent, available, change);
-
-        if self.tree.set_child_percent_at(
-            parent_path.as_slice(),
-            child_idx,
-            Layout::SplitH,
-            percent,
-        ) {
-            self.tree.layout();
-        }
+        self.set_window_dimension(window, change, Layout::SplitH);
     }
 
     pub fn set_window_height(&mut self, window: Option<&W::Id>, change: SizeChange) {
+        self.set_window_dimension(window, change, Layout::SplitV);
+    }
+
+    /// Resize a window's share within its nearest ancestor split along `layout`'s axis.
+    fn set_window_dimension(&mut self, window: Option<&W::Id>, change: SizeChange, layout: Layout) {
         let Some(path) = self.window_path(window) else {
             return;
         };
         let Some((parent_path, child_idx, available, _, _)) =
-            self.window_container_metrics(&path, Layout::SplitV)
+            self.window_container_metrics(&path, layout)
         else {
             return;
         };
@@ -3284,12 +3188,10 @@ impl<W: LayoutElement> TilingSpace<W> {
             .unwrap_or(1.0);
         let percent = Self::percent_from_size_change(current_percent, available, change);
 
-        if self.tree.set_child_percent_at(
-            parent_path.as_slice(),
-            child_idx,
-            Layout::SplitV,
-            percent,
-        ) {
+        if self
+            .tree
+            .set_child_percent_at(parent_path.as_slice(), child_idx, layout, percent)
+        {
             self.tree.layout();
         }
     }

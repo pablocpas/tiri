@@ -5,7 +5,7 @@ use pangocairo::cairo::{self, ImageSurface};
 use pangocairo::pango::{self, Alignment, EllipsizeMode, FontDescription};
 use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
 use smithay::reexports::gbm::Format as Fourcc;
-use smithay::utils::{Logical, Rectangle, Size, Transform};
+use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Size, Transform};
 use tiri_config::{Color, TabBar};
 
 use super::container::{Layout, TabBarInfo, TabBarTab};
@@ -229,14 +229,7 @@ pub fn render_tab_bar(
     }
 
     let tab_widths = if layout == Layout::Tabbed {
-        let tab_count_i32 = tab_count as i32;
-        let base = width_px / tab_count_i32;
-        let mut widths = vec![base.max(1); tab_count];
-        let remainder = width_px - base * tab_count_i32;
-        for width in widths.iter_mut().take(remainder as usize) {
-            *width += 1;
-        }
-        widths
+        even_tab_widths_px(width_px, tab_count)
     } else {
         vec![width_px; tab_count]
     };
@@ -373,4 +366,90 @@ pub fn render_tab_bar(
         buffer,
         tab_widths_px: tab_widths,
     })
+}
+
+/// Per-tab pixel widths for an evenly split tabbed bar. The remainder is distributed one
+/// pixel at a time starting from the first tab, matching how the bar is rendered.
+pub fn even_tab_widths_px(width_px: i32, tab_count: usize) -> Vec<i32> {
+    let tab_count_i32 = tab_count as i32;
+    let base = width_px / tab_count_i32;
+    let mut widths = vec![base.max(1); tab_count];
+    let remainder = width_px - base * tab_count_i32;
+    for width in widths.iter_mut().take(remainder as usize) {
+        *width += 1;
+    }
+    widths
+}
+
+/// Map a position to the tab index it hits inside a tab bar, or None when it misses the
+/// bar (or the bar belongs to a split container).
+///
+/// `cached_widths` are the per-tab pixel widths of the rendered bar when available;
+/// otherwise an even split matching the renderer is assumed. `hit_pad_px` expands the hit
+/// box, making the bar's edges more forgiving to hit.
+pub fn tab_bar_hit_index(
+    info: &TabBarInfo,
+    pos: Point<f64, Logical>,
+    scale: f64,
+    cached_widths: Option<&[i32]>,
+    hit_pad_px: i32,
+) -> Option<usize> {
+    let tab_count = info.tabs.len();
+    if tab_count == 0 {
+        return None;
+    }
+
+    let scale_2d = Scale::from(scale);
+    let bar_loc_px: Point<i32, Physical> = info.rect.loc.to_physical_precise_round(scale_2d);
+    let pos_px: Point<i32, Physical> = pos.to_physical_precise_round(scale_2d) - bar_loc_px;
+    let width_px = to_physical_precise_round::<i32>(scale, info.rect.size.w).max(1);
+    let height_px = to_physical_precise_round::<i32>(scale, info.rect.size.h).max(1);
+
+    if pos_px.x < -hit_pad_px
+        || pos_px.y < -hit_pad_px
+        || pos_px.x >= width_px + hit_pad_px
+        || pos_px.y >= height_px + hit_pad_px
+    {
+        return None;
+    }
+    let pos_px: Point<i32, Physical> = Point::from((
+        pos_px.x.clamp(0, width_px - 1),
+        pos_px.y.clamp(0, height_px - 1),
+    ));
+
+    let row_height_px = to_physical_precise_round::<i32>(scale, info.row_height).max(1);
+    let focused_idx = info.tabs.iter().position(|tab| tab.is_focused).unwrap_or(0);
+
+    match info.layout {
+        Layout::Tabbed => {
+            if pos_px.y >= row_height_px {
+                return Some(focused_idx);
+            }
+            let fallback;
+            let widths: &[i32] = match cached_widths.filter(|widths| widths.len() == tab_count) {
+                Some(widths) => widths,
+                None => {
+                    fallback = even_tab_widths_px(width_px, tab_count);
+                    &fallback
+                }
+            };
+            let mut cursor = 0;
+            for (idx, width) in widths.iter().enumerate() {
+                cursor += *width;
+                if pos_px.x < cursor {
+                    return Some(idx);
+                }
+            }
+            Some(tab_count.saturating_sub(1))
+        }
+        Layout::Stacked => {
+            let stack_height_px = row_height_px * tab_count as i32;
+            if pos_px.y >= stack_height_px {
+                return Some(focused_idx);
+            }
+            let max_idx = tab_count.saturating_sub(1) as i32;
+            Some(((pos_px.y / row_height_px).min(max_idx)) as usize)
+        }
+        Layout::SplitH | Layout::SplitV => None,
+    }
 }
