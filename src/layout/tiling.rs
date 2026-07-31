@@ -1835,10 +1835,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     /// The leaf under `pos`, or the nearest one: its node key, tree path and on-screen rect.
-    fn closest_leaf_rect(
-        &self,
-        pos: Point<f64, Logical>,
-    ) -> Option<LeafHit> {
+    fn closest_leaf_rect(&self, pos: Point<f64, Logical>) -> Option<LeafHit> {
         let scale = Scale::from(self.scale);
         let fullscreen_id = self.render_fullscreen_window();
         let windowed_fullscreen_id = if fullscreen_id.is_none() {

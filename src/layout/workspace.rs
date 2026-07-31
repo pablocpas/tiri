@@ -65,6 +65,12 @@ pub struct Workspace<W: LayoutElement> {
     workspace_focus: WorkspaceFocus,
 
     /// seat->focus_stack equivalent for tiling restore targets (MRU at index 0).
+    ///
+    /// Deliberately a *lazy* cache: entries are not pruned when the tree changes under
+    /// them, only when a lookup finds they no longer resolve. Holding stale references is
+    /// therefore expected, and no invariant may assert otherwise — the guarantee is that a
+    /// lookup never *returns* one, which [`Self::inactive_tiling_restore_target`] enforces
+    /// by skipping and dropping them as it scans.
     inactive_tiling_focus_stack: Vec<InactiveTilingReference>,
 
     /// The original output of this workspace.
@@ -1469,26 +1475,30 @@ impl<W: LayoutElement> Workspace<W> {
             .is_some_and(|window| window.id() == id)
     }
 
-    pub(super) fn tiling_replace_tile_at_path(
+    /// Swap a dragged tile with the leaf at `path`, sending the displaced tile back to
+    /// `origin` (where the dragged tile came from).
+    ///
+    /// Hands the tile back as `Err` when `path` no longer addresses a leaf, leaving the
+    /// tree untouched so the caller can fall back to a plain insert.
+    // The Err variant carries the tile back to the caller; boxing it would only add an
+    // allocation to the failure path.
+    #[allow(clippy::result_large_err)]
+    pub(super) fn tiling_swap_tile_at_path(
         &mut self,
         path: &[usize],
         tile: Tile<W>,
-    ) -> Option<Tile<W>> {
-        self.tiling.replace_tile_at_path(path, tile)
-    }
-
-    pub(super) fn tiling_is_leaf_at_path(&self, path: &[usize]) -> bool {
-        self.tiling.is_leaf_at_path(path)
-    }
-
-    pub(super) fn tiling_insert_tile_with_parent_info(
-        &mut self,
-        info: &InsertParentInfo,
-        tile: Tile<W>,
-        activate: bool,
-    ) -> bool {
+        origin: &InsertParentInfo,
+    ) -> Result<(), Tile<W>> {
+        if !self.tiling.is_leaf_at_path(path) {
+            return Err(tile);
+        }
+        let Some(displaced) = self.tiling.replace_tile_at_path(path, tile) else {
+            // is_leaf_at_path just said otherwise; the tile is already gone into the tree.
+            return Ok(());
+        };
         self.tiling
-            .insert_tile_with_parent_info(info, tile, activate)
+            .insert_tile_with_parent_info(origin, displaced, false);
+        Ok(())
     }
 
     pub fn add_tile_split(
