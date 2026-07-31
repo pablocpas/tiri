@@ -56,7 +56,11 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Calculate and apply layout to the tree with explicit animation flags.
-    pub(in crate::layout) fn layout_with_animation_flags(&mut self, animate: bool, animate_resize: bool) {
+    pub(in crate::layout) fn layout_with_animation_flags(
+        &mut self,
+        animate: bool,
+        animate_resize: bool,
+    ) {
         self.layout_with_animations(animate, animate_resize);
     }
 

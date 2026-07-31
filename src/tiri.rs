@@ -3908,7 +3908,6 @@ impl Niri {
         };
 
         while let Some(output) = self.next_output_with_queued_redraw() {
-
             // Try frame scheduling: delay render until just before vblank.
             let state = self.output_state.get_mut(&output).unwrap();
             let should_schedule = is_tty

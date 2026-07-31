@@ -471,7 +471,10 @@ impl<W: LayoutElement> TilingSpace<W> {
         } else {
             let selected_path = self.tree.selected_path();
             if selected_path.is_empty() {
-                self.tree.focused_window().is_some().then_some(selected_path)
+                self.tree
+                    .focused_window()
+                    .is_some()
+                    .then_some(selected_path)
             } else {
                 Some(selected_path)
             }
@@ -3812,7 +3815,6 @@ impl<W: LayoutElement> RootTilingSubtree<W> {
         self.subtree.into_tiles()
     }
 }
-
 
 fn compute_toplevel_bounds(
     border_config: Border,
