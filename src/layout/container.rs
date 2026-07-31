@@ -312,6 +312,26 @@ impl ContainerData {
         self.children.iter().position(|child| *child == key)
     }
 
+    /// Replace `old_key` with `new_key` in place, keeping its child slot, size share and
+    /// focus-stack position.
+    pub(super) fn replace_child_preserving_focus(
+        &mut self,
+        old_key: NodeKey,
+        new_key: NodeKey,
+    ) -> bool {
+        let Some(idx) = self.children.iter().position(|key| *key == old_key) else {
+            return false;
+        };
+        self.children[idx] = new_key;
+        if let Some(pos) = self.focus_stack.iter().position(|key| *key == old_key) {
+            self.focus_stack[pos] = new_key;
+        } else if !self.focus_stack.contains(&new_key) {
+            self.focus_stack.push(new_key);
+        }
+        self.ensure_focus_stack();
+        true
+    }
+
     pub(super) fn bubble_focus(&mut self, node_key: NodeKey) {
         self.ensure_focus_stack();
         if let Some(pos) = self.focus_stack.iter().position(|key| *key == node_key) {
@@ -892,6 +912,29 @@ impl Direction {
     /// Check if direction is vertical
     pub fn is_vertical(self) -> bool {
         matches!(self, Direction::Up | Direction::Down)
+    }
+
+    /// The split layout whose axis runs along this direction.
+    pub fn split_layout(self) -> Layout {
+        if self.is_horizontal() {
+            Layout::SplitH
+        } else {
+            Layout::SplitV
+        }
+    }
+
+    /// Whether this direction points at the start of its axis (left/up) rather than the end.
+    pub fn is_leading(self) -> bool {
+        matches!(self, Direction::Left | Direction::Up)
+    }
+
+    /// Index of the sibling adjacent to `idx` in this direction, if it exists.
+    pub fn sibling_index(self, idx: usize, count: usize) -> Option<usize> {
+        if self.is_leading() {
+            idx.checked_sub(1)
+        } else {
+            (idx + 1 < count).then_some(idx + 1)
+        }
     }
 }
 

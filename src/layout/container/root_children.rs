@@ -114,11 +114,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         container.child_percents.insert(to, percent);
         container.normalize_child_percents();
 
-        if let Some(key) = self.focused_key {
-            self.sync_container_focus_from_key(key);
-        } else {
-            self.focus_first_leaf();
-        }
+        self.resync_focus();
         true
     }
 
@@ -216,14 +212,6 @@ impl<W: LayoutElement> ContainerTree<W> {
             }
         }
 
-        if focus {
-            self.focus_node_key(node_key);
-        } else {
-            if let Some(key) = self.focused_key {
-                self.sync_container_focus_from_key(key);
-            } else {
-                self.focus_first_leaf();
-            }
-        }
+        self.settle_focus_after_insert(node_key, focus);
     }
 }

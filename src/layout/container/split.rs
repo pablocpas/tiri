@@ -212,11 +212,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.set_parent(container_key, None);
         self.root = Some(container_key);
 
-        if let Some(key) = self.focused_key {
-            self.sync_container_focus_from_key(key);
-        } else {
-            self.focus_first_leaf();
-        }
+        self.resync_focus();
 
         true
     }

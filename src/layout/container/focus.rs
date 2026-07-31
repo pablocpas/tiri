@@ -182,82 +182,60 @@ impl<W: LayoutElement> ContainerTree<W> {
         let focus_path = self.selected_path();
         let mut wrap_candidate: Option<(NodeKey, usize)> = None;
 
-        // Navigate up the focus path to find appropriate container
+        // Walk ancestors from the innermost container outwards, trying a direct sibling
+        // step at every level whose layout runs along `direction`.
         for depth in (0..focus_path.len()).rev() {
             let parent_path = &focus_path[..depth];
-            let current_idx = if depth < focus_path.len() {
-                focus_path[depth]
-            } else {
-                continue;
-            };
+            let current_idx = focus_path[depth];
 
             let parent_key = if parent_path.is_empty() {
                 self.root
             } else {
                 self.get_node_key_at_path(parent_path)
             };
+            let Some(parent_key) = parent_key else {
+                continue;
+            };
+            let Some(container) = self.get_container(parent_key) else {
+                continue;
+            };
+            if !container.layout.is_parallel_to(direction) {
+                continue;
+            }
 
-            if let Some(parent_key) = parent_key {
-                if let Some(container) = self.get_container(parent_key) {
-                    // Check if this container's layout matches the direction
-                    let layout_matches = container.layout.is_parallel_to(direction);
+            // Remember a wrap candidate at the first matching container, but only use it
+            // if no direct movement was possible at this or any ancestor.
+            let child_count = container.children.len();
+            if allow_wrap
+                && wrap_candidate.is_none()
+                && child_count > 1
+                && matches!(container.layout, Layout::SplitH | Layout::SplitV)
+            {
+                let wrap_idx = if direction.is_leading() {
+                    child_count - 1
+                } else {
+                    0
+                };
+                wrap_candidate = Some((parent_key, wrap_idx));
+            }
 
-                    if !layout_matches {
-                        continue;
-                    }
-
-                    // Remember a wrap candidate at the first matching container, but only use it
-                    // if no direct movement was possible at this or any ancestor.
-                    let child_count = container.children.len();
-                    if allow_wrap
-                        && wrap_candidate.is_none()
-                        && child_count > 1
-                        && matches!(container.layout, Layout::SplitH | Layout::SplitV)
-                    {
-                        let wrap_idx = match direction {
-                            Direction::Left | Direction::Up => child_count - 1,
-                            Direction::Right | Direction::Down => 0,
-                        };
-                        wrap_candidate = Some((parent_key, wrap_idx));
-                    }
-
-                    // First try direct movement without wrapping.
-                    let new_idx = match direction {
-                        Direction::Left | Direction::Up => {
-                            if current_idx > 0 {
-                                Some(current_idx - 1)
-                            } else {
-                                None
-                            }
-                        }
-                        Direction::Right | Direction::Down => {
-                            if current_idx + 1 < child_count {
-                                Some(current_idx + 1)
-                            } else {
-                                None
-                            }
-                        }
-                    };
-
-                    if let Some(new_idx) = new_idx {
-                        let Some(target_key) = container.child_key(new_idx) else {
-                            continue;
-                        };
-                        self.focus_node_key(target_key);
-                        return true;
-                    }
-                }
+            // First try direct movement without wrapping.
+            if let Some(new_idx) = direction.sibling_index(current_idx, child_count) {
+                let Some(target_key) = container.child_key(new_idx) else {
+                    continue;
+                };
+                self.focus_node_key(target_key);
+                return true;
             }
         }
 
-        if allow_wrap {
-            if let Some((container_key, wrap_idx)) = wrap_candidate {
-                if let Some(container) = self.get_container(container_key) {
-                    if let Some(target_key) = container.child_key(wrap_idx) {
-                        self.focus_node_key(target_key);
-                        return true;
-                    }
-                }
+        if let Some((container_key, wrap_idx)) = wrap_candidate {
+            if let Some(target_key) = self
+                .get_container(container_key)
+                .and_then(|container| container.child_key(wrap_idx))
+            {
+                self.focus_node_key(target_key);
+                return true;
             }
         }
 
@@ -335,6 +313,26 @@ impl<W: LayoutElement> ContainerTree<W> {
             self.focus_node_key(key);
         } else {
             self.focused_key = None;
+        }
+    }
+
+    /// Settle focus after inserting `key`: focus it when requested, otherwise keep the
+    /// current focus chain intact (falling back to the first leaf if nothing is focused).
+    pub(super) fn settle_focus_after_insert(&mut self, key: NodeKey, focus: bool) {
+        if focus {
+            self.focus_node_key(key);
+        } else {
+            self.resync_focus();
+        }
+    }
+
+    /// Re-derive the per-container focus chain from the focused leaf, falling back to the
+    /// first leaf when nothing is focused.
+    pub(super) fn resync_focus(&mut self) {
+        if let Some(focused) = self.focused_key {
+            self.sync_container_focus_from_key(focused);
+        } else {
+            self.focus_first_leaf();
         }
     }
 }

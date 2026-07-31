@@ -8,225 +8,236 @@ use super::NodeData;
 use super::NodeKey;
 
 impl<W: LayoutElement> ContainerTree<W> {
+    /// Normalize the tree after a mutation, walking from `key` towards the root: drop empty
+    /// containers, dissolve single-child wrappers and squash redundant nested splits.
     pub(super) fn cleanup_containers(&mut self, mut key: Option<NodeKey>) {
-        loop {
-            let Some(container_key) = key else {
-                if let Some(root_key) = self.root {
-                    if let Some(container) = self.get_container(root_key) {
-                        if container.children.is_empty() {
-                            self.pending_layout = None;
-                            self.pending_layout_wrap_on_split = false;
-                            self.remove_node_recursive(root_key);
-                            self.root = None;
-                        }
-                    }
-                }
-                break;
-            };
-
+        while let Some(container_key) = key {
             let parent_key = self.parent_of(container_key);
-            let Some(container) = self.get_container(container_key) else {
-                key = parent_key;
-                continue;
-            };
-
-            let container_layout = container.layout();
-            let container_children = container.children.clone();
-            let container_focus_stack = container.focus_stack.clone();
-            let container_child_percents = container.child_percents_slice().to_vec();
-            let container_preserve_on_single = container.preserve_on_single();
-            let child_count = container_children.len();
-
-            let mut remove_container = false;
-            let mut replace_with_child = None;
-            let mut squash_with_parent = false;
-
-            let parent_layout = parent_key.and_then(|parent_key| {
-                self.get_container(parent_key).map(|parent| parent.layout())
-            });
-
-            let single_child_key = container_children.first().copied();
-            let can_replace_with_child = !container_preserve_on_single
-                && match parent_key {
-                    Some(_) => true,
-                    None => single_child_key.is_some_and(|child_key| {
-                        matches!(self.get_node(child_key), Some(NodeData::Leaf(_)))
-                    }),
-                };
-
-            if child_count == 0 {
-                remove_container = true;
-            } else if child_count == 1 && can_replace_with_child {
-                replace_with_child = container_children.first().copied();
-            } else if child_count > 1
-                && !container_preserve_on_single
-                && parent_layout
-                    .map(|layout| Self::layouts_squashable(layout, container_layout))
-                    .unwrap_or(false)
-            {
-                squash_with_parent = true;
-            }
-
-            if let Some(parent_key) = parent_key {
-                let parent_idx = match self.child_index(parent_key, container_key) {
-                    Some(idx) => idx,
-                    None => {
-                        key = Some(parent_key);
-                        continue;
-                    }
-                };
-
-                if squash_with_parent {
-                    let (parent_children, parent_focus, parent_percents) =
-                        if let Some(parent) = self.get_container(parent_key) {
-                            (
-                                parent.children.clone(),
-                                parent.focus_stack.clone(),
-                                parent.child_percents_slice().to_vec(),
-                            )
-                        } else {
-                            key = Some(parent_key);
-                            continue;
-                        };
-
-                    let mut new_children = Vec::with_capacity(
-                        parent_children.len().saturating_sub(1) + container_children.len(),
-                    );
-                    new_children.extend_from_slice(&parent_children[..parent_idx]);
-                    new_children.extend_from_slice(&container_children);
-                    new_children.extend_from_slice(&parent_children[parent_idx + 1..]);
-
-                    let mut new_focus = Vec::with_capacity(
-                        parent_focus.len().saturating_sub(1) + container_focus_stack.len(),
-                    );
-                    for key in parent_focus {
-                        if key == container_key {
-                            for child in &container_focus_stack {
-                                if container_children.contains(child) && !new_focus.contains(child)
-                                {
-                                    new_focus.push(*child);
-                                }
-                            }
-                        } else if !new_focus.contains(&key) {
-                            new_focus.push(key);
-                        }
-                    }
-                    for child in &container_children {
-                        if !new_focus.contains(child) {
-                            new_focus.push(*child);
-                        }
-                    }
-
-                    let mut new_percents = Vec::new();
-                    if parent_percents.len() == parent_children.len() {
-                        let replaced_share = parent_percents[parent_idx];
-                        new_percents.extend_from_slice(&parent_percents[..parent_idx]);
-
-                        if !container_children.is_empty() {
-                            if container_child_percents.len() == container_children.len() {
-                                let sum: f64 = container_child_percents.iter().copied().sum();
-                                if sum > f64::EPSILON {
-                                    for percent in &container_child_percents {
-                                        new_percents.push(replaced_share * (*percent / sum));
-                                    }
-                                } else {
-                                    let value = replaced_share / container_children.len() as f64;
-                                    new_percents.resize(
-                                        new_percents.len() + container_children.len(),
-                                        value,
-                                    );
-                                }
-                            } else {
-                                let value = replaced_share / container_children.len() as f64;
-                                new_percents
-                                    .resize(new_percents.len() + container_children.len(), value);
-                            }
-                        }
-
-                        new_percents.extend_from_slice(&parent_percents[parent_idx + 1..]);
-                    }
-
-                    if let Some(parent) = self.get_container_mut(parent_key) {
-                        parent.children = new_children;
-                        parent.focus_stack = new_focus;
-                        if new_percents.len() == parent.children.len() {
-                            parent.child_percents = new_percents;
-                            parent.normalize_child_percents();
-                        } else {
-                            parent.recalculate_percentages();
-                        }
-                        parent.ensure_focus_stack();
-                    }
-
-                    for child_key in &container_children {
-                        self.set_parent(*child_key, Some(parent_key));
-                    }
-
-                    if self.selected_key == Some(container_key) {
-                        self.selected_key = container_focus_stack
-                            .iter()
-                            .copied()
-                            .find(|child| container_children.contains(child))
-                            .or_else(|| container_children.first().copied())
-                            .or(Some(parent_key));
-                    }
-
-                    if self.focused_key == Some(container_key) {
-                        self.focused_key = container_focus_stack
-                            .iter()
-                            .copied()
-                            .find(|child| container_children.contains(child))
-                            .or_else(|| container_children.first().copied())
-                            .or(Some(parent_key));
-                    }
-
-                    self.nodes.remove(container_key);
-                    self.parents.remove(container_key);
-                } else if remove_container {
-                    if let Some(parent) = self.get_container_mut(parent_key) {
-                        parent.remove_child(parent_idx);
-                    }
-                    self.set_parent(container_key, None);
-                    self.remove_node_recursive(container_key);
-                } else if let Some(child_key) = replace_with_child {
-                    if let Some(parent) = self.get_container_mut(parent_key) {
-                        parent.children[parent_idx] = child_key;
-                        if let Some(pos) = parent
-                            .focus_stack
-                            .iter()
-                            .position(|key| *key == container_key)
-                        {
-                            parent.focus_stack[pos] = child_key;
-                        } else if !parent.focus_stack.contains(&child_key) {
-                            parent.focus_stack.push(child_key);
-                        }
-                        parent.ensure_focus_stack();
-                    }
-                    self.set_parent(child_key, Some(parent_key));
-                    self.nodes.remove(container_key);
-                    self.parents.remove(container_key);
-                }
-            } else if remove_container {
-                self.pending_layout = Some(container_layout);
-                self.pending_layout_wrap_on_split = container_preserve_on_single;
-                self.remove_node_recursive(container_key);
-                self.root = None;
-            } else if let Some(child_key) = replace_with_child {
-                if self.selected_key == Some(container_key) {
-                    self.selected_key = Some(child_key);
-                }
-                if self.focused_key == Some(container_key) {
-                    self.focused_key = Some(child_key);
-                }
-                self.set_parent(child_key, None);
-                self.nodes.remove(container_key);
-                self.parents.remove(container_key);
-                self.root = Some(child_key);
-            }
-
+            self.cleanup_one_container(container_key, parent_key);
             key = parent_key;
         }
 
+        self.remove_root_if_empty();
+        self.collapse_singleton_root_chain();
+    }
+
+    /// Apply at most one normalization step to `container_key`.
+    fn cleanup_one_container(&mut self, container_key: NodeKey, parent_key: Option<NodeKey>) {
+        let Some(container) = self.get_container(container_key) else {
+            return;
+        };
+
+        let container_layout = container.layout();
+        let container_children = container.children.clone();
+        let container_focus_stack = container.focus_stack.clone();
+        let container_child_percents = container.child_percents_slice().to_vec();
+        let container_preserve_on_single = container.preserve_on_single();
+        let child_count = container_children.len();
+
+        let parent_layout =
+            parent_key.and_then(|key| self.get_container(key).map(|parent| parent.layout()));
+
+        let single_child_key = container_children.first().copied();
+        // A rootless single-child wrapper only dissolves onto a leaf; a container child
+        // would become the root itself and is handled by collapse_singleton_root_chain.
+        let can_replace_with_child = !container_preserve_on_single
+            && match parent_key {
+                Some(_) => true,
+                None => single_child_key.is_some_and(|child_key| {
+                    matches!(self.get_node(child_key), Some(NodeData::Leaf(_)))
+                }),
+            };
+
+        if child_count == 0 {
+            self.remove_empty_container(
+                container_key,
+                parent_key,
+                container_layout,
+                container_preserve_on_single,
+            );
+        } else if child_count == 1 && can_replace_with_child {
+            let Some(child_key) = single_child_key else {
+                return;
+            };
+            self.replace_container_with_child(container_key, parent_key, child_key);
+        } else if child_count > 1
+            && !container_preserve_on_single
+            && parent_layout
+                .map(|layout| Self::layouts_squashable(layout, container_layout))
+                .unwrap_or(false)
+        {
+            let Some(parent_key) = parent_key else {
+                return;
+            };
+            self.squash_container_into_parent(
+                container_key,
+                parent_key,
+                &container_children,
+                &container_focus_stack,
+                &container_child_percents,
+            );
+        }
+    }
+
+    /// Remove a container with no children. Removing the root remembers its layout as the
+    /// workspace's pending layout, matching i3's workspace_layout persistence.
+    fn remove_empty_container(
+        &mut self,
+        container_key: NodeKey,
+        parent_key: Option<NodeKey>,
+        container_layout: Layout,
+        container_preserve_on_single: bool,
+    ) {
+        if let Some(parent_key) = parent_key {
+            let Some(parent_idx) = self.child_index(parent_key, container_key) else {
+                return;
+            };
+            if let Some(parent) = self.get_container_mut(parent_key) {
+                parent.remove_child(parent_idx);
+            }
+            self.set_parent(container_key, None);
+            self.remove_node_recursive(container_key);
+        } else {
+            self.pending_layout = Some(container_layout);
+            self.pending_layout_wrap_on_split = container_preserve_on_single;
+            self.remove_node_recursive(container_key);
+            self.root = None;
+        }
+    }
+
+    /// Dissolve a single-child wrapper by promoting its only child into its place.
+    fn replace_container_with_child(
+        &mut self,
+        container_key: NodeKey,
+        parent_key: Option<NodeKey>,
+        child_key: NodeKey,
+    ) {
+        if let Some(parent_key) = parent_key {
+            if self.child_index(parent_key, container_key).is_none() {
+                return;
+            }
+            if let Some(parent) = self.get_container_mut(parent_key) {
+                parent.replace_child_preserving_focus(container_key, child_key);
+            }
+            self.set_parent(child_key, Some(parent_key));
+        } else {
+            if self.selected_key == Some(container_key) {
+                self.selected_key = Some(child_key);
+            }
+            if self.focused_key == Some(container_key) {
+                self.focused_key = Some(child_key);
+            }
+            self.set_parent(child_key, None);
+            self.root = Some(child_key);
+        }
+        self.nodes.remove(container_key);
+        self.parents.remove(container_key);
+    }
+
+    /// Splice a container's children into its parent in place of the container itself,
+    /// merging focus stacks and scaling child percents into the replaced share.
+    fn squash_container_into_parent(
+        &mut self,
+        container_key: NodeKey,
+        parent_key: NodeKey,
+        container_children: &[NodeKey],
+        container_focus_stack: &[NodeKey],
+        container_child_percents: &[f64],
+    ) {
+        let Some(parent_idx) = self.child_index(parent_key, container_key) else {
+            return;
+        };
+        let Some(parent) = self.get_container(parent_key) else {
+            return;
+        };
+        let parent_children = parent.children.clone();
+        let parent_focus = parent.focus_stack.clone();
+        let parent_percents = parent.child_percents_slice().to_vec();
+
+        let mut new_children =
+            Vec::with_capacity(parent_children.len().saturating_sub(1) + container_children.len());
+        new_children.extend_from_slice(&parent_children[..parent_idx]);
+        new_children.extend_from_slice(container_children);
+        new_children.extend_from_slice(&parent_children[parent_idx + 1..]);
+
+        let mut new_focus =
+            Vec::with_capacity(parent_focus.len().saturating_sub(1) + container_focus_stack.len());
+        for key in parent_focus {
+            if key == container_key {
+                for child in container_focus_stack {
+                    if container_children.contains(child) && !new_focus.contains(child) {
+                        new_focus.push(*child);
+                    }
+                }
+            } else if !new_focus.contains(&key) {
+                new_focus.push(key);
+            }
+        }
+        for child in container_children {
+            if !new_focus.contains(child) {
+                new_focus.push(*child);
+            }
+        }
+
+        let new_percents = squashed_child_percents(
+            &parent_percents,
+            parent_children.len(),
+            parent_idx,
+            container_child_percents,
+            container_children.len(),
+        );
+
+        if let Some(parent) = self.get_container_mut(parent_key) {
+            parent.children = new_children;
+            parent.focus_stack = new_focus;
+            if new_percents.len() == parent.children.len() {
+                parent.child_percents = new_percents;
+                parent.normalize_child_percents();
+            } else {
+                parent.recalculate_percentages();
+            }
+            parent.ensure_focus_stack();
+        }
+
+        for child_key in container_children {
+            self.set_parent(*child_key, Some(parent_key));
+        }
+
+        let redirected = container_focus_stack
+            .iter()
+            .copied()
+            .find(|child| container_children.contains(child))
+            .or_else(|| container_children.first().copied())
+            .or(Some(parent_key));
+        if self.selected_key == Some(container_key) {
+            self.selected_key = redirected;
+        }
+        if self.focused_key == Some(container_key) {
+            self.focused_key = redirected;
+        }
+
+        self.nodes.remove(container_key);
+        self.parents.remove(container_key);
+    }
+
+    /// Drop the root container once it has no children left.
+    fn remove_root_if_empty(&mut self) {
+        let Some(root_key) = self.root else {
+            return;
+        };
+        let Some(container) = self.get_container(root_key) else {
+            return;
+        };
+        if container.children.is_empty() {
+            self.pending_layout = None;
+            self.pending_layout_wrap_on_split = false;
+            self.remove_node_recursive(root_key);
+            self.root = None;
+        }
+    }
+
+    /// Promote through chains of non-material single-child roots.
+    fn collapse_singleton_root_chain(&mut self) {
         while let Some(root_key) = self.root {
             let Some(root) = self.get_container(root_key) else {
                 break;
@@ -345,4 +356,38 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.set_parent(container_key, Some(parent_key));
         Some(container_key)
     }
+}
+
+/// Distribute the parent share previously occupied by a squashed container across its
+/// children, proportionally to their own percents. Returns an empty vec when the parent
+/// percents are inconsistent, signalling the caller to recalculate from scratch.
+fn squashed_child_percents(
+    parent_percents: &[f64],
+    parent_child_count: usize,
+    parent_idx: usize,
+    container_percents: &[f64],
+    container_child_count: usize,
+) -> Vec<f64> {
+    let mut new_percents = Vec::new();
+    if parent_percents.len() != parent_child_count {
+        return new_percents;
+    }
+
+    let replaced_share = parent_percents[parent_idx];
+    new_percents.extend_from_slice(&parent_percents[..parent_idx]);
+
+    if container_child_count > 0 {
+        let sum: f64 = container_percents.iter().copied().sum();
+        if container_percents.len() == container_child_count && sum > f64::EPSILON {
+            for percent in container_percents {
+                new_percents.push(replaced_share * (*percent / sum));
+            }
+        } else {
+            let value = replaced_share / container_child_count as f64;
+            new_percents.resize(new_percents.len() + container_child_count, value);
+        }
+    }
+
+    new_percents.extend_from_slice(&parent_percents[parent_idx + 1..]);
+    new_percents
 }
