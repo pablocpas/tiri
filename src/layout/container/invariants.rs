@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use super::{ContainerTree, LayoutElement, LeafLayoutInfo, NodeData, NodeKey};
 
 impl<W: LayoutElement> ContainerTree<W> {
-    pub fn verify_invariants(&self) {
+    pub(in crate::layout) fn verify_invariants(&self) {
         if self.root.is_none() {
             assert!(self.nodes.is_empty(), "empty tree must not retain nodes");
             assert!(

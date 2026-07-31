@@ -6,7 +6,7 @@ use crate::window::Mapped;
 use tiri_ipc::{LayoutTreeLayout, LayoutTreeNode, LayoutTreeRect};
 
 impl ContainerTree<Mapped> {
-    pub fn layout_tree(&self) -> Option<LayoutTreeNode> {
+    pub(in crate::layout) fn layout_tree(&self) -> Option<LayoutTreeNode> {
         let root_key = self.root_node_key()?;
         let focused_key = self.selected_node_key();
         Some(self.build_layout_tree_node(
@@ -20,7 +20,7 @@ impl ContainerTree<Mapped> {
         ))
     }
 
-    pub fn layout_tree_unfocused(&self) -> Option<LayoutTreeNode> {
+    pub(in crate::layout) fn layout_tree_unfocused(&self) -> Option<LayoutTreeNode> {
         let root_key = self.root_node_key()?;
         Some(self.build_layout_tree_node(
             root_key,

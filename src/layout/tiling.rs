@@ -3473,6 +3473,8 @@ impl<W: LayoutElement> TilingSpace<W> {
         true
     }
 
+    // No-ops: centering only makes sense with a scrolling viewport; in the i3 model the
+    // viewport is fixed and every root child is always fully visible.
     pub fn center_column(&mut self) {}
     pub fn center_window(&mut self, _window: Option<&W::Id>) {}
     pub fn center_visible_columns(&mut self) {}
@@ -3493,8 +3495,8 @@ impl<W: LayoutElement> TilingSpace<W> {
         self.move_command_target(direction);
     }
 
-    pub fn start_open_animation(&mut self, _id: &W::Id) -> bool {
-        let Some(path) = self.tree.find_window(_id) else {
+    pub fn start_open_animation(&mut self, id: &W::Id) -> bool {
+        let Some(path) = self.tree.find_window(id) else {
             return false;
         };
         if let Some(tile) = self.tree.tile_at_path_mut(&path) {

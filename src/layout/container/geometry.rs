@@ -45,18 +45,18 @@ struct LayoutRequest {
 
 impl<W: LayoutElement> ContainerTree<W> {
     /// Calculate and apply layout to the tree.
-    pub fn layout(&mut self) {
+    pub(in crate::layout) fn layout(&mut self) {
         self.layout_with_resize_animation(true);
     }
 
     /// Calculate and apply layout to the tree, with control over resize animation.
-    pub fn layout_with_resize_animation(&mut self, animate_resize: bool) {
+    pub(in crate::layout) fn layout_with_resize_animation(&mut self, animate_resize: bool) {
         let animate = !self.options.animations.off;
         self.layout_with_animations(animate, animate_resize);
     }
 
     /// Calculate and apply layout to the tree with explicit animation flags.
-    pub fn layout_with_animation_flags(&mut self, animate: bool, animate_resize: bool) {
+    pub(in crate::layout) fn layout_with_animation_flags(&mut self, animate: bool, animate_resize: bool) {
         self.layout_with_animations(animate, animate_resize);
     }
 
@@ -66,7 +66,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.layout_atomic(animate_resize);
     }
 
-    pub fn layout_area(&self) -> Rectangle<f64, Logical> {
+    pub(in crate::layout) fn layout_area(&self) -> Rectangle<f64, Logical> {
         let mut area = self.working_area;
         let gap = self.options.layout.gaps;
         if gap > 0.0 {
@@ -122,7 +122,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.debug_layout_state("layout_atomic_requested");
     }
 
-    pub fn apply_pending_layouts_if_ready(&mut self) -> bool {
+    pub(in crate::layout) fn apply_pending_layouts_if_ready(&mut self) -> bool {
         let Some(pending) = &self.pending_layouts else {
             return false;
         };
@@ -135,7 +135,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         true
     }
 
-    pub fn has_pending_layouts(&self) -> bool {
+    pub(in crate::layout) fn has_pending_layouts(&self) -> bool {
         self.pending_layouts.is_some()
     }
 

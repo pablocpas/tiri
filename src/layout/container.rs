@@ -232,7 +232,7 @@ pub(super) struct PreviewLeafGeometry {
 
 impl ContainerData {
     /// Create a new container with given layout
-    pub fn new(layout: Layout) -> Self {
+    pub(super) fn new(layout: Layout) -> Self {
         Self {
             layout,
             children: Vec::new(),
@@ -245,59 +245,59 @@ impl ContainerData {
     }
 
     /// Get container layout
-    pub fn layout(&self) -> Layout {
+    pub(super) fn layout(&self) -> Layout {
         self.layout
     }
 
     /// Set container layout
-    pub fn set_layout(&mut self, layout: Layout) {
+    pub(super) fn set_layout(&mut self, layout: Layout) {
         if self.layout != layout && matches!(self.layout, Layout::SplitH | Layout::SplitV) {
             self.prev_split_layout = Some(self.layout);
         }
         self.layout = layout;
     }
 
-    pub fn set_layout_explicit(&mut self, layout: Layout) {
+    pub(super) fn set_layout_explicit(&mut self, layout: Layout) {
         self.set_layout(layout);
         self.preserve_on_single = true;
     }
 
-    pub fn preserve_on_single(&self) -> bool {
+    pub(super) fn preserve_on_single(&self) -> bool {
         self.preserve_on_single
     }
 
-    pub fn prev_split_layout(&self) -> Option<Layout> {
+    pub(super) fn prev_split_layout(&self) -> Option<Layout> {
         self.prev_split_layout
     }
 
-    pub fn mark_preserve_on_single(&mut self) {
+    pub(super) fn mark_preserve_on_single(&mut self) {
         self.preserve_on_single = true;
     }
 
     /// Get children keys
-    pub fn children(&self) -> &[NodeKey] {
+    pub(super) fn children(&self) -> &[NodeKey] {
         &self.children
     }
 
     /// Number of children
-    pub fn child_count(&self) -> usize {
+    pub(super) fn child_count(&self) -> usize {
         self.children.len()
     }
 
     /// Get focused child key
-    pub fn focused_child_key(&self) -> Option<NodeKey> {
+    pub(super) fn focused_child_key(&self) -> Option<NodeKey> {
         self.focus_stack
             .first()
             .copied()
             .or_else(|| self.children.first().copied())
     }
 
-    pub fn focused_child_index(&self) -> Option<usize> {
+    pub(super) fn focused_child_index(&self) -> Option<usize> {
         let key = self.focused_child_key()?;
         self.children.iter().position(|child| *child == key)
     }
 
-    pub fn bubble_focus(&mut self, node_key: NodeKey) {
+    pub(super) fn bubble_focus(&mut self, node_key: NodeKey) {
         self.ensure_focus_stack();
         if let Some(pos) = self.focus_stack.iter().position(|key| *key == node_key) {
             self.focus_stack.remove(pos);
@@ -315,13 +315,13 @@ impl ContainerData {
     }
 
     /// Add a child node by key
-    pub fn add_child(&mut self, node_key: NodeKey) {
+    pub(super) fn add_child(&mut self, node_key: NodeKey) {
         let idx = self.children.len();
         self.insert_child(idx, node_key);
     }
 
     /// Remove a child at index, returns the removed node key
-    pub fn remove_child(&mut self, idx: usize) -> Option<NodeKey> {
+    pub(super) fn remove_child(&mut self, idx: usize) -> Option<NodeKey> {
         if idx >= self.children.len() {
             return None;
         }
@@ -362,11 +362,11 @@ impl ContainerData {
     }
 
     /// Get child key at index
-    pub fn child_key(&self, idx: usize) -> Option<NodeKey> {
+    pub(super) fn child_key(&self, idx: usize) -> Option<NodeKey> {
         self.children.get(idx).copied()
     }
 
-    pub fn insert_child(&mut self, idx: usize, node_key: NodeKey) {
+    pub(super) fn insert_child(&mut self, idx: usize, node_key: NodeKey) {
         let idx = idx.min(self.children.len());
         let old_len = self.children.len();
 
@@ -400,7 +400,7 @@ impl ContainerData {
         }
     }
 
-    pub fn recalculate_percentages(&mut self) {
+    pub(super) fn recalculate_percentages(&mut self) {
         if self.children.is_empty() {
             self.child_percents.clear();
             return;
@@ -415,7 +415,7 @@ impl ContainerData {
         }
     }
 
-    pub fn normalize_child_percents(&mut self) {
+    pub(super) fn normalize_child_percents(&mut self) {
         if self.child_percents.is_empty() {
             return;
         }
@@ -436,16 +436,16 @@ impl ContainerData {
         }
     }
 
-    pub fn child_percent(&self, idx: usize) -> f64 {
+    pub(super) fn child_percent(&self, idx: usize) -> f64 {
         self.child_percents.get(idx).copied().unwrap_or(0.0)
     }
 
     /// Get child percentages as a slice (avoids cloning)
-    pub fn child_percents_slice(&self) -> &[f64] {
+    pub(super) fn child_percents_slice(&self) -> &[f64] {
         &self.child_percents
     }
 
-    pub fn set_child_percent(&mut self, idx: usize, percent: f64) {
+    pub(super) fn set_child_percent(&mut self, idx: usize, percent: f64) {
         if self.child_percents.len() != self.children.len() {
             self.recalculate_percentages();
         }
@@ -497,7 +497,7 @@ impl ContainerData {
         self.normalize_child_percents();
     }
 
-    pub fn set_child_percent_pair(
+    pub(super) fn set_child_percent_pair(
         &mut self,
         idx: usize,
         neighbor_idx: usize,
@@ -537,23 +537,13 @@ impl ContainerData {
         true
     }
 
-    /// Check if container is empty
-    pub fn is_empty(&self) -> bool {
-        self.children.is_empty()
-    }
-
-    /// Get number of children
-    pub fn len(&self) -> usize {
-        self.children.len()
-    }
-
     /// Set geometry for this container
-    pub fn set_geometry(&mut self, geometry: Rectangle<f64, Logical>) {
+    pub(super) fn set_geometry(&mut self, geometry: Rectangle<f64, Logical>) {
         self.geometry = geometry;
     }
 
     /// Get geometry
-    pub fn geometry(&self) -> Rectangle<f64, Logical> {
+    pub(super) fn geometry(&self) -> Rectangle<f64, Logical> {
         self.geometry
     }
 }
@@ -563,7 +553,7 @@ impl ContainerData {
 // ============================================================================
 
 impl<W: LayoutElement> DetachedNode<W> {
-    pub fn tiles(&self) -> Vec<&Tile<W>> {
+    pub(super) fn tiles(&self) -> Vec<&Tile<W>> {
         let mut tiles = Vec::new();
         self.collect_tiles(&mut tiles);
         tiles
@@ -580,7 +570,7 @@ impl<W: LayoutElement> DetachedNode<W> {
         }
     }
 
-    pub fn contains_window(&self, window_id: &W::Id) -> bool {
+    pub(super) fn contains_window(&self, window_id: &W::Id) -> bool {
         match self {
             DetachedNode::Leaf(tile) => tile.window().id() == window_id,
             DetachedNode::Container(container) => container
@@ -590,7 +580,7 @@ impl<W: LayoutElement> DetachedNode<W> {
         }
     }
 
-    pub fn into_tiles(self) -> Vec<Tile<W>> {
+    pub(super) fn into_tiles(self) -> Vec<Tile<W>> {
         let mut tiles = Vec::new();
         self.collect_tiles_owned(&mut tiles);
         tiles
@@ -601,7 +591,7 @@ impl<W: LayoutElement> DetachedNode<W> {
     /// Floating containers are internally represented as root split containers even for
     /// a single window. When moving such a subtree back to tiling we must not materialize
     /// that implicit wrapper, otherwise tiling gains an extra one-child split unlike i3/sway.
-    pub fn collapse_implicit_single_child_split_root(self) -> Self {
+    pub(super) fn collapse_implicit_single_child_split_root(self) -> Self {
         match self {
             DetachedNode::Container(mut container)
                 if !container.preserve_on_single
@@ -611,72 +601,6 @@ impl<W: LayoutElement> DetachedNode<W> {
                 container.children.remove(0)
             }
             other => other,
-        }
-    }
-
-    /// Collapse a root chain of single-child containers.
-    ///
-    /// This is used when restoring a single floating window back into an empty tiling tree:
-    /// i3/sway treat any one-child wrapper stack as non-material and restore just the leaf.
-    pub fn collapse_single_child_root_chain(self) -> Self {
-        let mut current = self;
-        loop {
-            match current {
-                DetachedNode::Container(mut container) if container.children.len() == 1 => {
-                    current = container.children.remove(0);
-                }
-                other => return other,
-            }
-        }
-    }
-
-    /// Collapse redundant split wrappers at subtree root.
-    ///
-    /// If a root split container has a single child that is also a split container with the same
-    /// layout, the outer wrapper is structurally redundant and should be removed.
-    pub fn collapse_redundant_single_child_split_root(self) -> Self {
-        let mut current = self;
-        loop {
-            let DetachedNode::Container(mut container) = current else {
-                return current;
-            };
-
-            if container.children.len() != 1 {
-                return DetachedNode::Container(container);
-            }
-
-            let same_split_child = match container.children.first() {
-                Some(DetachedNode::Container(child)) => {
-                    matches!(container.layout, Layout::SplitH | Layout::SplitV)
-                        && child.layout == container.layout
-                }
-                _ => false,
-            };
-
-            if !same_split_child {
-                return DetachedNode::Container(container);
-            }
-
-            current = container.children.remove(0);
-        }
-    }
-
-    /// Whether the root single-child container chain contains tabbed/stacked nodes.
-    ///
-    /// This is used to identify floating wrapper stacks that i3/sway do not materialize when
-    /// restoring a single window back into an empty tiling tree.
-    pub fn single_child_root_chain_has_non_split_layout(&self) -> bool {
-        let mut current = self;
-        loop {
-            match current {
-                DetachedNode::Container(container) if container.children.len() == 1 => {
-                    if matches!(container.layout, Layout::Tabbed | Layout::Stacked) {
-                        return true;
-                    }
-                    current = &container.children[0];
-                }
-                _ => return false,
-            }
         }
     }
 
@@ -691,7 +615,7 @@ impl<W: LayoutElement> DetachedNode<W> {
         }
     }
 
-    pub fn for_each_tile_mut(&mut self, f: &mut impl FnMut(&mut Tile<W>)) {
+    pub(super) fn for_each_tile_mut(&mut self, f: &mut impl FnMut(&mut Tile<W>)) {
         match self {
             DetachedNode::Leaf(tile) => f(tile),
             DetachedNode::Container(container) => {
@@ -702,46 +626,10 @@ impl<W: LayoutElement> DetachedNode<W> {
         }
     }
 
-    /// Normalize root-level focus history for floating->tiling subtree restores.
-    ///
-    /// In i3/sway, mixed roots (container + leaf siblings) prefer descending into container
-    /// branches instead of keeping focus on a leaf sibling when reattached.
-    pub fn normalize_root_focus_for_tiling_restore(mut self) -> Self {
-        if let DetachedNode::Container(container) = &mut self {
-            let child_count = container.children.len();
-            if child_count > 1 {
-                let focused_idx = container
-                    .focus_stack
-                    .iter()
-                    .copied()
-                    .find(|idx| *idx < child_count)
-                    .unwrap_or(0);
-                let focused_is_leaf = matches!(
-                    container.children.get(focused_idx),
-                    Some(DetachedNode::Leaf(_))
-                );
-                let has_leaf = container
-                    .children
-                    .iter()
-                    .any(|child| matches!(child, DetachedNode::Leaf(_)));
-                if focused_is_leaf && has_leaf {
-                    if let Some(container_idx) = container
-                        .children
-                        .iter()
-                        .position(|child| matches!(child, DetachedNode::Container(_)))
-                    {
-                        container.focus_stack.clear();
-                        container.focus_stack.push(container_idx);
-                    }
-                }
-            }
-        }
-        self
-    }
 }
 
 impl<W: LayoutElement> DetachedContainer<W> {
-    pub fn new(layout: Layout, children: Vec<DetachedNode<W>>) -> Self {
+    pub(super) fn new(layout: Layout, children: Vec<DetachedNode<W>>) -> Self {
         let mut container = Self {
             layout,
             children,
@@ -854,7 +742,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Create a new empty container tree
-    pub fn new(
+    pub(super) fn new(
         view_size: Size<f64, Logical>,
         working_area: Rectangle<f64, Logical>,
         scale: f64,
@@ -1181,7 +1069,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Get tile by key (O(1) access).
-    pub fn get_tile(&self, key: NodeKey) -> Option<&Tile<W>> {
+    pub(super) fn get_tile(&self, key: NodeKey) -> Option<&Tile<W>> {
         match self.nodes.get(key)? {
             NodeData::Leaf(tile) => Some(tile),
             _ => None,
@@ -1189,7 +1077,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Get mutable tile by key (O(1) access).
-    pub fn get_tile_mut(&mut self, key: NodeKey) -> Option<&mut Tile<W>> {
+    pub(super) fn get_tile_mut(&mut self, key: NodeKey) -> Option<&mut Tile<W>> {
         match self.nodes.get_mut(key)? {
             NodeData::Leaf(tile) => Some(tile),
             _ => None,
@@ -1223,7 +1111,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     // ========================================================================
 
     /// Check if tree is empty
-    pub fn is_empty(&self) -> bool {
+    pub(super) fn is_empty(&self) -> bool {
         self.root.is_none()
     }
 
@@ -1243,29 +1131,30 @@ impl<W: LayoutElement> ContainerTree<W> {
             .expect("container tree root must exist here")
     }
 
-    pub fn root_is_synthetic_workspace_container(&self) -> bool {
+    pub(super) fn root_is_synthetic_workspace_container(&self) -> bool {
         self.root
             .is_some_and(|root_key| self.is_synthetic_root_container_key(root_key))
     }
 
-    pub fn selected_container_is_root(&self) -> bool {
+    pub(super) fn selected_container_is_root(&self) -> bool {
         self.selected_container_key()
             .is_some_and(|selected_key| Some(selected_key) == self.root)
     }
 
-    pub fn focused_leaf_targets_workspace_layout(&self) -> bool {
+    pub(super) fn focused_leaf_targets_workspace_layout(&self) -> bool {
         let focus_path = self.focus_path();
         focus_path.is_empty()
             || (focus_path.len() == 1 && self.root_is_synthetic_workspace_container())
     }
 
     /// Insert a window into the tree, focusing it afterwards.
-    pub fn insert_window(&mut self, tile: Tile<W>) {
+    #[cfg(test)]
+    pub(super) fn insert_window(&mut self, tile: Tile<W>) {
         self.insert_window_with_focus(tile, true);
     }
 
     /// Insert a window into the tree, optionally focusing it afterwards.
-    pub fn insert_window_with_focus(&mut self, tile: Tile<W>, focus: bool) {
+    pub(super) fn insert_window_with_focus(&mut self, tile: Tile<W>, focus: bool) {
         self.clear_focus_history();
 
         if self.root.is_none() {
@@ -1400,7 +1289,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Insert a detached subtree into the tree, optionally focusing it afterwards.
-    pub fn insert_subtree_with_focus(&mut self, subtree: DetachedNode<W>, focus: bool) {
+    pub(super) fn insert_subtree_with_focus(&mut self, subtree: DetachedNode<W>, focus: bool) {
         self.clear_focus_history();
 
         let node_key = self.insert_subtree(subtree);
@@ -1601,7 +1490,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Find a window by ID and return path to it
-    pub fn find_window(&self, window_id: &W::Id) -> Option<Vec<usize>> {
+    pub(super) fn find_window(&self, window_id: &W::Id) -> Option<Vec<usize>> {
         let root_key = self.root?;
         let mut path = Vec::new();
         self.find_window_in_node(root_key, window_id, &mut path)
@@ -1636,19 +1525,19 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Get the currently focused window
-    pub fn focused_window(&self) -> Option<&W> {
+    pub(super) fn focused_window(&self) -> Option<&W> {
         let key = self.focused_key?;
         self.get_tile(key).map(|tile| tile.window())
     }
 
     /// Get the currently focused window (mutable)
-    pub fn focused_window_mut(&mut self) -> Option<&mut W> {
+    pub(super) fn focused_window_mut(&mut self) -> Option<&mut W> {
         let key = self.focused_key?;
         self.get_tile_mut(key).map(|tile| tile.window_mut())
     }
 
     /// Update view size and working area
-    pub fn set_view_size(
+    pub(super) fn set_view_size(
         &mut self,
         view_size: Size<f64, Logical>,
         working_area: Rectangle<f64, Logical>,
@@ -1658,7 +1547,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Update configuration
-    pub fn update_config(
+    pub(super) fn update_config(
         &mut self,
         view_size: Size<f64, Logical>,
         working_area: Rectangle<f64, Logical>,
@@ -1672,7 +1561,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Count total number of windows in tree
-    pub fn window_count(&self) -> usize {
+    pub(super) fn window_count(&self) -> usize {
         self.root
             .map_or(0, |root_key| self.count_windows_in_node(root_key))
     }
@@ -1691,28 +1580,28 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Access the cached leaf layout information from the last layout pass.
-    pub fn leaf_layouts(&self) -> &[LeafLayoutInfo] {
+    pub(super) fn leaf_layouts(&self) -> &[LeafLayoutInfo] {
         &self.leaf_layouts
     }
 
     /// Clone of the cached leaf layout information
-    pub fn leaf_layouts_cloned(&self) -> Vec<LeafLayoutInfo> {
+    pub(super) fn leaf_layouts_cloned(&self) -> Vec<LeafLayoutInfo> {
         self.leaf_layouts.clone()
     }
 
-    pub fn pending_leaf_layouts(&self) -> Option<&[LeafLayoutInfo]> {
+    pub(super) fn pending_leaf_layouts(&self) -> Option<&[LeafLayoutInfo]> {
         self.pending_layouts
             .as_ref()
             .map(|pending| pending.data.leaf_layouts.as_slice())
     }
 
-    pub fn pending_leaf_layouts_cloned(&self) -> Option<Vec<LeafLayoutInfo>> {
+    pub(super) fn pending_leaf_layouts_cloned(&self) -> Option<Vec<LeafLayoutInfo>> {
         self.pending_layouts
             .as_ref()
             .map(|pending| pending.data.leaf_layouts.clone())
     }
 
-    pub fn set_pending_transaction(&mut self, transaction: Transaction) {
+    pub(super) fn set_pending_transaction(&mut self, transaction: Transaction) {
         self.pending_transaction = Some(transaction);
     }
 
@@ -1823,7 +1712,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Current focus path within the tree.
     /// Uses cached path when generation and focused_key haven't changed.
-    pub fn focus_path(&self) -> Vec<usize> {
+    pub(super) fn focus_path(&self) -> Vec<usize> {
         {
             let cache = self.focus_path_cache.borrow();
             if cache.0 == self.generation && cache.1 == self.focused_key {
@@ -1855,7 +1744,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         path
     }
 
-    pub fn selected_path(&self) -> Vec<usize> {
+    pub(super) fn selected_path(&self) -> Vec<usize> {
         if let Some(key) = self.selected_key {
             if let Some(path) = self.find_node_path(key) {
                 return path;
@@ -1864,7 +1753,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.focus_path()
     }
 
-    pub fn selected_node_key(&self) -> Option<NodeKey> {
+    pub(super) fn selected_node_key(&self) -> Option<NodeKey> {
         if let Some(key) = self.selected_key {
             if self.get_node(key).is_some() {
                 return Some(key);
@@ -1881,17 +1770,17 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.root
     }
 
-    pub fn selected_is_container(&self) -> bool {
+    pub(super) fn selected_is_container(&self) -> bool {
         self.selected_key
             .is_some_and(|key| matches!(self.get_node(key), Some(NodeData::Container(_))))
     }
 
-    pub fn selected_container_key(&self) -> Option<NodeKey> {
+    pub(super) fn selected_container_key(&self) -> Option<NodeKey> {
         let key = self.selected_key?;
         matches!(self.get_node(key), Some(NodeData::Container(_))).then_some(key)
     }
 
-    pub fn set_selected_container_key(&mut self, key: NodeKey) -> bool {
+    pub(super) fn set_selected_container_key(&mut self, key: NodeKey) -> bool {
         if matches!(self.get_node(key), Some(NodeData::Container(_))) {
             self.selected_key = Some(key);
             true
@@ -1900,7 +1789,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    pub fn select_container_at_path(&mut self, path: &[usize]) -> bool {
+    pub(super) fn select_container_at_path(&mut self, path: &[usize]) -> bool {
         let Some(key) = self.node_key_for_path_or_root(path) else {
             return false;
         };
@@ -1912,11 +1801,11 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    pub fn clear_selection(&mut self) {
+    pub(super) fn clear_selection(&mut self) {
         self.selected_key = None;
     }
 
-    pub fn select_root_container(&mut self) -> bool {
+    pub(super) fn select_root_container(&mut self) -> bool {
         let Some(root_key) = self.root else {
             return false;
         };
@@ -1933,7 +1822,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// A selected top-level tiling container resolves through the implicit
     /// workspace parent, so the root is wrapped and the previous selection is
     /// preserved as command context.
-    pub fn set_layout_for_selected_container(&mut self, layout: Layout) -> bool {
+    pub(super) fn set_layout_for_selected_container(&mut self, layout: Layout) -> bool {
         let Some(selected_key) = self.selected_container_key() else {
             return false;
         };
@@ -1982,7 +1871,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         true
     }
 
-    pub fn set_root_container_layout(&mut self, layout: Layout) -> bool {
+    pub(super) fn set_root_container_layout(&mut self, layout: Layout) -> bool {
         let Some(root_key) = self.root else {
             return false;
         };
@@ -2048,7 +1937,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    pub fn select_parent(&mut self) -> bool {
+    pub(super) fn select_parent(&mut self) -> bool {
         let base_key = self
             .selected_key
             .or(self.focused_key)
@@ -2063,7 +1952,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         true
     }
 
-    pub fn select_child(&mut self) -> bool {
+    pub(super) fn select_child(&mut self) -> bool {
         let Some(selected_key) = self.selected_key else {
             return false;
         };
@@ -2078,13 +1967,13 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Focused tile (if any).
-    pub fn focused_tile(&self) -> Option<&Tile<W>> {
+    pub(super) fn focused_tile(&self) -> Option<&Tile<W>> {
         let key = self.focused_key.or_else(|| self.first_leaf_key())?;
         self.get_tile(key)
     }
 
     /// Focused tile (mutable) if any.
-    pub fn focused_tile_mut(&mut self) -> Option<&mut Tile<W>> {
+    pub(super) fn focused_tile_mut(&mut self) -> Option<&mut Tile<W>> {
         let key = self.focused_key.or_else(|| self.first_leaf_key())?;
         self.get_tile_mut(key)
     }
@@ -2126,29 +2015,29 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    pub fn set_pending_layout(&mut self, layout: Layout) {
+    pub(super) fn set_pending_layout(&mut self, layout: Layout) {
         self.pending_layout = Some(layout);
         // External layout hints (workspace parity plumbing) should be consumable by
         // the next split command on a single root leaf.
         self.pending_layout_wrap_on_split = true;
     }
 
-    pub fn set_workspace_layout_hint(&mut self, layout: Layout) {
+    pub(super) fn set_workspace_layout_hint(&mut self, layout: Layout) {
         self.pending_layout = Some(layout);
         self.pending_layout_wrap_on_split = false;
     }
 
-    pub fn clear_pending_layout(&mut self) {
+    pub(super) fn clear_pending_layout(&mut self) {
         self.pending_layout = None;
         self.pending_layout_wrap_on_split = false;
     }
 
-    pub fn take_pending_relayout(&mut self) -> bool {
+    pub(super) fn take_pending_relayout(&mut self) -> bool {
         std::mem::take(&mut self.pending_relayout)
     }
 
     /// Get all windows in the tree (depth-first traversal)
-    pub fn all_windows(&self) -> Vec<&W> {
+    pub(super) fn all_windows(&self) -> Vec<&W> {
         let mut windows = Vec::new();
         if let Some(root_key) = self.root {
             self.collect_windows_from_node(root_key, &mut windows);
@@ -2172,7 +2061,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Get window IDs under the subtree at `path` (depth-first traversal).
     ///
     /// An empty `path` means the whole tree.
-    pub fn window_ids_under_path(&self, path: &[usize]) -> Vec<W::Id> {
+    pub(super) fn window_ids_under_path(&self, path: &[usize]) -> Vec<W::Id> {
         let mut ids = Vec::new();
         let node_key = if path.is_empty() {
             self.root
@@ -2199,7 +2088,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Get all tiles in the tree (depth-first traversal)
-    pub fn all_tiles(&self) -> Vec<&Tile<W>> {
+    pub(super) fn all_tiles(&self) -> Vec<&Tile<W>> {
         let mut tiles = Vec::new();
         if let Some(root_key) = self.root {
             self.collect_tiles_from_node(root_key, &mut tiles);
@@ -2220,7 +2109,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    pub fn tab_bar_layouts(&self) -> Vec<TabBarInfo> {
+    pub(super) fn tab_bar_layouts(&self) -> Vec<TabBarInfo> {
         let mut out = Vec::new();
         let Some(root_key) = self.root else {
             return out;
@@ -2286,7 +2175,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    pub fn window_for_tab(&self, container_path: &[usize], tab_idx: usize) -> Option<&W> {
+    pub(super) fn window_for_tab(&self, container_path: &[usize], tab_idx: usize) -> Option<&W> {
         let key = if container_path.is_empty() {
             self.root?
         } else {
@@ -2341,7 +2230,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Collect raw pointers to tiles (immutable) in depth-first order.
-    pub fn tile_ptrs(&self) -> Vec<*const Tile<W>> {
+    pub(super) fn tile_ptrs(&self) -> Vec<*const Tile<W>> {
         let mut tiles = Vec::new();
         if let Some(root_key) = self.root {
             self.collect_tile_ptrs(root_key, &mut tiles);
@@ -2362,7 +2251,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Collect raw pointers to tiles (mutable) in depth-first order.
-    pub fn tile_ptrs_mut(&mut self) -> Vec<*mut Tile<W>> {
+    pub(super) fn tile_ptrs_mut(&mut self) -> Vec<*mut Tile<W>> {
         let mut tiles = Vec::new();
         if let Some(root_key) = self.root {
             self.collect_tile_ptrs_mut(root_key, &mut tiles);
@@ -2385,13 +2274,13 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Helper: get tile at a given path (immutable).
-    pub fn tile_at_path(&self, path: &[usize]) -> Option<&Tile<W>> {
+    pub(super) fn tile_at_path(&self, path: &[usize]) -> Option<&Tile<W>> {
         let key = self.get_node_key_at_path(path)?;
         self.get_tile(key)
     }
 
     /// Helper: get tile at a given path (mutable).
-    pub fn tile_at_path_mut(&mut self, path: &[usize]) -> Option<&mut Tile<W>> {
+    pub(super) fn tile_at_path_mut(&mut self, path: &[usize]) -> Option<&mut Tile<W>> {
         let key = self.get_node_key_at_path(path)?;
         self.get_tile_mut(key)
     }
@@ -2401,12 +2290,12 @@ impl<W: LayoutElement> ContainerTree<W> {
     // ========================================================================
 
     /// Move focus in a direction
-    pub fn focus_in_direction(&mut self, direction: Direction) -> bool {
+    pub(super) fn focus_in_direction(&mut self, direction: Direction) -> bool {
         self.focus_in_direction_internal(direction, true)
     }
 
     /// Move focus in a direction without wrapping at container boundaries.
-    pub fn focus_in_direction_no_wrap(&mut self, direction: Direction) -> bool {
+    pub(super) fn focus_in_direction_no_wrap(&mut self, direction: Direction) -> bool {
         self.focus_in_direction_internal(direction, false)
     }
 
@@ -2506,7 +2395,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Focus window by its ID if present.
-    pub fn focus_window_by_id(&mut self, window_id: &W::Id) -> bool {
+    pub(super) fn focus_window_by_id(&mut self, window_id: &W::Id) -> bool {
         self.clear_focus_history();
         let Some(path) = self.find_window(window_id) else {
             return false;
@@ -2518,7 +2407,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         true
     }
 
-    pub fn focus_parent(&mut self) -> bool {
+    #[cfg(test)]
+    pub(super) fn focus_parent(&mut self) -> bool {
         self.clear_focus_history();
         let Some(focused_key) = self.focused_key else {
             return false;
@@ -2530,7 +2420,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         true
     }
 
-    pub fn focus_child(&mut self) -> bool {
+    #[cfg(test)]
+    pub(super) fn focus_child(&mut self) -> bool {
         self.clear_focus_history();
         let Some(focused_key) = self.focused_key else {
             return false;
@@ -2574,7 +2465,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     // ========================================================================
 
     /// Remove a window by ID, returns the removed tile
-    pub fn remove_window(&mut self, window_id: &W::Id) -> Option<Tile<W>> {
+    pub(super) fn remove_window(&mut self, window_id: &W::Id) -> Option<Tile<W>> {
         let path = self.find_window(window_id)?;
         let node_key = self.get_node_key_at_path(&path)?;
         let cleanup_key = self.parent_of(node_key);
@@ -2668,7 +2559,8 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Move the current command target in a direction.
-    pub fn move_in_direction(&mut self, direction: Direction) -> bool {
+    #[cfg(test)]
+    pub(super) fn move_in_direction(&mut self, direction: Direction) -> bool {
         self.move_target_in_direction(
             direction,
             self.command_target(RootPolicy::MaterialContainer),
@@ -2853,9 +2745,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                 self.selected_key = Some(node_key);
             }
             return true;
-        }
-
-        if !layout_matches {
+        } else {
             let mut ancestor_path = node_parent_path.to_vec();
             while !ancestor_path.is_empty() {
                 let ancestor_parent_path = &ancestor_path[..ancestor_path.len() - 1];
@@ -3005,7 +2895,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Wrap the root container into a SplitH parent so sibling insertions can
     /// target the root as a first-class container.
-    pub fn wrap_root_for_sibling_insert(&mut self) -> bool {
+    pub(super) fn wrap_root_for_sibling_insert(&mut self) -> bool {
         let Some(root_key) = self.root else {
             return false;
         };
@@ -3019,7 +2909,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Apply a workspace-level layout change by keeping the synthetic root as
     /// the workspace node and moving its current children under an explicit
     /// wrapper with the old layout.
-    pub fn wrap_synthetic_root_children_for_workspace_layout(&mut self, layout: Layout) -> bool {
+    pub(super) fn wrap_synthetic_root_children_for_workspace_layout(&mut self, layout: Layout) -> bool {
         let Some(root_key) = self.root else {
             return false;
         };
@@ -3075,7 +2965,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         true
     }
 
-    pub fn collapse_redundant_root_single_child_split(&mut self) -> bool {
+    pub(super) fn collapse_redundant_root_single_child_split(&mut self) -> bool {
         let mut changed = false;
 
         while let Some(root_key) = self.root {
@@ -3326,7 +3216,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Split a material root container, preserving selected command context on
     /// the original root node.
-    pub fn split_root_container(&mut self, layout: Layout) -> bool {
+    pub(super) fn split_root_container(&mut self, layout: Layout) -> bool {
         self.clear_focus_history();
         let Some(root_key) = self.root else {
             return false;
@@ -3345,7 +3235,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Split the focused container in a direction
-    pub fn split_focused(&mut self, layout: Layout) -> bool {
+    pub(super) fn split_focused(&mut self, layout: Layout) -> bool {
         self.clear_focus_history();
         if self.root.is_none() {
             self.pending_layout = Some(layout);
@@ -3358,10 +3248,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         // Special case: if root is a leaf, wrap it in a container immediately.
         if focus_path.is_empty() {
             return self.ensure_root_container_with_layout(layout);
-        }
-
-        if focus_path.is_empty() {
-            return false;
         }
 
         let parent_path = &focus_path[..focus_path.len() - 1];
@@ -3448,7 +3334,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Change layout of focused container
-    pub fn set_focused_layout(&mut self, layout: Layout) -> bool {
+    pub(super) fn set_focused_layout(&mut self, layout: Layout) -> bool {
         if self.root.is_none() {
             self.pending_layout = Some(layout);
             self.pending_layout_wrap_on_split = false;
@@ -3555,7 +3441,8 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Toggle between horizontal and vertical split for the focused container.
-    pub fn toggle_split_layout(&mut self) -> bool {
+    #[cfg(test)]
+    pub(super) fn toggle_split_layout(&mut self) -> bool {
         let target = self.command_target(RootPolicy::MaterialContainer);
         self.toggle_split_for_target(target, RootPolicy::MaterialContainer)
     }
@@ -3609,7 +3496,8 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Cycle focused container layout in sway-style order:
     /// SplitH -> SplitV -> Stacked -> Tabbed -> SplitH.
-    pub fn toggle_layout_all(&mut self) -> bool {
+    #[cfg(test)]
+    pub(super) fn toggle_layout_all(&mut self) -> bool {
         let target = self.command_target(RootPolicy::MaterialContainer);
         self.toggle_layout_all_for_target(target, RootPolicy::MaterialContainer)
     }
@@ -3659,7 +3547,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Layout of the container that currently owns the focused leaf (if any).
-    pub fn focused_layout(&self) -> Option<Layout> {
+    pub(super) fn focused_layout(&self) -> Option<Layout> {
         let focus_path = self.focus_path();
         if focus_path.is_empty() {
             let root_key = self.root?;
@@ -3676,7 +3564,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Whether the focused container should accept new splits.
-    pub fn focused_container_allows_splits(&self) -> bool {
+    pub(super) fn focused_container_allows_splits(&self) -> bool {
         let focus_path = self.focus_path();
         let container_key = if focus_path.is_empty() {
             let root_key = match self.root {
@@ -3713,7 +3601,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     // Query methods
     // ========================================================================
 
-    pub fn container_info(
+    pub(super) fn container_info(
         &self,
         path: &[usize],
     ) -> Option<(Layout, Rectangle<f64, Logical>, usize)> {
@@ -3731,7 +3619,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         ))
     }
 
-    pub fn container_is_meaningful_parent(&self, path: &[usize]) -> Option<bool> {
+    pub(super) fn container_is_meaningful_parent(&self, path: &[usize]) -> Option<bool> {
         let container_key = if path.is_empty() {
             self.root?
         } else {
@@ -3742,7 +3630,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         Some(container.child_count() > 1 || container.preserve_on_single())
     }
 
-    pub fn child_rect_at(
+    pub(super) fn child_rect_at(
         &self,
         parent_path: &[usize],
         child_idx: usize,
@@ -3775,7 +3663,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         Some(rect)
     }
 
-    pub fn find_parent_with_layout(
+    pub(super) fn find_parent_with_layout(
         &self,
         mut path: Vec<usize>,
         layout: Layout,
@@ -3802,7 +3690,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         None
     }
 
-    pub fn child_percent_at(&self, parent_path: &[usize], child_idx: usize) -> Option<f64> {
+    pub(super) fn child_percent_at(&self, parent_path: &[usize], child_idx: usize) -> Option<f64> {
         let container_key = if parent_path.is_empty() {
             self.root?
         } else {
@@ -3817,7 +3705,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         Some(container.child_percent(child_idx))
     }
 
-    pub fn set_child_percent_at(
+    pub(super) fn set_child_percent_at(
         &mut self,
         parent_path: &[usize],
         child_idx: usize,
@@ -3847,7 +3735,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    pub fn set_child_percent_pair_at(
+    pub(super) fn set_child_percent_pair_at(
         &mut self,
         parent_path: &[usize],
         child_idx: usize,
@@ -3880,7 +3768,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    pub fn container_at_path_mut(&mut self, path: &[usize]) -> Option<&mut ContainerData> {
+    pub(super) fn container_at_path_mut(&mut self, path: &[usize]) -> Option<&mut ContainerData> {
         let key = if path.is_empty() {
             self.root?
         } else {
@@ -3894,7 +3782,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     // ========================================================================
 
     /// Number of root-level children (columns).
-    pub fn root_children_len(&self) -> usize {
+    pub(super) fn root_children_len(&self) -> usize {
         let root_key = match self.root {
             Some(key) => key,
             None => return 0,
@@ -3907,58 +3795,13 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    pub fn root_container(&self) -> Option<&ContainerData> {
+    pub(super) fn root_container(&self) -> Option<&ContainerData> {
         let root_key = self.root?;
         self.get_container(root_key)
     }
 
-    pub fn root_container_mut(&mut self) -> Option<&mut ContainerData> {
-        let root_key = self.root?;
-        self.get_container_mut(root_key)
-    }
-
-    /// Current percent of a root child relative to the root container, if any.
-    pub fn root_child_percent(&self, idx: usize) -> Option<f64> {
-        let root_key = self.root?;
-        match self.get_node(root_key) {
-            Some(NodeData::Container(container)) => {
-                if idx >= container.children.len() {
-                    None
-                } else {
-                    Some(container.child_percent(idx))
-                }
-            }
-            Some(NodeData::Leaf(_)) => {
-                if idx == 0 {
-                    Some(1.0)
-                } else {
-                    None
-                }
-            }
-            None => None,
-        }
-    }
-
-    /// Set the percent of a root child.
-    pub fn set_root_child_percent(&mut self, idx: usize, percent: f64) -> bool {
-        let root_key = match self.root {
-            Some(key) => key,
-            None => return false,
-        };
-
-        if let Some(container) = self.get_container_mut(root_key) {
-            if idx >= container.children.len() {
-                return false;
-            }
-            container.set_child_percent(idx, percent);
-            true
-        } else {
-            false
-        }
-    }
-
     /// Index of currently focused root child, if any.
-    pub fn focused_root_index(&self) -> Option<usize> {
+    pub(super) fn focused_root_index(&self) -> Option<usize> {
         let root_key = self.root?;
         if let Some(key) = self.focused_key {
             if key == root_key {
@@ -3988,7 +3831,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Focus root child at index, descending to the first leaf.
-    pub fn focus_root_child(&mut self, idx: usize) -> bool {
+    pub(super) fn focus_root_child(&mut self, idx: usize) -> bool {
         self.clear_focus_history();
         let root_key = match self.root {
             Some(key) => key,
@@ -4021,7 +3864,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Move a root child from one index to another
-    pub fn move_root_child(&mut self, from: usize, to: usize) -> bool {
+    pub(super) fn move_root_child(&mut self, from: usize, to: usize) -> bool {
         self.clear_focus_history();
         let root_key = match self.root {
             Some(key) => key,
@@ -4127,7 +3970,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Remove and return the root-level child at the given index as a detached subtree.
-    pub fn take_root_child_subtree(&mut self, idx: usize) -> Option<DetachedNode<W>> {
+    pub(super) fn take_root_child_subtree(&mut self, idx: usize) -> Option<DetachedNode<W>> {
         let root_key = self.root?;
 
         match self.get_node(root_key) {
@@ -4189,20 +4032,14 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    /// Remove and return the root-level child at the given index as a vector of tiles.
-    pub fn take_root_child_tiles(&mut self, idx: usize) -> Option<Vec<Tile<W>>> {
-        self.take_root_child_subtree(idx)
-            .map(|subtree| subtree.into_tiles())
-    }
-
     /// Insert a detached subtree at root level.
-    pub fn insert_subtree_at_root(&mut self, index: usize, subtree: DetachedNode<W>, focus: bool) {
+    pub(super) fn insert_subtree_at_root(&mut self, index: usize, subtree: DetachedNode<W>, focus: bool) {
         let node_key = self.insert_subtree(subtree);
         self.insert_key_at_root(index, node_key, focus);
     }
 
     /// Focus nth (1-based) leaf within the given root child.
-    pub fn focus_leaf_in_root_child(&mut self, child_idx: usize, leaf_idx: usize) -> bool {
+    pub(super) fn focus_leaf_in_root_child(&mut self, child_idx: usize, leaf_idx: usize) -> bool {
         self.clear_focus_history();
         if leaf_idx == 0 {
             return false;
@@ -4224,7 +4061,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Focus the first leaf in the currently focused root child.
-    pub fn focus_top_in_current_column(&mut self) -> bool {
+    pub(super) fn focus_top_in_current_column(&mut self) -> bool {
         let idx = match self.focused_root_index() {
             Some(idx) => idx,
             None => return false,
@@ -4233,7 +4070,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Focus the last leaf in the currently focused root child.
-    pub fn focus_bottom_in_current_column(&mut self) -> bool {
+    pub(super) fn focus_bottom_in_current_column(&mut self) -> bool {
         let idx = match self.focused_root_index() {
             Some(idx) => idx,
             None => return false,
@@ -4251,7 +4088,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Collect leaf paths under a given prefix path.
-    pub fn leaf_paths_under(&self, prefix: &[usize]) -> Vec<Vec<usize>> {
+    pub(super) fn leaf_paths_under(&self, prefix: &[usize]) -> Vec<Vec<usize>> {
         let mut results = Vec::new();
         let mut path = prefix.to_vec();
         if let Some(node_key) = self.get_node_key_at_path(prefix) {
@@ -4283,40 +4120,11 @@ impl<W: LayoutElement> ContainerTree<W> {
     // Insertion methods
     // ========================================================================
 
-    /// Insert multiple tiles as a column (vertical container) at root level
-    pub fn insert_tiles_at_root(&mut self, index: usize, tiles: Vec<Tile<W>>, focus: bool) {
-        if tiles.is_empty() {
-            return;
-        }
-
-        // If only one tile, insert it directly
-        if tiles.len() == 1 {
-            let tile = tiles.into_iter().next().unwrap();
-            self.insert_leaf_at(index, tile, focus);
-            return;
-        }
-
-        // Create a vertical container with all tiles
-        let mut container = ContainerData::new(Layout::SplitV);
-        let mut tile_keys = Vec::new();
-        for tile in tiles {
-            let tile_key = self.insert_node(NodeData::Leaf(tile));
-            container.add_child(tile_key);
-            tile_keys.push(tile_key);
-        }
-
-        let container_key = self.insert_node(NodeData::Container(container));
-        for tile_key in tile_keys {
-            self.set_parent(tile_key, Some(container_key));
-        }
-        self.insert_key_at_root(index, container_key, focus);
-    }
-
-    pub fn append_leaf(&mut self, tile: Tile<W>, focus: bool) {
+    pub(super) fn append_leaf(&mut self, tile: Tile<W>, focus: bool) {
         self.insert_leaf_at(self.root_children_len(), tile, focus);
     }
 
-    pub fn insert_leaf_at(&mut self, index: usize, tile: Tile<W>, focus: bool) {
+    pub(super) fn insert_leaf_at(&mut self, index: usize, tile: Tile<W>, focus: bool) {
         let tile_key = self.insert_node(NodeData::Leaf(tile));
         self.insert_key_at_root(index, tile_key, focus);
     }
@@ -4353,7 +4161,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    pub fn insert_leaf_after(&mut self, window_id: &W::Id, tile: Tile<W>, focus: bool) -> bool {
+    pub(super) fn insert_leaf_after(&mut self, window_id: &W::Id, tile: Tile<W>, focus: bool) -> bool {
         let path = match self.find_window(window_id) {
             Some(path) => path,
             None => {
@@ -4401,7 +4209,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         false
     }
 
-    pub fn insert_leaf_in_root_container(
+    pub(super) fn insert_leaf_in_root_container(
         &mut self,
         root_idx: usize,
         tile_idx: Option<usize>,
@@ -4494,16 +4302,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.set_parent(tile_key, Some(root_child_key));
 
         true
-    }
-
-    pub fn insert_leaf_in_column(
-        &mut self,
-        column_idx: usize,
-        tile_idx: Option<usize>,
-        tile: Tile<W>,
-        focus: bool,
-    ) -> bool {
-        self.insert_leaf_in_root_container(column_idx, tile_idx, tile, focus)
     }
 
     pub(super) fn insert_parent_info_for_window(
@@ -4927,7 +4725,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         true
     }
 
-    pub fn insert_leaf_split(
+    pub(super) fn insert_leaf_split(
         &mut self,
         target_path: &[usize],
         direction: Direction,
@@ -5090,7 +4888,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         true
     }
 
-    pub fn insert_leaf_split_root(
+    pub(super) fn insert_leaf_split_root(
         &mut self,
         direction: Direction,
         tile: Tile<W>,
