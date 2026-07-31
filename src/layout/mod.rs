@@ -2218,6 +2218,17 @@ impl<W: LayoutElement> Layout<W> {
         Some(&mut monitors[*active_monitor_idx])
     }
 
+    /// Run a focus command on the active workspace. Sticky focus is dropped first and the
+    /// seat focus chain re-recorded afterwards, so individual commands cannot forget either.
+    fn with_active_workspace_focus<R>(&mut self, f: impl FnOnce(&mut Workspace<W>) -> R) {
+        self.clear_sticky_focus();
+        let Some(workspace) = self.active_workspace_mut() else {
+            return;
+        };
+        let _ = f(workspace);
+        self.seat_focus_record_active_chain();
+    }
+
     fn clear_sticky_focus(&mut self) {
         if let Some(mon) = self.active_monitor() {
             mon.clear_sticky_focus();
@@ -2711,6 +2722,9 @@ impl<W: LayoutElement> Layout<W> {
         self.monitors().map(|mon| &mon.output)
     }
 
+    // Unlike the focus_* family, directional moves don't re-record the seat focus chain:
+    // the focused window itself doesn't change, and the chain is re-derived on the next
+    // focus command.
     pub fn move_left(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
@@ -2895,66 +2909,31 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn focus_left(&mut self) {
-        self.clear_sticky_focus();
-        let Some(workspace) = self.active_workspace_mut() else {
-            return;
-        };
-        workspace.focus_left();
-        self.seat_focus_record_active_chain();
+        self.with_active_workspace_focus(|ws| ws.focus_left());
     }
 
     pub fn focus_right(&mut self) {
-        self.clear_sticky_focus();
-        let Some(workspace) = self.active_workspace_mut() else {
-            return;
-        };
-        workspace.focus_right();
-        self.seat_focus_record_active_chain();
+        self.with_active_workspace_focus(|ws| ws.focus_right());
     }
 
     pub fn focus_root_container_first(&mut self) {
-        self.clear_sticky_focus();
-        let Some(workspace) = self.active_workspace_mut() else {
-            return;
-        };
-        workspace.focus_root_container_first();
-        self.seat_focus_record_active_chain();
+        self.with_active_workspace_focus(|ws| ws.focus_root_container_first());
     }
 
     pub fn focus_root_container_last(&mut self) {
-        self.clear_sticky_focus();
-        let Some(workspace) = self.active_workspace_mut() else {
-            return;
-        };
-        workspace.focus_root_container_last();
-        self.seat_focus_record_active_chain();
+        self.with_active_workspace_focus(|ws| ws.focus_root_container_last());
     }
 
     pub fn focus_root_container_right_or_first(&mut self) {
-        self.clear_sticky_focus();
-        let Some(workspace) = self.active_workspace_mut() else {
-            return;
-        };
-        workspace.focus_column_right_or_first();
-        self.seat_focus_record_active_chain();
+        self.with_active_workspace_focus(|ws| ws.focus_column_right_or_first());
     }
 
     pub fn focus_root_container_left_or_last(&mut self) {
-        self.clear_sticky_focus();
-        let Some(workspace) = self.active_workspace_mut() else {
-            return;
-        };
-        workspace.focus_column_left_or_last();
-        self.seat_focus_record_active_chain();
+        self.with_active_workspace_focus(|ws| ws.focus_column_left_or_last());
     }
 
     pub fn focus_root_container(&mut self, index: usize) {
-        self.clear_sticky_focus();
-        let Some(workspace) = self.active_workspace_mut() else {
-            return;
-        };
-        workspace.focus_root_container(index);
-        self.seat_focus_record_active_chain();
+        self.with_active_workspace_focus(|ws| ws.focus_root_container(index));
     }
 
     pub fn focus_column_first(&mut self) {
@@ -3042,66 +3021,31 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn focus_window_in_column(&mut self, index: u8) {
-        self.clear_sticky_focus();
-        let Some(workspace) = self.active_workspace_mut() else {
-            return;
-        };
-        workspace.focus_window_in_column(index);
-        self.seat_focus_record_active_chain();
+        self.with_active_workspace_focus(|ws| ws.focus_window_in_column(index));
     }
 
     pub fn focus_down(&mut self) {
-        self.clear_sticky_focus();
-        let Some(workspace) = self.active_workspace_mut() else {
-            return;
-        };
-        workspace.focus_down();
-        self.seat_focus_record_active_chain();
+        self.with_active_workspace_focus(|ws| ws.focus_down());
     }
 
     pub fn focus_up(&mut self) {
-        self.clear_sticky_focus();
-        let Some(workspace) = self.active_workspace_mut() else {
-            return;
-        };
-        workspace.focus_up();
-        self.seat_focus_record_active_chain();
+        self.with_active_workspace_focus(|ws| ws.focus_up());
     }
 
     pub fn focus_down_or_left(&mut self) {
-        self.clear_sticky_focus();
-        let Some(workspace) = self.active_workspace_mut() else {
-            return;
-        };
-        workspace.focus_down_or_left();
-        self.seat_focus_record_active_chain();
+        self.with_active_workspace_focus(|ws| ws.focus_down_or_left());
     }
 
     pub fn focus_down_or_right(&mut self) {
-        self.clear_sticky_focus();
-        let Some(workspace) = self.active_workspace_mut() else {
-            return;
-        };
-        workspace.focus_down_or_right();
-        self.seat_focus_record_active_chain();
+        self.with_active_workspace_focus(|ws| ws.focus_down_or_right());
     }
 
     pub fn focus_up_or_left(&mut self) {
-        self.clear_sticky_focus();
-        let Some(workspace) = self.active_workspace_mut() else {
-            return;
-        };
-        workspace.focus_up_or_left();
-        self.seat_focus_record_active_chain();
+        self.with_active_workspace_focus(|ws| ws.focus_up_or_left());
     }
 
     pub fn focus_up_or_right(&mut self) {
-        self.clear_sticky_focus();
-        let Some(workspace) = self.active_workspace_mut() else {
-            return;
-        };
-        workspace.focus_up_or_right();
-        self.seat_focus_record_active_chain();
+        self.with_active_workspace_focus(|ws| ws.focus_up_or_right());
     }
 
     pub fn focus_window_or_workspace_down(&mut self) {
@@ -3129,39 +3073,19 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn focus_window_top(&mut self) {
-        self.clear_sticky_focus();
-        let Some(workspace) = self.active_workspace_mut() else {
-            return;
-        };
-        workspace.focus_window_top();
-        self.seat_focus_record_active_chain();
+        self.with_active_workspace_focus(|ws| ws.focus_window_top());
     }
 
     pub fn focus_window_bottom(&mut self) {
-        self.clear_sticky_focus();
-        let Some(workspace) = self.active_workspace_mut() else {
-            return;
-        };
-        workspace.focus_window_bottom();
-        self.seat_focus_record_active_chain();
+        self.with_active_workspace_focus(|ws| ws.focus_window_bottom());
     }
 
     pub fn focus_window_down_or_top(&mut self) {
-        self.clear_sticky_focus();
-        let Some(workspace) = self.active_workspace_mut() else {
-            return;
-        };
-        workspace.focus_window_down_or_top();
-        self.seat_focus_record_active_chain();
+        self.with_active_workspace_focus(|ws| ws.focus_window_down_or_top());
     }
 
     pub fn focus_window_up_or_bottom(&mut self) {
-        self.clear_sticky_focus();
-        let Some(workspace) = self.active_workspace_mut() else {
-            return;
-        };
-        workspace.focus_window_up_or_bottom();
-        self.seat_focus_record_active_chain();
+        self.with_active_workspace_focus(|ws| ws.focus_window_up_or_bottom());
     }
 
     pub fn move_to_workspace_up(&mut self, focus: bool) {

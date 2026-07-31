@@ -230,13 +230,6 @@ enum FloatingActive {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CommandContext {
-    Tiling,
-    Floating,
-    Workspace,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CommandTarget {
     TilingWindow,
     TilingContainer,
@@ -248,7 +241,7 @@ enum CommandTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CommandFamily {
     Focus,
-    Split,
+    /// Split and layout commands route identically.
     Layout,
     MoveDirectional,
     MoveContainer,
@@ -264,7 +257,6 @@ enum RouteDomain {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ResolvedCommandRoute {
     command_target: CommandTarget,
-    command_context: CommandContext,
     default_domain: RouteDomain,
     floating_workspace_container_selected: bool,
 }
@@ -301,13 +293,13 @@ impl FloatingActive {
 }
 
 impl CommandTarget {
-    fn command_context(self) -> CommandContext {
+    fn domain(self) -> RouteDomain {
         match self {
-            CommandTarget::TilingWindow | CommandTarget::TilingContainer => CommandContext::Tiling,
+            CommandTarget::TilingWindow | CommandTarget::TilingContainer => RouteDomain::Tiling,
             CommandTarget::FloatingWindow | CommandTarget::FloatingContainer => {
-                CommandContext::Floating
+                RouteDomain::Floating
             }
-            CommandTarget::Workspace => CommandContext::Workspace,
+            CommandTarget::Workspace => RouteDomain::Workspace,
         }
     }
 
@@ -328,16 +320,9 @@ impl CommandTarget {
 
 impl ResolvedCommandRoute {
     fn new(command_target: CommandTarget, floating_workspace_container_selected: bool) -> Self {
-        let command_context = command_target.command_context();
-        let default_domain = match command_context {
-            CommandContext::Tiling => RouteDomain::Tiling,
-            CommandContext::Floating => RouteDomain::Floating,
-            CommandContext::Workspace => RouteDomain::Workspace,
-        };
         Self {
             command_target,
-            command_context,
-            default_domain,
+            default_domain: command_target.domain(),
             floating_workspace_container_selected: matches!(
                 command_target,
                 CommandTarget::Workspace
@@ -349,7 +334,7 @@ impl ResolvedCommandRoute {
         if self.floating_workspace_container_selected {
             return match family {
                 CommandFamily::Focus => RouteDomain::Workspace,
-                CommandFamily::Split | CommandFamily::Layout => RouteDomain::Floating,
+                CommandFamily::Layout => RouteDomain::Floating,
                 CommandFamily::MoveDirectional | CommandFamily::MoveContainer => {
                     self.default_domain
                 }
@@ -360,8 +345,7 @@ impl ResolvedCommandRoute {
     }
 
     fn preserves_floating_workspace_context_for_family(self, family: CommandFamily) -> bool {
-        self.floating_workspace_container_selected
-            && matches!(family, CommandFamily::Split | CommandFamily::Layout)
+        self.floating_workspace_container_selected && family == CommandFamily::Layout
     }
 }
 
@@ -849,6 +833,34 @@ impl<W: LayoutElement> Workspace<W> {
                 true
             }
             RouteDomain::Tiling => tiling(&mut self.tiling),
+        }
+    }
+
+    /// Route by the active layer only, ignoring workspace focus elevation: these commands
+    /// resolve their own target inside the layer (i3 falls back to the focused leaf).
+    fn dispatch_active_layer<R>(
+        &mut self,
+        floating: impl FnOnce(&mut FloatingSpace<W>) -> R,
+        tiling: impl FnOnce(&mut TilingSpace<W>) -> R,
+    ) -> R {
+        if self.floating_is_active.get() {
+            floating(&mut self.floating)
+        } else {
+            tiling(&mut self.tiling)
+        }
+    }
+
+    /// Route by the layer `window` lives in, defaulting to the active layer for `None`.
+    fn dispatch_for_window<R>(
+        &mut self,
+        window: Option<&W::Id>,
+        floating: impl FnOnce(&mut FloatingSpace<W>) -> R,
+        tiling: impl FnOnce(&mut TilingSpace<W>) -> R,
+    ) -> R {
+        if self.is_floating_target(window) {
+            floating(&mut self.floating)
+        } else {
+            tiling(&mut self.tiling)
         }
     }
 
@@ -1764,29 +1776,29 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn focus_root_container_first(&mut self) {
-        match self.command_target() {
-            CommandTarget::Workspace => {}
-            CommandTarget::FloatingWindow | CommandTarget::FloatingContainer => {
-                self.floating.focus_leftmost();
-            }
-            CommandTarget::TilingWindow | CommandTarget::TilingContainer => {
-                self.tiling.focus_root_container_first();
-                self.sync_tiling_focus_context_from_tiling();
-            }
-        }
+        self.dispatch_focus(
+            |f| {
+                f.focus_leftmost();
+                true
+            },
+            |t| {
+                t.focus_root_container_first();
+                true
+            },
+        );
     }
 
     pub fn focus_root_container_last(&mut self) {
-        match self.command_target() {
-            CommandTarget::Workspace => {}
-            CommandTarget::FloatingWindow | CommandTarget::FloatingContainer => {
-                self.floating.focus_rightmost();
-            }
-            CommandTarget::TilingWindow | CommandTarget::TilingContainer => {
-                self.tiling.focus_root_container_last();
-                self.sync_tiling_focus_context_from_tiling();
-            }
-        }
+        self.dispatch_focus(
+            |f| {
+                f.focus_rightmost();
+                true
+            },
+            |t| {
+                t.focus_root_container_last();
+                true
+            },
+        );
     }
 
     pub fn focus_column_right_or_first(&mut self) {
@@ -1842,81 +1854,81 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn focus_down_or_left(&mut self) {
-        match self.command_target() {
-            CommandTarget::Workspace => {}
-            CommandTarget::FloatingWindow | CommandTarget::FloatingContainer => {
-                self.floating.focus_down();
-            }
-            CommandTarget::TilingWindow | CommandTarget::TilingContainer => {
-                self.tiling.focus_down_or_left();
-                self.sync_tiling_focus_context_from_tiling();
-            }
-        }
+        self.dispatch_focus(
+            |f| {
+                f.focus_down();
+                true
+            },
+            |t| {
+                t.focus_down_or_left();
+                true
+            },
+        );
     }
 
     pub fn focus_down_or_right(&mut self) {
-        match self.command_target() {
-            CommandTarget::Workspace => {}
-            CommandTarget::FloatingWindow | CommandTarget::FloatingContainer => {
-                self.floating.focus_down();
-            }
-            CommandTarget::TilingWindow | CommandTarget::TilingContainer => {
-                self.tiling.focus_down_or_right();
-                self.sync_tiling_focus_context_from_tiling();
-            }
-        }
+        self.dispatch_focus(
+            |f| {
+                f.focus_down();
+                true
+            },
+            |t| {
+                t.focus_down_or_right();
+                true
+            },
+        );
     }
 
     pub fn focus_up_or_left(&mut self) {
-        match self.command_target() {
-            CommandTarget::Workspace => {}
-            CommandTarget::FloatingWindow | CommandTarget::FloatingContainer => {
-                self.floating.focus_up();
-            }
-            CommandTarget::TilingWindow | CommandTarget::TilingContainer => {
-                self.tiling.focus_up_or_left();
-                self.sync_tiling_focus_context_from_tiling();
-            }
-        }
+        self.dispatch_focus(
+            |f| {
+                f.focus_up();
+                true
+            },
+            |t| {
+                t.focus_up_or_left();
+                true
+            },
+        );
     }
 
     pub fn focus_up_or_right(&mut self) {
-        match self.command_target() {
-            CommandTarget::Workspace => {}
-            CommandTarget::FloatingWindow | CommandTarget::FloatingContainer => {
-                self.floating.focus_up();
-            }
-            CommandTarget::TilingWindow | CommandTarget::TilingContainer => {
-                self.tiling.focus_up_or_right();
-                self.sync_tiling_focus_context_from_tiling();
-            }
-        }
+        self.dispatch_focus(
+            |f| {
+                f.focus_up();
+                true
+            },
+            |t| {
+                t.focus_up_or_right();
+                true
+            },
+        );
     }
 
     pub fn focus_window_top(&mut self) {
-        match self.command_target() {
-            CommandTarget::Workspace => {}
-            CommandTarget::FloatingWindow | CommandTarget::FloatingContainer => {
-                self.floating.focus_topmost();
-            }
-            CommandTarget::TilingWindow | CommandTarget::TilingContainer => {
-                self.tiling.focus_top();
-                self.sync_tiling_focus_context_from_tiling();
-            }
-        }
+        self.dispatch_focus(
+            |f| {
+                f.focus_topmost();
+                true
+            },
+            |t| {
+                t.focus_top();
+                true
+            },
+        );
     }
 
     pub fn focus_window_bottom(&mut self) {
-        match self.command_target() {
-            CommandTarget::Workspace => {}
-            CommandTarget::FloatingWindow | CommandTarget::FloatingContainer => {
-                self.floating.focus_bottommost();
-            }
-            CommandTarget::TilingWindow | CommandTarget::TilingContainer => {
-                self.tiling.focus_bottom();
-                self.sync_tiling_focus_context_from_tiling();
-            }
-        }
+        self.dispatch_focus(
+            |f| {
+                f.focus_bottommost();
+                true
+            },
+            |t| {
+                t.focus_bottom();
+                true
+            },
+        );
     }
 
     pub fn focus_window_down_or_top(&mut self) {
@@ -2094,27 +2106,23 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn consume_or_expel_window_left(&mut self, window: Option<&W::Id>) {
-        if self.is_floating_target(window) {
-            self.floating.consume_or_expel_window_left(window);
-        } else {
-            self.tiling.consume_or_expel_window_left(window);
-        }
+        self.dispatch_for_window(
+            window,
+            |f| f.consume_or_expel_window_left(window),
+            |t| t.consume_or_expel_window_left(window),
+        );
     }
 
     pub fn consume_or_expel_window_right(&mut self, window: Option<&W::Id>) {
-        if self.is_floating_target(window) {
-            self.floating.consume_or_expel_window_right(window);
-        } else {
-            self.tiling.consume_or_expel_window_right(window);
-        }
+        self.dispatch_for_window(
+            window,
+            |f| f.consume_or_expel_window_right(window),
+            |t| t.consume_or_expel_window_right(window),
+        );
     }
 
     pub fn consume_into_container(&mut self) {
-        if self.floating_is_active.get() {
-            self.floating.consume_into_column();
-        } else {
-            self.tiling.consume_into_column();
-        }
+        self.dispatch_active_layer(|f| f.consume_into_column(), |t| t.consume_into_column());
     }
 
     pub fn consume_into_column(&mut self) {
@@ -2122,11 +2130,7 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn expel_from_container(&mut self) {
-        if self.floating_is_active.get() {
-            self.floating.expel_from_column();
-        } else {
-            self.tiling.expel_from_column();
-        }
+        self.dispatch_active_layer(|f| f.expel_from_column(), |t| t.expel_from_column());
     }
 
     pub fn expel_from_column(&mut self) {
@@ -2134,125 +2138,99 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn swap_window_in_direction(&mut self, direction: Direction) {
-        match self.command_target() {
-            CommandTarget::Workspace => {}
-            CommandTarget::FloatingWindow | CommandTarget::FloatingContainer => {
-                self.floating.swap_window_in_direction(direction);
-            }
-            CommandTarget::TilingWindow | CommandTarget::TilingContainer => {
-                self.tiling.swap_window_in_direction(direction);
-            }
-        }
+        self.dispatch_move_directional(
+            |f| f.swap_window_in_direction(direction),
+            |t| {
+                t.swap_window_in_direction(direction);
+                true
+            },
+        );
     }
 
     pub fn toggle_column_tabbed_display(&mut self) {
-        if self.floating_is_active.get() {
-            self.floating.toggle_column_tabbed_display();
-        } else {
-            self.tiling.toggle_column_tabbed_display();
-        }
+        self.dispatch_active_layer(
+            |f| f.toggle_column_tabbed_display(),
+            |t| t.toggle_column_tabbed_display(),
+        );
     }
 
     pub fn set_column_display(&mut self, display: ColumnDisplay) {
-        if self.floating_is_active.get() {
-            self.floating.set_column_display(display);
-        } else {
-            self.tiling.set_column_display(display);
-        }
+        self.dispatch_active_layer(
+            |f| f.set_column_display(display),
+            |t| t.set_column_display(display),
+        );
     }
 
     pub fn center_column(&mut self) {
-        if self.floating_is_active.get() {
-            self.floating.center_window(None);
-        } else {
-            self.tiling.center_column();
-        }
+        self.dispatch_active_layer(|f| f.center_window(None), |t| t.center_column());
     }
 
     pub fn center_window(&mut self, id: Option<&W::Id>) {
-        if self.is_floating_target(id) {
-            self.floating.center_window(id);
-        } else {
-            self.tiling.center_window(id);
-        }
+        self.dispatch_for_window(id, |f| f.center_window(id), |t| t.center_window(id));
     }
 
     pub fn center_visible_columns(&mut self) {
-        if self.floating_is_active.get() {
-            return;
-        }
-        self.tiling.center_visible_columns();
+        self.dispatch_active_layer(|_| {}, |t| t.center_visible_columns());
     }
 
     pub fn toggle_width(&mut self, forwards: bool) {
-        if self.floating_is_active.get() {
-            self.floating.toggle_window_width(None, forwards);
-        } else {
-            self.tiling.toggle_width(forwards);
-        }
+        self.dispatch_active_layer(
+            |f| f.toggle_window_width(None, forwards),
+            |t| t.toggle_width(forwards),
+        );
     }
 
     pub fn toggle_full_width(&mut self) {
-        if self.floating_is_active.get() {
-            // Leave this unimplemented for now. For good UX, this probably needs moving the tile
-            // to be against the left edge of the working area while it is full-width.
-            return;
-        }
-        self.tiling.toggle_full_width();
+        // Floating is left unimplemented for now. For good UX, this probably needs moving the
+        // tile to be against the left edge of the working area while it is full-width.
+        self.dispatch_active_layer(|_| {}, |t| t.toggle_full_width());
     }
 
     pub fn set_column_width(&mut self, change: SizeChange) {
-        if self.floating_is_active.get() {
-            self.floating.set_window_width(None, change, true);
-        } else {
-            self.tiling.set_column_width(change);
-        }
+        self.dispatch_active_layer(
+            |f| f.set_window_width(None, change, true),
+            |t| t.set_column_width(change),
+        );
     }
 
     pub fn set_window_width(&mut self, window: Option<&W::Id>, change: SizeChange) {
-        if self.is_floating_target(window) {
-            self.floating.set_window_width(window, change, true);
-        } else {
-            self.tiling.set_window_width(window, change);
-        }
+        self.dispatch_for_window(
+            window,
+            |f| f.set_window_width(window, change, true),
+            |t| t.set_window_width(window, change),
+        );
     }
 
     pub fn set_window_height(&mut self, window: Option<&W::Id>, change: SizeChange) {
-        if self.is_floating_target(window) {
-            self.floating.set_window_height(window, change, true);
-        } else {
-            self.tiling.set_window_height(window, change);
-        }
+        self.dispatch_for_window(
+            window,
+            |f| f.set_window_height(window, change, true),
+            |t| t.set_window_height(window, change),
+        );
     }
 
     pub fn reset_window_height(&mut self, window: Option<&W::Id>) {
-        if self.is_floating_target(window) {
-            return;
-        }
-        self.tiling.reset_window_height(window);
+        self.dispatch_for_window(window, |_| {}, |t| t.reset_window_height(window));
     }
 
     pub fn toggle_window_width(&mut self, window: Option<&W::Id>, forwards: bool) {
-        if self.is_floating_target(window) {
-            self.floating.toggle_window_width(window, forwards);
-        } else {
-            self.tiling.toggle_window_width(window, forwards);
-        }
+        self.dispatch_for_window(
+            window,
+            |f| f.toggle_window_width(window, forwards),
+            |t| t.toggle_window_width(window, forwards),
+        );
     }
 
     pub fn toggle_window_height(&mut self, window: Option<&W::Id>, forwards: bool) {
-        if self.is_floating_target(window) {
-            self.floating.toggle_window_height(window, forwards);
-        } else {
-            self.tiling.toggle_window_height(window, forwards);
-        }
+        self.dispatch_for_window(
+            window,
+            |f| f.toggle_window_height(window, forwards),
+            |t| t.toggle_window_height(window, forwards),
+        );
     }
 
     pub fn expand_column_to_available_width(&mut self) {
-        if self.floating_is_active.get() {
-            return;
-        }
-        self.tiling.expand_column_to_available_width();
+        self.dispatch_active_layer(|_| {}, |t| t.expand_column_to_available_width());
     }
 
     pub fn focus_parent(&mut self) {
@@ -2303,71 +2281,65 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
-    pub fn split_horizontal(&mut self) {
-        match self.route_domain_for_family(CommandFamily::Split) {
-            // Model rule: cmd_split works in both floating and tiling.
-            RouteDomain::Workspace => self.tiling.split_workspace_horizontal(),
-            RouteDomain::Tiling => self.tiling.split_horizontal(),
+    /// Route a split/layout command: workspace-level targets apply to the workspace layout,
+    /// floating targets drop focus elevation unless the selected floating workspace container
+    /// preserves it. Model rule: split/layout commands work in both floating and tiling.
+    fn dispatch_layout(
+        &mut self,
+        workspace: impl FnOnce(&mut TilingSpace<W>),
+        tiling: impl FnOnce(&mut TilingSpace<W>),
+        floating: impl FnOnce(&mut FloatingSpace<W>),
+    ) {
+        match self.route_domain_for_family(CommandFamily::Layout) {
+            RouteDomain::Workspace => workspace(&mut self.tiling),
+            RouteDomain::Tiling => tiling(&mut self.tiling),
             RouteDomain::Floating => {
-                if !self.preserves_floating_workspace_context_for_family(CommandFamily::Split) {
+                if !self.preserves_floating_workspace_context_for_family(CommandFamily::Layout) {
                     self.workspace_focus = WorkspaceFocus::OnContent;
                 }
-                self.floating.split_horizontal();
+                floating(&mut self.floating);
             }
         }
+    }
+
+    pub fn split_horizontal(&mut self) {
+        self.dispatch_layout(
+            |t| t.split_workspace_horizontal(),
+            |t| t.split_horizontal(),
+            |f| f.split_horizontal(),
+        );
     }
 
     pub fn split_vertical(&mut self) {
-        match self.route_domain_for_family(CommandFamily::Split) {
-            // Model rule: cmd_split works in both floating and tiling.
-            RouteDomain::Workspace => self.tiling.split_workspace_vertical(),
-            RouteDomain::Tiling => self.tiling.split_vertical(),
-            RouteDomain::Floating => {
-                if !self.preserves_floating_workspace_context_for_family(CommandFamily::Split) {
-                    self.workspace_focus = WorkspaceFocus::OnContent;
-                }
-                self.floating.split_vertical();
-            }
-        }
+        self.dispatch_layout(
+            |t| t.split_workspace_vertical(),
+            |t| t.split_vertical(),
+            |f| f.split_vertical(),
+        );
     }
 
     pub fn set_layout_mode(&mut self, layout: Layout) {
-        match self.route_domain_for_family(CommandFamily::Layout) {
-            RouteDomain::Workspace => self.tiling.set_workspace_layout_mode(layout),
-            RouteDomain::Tiling => self.tiling.set_layout_mode(layout),
-            RouteDomain::Floating => {
-                if !self.preserves_floating_workspace_context_for_family(CommandFamily::Layout) {
-                    self.workspace_focus = WorkspaceFocus::OnContent;
-                }
-                self.floating.set_layout_mode(layout);
-            }
-        }
+        self.dispatch_layout(
+            |t| t.set_workspace_layout_mode(layout),
+            |t| t.set_layout_mode(layout),
+            |f| f.set_layout_mode(layout),
+        );
     }
 
     pub fn toggle_split_layout(&mut self) {
-        match self.route_domain_for_family(CommandFamily::Layout) {
-            RouteDomain::Workspace => self.tiling.toggle_workspace_split_layout(),
-            RouteDomain::Tiling => self.tiling.toggle_split_layout(),
-            RouteDomain::Floating => {
-                if !self.preserves_floating_workspace_context_for_family(CommandFamily::Layout) {
-                    self.workspace_focus = WorkspaceFocus::OnContent;
-                }
-                self.floating.toggle_split_layout();
-            }
-        }
+        self.dispatch_layout(
+            |t| t.toggle_workspace_split_layout(),
+            |t| t.toggle_split_layout(),
+            |f| f.toggle_split_layout(),
+        );
     }
 
     pub fn toggle_layout_all(&mut self) {
-        match self.command_target() {
-            CommandTarget::Workspace => self.tiling.toggle_workspace_layout_all(),
-            CommandTarget::TilingWindow | CommandTarget::TilingContainer => {
-                self.tiling.toggle_layout_all()
-            }
-            CommandTarget::FloatingWindow | CommandTarget::FloatingContainer => {
-                self.workspace_focus = WorkspaceFocus::OnContent;
-                self.floating.toggle_layout_all();
-            }
-        }
+        self.dispatch_layout(
+            |t| t.toggle_workspace_layout_all(),
+            |t| t.toggle_layout_all(),
+            |f| f.toggle_layout_all(),
+        );
     }
 
     pub fn set_fullscreen(&mut self, window: &W::Id, is_fullscreen: bool) {
@@ -2486,16 +2458,16 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn toggle_window_floating(&mut self, id: Option<&W::Id>) {
-        let mut command_context = self.resolved_command_route().command_context;
-        let preserve_workspace_context_on_unfloat = command_context == CommandContext::Workspace;
+        let mut command_context = self.resolved_command_route().default_domain;
+        let preserve_workspace_context_on_unfloat = command_context == RouteDomain::Workspace;
 
-        if id.is_none() && command_context == CommandContext::Workspace {
+        if id.is_none() && command_context == RouteDomain::Workspace {
             // Floating command routing:
             // - if a floating container is still selected at command level, target it;
             // - otherwise workspace context with tiling children targets workspace tiling;
             // - workspace context with empty tiling is a no-op.
             if self.floating.active_command_container_selected() {
-                command_context = CommandContext::Floating;
+                command_context = RouteDomain::Floating;
             } else if self.tiling.is_empty() {
                 return;
             }
@@ -2504,18 +2476,16 @@ impl<W: LayoutElement> Workspace<W> {
         let explicit_window = id.is_some();
         let active_id = self.active_window().map(|win| win.id().clone());
         let target_is_active = id.is_none_or(|id| Some(id) == active_id.as_ref());
-        let preserve_selection_path_on_unfloat = if !explicit_window
-            && target_is_active
-            && command_context == CommandContext::Floating
-        {
-            self.floating
-                .active_command_container_path()
-                // Model rule: unfloating from a floating wrapper/root focus
-                // must not restore a workspace-level container selection.
-                .filter(|path| !path.is_empty())
-        } else {
-            None
-        };
+        let preserve_selection_path_on_unfloat =
+            if !explicit_window && target_is_active && command_context == RouteDomain::Floating {
+                self.floating
+                    .active_command_container_path()
+                    // Model rule: unfloating from a floating wrapper/root focus
+                    // must not restore a workspace-level container selection.
+                    .filter(|path| !path.is_empty())
+            } else {
+                None
+            };
         let Some(id) = id.cloned().or(active_id) else {
             return;
         };
@@ -2532,7 +2502,7 @@ impl<W: LayoutElement> Workspace<W> {
 
         if !explicit_window
             && target_is_active
-            && command_context == CommandContext::Workspace
+            && command_context == RouteDomain::Workspace
             && !self.floating.active_command_container_selected()
             && !self.tiling.is_empty()
         {
@@ -2558,7 +2528,7 @@ impl<W: LayoutElement> Workspace<W> {
         // is currently active.
         if !explicit_window
             && target_is_active
-            && command_context == CommandContext::Tiling
+            && command_context == RouteDomain::Tiling
             && self.tiling.selected_is_container()
         {
             let old_parent_ref = self
@@ -3381,10 +3351,10 @@ impl<W: LayoutElement> Workspace<W> {
 
     #[cfg(test)]
     pub fn debug_command_context(&self) -> &'static str {
-        match self.resolved_command_route().command_context {
-            CommandContext::Workspace => "workspace",
-            CommandContext::Tiling => "tiling",
-            CommandContext::Floating => "floating",
+        match self.resolved_command_route().default_domain {
+            RouteDomain::Workspace => "workspace",
+            RouteDomain::Tiling => "tiling",
+            RouteDomain::Floating => "floating",
         }
     }
 
@@ -3402,15 +3372,6 @@ impl<W: LayoutElement> Workspace<W> {
     #[cfg(test)]
     pub fn debug_route_domain_for_focus(&self) -> &'static str {
         match self.route_domain_for_family(CommandFamily::Focus) {
-            RouteDomain::Workspace => "workspace",
-            RouteDomain::Tiling => "tiling",
-            RouteDomain::Floating => "floating",
-        }
-    }
-
-    #[cfg(test)]
-    pub fn debug_route_domain_for_split(&self) -> &'static str {
-        match self.route_domain_for_family(CommandFamily::Split) {
             RouteDomain::Workspace => "workspace",
             RouteDomain::Tiling => "tiling",
             RouteDomain::Floating => "floating",

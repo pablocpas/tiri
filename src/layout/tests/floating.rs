@@ -1787,3 +1787,31 @@ fn focus_stack_head_is_workspace_in_floating_workspace_context() {
         "switching back to floating target should restore Floating at seat-focus head",
     );
 }
+#[test]
+fn floating_workspace_context_layout_all_preserves_context_like_split_toggle() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::ToggleWindowFloating { id: None },
+        Op::SplitVertical,
+        Op::FocusParent,
+        Op::FocusParent,
+    ]);
+
+    {
+        let workspace = layout.active_workspace().expect("active workspace");
+        assert!(workspace.debug_floating_workspace_context());
+        assert_eq!(workspace.debug_command_context(), "workspace");
+    }
+
+    layout.toggle_layout_all();
+
+    let workspace = layout.active_workspace().expect("active workspace");
+    assert!(
+        workspace.debug_floating_workspace_context(),
+        "layout toggle all must preserve the floating workspace context and route to the \
+         selected floating container, matching layout toggle split",
+    );
+}
