@@ -22,3 +22,24 @@ pub(super) fn available_span(gap: f64, total: f64, child_count: usize) -> f64 {
     }
     (total - gap * (child_count as f64 - 1.0)).max(0.0)
 }
+
+/// A tree mutation's report of whether it changed anything.
+///
+/// Implemented for `bool` (the op tells us) and for `()` (the op has no failure signal, so
+/// assume it changed). Used by the spaces' `mutate_tree` so a mutation can never be
+/// committed without the matching relayout.
+pub(super) trait TreeMutation {
+    fn changed(&self) -> bool;
+}
+
+impl TreeMutation for bool {
+    fn changed(&self) -> bool {
+        *self
+    }
+}
+
+impl TreeMutation for () {
+    fn changed(&self) -> bool {
+        true
+    }
+}

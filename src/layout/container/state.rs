@@ -149,7 +149,26 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.pending_layout_wrap_on_split = true;
     }
 
+    /// The workspace's layout: what layout commands target when addressing the workspace
+    /// itself rather than a container.
+    pub(in crate::layout) fn workspace_layout(&self) -> Layout {
+        self.workspace_layout
+    }
+
+    /// The split layout to fall back to when toggling out of tabbed/stacked, mirroring
+    /// i3's `layout toggle split` on the workspace.
+    pub(in crate::layout) fn workspace_prev_split_layout(&self) -> Layout {
+        self.workspace_prev_split_layout.unwrap_or(Layout::SplitH)
+    }
+
     pub(in crate::layout) fn set_workspace_layout_hint(&mut self, layout: Layout) {
+        if self.workspace_layout != layout
+            && matches!(self.workspace_layout, Layout::SplitH | Layout::SplitV)
+        {
+            self.workspace_prev_split_layout = Some(self.workspace_layout);
+        }
+        self.workspace_layout = layout;
+
         self.pending_layout = Some(layout);
         self.pending_layout_wrap_on_split = false;
     }

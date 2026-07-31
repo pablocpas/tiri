@@ -34,6 +34,7 @@ mod movement;
 mod paths;
 mod preview;
 mod query;
+mod resize;
 mod root_children;
 mod split;
 mod state;
@@ -43,6 +44,7 @@ mod tree_store;
 pub(super) use command::RootPolicy;
 use command::TreeCommandTarget;
 use geometry::PendingLayout;
+pub(super) use resize::ResizeTarget;
 
 // ============================================================================
 // SlotMap Key Types
@@ -206,6 +208,12 @@ pub struct ContainerTree<W: LayoutElement> {
     root: Option<NodeKey>,
     /// Layout to apply when the tree is empty (i3 workspace_layout equivalent).
     pending_layout: Option<Layout>,
+    /// The workspace's own layout: what a layout command targets when it addresses the
+    /// workspace rather than a container inside the tree. Single source of truth; the
+    /// spaces read it through `workspace_layout()`.
+    workspace_layout: Layout,
+    /// Last split layout the workspace had, for i3's `layout toggle split`.
+    workspace_prev_split_layout: Option<Layout>,
     /// Whether pending_layout should be consumed by the next split on a root leaf.
     /// This is used for i3/sway semantics after `layout split*` on a single tiled leaf.
     pending_layout_wrap_on_split: bool,
@@ -770,6 +778,8 @@ impl<W: LayoutElement> ContainerTree<W> {
             parents: SecondaryMap::new(),
             root: None,
             pending_layout: None,
+            workspace_layout: Layout::SplitH,
+            workspace_prev_split_layout: None,
             pending_layout_wrap_on_split: false,
             focused_key: None,
             selected_key: None,
@@ -826,39 +836,6 @@ impl<W: LayoutElement> ContainerTree<W> {
             }
             container.set_child_percent(child_idx, percent);
             true
-        } else {
-            false
-        }
-    }
-
-    pub(super) fn set_child_percent_pair_at(
-        &mut self,
-        parent_path: &[usize],
-        child_idx: usize,
-        neighbor_idx: usize,
-        layout: Layout,
-        percent: f64,
-    ) -> bool {
-        let container_key = if parent_path.is_empty() {
-            match self.root {
-                Some(key) => key,
-                None => return false,
-            }
-        } else {
-            match self.get_node_key_at_path(parent_path) {
-                Some(key) => key,
-                None => return false,
-            }
-        };
-
-        if let Some(container) = self.get_container_mut(container_key) {
-            if container.layout() != layout
-                || child_idx >= container.child_count()
-                || neighbor_idx >= container.child_count()
-            {
-                return false;
-            }
-            container.set_child_percent_pair(child_idx, neighbor_idx, percent)
         } else {
             false
         }

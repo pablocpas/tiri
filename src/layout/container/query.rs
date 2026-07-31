@@ -195,12 +195,16 @@ impl<W: LayoutElement> ContainerTree<W> {
         parent_path: &[usize],
         child_idx: usize,
     ) -> Option<Rectangle<f64, Logical>> {
-        let container_key = if parent_path.is_empty() {
-            self.root?
-        } else {
-            self.get_node_key_at_path(parent_path)?
-        };
+        let container_key = self.node_key_for_path_or_root(parent_path)?;
+        self.child_rect_in(container_key, child_idx)
+    }
 
+    /// Rect of the `child_idx`-th child of the container at `container_key`.
+    pub(super) fn child_rect_in(
+        &self,
+        container_key: NodeKey,
+        child_idx: usize,
+    ) -> Option<Rectangle<f64, Logical>> {
         let container = self.get_container(container_key)?;
         if child_idx >= container.child_count() {
             return None;
@@ -221,6 +225,13 @@ impl<W: LayoutElement> ContainerTree<W> {
         );
 
         Some(rect)
+    }
+
+    /// Rect of a node, resolved through its parent container.
+    pub(super) fn child_rect_for_key(&self, key: NodeKey) -> Option<Rectangle<f64, Logical>> {
+        let parent_key = self.parent_of(key)?;
+        let child_idx = self.child_index(parent_key, key)?;
+        self.child_rect_in(parent_key, child_idx)
     }
 
     pub(in crate::layout) fn find_parent_with_layout(

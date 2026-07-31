@@ -23,7 +23,7 @@ use tiri_ipc::{ColumnDisplay, LayoutTreeNode, SizeChange};
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::container::{
     ContainerMetrics, ContainerTree, DetachedContainer, DetachedNode, Direction, InsertParentInfo,
-    Layout, LeafLayoutInfo, NodeKey, RootPolicy, TakenSubtree,
+    Layout, LeafLayoutInfo, NodeKey, ResizeTarget, RootPolicy, TakenSubtree,
 };
 use super::focus_ring::{
     render_container_selection, ContainerSelectionStyle, FocusRingEdges, FocusRingIndicatorEdge,
@@ -32,6 +32,7 @@ use super::focus_ring::{
 use super::legacy_column::{Column, ColumnWidth};
 use super::monitor::{InsertPosition, SplitIndicator};
 use super::tile::{Tile, TileRenderElement};
+use super::tree_space::TreeMutation;
 use super::viewport::FixedViewport;
 use super::{
     ConfigureIntent, InteractiveResizeData, LayoutElement, Options, RemovedTile, ResizeHit,
@@ -65,9 +66,7 @@ pub struct TilingSpace<W: LayoutElement> {
     /// Container tree managing window layout
     tree: ContainerTree<W>,
     /// Workspace-level layout state (sway workspace->layout equivalent).
-    workspace_layout: Layout,
     /// Previous workspace split layout (sway workspace->prev_split_layout equivalent).
-    workspace_prev_split_layout: Option<Layout>,
     /// View size (output size)
     view_size: Size<f64, Logical>,
     /// Working area (view_size minus gaps/bars)
@@ -99,6 +98,9 @@ pub struct TilingSpace<W: LayoutElement> {
     overview_background: SolidColorBuffer,
 }
 
+/// A leaf identified for hit-testing: node key, tree path and on-screen rect.
+type LeafHit = (NodeKey, Vec<usize>, Rectangle<f64, Logical>);
+
 /// Workspace-wide context shared by every tile in an `update_window_state` pass.
 struct WindowStateContext<'a, W: LayoutElement> {
     focus_path: &'a [usize],
@@ -110,14 +112,6 @@ struct WindowStateContext<'a, W: LayoutElement> {
     fullscreen_id: Option<&'a W::Id>,
     windowed_fullscreen_id: Option<&'a W::Id>,
     view_size: Size<f64, Logical>,
-}
-
-#[derive(Debug, Clone)]
-struct ResizeTarget {
-    parent_path: Vec<usize>,
-    child_idx: usize,
-    neighbor_idx: usize,
-    original_span: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,41 +129,6 @@ struct InteractiveResizeState<W: LayoutElement> {
     data: InteractiveResizeData,
     horizontal: Option<ResizeTarget>,
     vertical: Option<ResizeTarget>,
-}
-
-fn resize_edge_for_path_at_target(
-    path: &[usize],
-    target: &ResizeTarget,
-    near_edge: ResizeEdge,
-    far_edge: ResizeEdge,
-) -> Option<ResizeEdge> {
-    if !path.starts_with(&target.parent_path) {
-        return None;
-    }
-
-    let next_idx = target.parent_path.len();
-    if path.len() <= next_idx {
-        return None;
-    }
-
-    let child_idx = path[next_idx];
-    if child_idx == target.child_idx {
-        return Some(if target.neighbor_idx > target.child_idx {
-            far_edge
-        } else {
-            near_edge
-        });
-    }
-
-    if child_idx == target.neighbor_idx {
-        return Some(if target.neighbor_idx > target.child_idx {
-            near_edge
-        } else {
-            far_edge
-        });
-    }
-
-    None
 }
 
 niri_render_elements! {
@@ -228,15 +187,6 @@ impl<W: LayoutElement> TilingSpace<W> {
         self.options.layout.tab_bar.clone()
     }
 
-    fn update_workspace_layout_state(&mut self, layout: Layout) {
-        if self.workspace_layout != layout
-            && matches!(self.workspace_layout, Layout::SplitH | Layout::SplitV)
-        {
-            self.workspace_prev_split_layout = Some(self.workspace_layout);
-        }
-        self.workspace_layout = layout;
-    }
-
     fn workspace_layout_target_kind(&self) -> WorkspaceLayoutTargetKind {
         if self.tree.selected_is_container() {
             if self.tree.selected_container_is_root() {
@@ -260,7 +210,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     fn apply_workspace_layout_target(&mut self, layout: Layout) -> bool {
-        if self.workspace_layout == layout {
+        if self.tree.workspace_layout() == layout {
             return false;
         }
 
@@ -470,10 +420,9 @@ impl<W: LayoutElement> TilingSpace<W> {
                 0 => return None,
                 1 => self.tree.take_root_child_subtree(0)?,
                 _ => {
-                    if !self
-                        .tree
-                        .wrap_synthetic_root_children_for_workspace_layout(self.workspace_layout)
-                    {
+                    if !self.tree.wrap_synthetic_root_children_for_workspace_layout(
+                        self.tree.workspace_layout(),
+                    ) {
                         return None;
                     }
                     self.tree.take_root_child_subtree(0)?
@@ -483,12 +432,12 @@ impl<W: LayoutElement> TilingSpace<W> {
             let (subtree, _) = self.tree.take_subtree_at_path(&[])?;
             match subtree {
                 DetachedNode::Leaf(tile) => DetachedNode::Container(DetachedContainer::from_parts(
-                    self.workspace_layout,
+                    self.tree.workspace_layout(),
                     vec![DetachedNode::Leaf(tile)],
                     vec![1.0],
                     vec![0],
                     true,
-                    Some(self.workspace_layout),
+                    Some(self.tree.workspace_layout()),
                 )),
                 subtree => subtree,
             }
@@ -499,209 +448,69 @@ impl<W: LayoutElement> TilingSpace<W> {
         Some((subtree, rect))
     }
 
-    fn container_available_span(
-        &self,
-        parent_path: &[usize],
-        layout: Layout,
-    ) -> Option<(f64, usize)> {
-        let (container_layout, rect, child_count) = self.tree.container_info(parent_path)?;
-        if container_layout != layout || child_count == 0 {
-            return None;
+    /// Run a mutation on the tree and relayout when it reports a change.
+    ///
+    /// Every structural mutation must be followed by a relayout; routing them through this
+    /// combinator makes that impossible to forget.
+    fn mutate_tree<R: TreeMutation>(&mut self, f: impl FnOnce(&mut ContainerTree<W>) -> R) -> R {
+        let result = f(&mut self.tree);
+        if result.changed() {
+            self.tree.layout();
         }
+        result
+    }
 
-        let available = match layout {
-            Layout::SplitH => self.available_span(rect.size.w, child_count),
-            Layout::SplitV => self.available_span(rect.size.h, child_count),
-            Layout::Tabbed | Layout::Stacked => return None,
+    /// Per-leaf resize edges for an in-flight interactive resize, keyed by node.
+    ///
+    /// Computed up front so the caller can hold mutable tile borrows while iterating.
+    fn interactive_resize_data_by_leaf(
+        &self,
+        layouts: &[LeafLayoutInfo],
+    ) -> HashMap<NodeKey, InteractiveResizeData> {
+        let Some(resize) = self.interactive_resize.as_ref() else {
+            return HashMap::new();
         };
 
-        if available <= 0.0 {
-            return None;
-        }
-
-        Some((available, child_count))
+        layouts
+            .iter()
+            .filter_map(|info| {
+                let edges = self.tree.resize_edges_for_leaf(
+                    info.key,
+                    resize.horizontal.as_ref(),
+                    resize.vertical.as_ref(),
+                );
+                (!edges.is_empty()).then_some((info.key, InteractiveResizeData { edges }))
+            })
+            .collect()
     }
 
-    fn resize_target_for_edge(
-        &self,
-        path: &[usize],
-        edge: ResizeEdge,
+    /// Apply one axis of an in-flight interactive resize. `delta` is the pointer movement
+    /// along that axis; `inverted` flips it for drags on the leading edge, where moving the
+    /// pointer left/up grows the window.
+    fn apply_interactive_resize(
+        &mut self,
+        target: Option<&ResizeTarget>,
         layout: Layout,
-        pos: Option<Point<f64, Logical>>,
-    ) -> Option<ResizeTarget> {
-        let mut best: Option<(ResizeTarget, f64)> = None;
-        let mut fallback = None;
-        let mut current_path = path.to_vec();
+        delta: f64,
+        inverted: bool,
+    ) -> bool {
+        let Some(target) = target else {
+            return false;
+        };
+        let Some(available) = self.tree.resize_available_span(target, layout) else {
+            return false;
+        };
 
-        while !current_path.is_empty() {
-            let child_idx = *current_path.last().unwrap();
-            let parent_path = &current_path[..current_path.len() - 1];
+        let delta = if inverted { -delta } else { delta };
+        let new_span = (target.original_span.max(1.0) + delta).round() as i32;
+        let current_percent = self.tree.resize_current_percent(target);
+        let percent = Self::percent_from_size_change(
+            current_percent,
+            available,
+            SizeChange::SetFixed(new_span),
+        );
 
-            let Some((container_layout, _rect, child_count)) =
-                self.tree.container_info(parent_path)
-            else {
-                current_path.pop();
-                continue;
-            };
-
-            if container_layout == layout && child_count > 1 {
-                let neighbor_idx = if edge == ResizeEdge::LEFT || edge == ResizeEdge::TOP {
-                    child_idx.checked_sub(1)
-                } else if edge == ResizeEdge::RIGHT || edge == ResizeEdge::BOTTOM {
-                    (child_idx + 1 < child_count).then_some(child_idx + 1)
-                } else {
-                    None
-                };
-
-                if let Some(neighbor_idx) = neighbor_idx {
-                    if let Some(child_rect) = self.tree.child_rect_at(parent_path, child_idx) {
-                        let target = ResizeTarget {
-                            parent_path: parent_path.to_vec(),
-                            child_idx,
-                            neighbor_idx,
-                            original_span: if edge == ResizeEdge::LEFT || edge == ResizeEdge::RIGHT
-                            {
-                                child_rect.size.w
-                            } else if edge == ResizeEdge::TOP || edge == ResizeEdge::BOTTOM {
-                                child_rect.size.h
-                            } else {
-                                0.0
-                            },
-                        };
-
-                        fallback.get_or_insert_with(|| target.clone());
-
-                        if let Some(pos) = pos {
-                            let Some(boundary) = self.resize_boundary_coord(&target, edge) else {
-                                current_path.pop();
-                                continue;
-                            };
-
-                            let dist = if edge == ResizeEdge::LEFT || edge == ResizeEdge::RIGHT {
-                                (pos.x - boundary).abs()
-                            } else if edge == ResizeEdge::TOP || edge == ResizeEdge::BOTTOM {
-                                (pos.y - boundary).abs()
-                            } else {
-                                f64::MAX
-                            };
-
-                            let should_update = match &best {
-                                None => true,
-                                Some((_, best_dist)) => dist + f64::EPSILON < *best_dist,
-                            };
-                            if should_update {
-                                best = Some((target, dist));
-                            }
-                        }
-                    }
-                }
-            }
-
-            current_path.pop();
-        }
-
-        best.map(|(target, _)| target).or(fallback)
-    }
-
-    fn resize_boundary_coord(&self, target: &ResizeTarget, edge: ResizeEdge) -> Option<f64> {
-        let child_rect = self
-            .tree
-            .child_rect_at(target.parent_path.as_slice(), target.child_idx)?;
-        let neighbor_rect = self
-            .tree
-            .child_rect_at(target.parent_path.as_slice(), target.neighbor_idx)?;
-
-        if edge == ResizeEdge::LEFT || edge == ResizeEdge::RIGHT {
-            let (left_edge, right_edge) = if neighbor_rect.loc.x < child_rect.loc.x {
-                (neighbor_rect.loc.x + neighbor_rect.size.w, child_rect.loc.x)
-            } else {
-                (child_rect.loc.x + child_rect.size.w, neighbor_rect.loc.x)
-            };
-            return Some((left_edge + right_edge) / 2.0);
-        }
-
-        if edge == ResizeEdge::TOP || edge == ResizeEdge::BOTTOM {
-            let (top_edge, bottom_edge) = if neighbor_rect.loc.y < child_rect.loc.y {
-                (neighbor_rect.loc.y + neighbor_rect.size.h, child_rect.loc.y)
-            } else {
-                (child_rect.loc.y + child_rect.size.h, neighbor_rect.loc.y)
-            };
-            return Some((top_edge + bottom_edge) / 2.0);
-        }
-
-        None
-    }
-
-    fn compute_resize_targets(
-        &self,
-        window: &W::Id,
-        mut edges: ResizeEdge,
-        pos: Option<Point<f64, Logical>>,
-    ) -> Option<(ResizeEdge, Option<ResizeTarget>, Option<ResizeTarget>)> {
-        let path = self.tree.find_window(window)?;
-        let tile = self.tree.tile_at_path(&path)?;
-
-        if !tile.window().pending_sizing_mode().is_normal() {
-            return None;
-        }
-
-        let mut horizontal = None;
-        let mut vertical = None;
-
-        if edges.intersects(ResizeEdge::LEFT_RIGHT) {
-            let edge = if edges.contains(ResizeEdge::LEFT) {
-                ResizeEdge::LEFT
-            } else {
-                ResizeEdge::RIGHT
-            };
-            horizontal = self.resize_target_for_edge(&path, edge, Layout::SplitH, pos);
-            if horizontal.is_none() {
-                edges.remove(ResizeEdge::LEFT_RIGHT);
-            }
-        }
-
-        if edges.intersects(ResizeEdge::TOP_BOTTOM) {
-            let edge = if edges.contains(ResizeEdge::TOP) {
-                ResizeEdge::TOP
-            } else {
-                ResizeEdge::BOTTOM
-            };
-            vertical = self.resize_target_for_edge(&path, edge, Layout::SplitV, pos);
-            if vertical.is_none() {
-                edges.remove(ResizeEdge::TOP_BOTTOM);
-            }
-        }
-
-        if edges.is_empty() {
-            return None;
-        }
-
-        Some((edges, horizontal, vertical))
-    }
-
-    fn interactive_resize_data_for_path(
-        path: &[usize],
-        resize: &InteractiveResizeState<W>,
-    ) -> Option<InteractiveResizeData> {
-        let mut edges = ResizeEdge::empty();
-
-        if let Some(target) = resize.horizontal.as_ref() {
-            if let Some(edge) =
-                resize_edge_for_path_at_target(path, target, ResizeEdge::LEFT, ResizeEdge::RIGHT)
-            {
-                edges |= edge;
-            }
-        }
-
-        if let Some(target) = resize.vertical.as_ref() {
-            if let Some(edge) =
-                resize_edge_for_path_at_target(path, target, ResizeEdge::TOP, ResizeEdge::BOTTOM)
-            {
-                edges |= edge;
-            }
-        }
-
-        (!edges.is_empty()).then_some(InteractiveResizeData { edges })
+        self.tree.apply_resize(target, layout, percent)
     }
 
     pub fn new(
@@ -716,8 +525,6 @@ impl<W: LayoutElement> TilingSpace<W> {
 
         Self {
             tree,
-            workspace_layout: Layout::SplitH,
-            workspace_prev_split_layout: None,
             view_size,
             working_area,
             viewport: FixedViewport,
@@ -794,7 +601,7 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     #[cfg(test)]
     pub fn debug_workspace_layout(&self) -> Layout {
-        self.workspace_layout
+        self.tree.workspace_layout()
     }
 
     #[cfg(test)]
@@ -1189,12 +996,11 @@ impl<W: LayoutElement> TilingSpace<W> {
             windowed_fullscreen_id: windowed_fullscreen_id.as_ref(),
             view_size: self.view_size,
         };
-        let interactive_resize = self.interactive_resize.as_ref();
+        let resize_data = self.interactive_resize_data_by_leaf(&state_layouts);
         for info in state_layouts {
             // Use O(1) key lookup instead of O(depth) path lookup.
             if let Some(tile) = self.tree.get_tile_mut(info.key) {
-                let resize = interactive_resize
-                    .and_then(|resize| Self::interactive_resize_data_for_path(&info.path, resize));
+                let resize = resize_data.get(&info.key).copied();
                 Self::update_window_state(tile, &info, resize, &ctx);
             }
         }
@@ -1266,7 +1072,8 @@ impl<W: LayoutElement> TilingSpace<W> {
             return false;
         }
 
-        let Some((edges, horizontal, vertical)) = self.compute_resize_targets(&window, edges, pos)
+        let Some((edges, horizontal, vertical)) =
+            self.tree.resize_targets_for_window(&window, edges, pos)
         else {
             return false;
         };
@@ -1293,76 +1100,26 @@ impl<W: LayoutElement> TilingSpace<W> {
             return false;
         }
 
+        let edges = resize.data.edges;
+        let horizontal = resize.horizontal;
+        let vertical = resize.vertical;
+
         let mut changed = false;
-
-        if resize.data.edges.intersects(ResizeEdge::LEFT_RIGHT) {
-            if let Some(target) = resize.horizontal.as_ref() {
-                if let Some((available, _child_count)) =
-                    self.container_available_span(&target.parent_path, Layout::SplitH)
-                {
-                    let mut dx = delta.x;
-                    if resize.data.edges.contains(ResizeEdge::LEFT) {
-                        dx = -dx;
-                    }
-
-                    let base = target.original_span.max(1.0);
-                    let window_width = (base + dx).round() as i32;
-                    let current_percent = self
-                        .tree
-                        .child_percent_at(target.parent_path.as_slice(), target.child_idx)
-                        .unwrap_or(1.0);
-                    let percent = Self::percent_from_size_change(
-                        current_percent,
-                        available,
-                        SizeChange::SetFixed(window_width),
-                    );
-
-                    if self.tree.set_child_percent_pair_at(
-                        target.parent_path.as_slice(),
-                        target.child_idx,
-                        target.neighbor_idx,
-                        Layout::SplitH,
-                        percent,
-                    ) {
-                        changed = true;
-                    }
-                }
-            }
+        if edges.intersects(ResizeEdge::LEFT_RIGHT) {
+            changed |= self.apply_interactive_resize(
+                horizontal.as_ref(),
+                Layout::SplitH,
+                delta.x,
+                edges.contains(ResizeEdge::LEFT),
+            );
         }
-
-        if resize.data.edges.intersects(ResizeEdge::TOP_BOTTOM) {
-            if let Some(target) = resize.vertical.as_ref() {
-                if let Some((available, _child_count)) =
-                    self.container_available_span(&target.parent_path, Layout::SplitV)
-                {
-                    let mut dy = delta.y;
-                    if resize.data.edges.contains(ResizeEdge::TOP) {
-                        dy = -dy;
-                    }
-
-                    let base = target.original_span.max(1.0);
-                    let window_height = (base + dy).round() as i32;
-                    let current_percent = self
-                        .tree
-                        .child_percent_at(target.parent_path.as_slice(), target.child_idx)
-                        .unwrap_or(1.0);
-                    let percent = Self::percent_from_size_change(
-                        current_percent,
-                        available,
-                        SizeChange::SetFixed(window_height),
-                    );
-
-                    if self.tree.set_child_percent_pair_at(
-                        target.parent_path.as_slice(),
-                        target.child_idx,
-                        target.neighbor_idx,
-                        Layout::SplitV,
-                        percent,
-                    ) {
-                        changed = true;
-                    }
-                }
-            }
+        if edges.intersects(ResizeEdge::TOP_BOTTOM) {
+            changed |= self.apply_interactive_resize(
+                vertical.as_ref(),
+                Layout::SplitV,
+                delta.y,
+                edges.contains(ResizeEdge::TOP),
+            );
         }
 
         if changed {
@@ -1410,8 +1167,8 @@ impl<W: LayoutElement> TilingSpace<W> {
             return None;
         }
 
-        let (path, rect) = self.closest_leaf_rect(pos)?;
-        let tile = self.tree.tile_at_path(&path)?;
+        let (leaf_key, _path, rect) = self.closest_leaf_rect(pos)?;
+        let tile = self.tree.get_tile(leaf_key)?;
         if !tile.window().pending_sizing_mode().is_normal() {
             return None;
         }
@@ -1433,10 +1190,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             if !edges.contains(edge) || !cross_ok || dist > edge_threshold {
                 return;
             }
-            if self
-                .resize_target_for_edge(&path, edge, layout, Some(pos))
-                .is_none()
-            {
+            if !self.tree.has_resize_target(leaf_key, edge, layout, pos) {
                 return;
             }
             let score = dist / edge_threshold.max(1.0);
@@ -1515,8 +1269,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         if let Some((fullscreen_id, Some(scope_root_idx))) = fullscreen_scope {
             let escaped_scope = self.tree.focus_path().first().copied() != Some(scope_root_idx);
             if escaped_scope {
-                let _ = self.tree.focus_window_by_id(&fullscreen_id);
-                self.tree.layout();
+                let _ = self.mutate_tree(|tree| tree.focus_window_by_id(&fullscreen_id));
                 return false;
             }
         }
@@ -1571,11 +1324,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn focus_child(&mut self) -> bool {
-        let selected = self.tree.select_child();
-        if selected {
-            self.tree.layout();
-        }
-        selected
+        self.mutate_tree(|tree| tree.select_child())
     }
 
     pub fn focus_parent_targets_workspace(&self) -> bool {
@@ -1689,11 +1438,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn wrap_root_for_sibling_insert(&mut self) -> bool {
-        let changed = self.tree.wrap_root_for_sibling_insert();
-        if changed {
-            self.tree.layout();
-        }
-        changed
+        self.mutate_tree(|tree| tree.wrap_root_for_sibling_insert())
     }
 
     fn active_selection_layout(&self) -> Option<Layout> {
@@ -1757,12 +1502,10 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     fn toggle_split_for_active_selection(&mut self) -> bool {
         if self.targets_workspace_layout() {
-            let next = match self.workspace_layout {
+            let next = match self.tree.workspace_layout() {
                 Layout::SplitH => Layout::SplitV,
                 Layout::SplitV => Layout::SplitH,
-                Layout::Tabbed | Layout::Stacked => {
-                    self.workspace_prev_split_layout.unwrap_or(Layout::SplitH)
-                }
+                Layout::Tabbed | Layout::Stacked => self.tree.workspace_prev_split_layout(),
             };
             return self.apply_workspace_layout_target(next);
         }
@@ -1782,7 +1525,7 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     fn toggle_layout_all_for_active_selection(&mut self) -> bool {
         if self.targets_workspace_layout() {
-            let next = self.workspace_layout.next_in_cycle();
+            let next = self.tree.workspace_layout().next_in_cycle();
             return self.apply_workspace_layout_target(next);
         }
 
@@ -1797,11 +1540,7 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     fn move_command_target(&mut self, direction: Direction) -> bool {
         let target = self.tree.command_target(RootPolicy::ImplicitWorkspace);
-        let result = self.tree.move_target_in_direction(direction, target);
-        if result {
-            self.tree.layout();
-        }
-        result
+        self.mutate_tree(|tree| tree.move_target_in_direction(direction, target))
     }
 
     // Move operations using ContainerTree
@@ -1861,12 +1600,25 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     fn split_workspace(&mut self, layout: Layout) {
+        self.apply_workspace_layout(layout, |tree| tree.split_focused(layout));
+    }
+
+    /// Retarget the workspace itself at `layout`.
+    ///
+    /// The workspace layout materializes differently depending on the tree's shape: an
+    /// empty tree only records the hint, a synthetic root wraps its children, an explicit
+    /// root gains a parent, and otherwise `fallback` applies it to the focused node.
+    fn apply_workspace_layout(
+        &mut self,
+        layout: Layout,
+        fallback: impl FnOnce(&mut ContainerTree<W>) -> bool,
+    ) {
         if self.tree.is_empty() {
             self.set_workspace_layout_hint(layout);
             return;
         }
 
-        if self.workspace_layout == layout {
+        if self.tree.workspace_layout() == layout {
             return;
         }
 
@@ -1887,9 +1639,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         }
 
         self.set_workspace_layout_hint(layout);
-        if self.tree.split_focused(layout) {
-            self.tree.layout();
-        }
+        self.mutate_tree(fallback);
     }
 
     /// Set layout mode for focused container
@@ -1901,51 +1651,15 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     /// Set workspace-level layout target (root container) like sway workspace path.
     pub fn set_workspace_layout_mode(&mut self, layout: Layout) {
-        if self.tree.is_empty() {
-            self.set_workspace_layout_hint(layout);
-            return;
-        }
-
-        if self.workspace_layout == layout {
-            return;
-        }
-
-        if self
-            .tree
-            .wrap_synthetic_root_children_for_workspace_layout(layout)
-        {
-            self.set_workspace_layout_hint(layout);
-            self.tree.layout();
-            return;
-        }
-
-        self.tree.set_workspace_layout_hint(layout);
-        if self.tree.wrap_root_for_sibling_insert() {
-            self.set_workspace_layout_hint(layout);
-            self.tree.layout();
-            return;
-        }
-
-        self.set_workspace_layout_hint(layout);
-        if self.tree.set_focused_layout(layout) {
-            self.tree.layout();
-        }
+        self.apply_workspace_layout(layout, |tree| tree.set_focused_layout(layout));
     }
 
     pub fn set_root_layout_mode(&mut self, layout: Layout) -> bool {
-        let changed = self.tree.set_root_container_layout(layout);
-        if changed {
-            self.tree.layout();
-        }
-        changed
+        self.mutate_tree(|tree| tree.set_root_container_layout(layout))
     }
 
     pub fn collapse_redundant_root_single_child_split(&mut self) -> bool {
-        let changed = self.tree.collapse_redundant_root_single_child_split();
-        if changed {
-            self.tree.layout();
-        }
-        changed
+        self.mutate_tree(|tree| tree.collapse_redundant_root_single_child_split())
     }
 
     /// Toggle between horizontal and vertical split for the focused container.
@@ -1956,12 +1670,10 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn toggle_workspace_split_layout(&mut self) {
-        let next = match self.workspace_layout {
+        let next = match self.tree.workspace_layout() {
             Layout::SplitH => Layout::SplitV,
             Layout::SplitV => Layout::SplitH,
-            Layout::Tabbed | Layout::Stacked => {
-                self.workspace_prev_split_layout.unwrap_or(Layout::SplitH)
-            }
+            Layout::Tabbed | Layout::Stacked => self.tree.workspace_prev_split_layout(),
         };
         self.set_workspace_layout_hint(next);
     }
@@ -1974,7 +1686,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn toggle_workspace_layout_all(&mut self) {
-        let next = self.workspace_layout.next_in_cycle();
+        let next = self.tree.workspace_layout().next_in_cycle();
         self.set_workspace_layout_mode(next);
     }
 
@@ -2122,10 +1834,11 @@ impl<W: LayoutElement> TilingSpace<W> {
         Some(Rectangle::new(tile_pos, tile.tile_size()))
     }
 
+    /// The leaf under `pos`, or the nearest one: its node key, tree path and on-screen rect.
     fn closest_leaf_rect(
         &self,
         pos: Point<f64, Logical>,
-    ) -> Option<(Vec<usize>, Rectangle<f64, Logical>)> {
+    ) -> Option<LeafHit> {
         let scale = Scale::from(self.scale);
         let fullscreen_id = self.render_fullscreen_window();
         let windowed_fullscreen_id = if fullscreen_id.is_none() {
@@ -2139,7 +1852,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         };
         let has_fullscreen_like = fullscreen_id.is_some() || windowed_fullscreen_id.is_some();
 
-        let mut nearest: Option<(Vec<usize>, Rectangle<f64, Logical>, f64)> = None;
+        let mut nearest: Option<(LeafHit, f64)> = None;
 
         for info in self.display_layouts() {
             if let Some(tile) = self.tree.get_tile(info.key) {
@@ -2167,7 +1880,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                 let tile_rect = Rectangle::new(tile_pos, tile.tile_size());
 
                 if tile_rect.contains(pos) {
-                    return Some((info.path.clone(), tile_rect));
+                    return Some((info.key, info.path.clone(), tile_rect));
                 }
 
                 let dx = if pos.x < tile_rect.loc.x {
@@ -2186,14 +1899,14 @@ impl<W: LayoutElement> TilingSpace<W> {
                 };
                 let dist2 = dx * dx + dy * dy;
 
-                let replace = nearest.as_ref().is_none_or(|(_, _, best)| dist2 < *best);
+                let replace = nearest.as_ref().is_none_or(|(_, best)| dist2 < *best);
                 if replace {
-                    nearest = Some((info.path.clone(), tile_rect, dist2));
+                    nearest = Some(((info.key, info.path.clone(), tile_rect), dist2));
                 }
             }
         }
 
-        nearest.map(|(path, rect, _)| (path, rect))
+        nearest.map(|(hit, _)| hit)
     }
 
     fn indicator_rect(
@@ -2256,7 +1969,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             };
         }
 
-        let Some((path, rect)) = self.closest_leaf_rect(pos) else {
+        let Some((_leaf_key, path, rect)) = self.closest_leaf_rect(pos) else {
             return InsertPosition::NewColumn(0);
         };
 
@@ -2603,7 +2316,6 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn set_workspace_layout_hint(&mut self, layout: Layout) {
-        self.update_workspace_layout_state(layout);
         self.tree.set_workspace_layout_hint(layout);
     }
 
@@ -2680,8 +2392,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn insert_subtree_at_root(&mut self, index: usize, subtree: DetachedNode<W>, focus: bool) {
-        self.tree.insert_subtree_at_root(index, subtree, focus);
-        self.tree.layout();
+        self.mutate_tree(|tree| tree.insert_subtree_at_root(index, subtree, focus));
     }
 
     pub fn insert_subtree_with_focus(&mut self, subtree: DetachedNode<W>, focus: bool) {
@@ -2910,8 +2621,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn focus_root_container_first(&mut self) {
-        self.tree.focus_root_child(0);
-        self.tree.layout();
+        self.mutate_tree(|tree| tree.focus_root_child(0));
     }
 
     pub fn focus_first_leaf(&mut self) {
@@ -2923,8 +2633,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     pub fn focus_root_container_last(&mut self) {
         let len = self.tree.root_children_len();
         if len > 0 {
-            self.tree.focus_root_child(len - 1);
-            self.tree.layout();
+            self.mutate_tree(|tree| tree.focus_root_child(len - 1));
         }
     }
 
@@ -2933,8 +2642,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         if idx == 0 {
             return;
         }
-        self.tree.focus_root_child(idx - 1);
-        self.tree.layout();
+        self.mutate_tree(|tree| tree.focus_root_child(idx - 1));
     }
 
     /// Leaves inside the current root container are 1-based.
@@ -2946,8 +2654,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             Some(idx) => idx,
             None => return,
         };
-        self.tree.focus_leaf_in_root_child(root_idx, index as usize);
-        self.tree.layout();
+        self.mutate_tree(|tree| tree.focus_leaf_in_root_child(root_idx, index as usize));
     }
 
     pub fn focus_column_first(&mut self) {
@@ -3013,11 +2720,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         if target >= self.tree.root_children_len() {
             return false;
         }
-        let moved = self.tree.move_root_child(current, target);
-        if moved {
-            self.tree.layout();
-        }
-        moved
+        self.mutate_tree(|tree| tree.move_root_child(current, target))
     }
 
     pub fn move_root_container_to_first(&mut self) {
@@ -3098,8 +2801,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         }
 
         if !self.move_command_target(direction) {
-            self.tree.split_focused(Layout::SplitV);
-            self.tree.layout();
+            self.mutate_tree(|tree| tree.split_focused(Layout::SplitV));
         }
     }
 
@@ -3423,12 +3125,11 @@ impl<W: LayoutElement> TilingSpace<W> {
             windowed_fullscreen_id: windowed_fullscreen_id.as_ref(),
             view_size: self.view_size,
         };
-        let interactive_resize = self.interactive_resize.as_ref();
+        let resize_data = self.interactive_resize_data_by_leaf(&layouts);
         for info in layouts {
             // Use O(1) key lookup instead of O(depth) path lookup.
             if let Some(tile) = self.tree.get_tile_mut(info.key) {
-                let resize = interactive_resize
-                    .and_then(|resize| Self::interactive_resize_data_for_path(&info.path, resize));
+                let resize = resize_data.get(&info.key).copied();
                 Self::update_window_state(tile, &info, resize, &ctx);
             }
         }
