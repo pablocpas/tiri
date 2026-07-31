@@ -222,7 +222,7 @@ pub fn handle_msg(mut msg: Msg, json: bool) -> anyhow::Result<()> {
 
             let print = |surface: &tiri_ipc::LayerSurface| {
                 println!("    Surface:");
-                println!("      Namespace: \"{}\"", &surface.namespace);
+                println!("      Namespace: \"{}\"", surface.namespace);
 
                 let interactivity = match surface.keyboard_interactivity {
                     tiri_ipc::LayerSurfaceKeyboardInteractivity::None => "none",

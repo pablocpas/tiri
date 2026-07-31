@@ -1626,7 +1626,7 @@ impl<W: LayoutElement> Layout<W> {
     ) -> Option<&mut Workspace<W>> {
         if let WorkspaceReference::Index(index) = reference {
             let workspace_id = self.find_workspace_by_number(index).map(|(_, ws)| ws.id());
-            return workspace_id.and_then(|id| self.workspaces_mut().find(|ws| ws.id() == id));
+            workspace_id.and_then(|id| self.workspaces_mut().find(|ws| ws.id() == id))
         } else {
             self.workspaces_mut().find(|ws| match &reference {
                 WorkspaceReference::Name(ref_name) => ws
@@ -3357,24 +3357,14 @@ impl<W: LayoutElement> Layout<W> {
 
         if let Some(target_output) = output.as_ref() {
             self.focus_output(target_output);
-            let Some(monitor) = self.active_monitor() else {
-                return None;
-            };
-            monitor.switch_workspace(idx);
-            self.seat_focus_restore_workspace(workspace_id);
-        } else if auto_back_and_forth {
-            let Some(monitor) = self.active_monitor() else {
-                return None;
-            };
-            monitor.switch_workspace_auto_back_and_forth(idx);
-            self.seat_focus_restore_workspace(workspace_id);
-        } else {
-            let Some(monitor) = self.active_monitor() else {
-                return None;
-            };
-            monitor.switch_workspace(idx);
-            self.seat_focus_restore_workspace(workspace_id);
         }
+        let monitor = self.active_monitor()?;
+        if output.is_none() && auto_back_and_forth {
+            monitor.switch_workspace_auto_back_and_forth(idx);
+        } else {
+            monitor.switch_workspace(idx);
+        }
+        self.seat_focus_restore_workspace(workspace_id);
 
         self.seat_focus_record_active_chain();
 
@@ -5010,7 +5000,7 @@ impl<W: LayoutElement> Layout<W> {
         }
 
         let focused_id = self.focus().map(|win| win.id().clone());
-        let sticky_target = window.map(|id| id.clone()).or_else(|| {
+        let sticky_target = window.cloned().or_else(|| {
             focused_id.as_ref().and_then(|id| {
                 self.monitors()
                     .any(|mon| mon.has_sticky_window(id))

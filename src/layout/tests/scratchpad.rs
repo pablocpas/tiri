@@ -502,11 +502,7 @@ fn scratchpad_show_hides_visible_then_shows_next() {
     // Show first scratchpad window
     layout.scratchpad_show();
     let workspace = layout.active_workspace().expect("active workspace");
-    let first_visible = if workspace.has_window(&id1) {
-        id1.clone()
-    } else {
-        id2.clone()
-    };
+    let first_visible = if workspace.has_window(&id1) { id1 } else { id2 };
     assert!(workspace.has_window(&first_visible));
 
     // Call scratchpad_show again - should hide current and show the other

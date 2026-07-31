@@ -239,7 +239,7 @@ where
                         binds.retain(|bind| !part.binds.0.iter().any(|new| new.key == bind.key));
                         binds.extend(part.binds.0);
                     } else {
-                        let entry = config.modes.entry(part.name).or_insert_with(Binds::default);
+                        let entry = config.modes.entry(part.name).or_default();
                         let binds = &mut entry.0;
                         binds.retain(|bind| !part.binds.0.iter().any(|new| new.key == bind.key));
                         binds.extend(part.binds.0);

@@ -1083,9 +1083,7 @@ impl<W: LayoutElement> Workspace<W> {
                 // selection/focus from the container command target.
                 let keep_floating_container_selection =
                     floating_active && wants_floating && self.floating.selected_is_container(None);
-                let activate = if keep_floating_focus {
-                    false
-                } else if keep_floating_container_selection {
+                let activate = if keep_floating_focus || keep_floating_container_selection {
                     false
                 } else if !wants_floating && has_tiling_fullscreen {
                     // Model rule: while a tiling window is fullscreen, newly opened tiling windows
@@ -2024,12 +2022,10 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn focus_window_by_id(&mut self, id: &W::Id) -> bool {
-        if self.floating.has_window(id) {
-            if self.floating.focus_window_by_id(id) {
-                self.floating_is_active = FloatingActive::Yes;
-                self.workspace_focus = WorkspaceFocus::OnContent;
-                return true;
-            }
+        if self.floating.has_window(id) && self.floating.focus_window_by_id(id) {
+            self.floating_is_active = FloatingActive::Yes;
+            self.workspace_focus = WorkspaceFocus::OnContent;
+            return true;
         }
 
         if self.tiling.activate_window(id) {
@@ -2395,13 +2391,11 @@ impl<W: LayoutElement> Workspace<W> {
             // handle requests while the client is catching up.
             let is_fullscreen_now = self.tiling.is_fullscreen(tile.window())
                 || tile.window().pending_sizing_mode().is_fullscreen();
-            if is_fullscreen_now && !tile.pending_maximized {
-                if tile.restore_to_floating {
-                    // Unfullscreen and float in one call so it has a chance to notice and request a
-                    // (0, 0) size, rather than the tiling tile size.
-                    self.toggle_window_floating(Some(window));
-                    return;
-                }
+            if is_fullscreen_now && !tile.pending_maximized && tile.restore_to_floating {
+                // Unfullscreen and float in one call so it has a chance to notice and request a
+                // (0, 0) size, rather than the tiling tile size.
+                self.toggle_window_floating(Some(window));
+                return;
             }
         }
 
@@ -2820,9 +2814,7 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn switch_focus_floating_tiling(&mut self) {
-        if self.floating.is_empty() {
-            return;
-        } else if self.tiling.is_empty() {
+        if self.floating.is_empty() || self.tiling.is_empty() {
             return;
         }
 

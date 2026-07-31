@@ -1463,10 +1463,9 @@ impl State {
                                 // If the active output changed (window was moved and focused).
                                 if !target_was_active
                                     && self.niri.layout.active_output() == Some(&output)
+                                    && !self.maybe_warp_cursor_to_focus_centered()
                                 {
-                                    if !self.maybe_warp_cursor_to_focus_centered() {
-                                        self.move_cursor_to_output(&output);
-                                    }
+                                    self.move_cursor_to_output(&output);
                                 }
                             } else {
                                 // If we focused the target window.

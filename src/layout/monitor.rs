@@ -831,7 +831,7 @@ impl<W: LayoutElement> Monitor<W> {
             (
                 WorkspaceIdentity::Numeric { number: a, .. },
                 WorkspaceIdentity::Numeric { number: b, .. },
-            ) => a.cmp(&b),
+            ) => a.cmp(b),
             (WorkspaceIdentity::Numeric { .. }, _) => std::cmp::Ordering::Less,
             (_, WorkspaceIdentity::Numeric { .. }) => std::cmp::Ordering::Greater,
             _ => std::cmp::Ordering::Equal,

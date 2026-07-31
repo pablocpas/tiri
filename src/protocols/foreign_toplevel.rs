@@ -100,6 +100,8 @@ pub fn refresh(state: &mut State) {
 
     // Collect the current surfaces once so closed-window detection doesn't repeatedly rescan the
     // layout, then refresh non-focused windows before the focused one.
+    // WlSurface hashes by protocol object id; its interior mutability never affects the hash.
+    #[allow(clippy::mutable_key_type)]
     let mut surfaces = HashSet::new();
     let mut windows = Vec::new();
     let mut focused = None;

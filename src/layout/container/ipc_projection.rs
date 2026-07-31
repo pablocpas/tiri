@@ -53,6 +53,7 @@ impl ContainerTree<Mapped> {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_layout_tree_node(
         &self,
         node_key: NodeKey,

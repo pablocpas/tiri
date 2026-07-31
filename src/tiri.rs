@@ -3880,6 +3880,18 @@ impl Niri {
         state.redraw_state = mem::take(&mut state.redraw_state).queue_redraw();
     }
 
+    fn next_output_with_queued_redraw(&self) -> Option<Output> {
+        self.output_state
+            .iter()
+            .find(|(_, state)| {
+                matches!(
+                    state.redraw_state,
+                    RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
+                )
+            })
+            .map(|(output, _)| output.clone())
+    }
+
     pub fn redraw_queued_outputs(&mut self, backend: &mut Backend) {
         let _span = tracy_client::span!("Niri::redraw_queued_outputs");
 
@@ -3895,16 +3907,7 @@ impl Niri {
             )
         };
 
-        loop {
-            let Some((output, _)) = self.output_state.iter().find(|(_, state)| {
-                matches!(
-                    state.redraw_state,
-                    RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
-                )
-            }) else {
-                break;
-            };
-            let output = output.clone();
+        while let Some(output) = self.next_output_with_queued_redraw() {
 
             // Try frame scheduling: delay render until just before vblank.
             let state = self.output_state.get_mut(&output).unwrap();

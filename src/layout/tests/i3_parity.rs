@@ -24,7 +24,7 @@ fn apply_parity_replay_op(layout: &mut Layout<TestWindow>, op: &str, next_id: &m
         "toggle_floating" => layout.toggle_window_floating(None),
         "toggle_focus_mode" => layout.switch_focus_floating_tiling(),
         "toggle_fullscreen" => {
-            if let Some(id) = layout.focus().map(|win| win.id().clone()) {
+            if let Some(id) = layout.focus().map(|win| *win.id()) {
                 layout.toggle_fullscreen(&id);
             }
         }
@@ -148,12 +148,12 @@ fn parity_seed1_step53_replay_includes_floating_roundtrip_shape() {
             "toggle_floating" => layout.toggle_window_floating(None),
             "toggle_focus_mode" => layout.switch_focus_floating_tiling(),
             "toggle_fullscreen" => {
-                if let Some(id) = layout.focus().map(|win| win.id().clone()) {
+                if let Some(id) = layout.focus().map(|win| *win.id()) {
                     layout.toggle_fullscreen(&id);
                 }
             }
             "close_focused" => {
-                if let Some(id) = layout.focus().map(|win| win.id().clone()) {
+                if let Some(id) = layout.focus().map(|win| *win.id()) {
                     layout.remove_window(&id, Transaction::new());
                 }
             }
@@ -400,12 +400,12 @@ fn parity_seed1_focus_parent_on_single_child_floating_wrapper_keeps_floating_mod
             "toggle_floating" => layout.toggle_window_floating(None),
             "toggle_focus_mode" => layout.switch_focus_floating_tiling(),
             "toggle_fullscreen" => {
-                if let Some(id) = layout.focus().map(|win| win.id().clone()) {
+                if let Some(id) = layout.focus().map(|win| *win.id()) {
                     layout.toggle_fullscreen(&id);
                 }
             }
             "close_focused" => {
-                if let Some(id) = layout.focus().map(|win| win.id().clone()) {
+                if let Some(id) = layout.focus().map(|win| *win.id()) {
                     layout.remove_window(&id, Transaction::new());
                 }
             }

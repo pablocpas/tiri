@@ -380,7 +380,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                 continue;
             };
             let request = self.layout_request_for(tile, info.rect.size, offset);
-            if current.get(&info.key).map_or(true, |old| *old != request) {
+            if current.get(&info.key).is_none_or(|old| *old != request) {
                 changed.insert(info.key);
             }
         }

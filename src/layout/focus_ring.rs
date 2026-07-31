@@ -539,9 +539,11 @@ mod tests {
 
     #[test]
     fn container_selection_prefers_focus_ring_when_visible() {
-        let mut focus = tiri_config::FocusRing::default();
-        focus.off = false;
-        focus.width = 3.0;
+        let focus = tiri_config::FocusRing {
+            off: false,
+            width: 3.0,
+            ..Default::default()
+        };
 
         let border = tiri_config::Border::default();
         let selected = container_selection_config(focus, border);
@@ -550,12 +552,16 @@ mod tests {
 
     #[test]
     fn container_selection_falls_back_to_border_when_focus_ring_off() {
-        let mut focus = tiri_config::FocusRing::default();
-        focus.off = true;
-        focus.width = 3.0;
+        let focus = tiri_config::FocusRing {
+            off: true,
+            width: 3.0,
+            ..Default::default()
+        };
 
-        let mut border = tiri_config::Border::default();
-        border.off = false;
+        let border = tiri_config::Border {
+            off: false,
+            ..Default::default()
+        };
 
         let selected = container_selection_config(focus, border);
         assert_eq!(selected, tiri_config::FocusRing::from(border));
@@ -563,12 +569,16 @@ mod tests {
 
     #[test]
     fn container_selection_falls_back_to_border_when_focus_ring_zero_width() {
-        let mut focus = tiri_config::FocusRing::default();
-        focus.off = false;
-        focus.width = 0.0;
+        let focus = tiri_config::FocusRing {
+            off: false,
+            width: 0.0,
+            ..Default::default()
+        };
 
-        let mut border = tiri_config::Border::default();
-        border.off = false;
+        let border = tiri_config::Border {
+            off: false,
+            ..Default::default()
+        };
 
         let selected = container_selection_config(focus, border);
         assert_eq!(selected, tiri_config::FocusRing::from(border));

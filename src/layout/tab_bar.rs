@@ -187,6 +187,7 @@ pub struct TabBarRenderOutput {
     pub tab_widths_px: Vec<i32>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_tab_bar(
     renderer: &mut GlesRenderer,
     config: &TabBar,
@@ -232,8 +233,8 @@ pub fn render_tab_bar(
         let base = width_px / tab_count_i32;
         let mut widths = vec![base.max(1); tab_count];
         let remainder = width_px - base * tab_count_i32;
-        for idx in 0..remainder as usize {
-            widths[idx] += 1;
+        for width in widths.iter_mut().take(remainder as usize) {
+            *width += 1;
         }
         widths
     } else {

@@ -961,7 +961,7 @@ where
             ));
         }
 
-        for (name, _) in &node.properties {
+        for name in node.properties.keys() {
             ctx.emit_error(DecodeError::unexpected(
                 name,
                 "property",

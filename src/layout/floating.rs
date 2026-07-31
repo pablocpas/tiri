@@ -13,8 +13,8 @@ use tiri_ipc::{ColumnDisplay, LayoutTreeNode, PositionChange, SizeChange, Window
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::container::{
-    ContainerTree, DetachedNode, Direction, InsertParentInfo, Layout, LeafLayoutInfo, RootPolicy,
-    TabBarInfo,
+    ContainerMetrics, ContainerTree, DetachedNode, Direction, InsertParentInfo, Layout,
+    LeafLayoutInfo, RootPolicy, TabBarInfo, TakenSubtree,
 };
 use super::focus_ring::{
     render_container_selection, ContainerSelectionStyle, FocusRingEdges, FocusRingRenderElement,
@@ -748,8 +748,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     pub fn window_under(&self, pos: Point<f64, Logical>) -> Option<(&W, super::HitType)> {
         if let Some(fullscreen_id) = &self.fullscreen_window {
             let tile = self.tiles().find(|t| t.window().id() == fullscreen_id)?;
-            return super::HitType::hit_tile(tile, Point::from((0.0, 0.0)), pos)
-                .map(|(w, ht)| (w, ht));
+            return super::HitType::hit_tile(tile, Point::from((0.0, 0.0)), pos);
         }
 
         if let Some(hit) = self.tab_bar_hit(pos) {
@@ -1271,7 +1270,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         tree.layout();
 
         let focus_id = focus
-            .map(|id| id.clone())
+            .cloned()
             .or_else(|| tree.focused_window().map(|win| win.id().clone()));
 
         let container = FloatingContainer {
@@ -1326,14 +1325,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         self.remove_tile_from_container(idx, id)
     }
 
-    pub(super) fn take_container_subtree(
-        &mut self,
-        id: &W::Id,
-    ) -> Option<(
-        DetachedNode<W>,
-        Option<InsertParentInfo>,
-        Rectangle<f64, Logical>,
-    )> {
+    pub(super) fn take_container_subtree(&mut self, id: &W::Id) -> Option<TakenSubtree<W>> {
         // Clear fullscreen if the subtree contains the fullscreen window.
         if let Some(fs_id) = &self.fullscreen_window {
             if self.idx_of(fs_id) == self.idx_of(id) {
@@ -1642,7 +1634,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         tree: &ContainerTree<W>,
         path: &[usize],
         layout: Layout,
-    ) -> Option<(Vec<usize>, usize, f64, usize, Rectangle<f64, Logical>)> {
+    ) -> Option<ContainerMetrics> {
         let (parent_path, child_idx) = tree.find_parent_with_layout(path.to_vec(), layout)?;
         let (container_layout, rect, child_count) = tree.container_info(parent_path.as_slice())?;
         if container_layout != layout || child_count == 0 {

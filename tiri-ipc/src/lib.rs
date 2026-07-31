@@ -1256,22 +1256,17 @@ pub enum ColumnDisplay {
 }
 
 /// Marking mode for the focused window.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum MarkMode {
     /// Replace marks on the focused window with the provided mark.
+    #[default]
     Replace,
     /// Add the mark to the focused window without clearing other marks.
     Add,
     /// Toggle the mark on the focused window.
     Toggle,
-}
-
-impl Default for MarkMode {
-    fn default() -> Self {
-        MarkMode::Replace
-    }
 }
 
 impl std::fmt::Display for MarkMode {

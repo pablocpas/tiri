@@ -43,9 +43,10 @@ new_key_type! {
 // ============================================================================
 
 /// Layout mode for a container (following i3 model)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Layout {
     /// Horizontal split - children arranged left to right
+    #[default]
     SplitH,
     /// Vertical split - children arranged top to bottom
     SplitV,
@@ -84,6 +85,9 @@ pub struct TabBarInfo {
 const MIN_CHILD_PERCENT: f64 = 0.05;
 
 /// Node type in the container tree
+// Tile<W> dwarfs ContainerData, but trees hold one node per window; boxing the
+// tile would add an indirection on every render-path access for negligible savings.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum NodeData<W: LayoutElement> {
     /// Container node with children (stored as keys)
@@ -93,6 +97,7 @@ pub enum NodeData<W: LayoutElement> {
 }
 
 /// Detached subtree used to move container structures across trees.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum DetachedNode<W: LayoutElement> {
     Container(DetachedContainer<W>),
@@ -144,6 +149,16 @@ pub(super) struct InsertParentInfo {
     pub layout: Layout,
     pub child_percents: Vec<f64>,
 }
+
+/// Subtree detached from a tree along with its origin info and geometry.
+pub(super) type TakenSubtree<W> = (
+    DetachedNode<W>,
+    Option<InsertParentInfo>,
+    Rectangle<f64, Logical>,
+);
+
+/// Parent path, child index, available span, child count and rect of a window's container.
+pub(super) type ContainerMetrics = (Vec<usize>, usize, f64, usize, Rectangle<f64, Logical>);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum InactiveTilingReference {
@@ -808,8 +823,8 @@ impl<W: LayoutElement> DetachedContainer<W> {
                 true
             }
         });
-        for idx in 0..self.children.len() {
-            if !seen[idx] {
+        for (idx, seen) in seen.iter().enumerate() {
+            if !seen {
                 self.focus_stack.push(idx);
             }
         }
@@ -992,7 +1007,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         percents
     }
 
-    fn normalize_child_percents_for_preview(percents: &mut Vec<f64>) {
+    fn normalize_child_percents_for_preview(percents: &mut [f64]) {
         if percents.is_empty() {
             return;
         }
@@ -2426,13 +2441,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             if let Some(parent_key) = parent_key {
                 if let Some(container) = self.get_container(parent_key) {
                     // Check if this container's layout matches the direction
-                    let layout_matches = match (container.layout, direction) {
-                        (Layout::SplitH | Layout::Tabbed, Direction::Left | Direction::Right) => {
-                            true
-                        }
-                        (Layout::SplitV | Layout::Stacked, Direction::Up | Direction::Down) => true,
-                        _ => false,
-                    };
+                    let layout_matches = container.layout.is_parallel_to(direction);
 
                     if !layout_matches {
                         continue;
@@ -2756,11 +2765,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         };
 
-        let layout_matches = match (parent_layout, direction) {
-            (Layout::SplitH | Layout::Tabbed, Direction::Left | Direction::Right) => true,
-            (Layout::SplitV | Layout::Stacked, Direction::Up | Direction::Down) => true,
-            _ => false,
-        };
+        let layout_matches = parent_layout.is_parallel_to(direction);
 
         if layout_matches {
             let child_count = match self.get_container(parent_key) {
@@ -2869,11 +2874,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     break;
                 };
 
-                let ancestor_parallel = match (ancestor_parent_layout, direction) {
-                    (Layout::SplitH | Layout::Tabbed, Direction::Left | Direction::Right) => true,
-                    (Layout::SplitV | Layout::Stacked, Direction::Up | Direction::Down) => true,
-                    _ => false,
-                };
+                let ancestor_parallel = ancestor_parent_layout.is_parallel_to(direction);
                 if !ancestor_parallel {
                     ancestor_path.pop();
                     continue;
@@ -3077,10 +3078,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub fn collapse_redundant_root_single_child_split(&mut self) -> bool {
         let mut changed = false;
 
-        loop {
-            let Some(root_key) = self.root else {
-                break;
-            };
+        while let Some(root_key) = self.root {
             let Some(root_container) = self.get_container(root_key) else {
                 break;
             };
@@ -5391,10 +5389,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             key = parent_key;
         }
 
-        loop {
-            let Some(root_key) = self.root else {
-                break;
-            };
+        while let Some(root_key) = self.root {
             let Some(root) = self.get_container(root_key) else {
                 break;
             };
@@ -5676,11 +5671,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             return Some(child_key);
         }
 
-        if let Some(parent) = self.get_container_mut(parent_key) {
-            let _ = parent.remove_child(child_idx);
-        } else {
-            return None;
-        }
+        let _ = self.get_container_mut(parent_key)?.remove_child(child_idx);
         self.set_parent(child_key, None);
 
         let mut wrapper = ContainerData::new(layout);
@@ -5688,11 +5679,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         let wrapper_key = self.insert_node(NodeData::Container(wrapper));
         self.set_parent(child_key, Some(wrapper_key));
 
-        if let Some(parent) = self.get_container_mut(parent_key) {
-            parent.insert_child(child_idx, wrapper_key);
-        } else {
-            return None;
-        }
+        self.get_container_mut(parent_key)?
+            .insert_child(child_idx, wrapper_key);
         self.set_parent(wrapper_key, Some(parent_key));
 
         Some(wrapper_key)
@@ -5857,9 +5845,14 @@ fn reconcile_leaf_layouts(
 // Additional helper implementations
 // ============================================================================
 
-impl Default for Layout {
-    fn default() -> Self {
-        Layout::SplitH
+impl Layout {
+    /// Whether children of a container with this layout are arranged along `direction`'s axis,
+    /// so that moving or focusing in that direction steps between siblings.
+    pub fn is_parallel_to(self, direction: Direction) -> bool {
+        match self {
+            Layout::SplitH | Layout::Tabbed => direction.is_horizontal(),
+            Layout::SplitV | Layout::Stacked => direction.is_vertical(),
+        }
     }
 }
 

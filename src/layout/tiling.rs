@@ -23,8 +23,8 @@ use tiri_ipc::{ColumnDisplay, LayoutTreeNode, SizeChange};
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::container::{
-    ContainerTree, DetachedContainer, DetachedNode, Direction, InsertParentInfo, Layout,
-    LeafLayoutInfo, RootPolicy,
+    ContainerMetrics, ContainerTree, DetachedContainer, DetachedNode, Direction, InsertParentInfo,
+    Layout, LeafLayoutInfo, RootPolicy, TakenSubtree,
 };
 use super::focus_ring::{
     render_container_selection, ContainerSelectionStyle, FocusRingEdges, FocusRingIndicatorEdge,
@@ -98,6 +98,19 @@ pub struct TilingSpace<W: LayoutElement> {
     overview_offscreen: OffscreenBuffer,
     /// Stable workspace-sized background used under the overview offscreen.
     overview_background: SolidColorBuffer,
+}
+
+/// Workspace-wide context shared by every tile in an `update_window_state` pass.
+struct WindowStateContext<'a, W: LayoutElement> {
+    focus_path: &'a [usize],
+    workspace_active: bool,
+    deactivate_unfocused: bool,
+    request_size: bool,
+    working_area_size: Size<f64, Logical>,
+    options: &'a Options,
+    fullscreen_id: Option<&'a W::Id>,
+    windowed_fullscreen_id: Option<&'a W::Id>,
+    view_size: Size<f64, Logical>,
 }
 
 #[derive(Debug, Clone)]
@@ -181,8 +194,9 @@ pub struct RootTilingSubtree<W: LayoutElement> {
 }
 
 /// Window height specification for tiling layout
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub enum WindowHeight {
+    #[default]
     Auto,
     Fixed(i32),
 }
@@ -457,18 +471,14 @@ impl<W: LayoutElement> TilingSpace<W> {
         } else {
             let selected_path = self.tree.selected_path();
             if selected_path.is_empty() {
-                self.tree.focused_window().is_some().then(|| selected_path)
+                self.tree.focused_window().is_some().then_some(selected_path)
             } else {
                 Some(selected_path)
             }
         }
     }
 
-    fn window_container_metrics(
-        &self,
-        path: &[usize],
-        layout: Layout,
-    ) -> Option<(Vec<usize>, usize, f64, usize, Rectangle<f64, Logical>)> {
+    fn window_container_metrics(&self, path: &[usize], layout: Layout) -> Option<ContainerMetrics> {
         let (parent_path, child_idx) = self.tree.find_parent_with_layout(path.to_vec(), layout)?;
         let (container_layout, rect, child_count) =
             self.tree.container_info(parent_path.as_slice())?;
@@ -546,13 +556,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             .unwrap_or_default()
     }
 
-    pub(super) fn take_selected_subtree(
-        &mut self,
-    ) -> Option<(
-        DetachedNode<W>,
-        Option<InsertParentInfo>,
-        Rectangle<f64, Logical>,
-    )> {
+    pub(super) fn take_selected_subtree(&mut self) -> Option<TakenSubtree<W>> {
         let path = self.tree.selected_path();
         let rect = self.selected_geometry()?;
         let (subtree, origin) = self.tree.take_subtree_at_path(&path)?;
@@ -737,12 +741,8 @@ impl<W: LayoutElement> TilingSpace<W> {
         mut edges: ResizeEdge,
         pos: Option<Point<f64, Logical>>,
     ) -> Option<(ResizeEdge, Option<ResizeTarget>, Option<ResizeTarget>)> {
-        let Some(path) = self.tree.find_window(window) else {
-            return None;
-        };
-        let Some(tile) = self.tree.tile_at_path(&path) else {
-            return None;
-        };
+        let path = self.tree.find_window(window)?;
+        let tile = self.tree.tile_at_path(&path)?;
 
         if !tile.window().pending_sizing_mode().is_normal() {
             return None;
@@ -856,7 +856,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn is_active_pending_fullscreen(&self) -> bool {
-        self.tree.focused_tile().map_or(false, |tile| {
+        self.tree.focused_tile().is_some_and(|tile| {
             tile.window().pending_sizing_mode().is_fullscreen()
                 || tile.window().is_pending_windowed_fullscreen()
         })
@@ -915,7 +915,7 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     pub fn remove_window(&mut self, window: &W) -> Option<RemovedTile<W>> {
         let window_id = window.id();
-        let tile = self.tree.remove_window(&window_id)?;
+        let tile = self.tree.remove_window(window_id)?;
 
         if self
             .fullscreen_window
@@ -1281,27 +1281,24 @@ impl<W: LayoutElement> TilingSpace<W> {
             })
             .collect();
 
+        let ctx = WindowStateContext {
+            focus_path: &focus_path,
+            workspace_active: is_active,
+            deactivate_unfocused: self.options.deactivate_unfocused_windows,
+            request_size: !has_pending,
+            working_area_size: self.working_area.size,
+            options: &self.options,
+            fullscreen_id: logical_fullscreen_id.as_ref(),
+            windowed_fullscreen_id: windowed_fullscreen_id.as_ref(),
+            view_size: self.view_size,
+        };
+        let interactive_resize = self.interactive_resize.as_ref();
         for info in state_layouts {
             // Use O(1) key lookup instead of O(depth) path lookup.
             if let Some(tile) = self.tree.get_tile_mut(info.key) {
-                let resize = self
-                    .interactive_resize
-                    .as_ref()
+                let resize = interactive_resize
                     .and_then(|resize| Self::interactive_resize_data_for_path(&info.path, resize));
-                Self::update_window_state(
-                    tile,
-                    &info,
-                    &focus_path,
-                    is_active,
-                    self.options.deactivate_unfocused_windows,
-                    resize,
-                    !has_pending,
-                    self.working_area.size,
-                    &self.options,
-                    logical_fullscreen_id.as_ref(),
-                    windowed_fullscreen_id.as_ref(),
-                    self.view_size,
-                );
+                Self::update_window_state(tile, &info, resize, &ctx);
             }
         }
 
@@ -1546,7 +1543,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                 return;
             }
             let score = dist / edge_threshold.max(1.0);
-            if best.map_or(true, |(_, best_score)| score < best_score) {
+            if best.is_none_or(|(_, best_score)| score < best_score) {
                 best = Some((edge, score));
             }
         };
@@ -3080,9 +3077,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn focus_first_leaf(&mut self) {
-        if self.tree.focus_leaf_in_root_child(0, 1) {
-            self.tree.layout();
-        } else if self.tree.focus_root_child(0) {
+        if self.tree.focus_leaf_in_root_child(0, 1) || self.tree.focus_root_child(0) {
             self.tree.layout();
         }
     }
@@ -3596,29 +3591,24 @@ impl<W: LayoutElement> TilingSpace<W> {
             None
         };
 
+        let ctx = WindowStateContext {
+            focus_path: &focus_path,
+            workspace_active: is_active,
+            deactivate_unfocused: self.options.deactivate_unfocused_windows && !is_focused,
+            request_size: !has_pending,
+            working_area_size: self.working_area.size,
+            options: &self.options,
+            fullscreen_id: fullscreen_id.as_ref(),
+            windowed_fullscreen_id: windowed_fullscreen_id.as_ref(),
+            view_size: self.view_size,
+        };
+        let interactive_resize = self.interactive_resize.as_ref();
         for info in layouts {
             // Use O(1) key lookup instead of O(depth) path lookup.
             if let Some(tile) = self.tree.get_tile_mut(info.key) {
-                let deactivate_unfocused = self.options.deactivate_unfocused_windows && !is_focused;
-
-                let resize = self
-                    .interactive_resize
-                    .as_ref()
+                let resize = interactive_resize
                     .and_then(|resize| Self::interactive_resize_data_for_path(&info.path, resize));
-                Self::update_window_state(
-                    tile,
-                    &info,
-                    &focus_path,
-                    is_active,
-                    deactivate_unfocused,
-                    resize,
-                    !has_pending,
-                    self.working_area.size,
-                    &self.options,
-                    fullscreen_id.as_ref(),
-                    windowed_fullscreen_id.as_ref(),
-                    self.view_size,
-                );
+                Self::update_window_state(tile, &info, resize, &ctx);
             }
         }
     }
@@ -3690,17 +3680,21 @@ impl<W: LayoutElement> TilingSpace<W> {
     fn update_window_state(
         tile: &mut Tile<W>,
         info: &LeafLayoutInfo,
-        focus_path: &[usize],
-        workspace_active: bool,
-        deactivate_unfocused: bool,
         interactive_resize: Option<InteractiveResizeData>,
-        request_size: bool,
-        working_area_size: Size<f64, Logical>,
-        options: &Options,
-        fullscreen_id: Option<&W::Id>,
-        windowed_fullscreen_id: Option<&W::Id>,
-        view_size: Size<f64, Logical>,
+        ctx: &WindowStateContext<'_, W>,
     ) {
+        let &WindowStateContext {
+            focus_path,
+            workspace_active,
+            deactivate_unfocused,
+            request_size,
+            working_area_size,
+            options,
+            fullscreen_id,
+            windowed_fullscreen_id,
+            view_size,
+        } = ctx;
+
         let window_id = tile.window().id().clone();
         let is_focused_tile = info.path == focus_path;
         let is_fullscreen_tile = fullscreen_id.is_some_and(|id| id == &window_id);
@@ -3817,11 +3811,6 @@ impl<W: LayoutElement> RootTilingSubtree<W> {
     }
 }
 
-impl Default for WindowHeight {
-    fn default() -> Self {
-        Self::Auto
-    }
-}
 
 fn compute_toplevel_bounds(
     border_config: Border,

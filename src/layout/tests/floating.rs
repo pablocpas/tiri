@@ -949,12 +949,11 @@ fn floating_toggle_after_split_marks_container_as_grouped() {
     );
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let floating_id = workspace
+    let floating_id = *workspace
         .floating()
         .active_window()
         .expect("floating window should stay active")
-        .id()
-        .clone();
+        .id();
     assert!(workspace.is_floating(&floating_id));
     assert!(
         workspace.floating_container_allows_splits(&floating_id),
