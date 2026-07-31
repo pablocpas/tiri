@@ -726,22 +726,14 @@ impl<W: LayoutElement> ContainerTree<W> {
                         let Some(child_idx) = self.child_index(target_key, node_key) else {
                             return false;
                         };
-
-                        if let Some(container) = self.get_container_mut(target_key) {
-                            container.remove_child(child_idx);
+                        let Some(nested_key) =
+                            self.wrap_child_in_container(target_key, child_idx, layout)
+                        else {
+                            return false;
+                        };
+                        if let Some(nested) = self.get_container_mut(nested_key) {
+                            nested.mark_preserve_on_single();
                         }
-                        self.set_parent(node_key, None);
-
-                        let mut nested = ContainerData::new(layout);
-                        nested.mark_preserve_on_single();
-                        nested.add_child(node_key);
-                        let nested_key = self.insert_node(NodeData::Container(nested));
-                        self.set_parent(node_key, Some(nested_key));
-
-                        if let Some(container) = self.get_container_mut(target_key) {
-                            container.insert_child(child_idx, nested_key);
-                        }
-                        self.set_parent(nested_key, Some(target_key));
 
                         self.focus_node_key(node_key);
                         return true;
@@ -842,12 +834,10 @@ impl<W: LayoutElement> ContainerTree<W> {
             if target != TreeCommandTarget::Workspace {
                 return false;
             }
-            let next = match self.pending_layout.unwrap_or(Layout::SplitH) {
-                Layout::SplitH => Layout::SplitV,
-                Layout::SplitV => Layout::Stacked,
-                Layout::Stacked => Layout::Tabbed,
-                Layout::Tabbed => Layout::SplitH,
-            };
+            let next = self
+                .pending_layout
+                .unwrap_or(Layout::SplitH)
+                .next_in_cycle();
             self.pending_layout = Some(next);
             self.pending_layout_wrap_on_split = false;
             return true;
@@ -862,12 +852,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             None => return false,
         };
 
-        let next = match current {
-            Layout::SplitH => Layout::SplitV,
-            Layout::SplitV => Layout::Stacked,
-            Layout::Stacked => Layout::Tabbed,
-            Layout::Tabbed => Layout::SplitH,
-        };
+        let next = current.next_in_cycle();
 
         if let Some(container) = self.get_container_mut(target_key) {
             container.set_layout_explicit(next);

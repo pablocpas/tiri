@@ -891,6 +891,17 @@ impl Layout {
             Layout::SplitV | Layout::Stacked => direction.is_vertical(),
         }
     }
+
+    /// Next layout in sway's `layout toggle all` cycle:
+    /// SplitH -> SplitV -> Stacked -> Tabbed -> SplitH.
+    pub fn next_in_cycle(self) -> Layout {
+        match self {
+            Layout::SplitH => Layout::SplitV,
+            Layout::SplitV => Layout::Stacked,
+            Layout::Stacked => Layout::Tabbed,
+            Layout::Tabbed => Layout::SplitH,
+        }
+    }
 }
 
 impl Direction {

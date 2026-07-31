@@ -1,9 +1,7 @@
 //! Preview geometry for insert hints (drag-and-drop and open-placement previews).
 
 use smithay::utils::Logical;
-use smithay::utils::Point;
 use smithay::utils::Rectangle;
-use smithay::utils::Size;
 
 use super::ContainerTree;
 use super::Layout;
@@ -172,94 +170,24 @@ impl<W: LayoutElement> ContainerTree<W> {
         child_idx: usize,
         child_is_leaf: bool,
     ) -> (Rectangle<f64, Logical>, f64) {
-        let gap = self.options.layout.gaps;
+        let (child_rects, _) = self.child_rects_for_layout(layout, rect, child_count, percents);
         match layout {
-            Layout::SplitH => {
-                let total_gap = if child_count > 1 {
-                    gap * (child_count as f64 - 1.0)
+            Layout::SplitH | Layout::SplitV => {
+                let Some(child_rect) = child_rects.get(child_idx).copied() else {
+                    return (rect, 0.0);
+                };
+                let split_bar_height = self.split_title_bar_height();
+                let tab_bar_offset = if child_is_leaf && split_bar_height > 0.0 {
+                    split_bar_height
                 } else {
                     0.0
                 };
-                let available_width = (rect.size.w - total_gap).max(0.0);
-                let widths = self.distribute_split_lengths(available_width, child_count, percents);
-                let mut cursor_x = rect.loc.x;
-                let split_bar_height = self.split_title_bar_height();
-                for idx in 0..child_count {
-                    let width = *widths.get(idx).unwrap_or(&0.0);
-                    if idx == child_idx {
-                        let child_rect = Rectangle::new(
-                            Point::from((cursor_x, rect.loc.y)),
-                            Size::from((width, rect.size.h)),
-                        );
-                        let tab_bar_offset = if child_is_leaf && split_bar_height > 0.0 {
-                            split_bar_height
-                        } else {
-                            0.0
-                        };
-                        return (child_rect, tab_bar_offset);
-                    }
-                    if idx + 1 < child_count {
-                        cursor_x += width + gap;
-                    }
-                }
-            }
-            Layout::SplitV => {
-                let total_gap = if child_count > 1 {
-                    gap * (child_count as f64 - 1.0)
-                } else {
-                    0.0
-                };
-                let available_height = (rect.size.h - total_gap).max(0.0);
-                let heights =
-                    self.distribute_split_lengths(available_height, child_count, percents);
-                let mut cursor_y = rect.loc.y;
-                let split_bar_height = self.split_title_bar_height();
-                for idx in 0..child_count {
-                    let height = *heights.get(idx).unwrap_or(&0.0);
-                    if idx == child_idx {
-                        let child_rect = Rectangle::new(
-                            Point::from((rect.loc.x, cursor_y)),
-                            Size::from((rect.size.w, height)),
-                        );
-                        let tab_bar_offset = if child_is_leaf && split_bar_height > 0.0 {
-                            split_bar_height
-                        } else {
-                            0.0
-                        };
-                        return (child_rect, tab_bar_offset);
-                    }
-                    if idx + 1 < child_count {
-                        cursor_y += height + gap;
-                    }
-                }
+                (child_rect, tab_bar_offset)
             }
             Layout::Tabbed | Layout::Stacked => {
-                // No gap padding for tabbed/stacked.
-                let inner_rect = rect;
-
-                let bar_row_height = self.tab_bar_row_height();
-                let mut tab_offset = 0.0;
-                if bar_row_height > 0.0 && child_count > 0 {
-                    let bar_height = match layout {
-                        Layout::Tabbed => bar_row_height,
-                        Layout::Stacked => bar_row_height * child_count as f64,
-                        _ => 0.0,
-                    };
-                    let total_bar_height = (bar_height + self.tab_bar_spacing())
-                        .min(inner_rect.size.h)
-                        .max(0.0);
-                    tab_offset = total_bar_height;
-                }
-
-                let mut content_rect = inner_rect;
-                if tab_offset > 0.0 {
-                    content_rect.loc.y += tab_offset;
-                    content_rect.size.h = (content_rect.size.h - tab_offset).max(0.0);
-                }
-                return (content_rect, 0.0);
+                let content_rect = child_rects.first().copied().unwrap_or(rect);
+                (content_rect, 0.0)
             }
         }
-
-        (rect, 0.0)
     }
 }

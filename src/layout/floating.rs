@@ -14,14 +14,13 @@ use tiri_ipc::{ColumnDisplay, LayoutTreeNode, PositionChange, SizeChange, Window
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::container::{
     ContainerMetrics, ContainerTree, DetachedNode, Direction, InsertParentInfo, Layout,
-    LeafLayoutInfo, RootPolicy, TabBarInfo, TakenSubtree,
+    LeafLayoutInfo, NodeKey, RootPolicy, TabBarInfo, TakenSubtree,
 };
 use super::focus_ring::{
     render_container_selection, ContainerSelectionStyle, FocusRingEdges, FocusRingRenderElement,
 };
 use super::legacy_column::ColumnWidth;
 use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
-use super::tile::{TilePtrIter, TilePtrIterMut, TileWithPosIterMut};
 use super::workspace::{InteractiveResize, ResolvedSize};
 use super::{
     resize_edges_for_point, ConfigureIntent, InteractiveResizeData, LayoutElement, Options,
@@ -244,24 +243,24 @@ impl FloatingContainerData {
     }
 }
 
-/// Helper to create tile iterator
-fn floating_tile_iter<'a, W: LayoutElement>(space: &'a FloatingSpace<W>) -> TilePtrIter<'a, W> {
-    let mut tiles = Vec::new();
-    for container in &space.containers {
-        tiles.extend(container.tree.tile_ptrs());
-    }
-    TilePtrIter::new(tiles)
+/// All tiles across the floating containers, in container order.
+fn floating_tile_iter<'a, W: LayoutElement>(
+    space: &'a FloatingSpace<W>,
+) -> impl Iterator<Item = &'a Tile<W>> + 'a {
+    space
+        .containers
+        .iter()
+        .flat_map(|container| container.tree.all_tiles())
 }
 
-/// Helper to create mutable tile iterator
+/// All tiles across the floating containers (mutable), in container order.
 fn floating_tile_iter_mut<'a, W: LayoutElement>(
     space: &'a mut FloatingSpace<W>,
-) -> TilePtrIterMut<'a, W> {
-    let mut tiles = Vec::new();
-    for container in &mut space.containers {
-        tiles.extend(container.tree.tile_ptrs_mut());
-    }
-    TilePtrIterMut::new(tiles)
+) -> impl Iterator<Item = &'a mut Tile<W>> + 'a {
+    space
+        .containers
+        .iter_mut()
+        .flat_map(|container| container.tree.all_tiles_mut())
 }
 
 impl<W: LayoutElement> FloatingSpace<W> {
@@ -599,18 +598,17 @@ impl<W: LayoutElement> FloatingSpace<W> {
     pub fn tiles_with_offsets_mut(
         &mut self,
     ) -> impl Iterator<Item = (&mut Tile<W>, Point<f64, Logical>)> + '_ {
-        let mut tiles = Vec::new();
-        for container in &mut self.containers {
+        self.containers.iter_mut().flat_map(|container| {
             let offset = container.data.logical_pos;
             let layouts = Self::display_layouts(&container.tree).to_vec();
-            for info in layouts {
-                if let Some(tile) = container.tree.get_tile_mut(info.key) {
-                    tiles.push((tile as *mut Tile<W>, offset + info.rect.loc));
-                }
-            }
-        }
-
-        TileWithPosIterMut::new(tiles)
+            let keys: Vec<NodeKey> = layouts.iter().map(|info| info.key).collect();
+            let locs: Vec<Point<f64, Logical>> = layouts.iter().map(|info| info.rect.loc).collect();
+            container
+                .tree
+                .tiles_mut_for_keys(&keys)
+                .into_iter()
+                .map(move |(idx, tile)| (tile, offset + locs[idx]))
+        })
     }
 
     pub fn tiles_with_render_positions(
@@ -2264,15 +2262,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
             && matches!(root.layout(), Layout::SplitH | Layout::SplitV)
     }
 
-    fn next_layout_all(current: Layout) -> Layout {
-        match current {
-            Layout::SplitH => Layout::SplitV,
-            Layout::SplitV => Layout::Stacked,
-            Layout::Stacked => Layout::Tabbed,
-            Layout::Tabbed => Layout::SplitH,
-        }
-    }
-
     fn consume_or_expel_window(&mut self, window: Option<&W::Id>, direction: Direction) {
         if let Some(id) = window {
             if !self.activate_window(id) {
@@ -2467,7 +2456,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         if let Some(path) = target_path {
             if let Some((current, _, _)) = self.containers[idx].tree.container_info(&path) {
-                let next = Self::next_layout_all(current);
+                let next = current.next_in_cycle();
                 if let Some(container) = self.containers[idx].tree.container_at_path_mut(&path) {
                     container.set_layout_explicit(next);
                     return true;
@@ -3175,12 +3164,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let diff = prev_pos - new_pos;
         if diff.x * diff.x + diff.y * diff.y > ANIMATION_THRESHOLD_SQ {
             let delta = prev_pos - new_pos;
-            for tile in container.tree.tile_ptrs_mut() {
-                unsafe {
-                    if let Some(tile) = tile.as_mut() {
-                        tile.animate_move_from(delta);
-                    }
-                }
+            for tile in container.tree.all_tiles_mut() {
+                tile.animate_move_from(delta);
             }
         }
     }

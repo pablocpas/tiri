@@ -1,5 +1,7 @@
 //! Read-only traversals and collection queries over the tree.
 
+use std::collections::HashMap;
+
 use smithay::utils::Logical;
 use smithay::utils::Rectangle;
 
@@ -94,47 +96,57 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Collect raw pointers to tiles (immutable) in depth-first order.
-    pub(in crate::layout) fn tile_ptrs(&self) -> Vec<*const Tile<W>> {
-        let mut tiles = Vec::new();
+    /// Leaf node keys in depth-first (visual) order.
+    pub(super) fn dfs_leaf_keys(&self) -> Vec<NodeKey> {
+        let mut keys = Vec::new();
         if let Some(root_key) = self.root {
-            self.collect_tile_ptrs(root_key, &mut tiles);
+            self.collect_leaf_keys(root_key, &mut keys);
         }
-        tiles
+        keys
     }
 
-    pub(super) fn collect_tile_ptrs(&self, node_key: NodeKey, out: &mut Vec<*const Tile<W>>) {
+    fn collect_leaf_keys(&self, node_key: NodeKey, out: &mut Vec<NodeKey>) {
         match self.get_node(node_key) {
-            Some(NodeData::Leaf(tile)) => out.push(tile as *const _),
+            Some(NodeData::Leaf(_)) => out.push(node_key),
             Some(NodeData::Container(container)) => {
                 for &child_key in &container.children {
-                    self.collect_tile_ptrs(child_key, out);
+                    self.collect_leaf_keys(child_key, out);
                 }
             }
             None => {}
         }
     }
 
-    /// Collect raw pointers to tiles (mutable) in depth-first order.
-    pub(in crate::layout) fn tile_ptrs_mut(&mut self) -> Vec<*mut Tile<W>> {
-        let mut tiles = Vec::new();
-        if let Some(root_key) = self.root {
-            self.collect_tile_ptrs_mut(root_key, &mut tiles);
-        }
-        tiles
+    /// All tiles mutably, in depth-first (visual) order.
+    pub(in crate::layout) fn all_tiles_mut(&mut self) -> Vec<&mut Tile<W>> {
+        let keys = self.dfs_leaf_keys();
+        self.tiles_mut_for_keys(&keys)
+            .into_iter()
+            .map(|(_, tile)| tile)
+            .collect()
     }
 
-    pub(super) fn collect_tile_ptrs_mut(&mut self, node_key: NodeKey, out: &mut Vec<*mut Tile<W>>) {
-        // Safety: We're creating raw pointers, caller must ensure proper usage
-        match self.get_node_mut(node_key) {
-            Some(NodeData::Leaf(tile)) => out.push(tile as *mut _),
-            Some(NodeData::Container(container)) => {
-                let children = container.children.clone();
-                for child_key in children {
-                    self.collect_tile_ptrs_mut(child_key, out);
-                }
-            }
-            None => {}
-        }
+    /// Mutable tiles for `keys`, each tagged with the index of its key in `keys` and sorted
+    /// by that index. Keys that are not (or no longer) leaves of this tree are skipped.
+    pub(in crate::layout) fn tiles_mut_for_keys(
+        &mut self,
+        keys: &[NodeKey],
+    ) -> Vec<(usize, &mut Tile<W>)> {
+        let rank: HashMap<NodeKey, usize> = keys
+            .iter()
+            .enumerate()
+            .map(|(idx, key)| (*key, idx))
+            .collect();
+        let mut out: Vec<(usize, &mut Tile<W>)> = self
+            .nodes
+            .iter_mut()
+            .filter_map(|(key, node)| match node {
+                NodeData::Leaf(tile) => rank.get(&key).map(|&idx| (idx, tile)),
+                _ => None,
+            })
+            .collect();
+        out.sort_by_key(|(idx, _)| *idx);
+        out
     }
 
     /// Helper: get tile at a given path (immutable).

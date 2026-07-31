@@ -10,7 +10,6 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::marker::PhantomData;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -24,7 +23,7 @@ use tiri_ipc::{ColumnDisplay, LayoutTreeNode, SizeChange};
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::container::{
     ContainerMetrics, ContainerTree, DetachedContainer, DetachedNode, Direction, InsertParentInfo,
-    Layout, LeafLayoutInfo, RootPolicy, TakenSubtree,
+    Layout, LeafLayoutInfo, NodeKey, RootPolicy, TakenSubtree,
 };
 use super::focus_ring::{
     render_container_selection, ContainerSelectionStyle, FocusRingEdges, FocusRingIndicatorEdge,
@@ -33,7 +32,6 @@ use super::focus_ring::{
 use super::legacy_column::{Column, ColumnWidth};
 use super::monitor::{InsertPosition, SplitIndicator};
 use super::tile::{Tile, TileRenderElement};
-use super::tile::{TilePtrIter, TilePtrIterMut};
 use super::viewport::FixedViewport;
 use super::{
     ConfigureIntent, InteractiveResizeData, LayoutElement, Options, RemovedTile, ResizeHit,
@@ -199,101 +197,6 @@ pub enum WindowHeight {
     #[default]
     Auto,
     Fixed(i32),
-}
-
-struct TileRenderPositions<'a, W: LayoutElement> {
-    entries: Vec<(*const Tile<W>, Point<f64, Logical>, bool)>,
-    index: usize,
-    _marker: PhantomData<&'a Tile<W>>,
-}
-
-impl<'a, W: LayoutElement> TileRenderPositions<'a, W> {
-    fn new(space: &'a TilingSpace<W>) -> Self {
-        let scale = Scale::from(space.scale);
-        let mut entries = Vec::new();
-        let layouts = space.display_layouts();
-        for info in layouts {
-            // Use O(1) key lookup instead of O(depth) path lookup.
-            if let Some(tile) = space.tree.get_tile(info.key) {
-                let mut pos = info.rect.loc + tile.render_offset();
-                pos = pos.to_physical_precise_round(scale).to_logical(scale);
-                entries.push((tile as *const _, pos, info.visible));
-            }
-        }
-
-        Self {
-            entries,
-            index: 0,
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<'a, W: LayoutElement> Iterator for TileRenderPositions<'a, W> {
-    type Item = (&'a Tile<W>, Point<f64, Logical>, bool);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index >= self.entries.len() {
-            return None;
-        }
-
-        let (ptr, pos, visible) = self.entries[self.index];
-        self.index += 1;
-
-        unsafe { ptr.as_ref().map(|tile| (tile, pos, visible)) }
-    }
-}
-
-struct TileRenderPositionsMut<'a, W: LayoutElement> {
-    space: *mut TilingSpace<W>,
-    layouts: Vec<LeafLayoutInfo>,
-    index: usize,
-    round: bool,
-    scale: Scale<f64>,
-    _marker: PhantomData<&'a mut TilingSpace<W>>,
-}
-
-impl<'a, W: LayoutElement> TileRenderPositionsMut<'a, W> {
-    fn new(space: &'a mut TilingSpace<W>, round: bool) -> Self {
-        // Clone layouts here because we need mutable access to space later.
-        // The layouts are small (just NodeKey + rect per tile).
-        let layouts = space.display_layouts().to_vec();
-        Self {
-            space: space as *mut _,
-            layouts,
-            index: 0,
-            round,
-            scale: Scale::from(space.scale),
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<'a, W: LayoutElement> Iterator for TileRenderPositionsMut<'a, W> {
-    type Item = (&'a mut Tile<W>, Point<f64, Logical>);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        while self.index < self.layouts.len() {
-            let info = self.layouts[self.index].clone();
-            self.index += 1;
-
-            unsafe {
-                let space = &mut *self.space;
-                // Use O(1) key lookup instead of O(depth) path lookup.
-                if let Some(tile) = space.tree.get_tile_mut(info.key) {
-                    let mut pos = info.rect.loc + tile.render_offset();
-                    if self.round {
-                        pos = pos
-                            .to_physical_precise_round(self.scale)
-                            .to_logical(self.scale);
-                    }
-                    return Some((tile, pos));
-                }
-            }
-        }
-
-        None
-    }
 }
 
 // ============================================================================
@@ -847,7 +750,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn tiles(&self) -> impl Iterator<Item = &Tile<W>> + '_ {
-        TilePtrIter::new(self.tree.tile_ptrs())
+        self.tree.all_tiles().into_iter()
     }
 
     pub fn active_tile(&self) -> Option<&Tile<W>> {
@@ -1810,15 +1713,6 @@ impl<W: LayoutElement> TilingSpace<W> {
         self.tree.focused_layout()
     }
 
-    fn next_layout_all(current: Layout) -> Layout {
-        match current {
-            Layout::SplitH => Layout::SplitV,
-            Layout::SplitV => Layout::Stacked,
-            Layout::Stacked => Layout::Tabbed,
-            Layout::Tabbed => Layout::SplitH,
-        }
-    }
-
     fn split_for_active_selection(&mut self, layout: Layout) -> bool {
         let target = self.tree.command_target(RootPolicy::ImplicitWorkspace);
         self.tree
@@ -1887,14 +1781,14 @@ impl<W: LayoutElement> TilingSpace<W> {
                 | WorkspaceLayoutTargetKind::SyntheticRootContainer
                 | WorkspaceLayoutTargetKind::SelectedRootContainer
         ) {
-            let next = Self::next_layout_all(self.workspace_layout);
+            let next = self.workspace_layout.next_in_cycle();
             return self.apply_workspace_layout_target(next);
         }
 
         if self.tree.selected_is_container() {
             let path = self.tree.selected_path();
             if let Some((current, _, _)) = self.tree.container_info(&path) {
-                let next = Self::next_layout_all(current);
+                let next = current.next_in_cycle();
                 let target = self.tree.command_target(RootPolicy::ImplicitWorkspace);
                 return self.tree.set_layout_for_target(
                     next,
@@ -2088,7 +1982,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn toggle_workspace_layout_all(&mut self) {
-        let next = Self::next_layout_all(self.workspace_layout);
+        let next = self.workspace_layout.next_in_cycle();
         self.set_workspace_layout_mode(next);
     }
 
@@ -2676,20 +2570,40 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     // Additional methods needed by workspace.rs
     pub fn tiles_mut(&mut self) -> impl Iterator<Item = &mut Tile<W>> + '_ {
-        TilePtrIterMut::new(self.tree.tile_ptrs_mut())
+        self.tree.all_tiles_mut().into_iter()
     }
 
     pub fn tiles_with_render_positions(
         &self,
     ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>, bool)> + '_ {
-        TileRenderPositions::new(self)
+        let scale = Scale::from(self.scale);
+        self.display_layouts().iter().filter_map(move |info| {
+            // Use O(1) key lookup instead of O(depth) path lookup.
+            let tile = self.tree.get_tile(info.key)?;
+            let pos = info.rect.loc + tile.render_offset();
+            let pos = pos.to_physical_precise_round(scale).to_logical(scale);
+            Some((tile, pos, info.visible))
+        })
     }
 
     pub fn tiles_with_render_positions_mut(
         &mut self,
         round: bool,
     ) -> impl Iterator<Item = (&mut Tile<W>, Point<f64, Logical>)> + '_ {
-        TileRenderPositionsMut::new(self, round)
+        let scale = Scale::from(self.scale);
+        let layouts = self.display_layouts().to_vec();
+        let keys: Vec<NodeKey> = layouts.iter().map(|info| info.key).collect();
+        let locs: Vec<Point<f64, Logical>> = layouts.iter().map(|info| info.rect.loc).collect();
+        self.tree
+            .tiles_mut_for_keys(&keys)
+            .into_iter()
+            .map(move |(idx, tile)| {
+                let mut pos = locs[idx] + tile.render_offset();
+                if round {
+                    pos = pos.to_physical_precise_round(scale).to_logical(scale);
+                }
+                (tile, pos)
+            })
     }
 
     pub fn tiles_with_ipc_layouts(

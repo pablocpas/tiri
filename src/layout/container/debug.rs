@@ -10,6 +10,8 @@ use super::NodeData;
 use super::NodeKey;
 
 impl<W: LayoutElement> ContainerTree<W> {
+    /// Log a diagnostic dump when the layout state looks inconsistent. Quiet otherwise, so
+    /// it is safe to call on every layout pass.
     pub(super) fn debug_layout_state(&self, context: &'static str) {
         let window_count = self.window_count();
         let leaf_count = self.leaf_layouts.len();
@@ -20,51 +22,25 @@ impl<W: LayoutElement> ContainerTree<W> {
             .unwrap_or(0);
         let has_pending = self.pending_layouts.is_some();
 
-        if window_count <= 3 {
-            debug!(
-                context = context,
-                window_count,
-                leaf_count,
-                pending_leaf_count,
-                has_pending,
-                working_area = ?self.working_area,
-                view_size = ?self.view_size,
-                scale = self.scale,
-                root = ?self.root,
-                focused = ?self.focused_key,
-                "layout summary"
-            );
-            for info in &self.leaf_layouts {
-                debug!(
-                    context = context,
-                    key = ?info.key,
-                    rect = ?info.rect,
-                    visible = info.visible,
-                    path = ?info.path,
-                    "leaf layout"
-                );
-            }
-            if let Some(pending) = &self.pending_layouts {
-                for info in &pending.data.leaf_layouts {
-                    debug!(
-                        context = context,
-                        key = ?info.key,
-                        rect = ?info.rect,
-                        visible = info.visible,
-                        path = ?info.path,
-                        "pending leaf layout"
-                    );
-                }
-            }
+        let orphan_pending = leaf_count == 0 && pending_leaf_count > 0;
+        let window_leaf_mismatch = window_count != leaf_count;
+        let zero_size = self
+            .leaf_layouts
+            .iter()
+            .filter(|info| info.rect.size.w <= 0.0 || info.rect.size.h <= 0.0)
+            .count();
+
+        if !(orphan_pending || window_leaf_mismatch || zero_size > 0) {
+            return;
         }
 
-        if leaf_count == 0 && pending_leaf_count > 0 {
+        if orphan_pending {
             debug!(
                 context = context,
                 window_count, pending_leaf_count, "layout has no leaf layouts but pending exists"
             );
         }
-        if window_count != leaf_count {
+        if window_leaf_mismatch {
             debug!(
                 context = context,
                 window_count,
@@ -74,14 +50,44 @@ impl<W: LayoutElement> ContainerTree<W> {
                 "layout window/leaf mismatch"
             );
         }
-
-        let zero_size = self
-            .leaf_layouts
-            .iter()
-            .filter(|info| info.rect.size.w <= 0.0 || info.rect.size.h <= 0.0)
-            .count();
         if zero_size > 0 {
             debug!(context = context, zero_size, "layout has zero-size leafs");
+        }
+
+        debug!(
+            context = context,
+            window_count,
+            leaf_count,
+            pending_leaf_count,
+            has_pending,
+            working_area = ?self.working_area,
+            view_size = ?self.view_size,
+            scale = self.scale,
+            root = ?self.root,
+            focused = ?self.focused_key,
+            "layout summary"
+        );
+        for info in &self.leaf_layouts {
+            debug!(
+                context = context,
+                key = ?info.key,
+                rect = ?info.rect,
+                visible = info.visible,
+                path = ?info.path,
+                "leaf layout"
+            );
+        }
+        if let Some(pending) = &self.pending_layouts {
+            for info in &pending.data.leaf_layouts {
+                debug!(
+                    context = context,
+                    key = ?info.key,
+                    rect = ?info.rect,
+                    visible = info.visible,
+                    path = ?info.path,
+                    "pending leaf layout"
+                );
+            }
         }
     }
 
