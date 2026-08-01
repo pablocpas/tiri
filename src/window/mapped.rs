@@ -639,8 +639,20 @@ impl LayoutElement for Mapped {
         &self.window
     }
 
+    fn ipc_id(&self) -> u64 {
+        self.id.get()
+    }
+
     fn title(&self) -> Option<String> {
         with_toplevel_role(self.toplevel(), |role| role.title.clone())
+    }
+
+    fn app_id(&self) -> Option<String> {
+        with_toplevel_role(self.toplevel(), |role| role.app_id.clone())
+    }
+
+    fn pid(&self) -> Option<i32> {
+        self.credentials.as_ref().map(|credentials| credentials.pid)
     }
 
     fn update_config(&mut self, blur_config: tiri_config::Blur) {

@@ -64,6 +64,13 @@ pub fn normalize(
     };
 
     for root in &tree.floating {
+        // tiri gives every floating group a container root; sway reports a lone floating
+        // window as the window itself. A wrapper around a single node is invisible either
+        // way, so it is not a difference — a group of two or more is, and stays.
+        let root = match root.children.as_slice() {
+            [only] if root.window_id.is_none() => only,
+            _ => root,
+        };
         nodes.push(convert(root, area, order, true, &mut focused)?);
     }
 

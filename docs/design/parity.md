@@ -63,10 +63,51 @@ open C                       →  splith / [splitv / win, win], win
 sway a workspace always exists and always has a layout. tiri models the same state as a
 bare-leaf root plus `workspace_layout`, which the tree has owned since phase 6.
 
-Observations A–C match what tiri does today, including the fix made in phase 9 after the
-two divergences above. Sway confirms it: the wrapper the old tests demanded is a level sway
-does not have either. The equivalence in D is the single most important normalization rule,
-because it is where the two representations differ while the behaviour does not.
+The equivalence in D is the single most important normalization rule, because it is where
+the two representations differ while the behaviour does not.
+
+### The workspace rules, measured in full
+
+Building the replayer forced these to be pinned down, because several tests disagreed about
+them and each disagreement had to be settled by measurement rather than by argument. All of
+the following were run against sway 1.11 headless:
+
+| command | target | sway builds a container? |
+|---|---|---|
+| `split X` | empty workspace | no — the workspace records the orientation |
+| `split X` | a lone window | no — the workspace takes the orientation, and keeps it after the window closes |
+| `split X` | a window with siblings | yes — around that window, kept at one child |
+| `split X` | the workspace (after `focus parent`) | **always** — the workspace's children move under a wrapper keeping the old layout, even with one child, even when the orientation does not change |
+| `layout X` | empty workspace | no — the workspace takes the layout |
+| `layout X` | the workspace (after `focus parent`) | no — the workspace takes the layout and its children reflow in place |
+| `layout X` | a window whose parent is a real container | no — that container takes the layout |
+| `layout X` | a window whose parent is the workspace | yes — a container with layout X takes all the workspace's children |
+
+Two consequences worth stating, because both contradicted tests that claimed to encode sway:
+
+- `split v` and `layout splitv` are **not** the same command on a workspace. One always
+  wraps, the other never does.
+- repeating a layout does not nest. `layout splith; layout splith` on a single-child split
+  leaves it exactly as it was, and so does `layout splitv` — the asymmetry a comment in
+  `split.rs` claimed (splitv nests one more level) is not sway's behaviour.
+
+## Known divergences
+
+Differences that are real, understood, and not yet fixed. An entry here is a promise to fix
+or to justify, not permission to ignore.
+
+- **`layout X` on a window whose parent is the workspace does not build a container.**
+  Sway builds one, holding all the workspace's children (see the table above). tiri covers
+  only pieces of this: it wraps for `tabbed`/`stacking`, and for `splitv` only when
+  restating the layout the root already has. The rule needs implementing uniformly, which
+  is a behavioural change with its own test fallout rather than a normalizer question.
+
+- **Cached leaf geometry goes stale when a sibling leaves the tiling tree.** After floating
+  one of two tiled windows, the remaining window is *rendered* at full width but the layout
+  tree still reports the old half-width rectangle, so IPC consumers see geometry no longer
+  on screen. The renderer and the tree's `leaf_layouts` cache disagree because the removal
+  path never settles the pending layout. Pinned by
+  `layout::tests::parity::tests::a_floating_window_is_reported_as_floating`.
 
 ## What already exists
 

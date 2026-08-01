@@ -43,3 +43,11 @@ impl TreeMutation for () {
         true
     }
 }
+
+/// A mutation that yields something only when it did something, such as taking a subtree
+/// out of the tree.
+impl<T> TreeMutation for Option<T> {
+    fn changed(&self) -> bool {
+        self.is_some()
+    }
+}

@@ -172,8 +172,24 @@ pub trait LayoutElement {
     /// Unique ID of this element.
     fn id(&self) -> &Self::Id;
 
+    /// Numeric identity of this element as exposed over IPC.
+    ///
+    /// `Id` is whatever an implementation finds convenient internally; this is the one every
+    /// consumer outside the compositor sees, so it must be stable for the element's lifetime.
+    fn ipc_id(&self) -> u64;
+
     /// Optional window title for UI elements like tab bars.
     fn title(&self) -> Option<String> {
+        None
+    }
+
+    /// Optional application id, for IPC.
+    fn app_id(&self) -> Option<String> {
+        None
+    }
+
+    /// Optional pid of the process owning this element, for IPC.
+    fn pid(&self) -> Option<i32> {
         None
     }
 
@@ -7289,7 +7305,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 }
 
-impl Layout<crate::window::Mapped> {
+impl<W: LayoutElement> Layout<W> {
     pub fn layout_tree(&self) -> LayoutTree {
         let Some(monitor) = self.active_monitor_ref() else {
             return LayoutTree {

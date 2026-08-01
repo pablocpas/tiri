@@ -123,6 +123,7 @@ insta.workspace = true
 proptest = "1.11.0"
 proptest-derive = { version = "0.8.0", features = ["boxed_union"] }
 rayon = "1.12.0"
+tiri-parity = { path = "tiri-parity" }
 wayland-client = "0.31.14"
 xshell = "0.2.7"
 

@@ -1,11 +1,10 @@
 use smithay::utils::{Logical, Point, Rectangle};
 
 use super::{ContainerTree, Layout, NodeData, NodeKey};
-use crate::utils::with_toplevel_role;
-use crate::window::Mapped;
+use crate::layout::LayoutElement;
 use tiri_ipc::{LayoutTreeLayout, LayoutTreeNode, LayoutTreeRect};
 
-impl ContainerTree<Mapped> {
+impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn layout_tree(&self) -> Option<LayoutTreeNode> {
         let root_key = self.root_node_key()?;
         let focused_key = self.selected_node_key();
@@ -67,17 +66,14 @@ impl ContainerTree<Mapped> {
         match self.get_node(node_key) {
             Some(NodeData::Leaf(tile)) => {
                 let window = tile.window();
-                let (title, app_id) = with_toplevel_role(window.toplevel(), |role| {
-                    (role.title.clone(), role.app_id.clone())
-                });
 
                 LayoutTreeNode {
                     path: path.clone(),
                     layout: None,
-                    window_id: Some(window.id().get()),
-                    title,
-                    app_id,
-                    pid: window.credentials().map(|credentials| credentials.pid),
+                    window_id: Some(window.ipc_id()),
+                    title: window.title(),
+                    app_id: window.app_id(),
+                    pid: window.pid(),
                     focused: focused_key == Some(node_key),
                     is_floating,
                     visible: self

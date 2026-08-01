@@ -21,6 +21,7 @@ mod floating;
 mod fullscreen;
 mod i3_parity;
 mod marks;
+mod parity;
 mod scratchpad;
 mod workspaces;
 
@@ -201,6 +202,10 @@ impl LayoutElement for TestWindow {
 
     fn id(&self) -> &Self::Id {
         &self.0.id
+    }
+
+    fn ipc_id(&self) -> u64 {
+        self.0.id as u64
     }
 
     fn title(&self) -> Option<String> {
@@ -2165,6 +2170,9 @@ fn repeated_layout_split_on_nested_single_child_split_is_noop() {
 
 #[test]
 fn layout_splith_on_single_child_preserved_split_stays_flat() {
+    // A single-child split only exists where sway builds one: on a window that has
+    // siblings. Measured against sway 1.11, re-issuing the layout the container already has
+    // leaves it exactly as it is — it does not nest another level.
     let mut layout = Layout::default();
     check_ops_on_layout(
         &mut layout,
@@ -2173,19 +2181,21 @@ fn layout_splith_on_single_child_preserved_split_stays_flat() {
             Op::AddWindow {
                 params: TestWindowParams::new(1),
             },
+            Op::AddWindow {
+                params: TestWindowParams::new(2),
+            },
         ],
     );
 
-    // Seed a preserved single-child SplitH root.
-    layout.set_layout_mode(ContainerLayout::SplitH);
     layout.split_horizontal();
 
     {
         let workspace = layout.active_workspace().expect("active workspace");
         let tree = workspace.tiling().debug_tree().replace(" *", "");
-        assert!(
-            tree.starts_with("SplitH\n  Window 1"),
-            "precondition:\n{tree}"
+        assert_eq!(
+            tree.trim_end(),
+            "SplitH\n  Window 1\n  SplitH\n    Window 2",
+            "precondition: the split builds a single-child container",
         );
     }
 
@@ -2193,9 +2203,10 @@ fn layout_splith_on_single_child_preserved_split_stays_flat() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     let tree = workspace.tiling().debug_tree().replace(" *", "");
-    assert!(
-        tree.starts_with("SplitH\n  Window 1"),
-        "layout_splith on focused leaf inside preserved single-child SplitH should stay flat:\n{tree}",
+    assert_eq!(
+        tree.trim_end(),
+        "SplitH\n  Window 1\n  SplitH\n    Window 2",
+        "layout splith on a single-child SplitH should stay flat",
     );
 }
 
@@ -3294,11 +3305,16 @@ fn command_target_routing_matrix_for_core_command_families() {
             },
         ),
         (
+            // Two windows, so the split builds a real container: on a lone window sway
+            // orients the workspace instead, and `focus parent` would land there.
             "tiling_container",
             vec![
                 Op::AddOutput(1),
                 Op::AddWindow {
                     params: TestWindowParams::new(1),
+                },
+                Op::AddWindow {
+                    params: TestWindowParams::new(2),
                 },
                 Op::SplitVertical,
                 Op::FocusParent,

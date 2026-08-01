@@ -42,7 +42,7 @@ use crate::utils::{
     center_preferring_top_left_in_area, clamp_preferring_top_left_in_area,
     ensure_min_max_size_maybe_zero, ResizeEdge,
 };
-use crate::window::{Mapped, ResolvedWindowRules};
+use crate::window::ResolvedWindowRules;
 
 /// By how many logical pixels the directional move commands move floating windows.
 pub const DIRECTIONAL_MOVE_PX: f64 = 50.;
@@ -3267,7 +3267,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     }
 }
 
-impl FloatingSpace<Mapped> {
+impl<W: LayoutElement> FloatingSpace<W> {
     pub(crate) fn layout_tree_nodes(&self) -> Vec<LayoutTreeNode> {
         self.containers
             .iter()

@@ -1224,6 +1224,9 @@ fn layout_persists_after_last_window_closed_via_append() {
 }
 #[test]
 fn split_on_single_window_persists_after_close() {
+    // Measured against sway 1.11: `split v` on a lone window builds no container, the
+    // workspace carries the orientation, and it outlives the window that set it. The
+    // replacement window is a plain child of the workspace, not a wrapped one.
     let layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow {
@@ -1237,13 +1240,11 @@ fn split_on_single_window_persists_after_close() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
+    assert_eq!(workspace.debug_workspace_layout(), ContainerLayout::SplitV);
     let tree = workspace.tiling().debug_tree();
     assert_snapshot!(
         tree.as_str(),
-        @"
-    SplitV
-      Window 2 *
-    "
+        @"Window 2 *"
     );
 }
 #[test]

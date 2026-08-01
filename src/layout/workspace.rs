@@ -3511,7 +3511,7 @@ impl<W: LayoutElement> Workspace<W> {
     }
 }
 
-impl Workspace<crate::window::Mapped> {
+impl<W: LayoutElement> Workspace<W> {
     pub(crate) fn layout_tree(&self) -> Option<LayoutTreeNode> {
         if self.floating_is_active.get() {
             self.tiling.layout_tree_unfocused()

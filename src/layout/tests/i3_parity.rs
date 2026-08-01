@@ -4,7 +4,7 @@ use super::super::container::Layout as ContainerLayout;
 use super::*;
 
 #[test]
-fn parity_seed2_step60_toggle_floating_restores_stacked_subtree_like_sway() {
+fn parity_seed2_step60_toggle_floating_restores_the_subtree_it_took() {
     let mut layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow {
@@ -98,14 +98,17 @@ fn parity_seed2_step60_toggle_floating_restores_stacked_subtree_like_sway() {
 
     let ws = layout.active_workspace().expect("active workspace");
     let tree = ws.tiling().debug_tree().replace(" *", "");
+    // Unverified against sway: this is a fuzz seed replay kept as a regression pin until
+    // the recorder can replay the same script against sway and say what it really does.
+    // What it does pin is that unfloating puts the subtree back where it came from, whole.
     assert!(
-        tree.starts_with("Tabbed\n  Window 8\n  Stacked\n    SplitV\n"),
-        "step60 toggle_floating should restore the floating subtree under the tabbed workspace root like sway:\n{tree}"
+        tree.starts_with("Tabbed\n  Window 8\n  Tabbed\n    SplitV\n"),
+        "step60 toggle_floating should restore the floating subtree under the workspace root:\n{tree}"
     );
     assert!(
-        tree.contains("Stacked\n    SplitV\n      Window 1")
+        tree.contains("Tabbed\n    SplitV\n      Window 1")
             && tree.contains("    SplitV\n      Window 7"),
-        "step60 toggle_floating should restore the stacked subtree with the splitv child holding window 7 like sway:\n{tree}"
+        "step60 toggle_floating should restore the subtree with the splitv child holding window 7:\n{tree}"
     );
     assert_eq!(
         ws.tiling().focus_path(),
@@ -745,7 +748,7 @@ fn parity_seed2_step42_unfloat_from_floating_workspace_context_preserves_workspa
     );
 }
 #[test]
-fn parity_seed2_step43_layout_tabbed_wraps_workspace_subtree_like_sway() {
+fn parity_seed2_step43_layout_tabbed_wraps_the_restored_workspace_subtree() {
     let mut layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow {
@@ -829,14 +832,19 @@ fn parity_seed2_step43_layout_tabbed_wraps_workspace_subtree_like_sway() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     let tree = workspace.tiling().debug_tree().replace(" *", "");
+    // Unverified against sway: fuzz seed replay, kept as a regression pin until the
+    // recorder can settle it. What it pins is that a workspace-context layout command
+    // reaches the restored tiling subtree rather than being swallowed.
     assert!(
-        tree.starts_with("Tabbed\n  Stacked\n"),
-        "workspace-context layout_tabbed should wrap the restored tiling subtree like sway:\n{tree}"
+        tree.starts_with("Tabbed\n  SplitV\n"),
+        "workspace-context layout_tabbed should wrap the restored tiling subtree:\n{tree}"
     );
+    // By identity, not by path: which path a leaf sits at is representation, and this
+    // seed's tree shape is exactly what the parity work keeps revising.
     assert_eq!(
-        workspace.tiling().focus_path(),
-        vec![0, 1],
-        "focus should remain on the same leaf inside the wrapped workspace subtree",
+        layout.focus().map(|win| *win.id()),
+        Some(7),
+        "the layout command must not move focus off the leaf it was issued from",
     );
 }
 #[test]
@@ -2911,7 +2919,11 @@ fn i3_520_cross_output_focus_falls_back_to_existing_floating_window() {
     );
 }
 #[test]
-fn i3_550_repeated_split_toggles_on_single_leaf_keep_one_wrapper() {
+fn i3_550_repeated_splits_on_a_lone_window_build_no_wrapper() {
+    // Measured against sway 1.11: `split v; split h; split v` on a lone window leaves the
+    // tree flat and the workspace splitv, so the next window stacks under window 1. Each
+    // command only restates the workspace orientation — the container the name of this test
+    // used to claim was never sway's.
     let layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow {
@@ -2920,15 +2932,20 @@ fn i3_550_repeated_split_toggles_on_single_leaf_keep_one_wrapper() {
         Op::SplitVertical,
         Op::SplitHorizontal,
         Op::SplitVertical,
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
+    assert_eq!(workspace.debug_workspace_layout(), ContainerLayout::SplitV);
     let tree = workspace.tiling().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
     SplitV
-      Window 1 *
+      Window 1
+      Window 2 *
     "
     );
 }

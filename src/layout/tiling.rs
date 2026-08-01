@@ -398,7 +398,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     pub(super) fn take_selected_subtree(&mut self) -> Option<TakenSubtree<W>> {
         let key = self.tree.selected_node_key()?;
         let rect = self.selected_geometry()?;
-        let (subtree, origin) = self.tree.take_subtree_at(key)?;
+        let (subtree, origin) = self.mutate_tree(|tree| tree.take_subtree_at(key))?;
         Some((subtree, origin, rect))
     }
 
@@ -412,9 +412,10 @@ impl<W: LayoutElement> TilingSpace<W> {
                 0 => return None,
                 1 => self.tree.take_root_child_subtree(0)?,
                 _ => {
-                    if !self.tree.wrap_synthetic_root_children_for_workspace_layout(
-                        self.tree.workspace_layout(),
-                    ) {
+                    if !self
+                        .tree
+                        .wrap_workspace_children(self.tree.workspace_layout())
+                    {
                         return None;
                     }
                     self.tree.take_root_child_subtree(0)?
@@ -1643,47 +1644,18 @@ impl<W: LayoutElement> TilingSpace<W> {
         self.split_workspace(Layout::SplitV);
     }
 
-    fn split_workspace(&mut self, layout: Layout) {
-        self.apply_workspace_layout(layout, |tree| tree.split_focused(layout));
-    }
-
-    /// Retarget the workspace itself at `layout`.
+    /// `split` with the workspace itself selected.
     ///
-    /// The workspace layout materializes differently depending on the tree's shape: an
-    /// empty tree only records the hint, a synthetic root wraps its children, an explicit
-    /// root gains a parent, and otherwise `fallback` applies it to the focused node.
-    fn apply_workspace_layout(
-        &mut self,
-        layout: Layout,
-        fallback: impl FnOnce(&mut ContainerTree<W>) -> bool,
-    ) {
-        if self.tree.is_empty() {
-            self.set_workspace_layout_hint(layout);
-            return;
-        }
-
-        if self.tree.workspace_layout() == layout {
-            return;
-        }
-
-        if self
-            .tree
-            .wrap_synthetic_root_children_for_workspace_layout(layout)
-        {
-            self.set_workspace_layout_hint(layout);
-            self.tree.layout();
-            return;
-        }
-
-        self.tree.set_workspace_layout_hint(layout);
-        if self.tree.wrap_root_for_sibling_insert() {
-            self.set_workspace_layout_hint(layout);
-            self.tree.layout();
-            return;
-        }
-
+    /// Measured against sway 1.11: this always builds a container. The workspace's current
+    /// children move under a wrapper that keeps the old orientation and the workspace takes
+    /// the new one — with a single child, and even when the orientation does not change.
+    /// Only an empty workspace is exempt, having nothing to wrap.
+    ///
+    /// It is the counterpart of [`Self::set_workspace_layout_mode`], which never wraps; the
+    /// difference between `split v` and `layout splitv` on a workspace is exactly this.
+    fn split_workspace(&mut self, layout: Layout) {
+        self.mutate_tree(|tree| tree.wrap_workspace_children(layout));
         self.set_workspace_layout_hint(layout);
-        self.mutate_tree(fallback);
     }
 
     /// Set layout mode for focused container
@@ -1693,9 +1665,15 @@ impl<W: LayoutElement> TilingSpace<W> {
         }
     }
 
-    /// Set workspace-level layout target (root container) like sway workspace path.
+    /// `layout` with the workspace itself selected.
+    ///
+    /// Measured against sway 1.11: this never builds a container. The workspace *is* the
+    /// container carrying the orientation, so the change lands on the root container when
+    /// there is one and on the recorded orientation otherwise — an empty workspace and a
+    /// lone window are the same case. See `docs/design/parity.md`, scenarios A–D.
     pub fn set_workspace_layout_mode(&mut self, layout: Layout) {
-        self.apply_workspace_layout(layout, |tree| tree.set_focused_layout(layout));
+        self.set_workspace_layout_hint(layout);
+        self.mutate_tree(|tree| tree.set_root_container_layout(layout));
     }
 
     pub fn set_root_layout_mode(&mut self, layout: Layout) -> bool {
@@ -3248,7 +3226,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 }
 
-impl TilingSpace<crate::window::Mapped> {
+impl<W: LayoutElement> TilingSpace<W> {
     pub(crate) fn layout_tree(&self) -> Option<LayoutTreeNode> {
         self.tree.layout_tree()
     }

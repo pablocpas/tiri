@@ -207,19 +207,27 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.ensure_selected_root_has_parent_for_sibling_insert()
     }
 
-    /// Apply a workspace-level layout change by keeping the synthetic root as
-    /// the workspace node and moving its current children under an explicit
-    /// wrapper with the old layout.
-    pub(in crate::layout) fn wrap_synthetic_root_children_for_workspace_layout(
-        &mut self,
-        layout: Layout,
-    ) -> bool {
+    /// Move the workspace's children under a wrapper that keeps the current layout, and
+    /// give the workspace `layout`.
+    ///
+    /// This is what `split` does when the workspace itself is selected. Measured against
+    /// sway 1.11: the container is built unconditionally — one child or several, orientation
+    /// changed or not. It is also how a subtree is grouped before being floated as a whole.
+    pub(in crate::layout) fn wrap_workspace_children(&mut self, layout: Layout) -> bool {
         let Some(root_key) = self.root else {
             return false;
         };
-        if !self.is_synthetic_root_container_key(root_key) {
+
+        // A lone window is the workspace's only child, so give it a container root first
+        // and the wrap below has something to move.
+        if matches!(self.get_node(root_key), Some(NodeData::Leaf(_)))
+            && !self.ensure_root_container_with_layout(self.workspace_layout())
+        {
             return false;
         }
+        let Some(root_key) = self.root else {
+            return false;
+        };
 
         let (old_layout, old_children, old_focus_stack, old_child_percents, root_geometry) = {
             let Some(root) = self.get_container_mut(root_key) else {
@@ -557,9 +565,12 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         };
 
-        // Root is a leaf: wrap it in a container immediately.
+        // The window is alone on the workspace, so the workspace is the container being
+        // split and it just changes orientation — measured against sway 1.11, which builds
+        // no container here and keeps the orientation after the window closes.
         let Some(parent_key) = self.parent_of(focused_key) else {
-            return self.ensure_root_container_with_layout(layout);
+            self.set_workspace_layout_hint(layout);
+            return true;
         };
         let Some(parent) = self.get_container(parent_key) else {
             return false;
@@ -633,9 +644,11 @@ impl<W: LayoutElement> ContainerTree<W> {
             && Some(target_key) == self.root
             && matches!(layout, Layout::SplitH | Layout::SplitV);
 
-        // Re-issuing the layout an explicit single-child root already has is asymmetric in
-        // i3: splitv nests one more level, so the next window stacks under the focused one,
-        // while splith keeps the shape flat. The layout_split* parity tests pin both.
+        // Measured against sway 1.11: `layout X` on a window whose parent is the workspace
+        // builds a container with layout X holding the workspace's children. This covers
+        // only the splitv-restating corner of that rule; the general case is listed as a
+        // known divergence in docs/design/parity.md. There is no splith/splitv asymmetry —
+        // an earlier comment here claimed one, and sway does not have it.
         if restates_explicit_lone_root && layout == Layout::SplitV {
             let Some(child_idx) = self.child_index(target_key, focused_key) else {
                 return false;
