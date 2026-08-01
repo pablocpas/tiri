@@ -1,0 +1,388 @@
+//! Tests for the normalizer itself.
+//!
+//! The normalizer decides what counts as a difference, so it is the one component that
+//! cannot be validated by the harness that uses it. These tests feed it hand-written trees
+//! from both sides — the sway ones are trimmed from real `get_tree` output captured against
+//! sway 1.11 — and assert that behaviourally equal states normalize equal, and that
+//! behaviourally different ones do not.
+
+use std::collections::HashMap;
+
+use tiri_ipc::{LayoutTree, LayoutTreeLayout, LayoutTreeNode, LayoutTreeRect};
+
+use crate::model::Layout;
+use crate::{erase_decoration, sway, tiri};
+
+const AREA: LayoutTreeRect = LayoutTreeRect {
+    x: 0.0,
+    y: 0.0,
+    width: 1920.0,
+    height: 1080.0,
+};
+
+fn sway_order(ids: &[(i64, u32)]) -> sway::OpenOrder {
+    ids.iter().copied().collect::<HashMap<_, _>>()
+}
+
+fn tiri_order(ids: &[(u64, u32)]) -> tiri::OpenOrder {
+    ids.iter().copied().collect::<HashMap<_, _>>()
+}
+
+fn leaf(window_id: u64, focused: bool, rect: LayoutTreeRect) -> LayoutTreeNode {
+    LayoutTreeNode {
+        path: Vec::new(),
+        layout: None,
+        window_id: Some(window_id),
+        title: None,
+        app_id: None,
+        pid: None,
+        focused,
+        is_floating: false,
+        visible: true,
+        is_urgent: false,
+        is_sticky: false,
+        is_scratchpad: false,
+        marks: Vec::new(),
+        rect: Some(rect),
+        percent: None,
+        children: Vec::new(),
+    }
+}
+
+fn container(
+    layout: LayoutTreeLayout,
+    rect: LayoutTreeRect,
+    children: Vec<LayoutTreeNode>,
+) -> LayoutTreeNode {
+    LayoutTreeNode {
+        path: Vec::new(),
+        layout: Some(layout),
+        window_id: None,
+        title: None,
+        app_id: None,
+        pid: None,
+        focused: false,
+        is_floating: false,
+        visible: true,
+        is_urgent: false,
+        is_sticky: false,
+        is_scratchpad: false,
+        marks: Vec::new(),
+        rect: Some(rect),
+        percent: None,
+        children,
+    }
+}
+
+fn rect(x: f64, y: f64, w: f64, h: f64) -> LayoutTreeRect {
+    LayoutTreeRect {
+        x,
+        y,
+        width: w,
+        height: h,
+    }
+}
+
+/// Trimmed from real sway output: `split v` on an empty workspace, then two windows.
+/// The workspace carries the orientation and the windows are its direct children.
+const SWAY_SPLITV_TWO_WINDOWS: &str = r#"
+{
+  "id": 1, "type": "root", "layout": "splith", "focused": false, "rect": {"x":0,"y":0,"width":1920,"height":1080},
+  "nodes": [
+    {
+      "id": 2, "type": "output", "name": "HEADLESS-1", "layout": "output", "focused": false,
+      "rect": {"x":0,"y":0,"width":1920,"height":1080},
+      "nodes": [
+        {
+          "id": 3, "type": "workspace", "name": "__i3_scratch", "layout": "splith", "focused": false,
+          "rect": {"x":0,"y":0,"width":1920,"height":1080}, "nodes": []
+        },
+        {
+          "id": 4, "type": "workspace", "name": "1", "layout": "splitv", "focused": false,
+          "rect": {"x":0,"y":0,"width":1920,"height":1080},
+          "nodes": [
+            {"id": 5, "type": "con", "layout": "none", "focused": false, "visible": true,
+             "rect": {"x":0,"y":0,"width":1920,"height":540}, "nodes": []},
+            {"id": 6, "type": "con", "layout": "none", "focused": true, "visible": true,
+             "rect": {"x":0,"y":540,"width":1920,"height":540}, "nodes": []}
+          ]
+        }
+      ]
+    }
+  ]
+}
+"#;
+
+#[test]
+fn sway_workspace_orientation_becomes_the_workspace_layout() {
+    let ws = sway::normalize(SWAY_SPLITV_TWO_WINDOWS, &sway_order(&[(5, 1), (6, 2)])).unwrap();
+
+    // The root, the output and the scratch workspace are gone; the windows are direct
+    // children of a splitv workspace.
+    assert_eq!(
+        ws.render(),
+        "workspace splitv focus=2\n\
+         \x20 window 1 0.000,0.000 1.000x0.500\n\
+         \x20 window 2 0.000,0.500 1.000x0.500\n"
+    );
+}
+
+#[test]
+fn a_bare_leaf_root_in_tiri_equals_a_workspace_with_one_child_in_sway() {
+    // This is the equivalence the whole comparison rests on: tiri keeps the workspace
+    // orientation outside the tree when the root is a lone window, sway keeps it on the
+    // workspace node. Same state, different representation.
+    let tree = LayoutTree {
+        workspace_id: None,
+        workspace_name: None,
+        output: None,
+        root: Some(leaf(10, true, rect(0.0, 0.0, 1920.0, 1080.0))),
+        floating: Vec::new(),
+    };
+    let from_tiri = tiri::normalize(&tree, Layout::SplitV, AREA, &tiri_order(&[(10, 1)])).unwrap();
+
+    let sway_json = r#"
+    {"id":1,"type":"root","layout":"splith","focused":false,"rect":{"x":0,"y":0,"width":1920,"height":1080},
+     "nodes":[{"id":4,"type":"workspace","name":"1","layout":"splitv","focused":false,
+               "rect":{"x":0,"y":0,"width":1920,"height":1080},
+               "nodes":[{"id":5,"type":"con","layout":"none","focused":true,"visible":true,
+                         "rect":{"x":0,"y":0,"width":1920,"height":1080},"nodes":[]}]}]}
+    "#;
+    let from_sway = sway::normalize(sway_json, &sway_order(&[(5, 1)])).unwrap();
+
+    assert_eq!(from_tiri.diff(&from_sway), Vec::new());
+}
+
+#[test]
+fn tiri_container_root_supplies_the_workspace_layout() {
+    // When tiri's root is a real container, its layout is the workspace's and its children
+    // are the workspace's children — no extra level.
+    let tree = LayoutTree {
+        workspace_id: None,
+        workspace_name: None,
+        output: None,
+        root: Some(container(
+            LayoutTreeLayout::SplitV,
+            rect(0.0, 0.0, 1920.0, 1080.0),
+            vec![
+                leaf(10, false, rect(0.0, 0.0, 1920.0, 540.0)),
+                leaf(11, true, rect(0.0, 540.0, 1920.0, 540.0)),
+            ],
+        )),
+        floating: Vec::new(),
+    };
+    let from_tiri = tiri::normalize(
+        &tree,
+        Layout::SplitH,
+        AREA,
+        &tiri_order(&[(10, 1), (11, 2)]),
+    )
+    .unwrap();
+    let from_sway =
+        sway::normalize(SWAY_SPLITV_TWO_WINDOWS, &sway_order(&[(5, 1), (6, 2)])).unwrap();
+
+    assert_eq!(from_tiri.diff(&from_sway), Vec::new());
+}
+
+#[test]
+fn an_explicit_single_child_split_is_kept_because_sway_keeps_it_too() {
+    // Measured: `focus left; split v` on a two-window workspace leaves a splitv container
+    // holding one window, and sway does not collapse it. Erasing it here would hide a real
+    // difference in how the next window gets placed.
+    let tree = LayoutTree {
+        workspace_id: None,
+        workspace_name: None,
+        output: None,
+        root: Some(container(
+            LayoutTreeLayout::SplitH,
+            rect(0.0, 0.0, 1920.0, 1080.0),
+            vec![
+                container(
+                    LayoutTreeLayout::SplitV,
+                    rect(0.0, 0.0, 960.0, 1080.0),
+                    vec![leaf(10, true, rect(0.0, 0.0, 960.0, 1080.0))],
+                ),
+                leaf(11, false, rect(960.0, 0.0, 960.0, 1080.0)),
+            ],
+        )),
+        floating: Vec::new(),
+    };
+    let ws = tiri::normalize(
+        &tree,
+        Layout::SplitH,
+        AREA,
+        &tiri_order(&[(10, 1), (11, 2)]),
+    )
+    .unwrap();
+
+    assert_eq!(
+        ws.render(),
+        "workspace splith focus=1\n\
+         \x20 splitv 0.000,0.000 0.500x1.000\n\
+         \x20   window 1 0.000,0.000 0.500x1.000\n\
+         \x20 window 2 0.500,0.000 0.500x1.000\n"
+    );
+}
+
+#[test]
+fn tab_bar_height_is_not_a_difference() {
+    // sway insets tabbed children by its own tab bar height (27px at the default font);
+    // tiri insets by whatever its tab bar config says. That band is decoration, so after
+    // erase_decoration the two must agree.
+    let sway_json = r#"
+    {"id":1,"type":"root","layout":"splith","focused":false,"rect":{"x":0,"y":0,"width":1920,"height":1080},
+     "nodes":[{"id":4,"type":"workspace","name":"1","layout":"tabbed","focused":false,
+               "rect":{"x":0,"y":0,"width":1920,"height":1080},
+               "nodes":[{"id":5,"type":"con","layout":"none","focused":false,"visible":false,
+                         "rect":{"x":0,"y":27,"width":1920,"height":1053},"nodes":[]},
+                        {"id":6,"type":"con","layout":"none","focused":true,"visible":true,
+                         "rect":{"x":0,"y":27,"width":1920,"height":1053},"nodes":[]}]}]}
+    "#;
+
+    let tree = LayoutTree {
+        workspace_id: None,
+        workspace_name: None,
+        output: None,
+        root: Some(container(
+            LayoutTreeLayout::Tabbed,
+            rect(0.0, 0.0, 1920.0, 1080.0),
+            vec![
+                // tiri's tab bar is a different height, so the content rect differs.
+                LayoutTreeNode {
+                    visible: false,
+                    ..leaf(10, false, rect(0.0, 40.0, 1920.0, 1040.0))
+                },
+                leaf(11, true, rect(0.0, 40.0, 1920.0, 1040.0)),
+            ],
+        )),
+        floating: Vec::new(),
+    };
+
+    let mut from_sway = sway::normalize(sway_json, &sway_order(&[(5, 1), (6, 2)])).unwrap();
+    let mut from_tiri = tiri::normalize(
+        &tree,
+        Layout::Tabbed,
+        AREA,
+        &tiri_order(&[(10, 1), (11, 2)]),
+    )
+    .unwrap();
+
+    // Without erasing decoration they differ, purely because of the band height.
+    assert!(!from_tiri.diff(&from_sway).is_empty());
+
+    erase_decoration(&mut from_sway);
+    erase_decoration(&mut from_tiri);
+    assert_eq!(from_tiri.diff(&from_sway), Vec::new());
+}
+
+#[test]
+fn which_tab_is_on_top_is_still_a_difference() {
+    // Erasing decoration must not erase the one thing a tabbed layout is about.
+    let base = |visible_first: bool| LayoutTree {
+        workspace_id: None,
+        workspace_name: None,
+        output: None,
+        root: Some(container(
+            LayoutTreeLayout::Tabbed,
+            rect(0.0, 0.0, 1920.0, 1080.0),
+            vec![
+                LayoutTreeNode {
+                    visible: visible_first,
+                    ..leaf(10, visible_first, rect(0.0, 40.0, 1920.0, 1040.0))
+                },
+                LayoutTreeNode {
+                    visible: !visible_first,
+                    ..leaf(11, !visible_first, rect(0.0, 40.0, 1920.0, 1040.0))
+                },
+            ],
+        )),
+        floating: Vec::new(),
+    };
+    let order = tiri_order(&[(10, 1), (11, 2)]);
+
+    let mut a = tiri::normalize(&base(true), Layout::Tabbed, AREA, &order).unwrap();
+    let mut b = tiri::normalize(&base(false), Layout::Tabbed, AREA, &order).unwrap();
+    erase_decoration(&mut a);
+    erase_decoration(&mut b);
+
+    let diff = a.diff(&b);
+    assert!(
+        diff.iter().any(|d| d.at == "workspace/focus"),
+        "focus moved between tabs and must be reported: {diff:?}"
+    );
+    assert!(
+        diff.iter()
+            .any(|d| d.expected == "visible" && d.actual == "hidden"),
+        "the visible tab changed and must be reported: {diff:?}"
+    );
+}
+
+#[test]
+fn geometry_differences_survive_the_tolerance() {
+    // A pixel of rounding is not a difference; a different split ratio is.
+    let build = |split: f64| LayoutTree {
+        workspace_id: None,
+        workspace_name: None,
+        output: None,
+        root: Some(container(
+            LayoutTreeLayout::SplitH,
+            rect(0.0, 0.0, 1920.0, 1080.0),
+            vec![
+                leaf(10, true, rect(0.0, 0.0, split, 1080.0)),
+                leaf(11, false, rect(split, 0.0, 1920.0 - split, 1080.0)),
+            ],
+        )),
+        floating: Vec::new(),
+    };
+    let order = tiri_order(&[(10, 1), (11, 2)]);
+    let at = |s| tiri::normalize(&build(s), Layout::SplitH, AREA, &order).unwrap();
+
+    assert_eq!(
+        at(960.0).diff(&at(961.0)),
+        Vec::new(),
+        "one pixel is rounding"
+    );
+    assert!(
+        !at(960.0).diff(&at(1200.0)).is_empty(),
+        "a different ratio is a real difference"
+    );
+}
+
+#[test]
+fn an_unopened_window_is_an_error_rather_than_a_silent_pass() {
+    // If the harness loses track of a window, the comparison must fail loudly: a model
+    // missing a window would otherwise look like agreement.
+    let err = sway::normalize(SWAY_SPLITV_TWO_WINDOWS, &sway_order(&[(5, 1)]));
+    assert!(matches!(err, Err(sway::Error::UnknownWindow(6))));
+}
+
+#[test]
+fn a_missing_window_is_reported_at_its_position() {
+    let two = LayoutTree {
+        workspace_id: None,
+        workspace_name: None,
+        output: None,
+        root: Some(container(
+            LayoutTreeLayout::SplitH,
+            rect(0.0, 0.0, 1920.0, 1080.0),
+            vec![
+                leaf(10, true, rect(0.0, 0.0, 960.0, 1080.0)),
+                leaf(11, false, rect(960.0, 0.0, 960.0, 1080.0)),
+            ],
+        )),
+        floating: Vec::new(),
+    };
+    let one = LayoutTree {
+        root: Some(leaf(10, true, rect(0.0, 0.0, 1920.0, 1080.0))),
+        ..two.clone()
+    };
+    let order = tiri_order(&[(10, 1), (11, 2)]);
+
+    let a = tiri::normalize(&two, Layout::SplitH, AREA, &order).unwrap();
+    let b = tiri::normalize(&one, Layout::SplitH, AREA, &order).unwrap();
+
+    let diff = a.diff(&b);
+    assert_eq!(diff[0].at, "workspace");
+    assert_eq!(diff[0].expected, "2 children");
+    assert_eq!(diff[0].actual, "1 children");
+}

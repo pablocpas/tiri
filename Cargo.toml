@@ -2,6 +2,7 @@
 members = [
     "tiri-config",
     "tiri-ipc",
+    "tiri-parity",
     "tiri-visual-tests",
 ]
 
