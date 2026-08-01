@@ -587,6 +587,18 @@ impl<W: LayoutElement> TilingSpace<W> {
         self.tree.contains_layout(layout)
     }
 
+    /// Window ids in visual (depth-first) order.
+    #[cfg(test)]
+    pub fn all_window_ids(&self) -> Vec<W::Id> {
+        self.tree.all_window_ids()
+    }
+
+    /// Number of children directly under the tree root.
+    #[cfg(test)]
+    pub fn root_children_len(&self) -> usize {
+        self.tree.root_children_len()
+    }
+
     /// The focused window's id, for shape assertions that used to look for a `*` marker in
     /// the debug dump.
     #[cfg(test)]

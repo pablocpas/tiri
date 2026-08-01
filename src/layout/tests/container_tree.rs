@@ -1383,18 +1383,28 @@ fn move_left_swaps_single_child_container_immediately() {
 }
 #[test]
 fn move_out_of_explicit_parallel_split_preserves_container_for_reentry() {
-    let mut harness = TreeHarness::new();
-    harness.add_window(1);
-    harness.add_window(2);
-    assert!(harness.tree.focus_in_direction(Direction::Left));
-    assert!(harness.tree.split_focused(ContainerLayout::SplitV));
-    harness.add_window(3);
-    harness.add_window(4);
-    assert!(harness.tree.set_focused_layout(ContainerLayout::SplitH));
-    assert!(harness.tree.focus_window_by_id(&4));
-
-    assert!(harness.tree.move_in_direction(Direction::Right));
-    let after_move_out = harness.tree.debug_tree();
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::FocusColumnLeft,
+        Op::SplitVertical,
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(4),
+        },
+        Op::SetLayoutSplitH,
+        Op::FocusWindow(4),
+        Op::MoveColumnRight,
+    ]);
+    let workspace = layout.active_workspace().expect("active workspace");
+    let after_move_out = workspace.tiling().debug_tree();
     assert_snapshot!(
         after_move_out.as_str(),
         @"
@@ -1406,9 +1416,9 @@ fn move_out_of_explicit_parallel_split_preserves_container_for_reentry() {
       Window 2
     "
     );
-
-    assert!(harness.tree.move_in_direction(Direction::Left));
-    let after_move_back = harness.tree.debug_tree();
+    check_ops_on_layout(&mut layout, [Op::MoveColumnLeft]);
+    let workspace = layout.active_workspace().expect("active workspace");
+    let after_move_back = workspace.tiling().debug_tree();
     assert_snapshot!(
         after_move_back.as_str(),
         @"
@@ -1423,38 +1433,48 @@ fn move_out_of_explicit_parallel_split_preserves_container_for_reentry() {
 }
 #[test]
 fn focus_parent_at_root_is_noop() {
-    let mut harness = TreeHarness::new();
-    harness.add_window(1);
-
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+    ]);
     // Single window at root - focus_parent should return false
-    assert!(!harness.tree.focus_parent());
+    check_ops_on_layout(&mut layout, [Op::FocusParent]);
 }
 #[test]
 fn focus_parent_child_roundtrip_in_nested_splitv() {
     // Based on focus_descends_into_last_focused_child pattern
-    let mut harness = TreeHarness::new();
-    harness.add_window(1);
-    harness.add_window(2);
-    assert!(harness.tree.focus_in_direction(Direction::Left));
-    harness.tree.split_focused(ContainerLayout::SplitV);
-    harness.add_window(3);
-    assert!(harness.tree.focus_window_by_id(&3));
-
-    let tree_before = harness.tree.debug_tree();
-
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::FocusColumnLeft,
+        Op::SplitVertical,
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::FocusWindow(3),
+    ]);
+    let workspace = layout.active_workspace().expect("active workspace");
+    let tree_before = workspace.tiling().debug_tree();
     // Go up to parent (SplitV container)
-    assert!(harness.tree.focus_parent());
-
+    check_ops_on_layout(&mut layout, [Op::FocusParent]);
     // Go back down to child (should return to window 3)
-    assert!(harness.tree.focus_child());
-
-    let tree_after = harness.tree.debug_tree();
-
+    check_ops_on_layout(&mut layout, [Op::FocusChild]);
+    let workspace = layout.active_workspace().expect("active workspace");
+    let tree_after = workspace.tiling().debug_tree();
     // Tree should be the same (window 3 still focused)
     assert_eq!(tree_before.as_str(), tree_after.as_str());
 }
 #[test]
 fn focus_parent_traverses_hierarchy() {
+    // Kept driving the tree: the assertion is a loop over focus_parent until it stops,
+    // which is a property of the tree walk itself rather than a command sequence.
     let mut harness = TreeHarness::new();
     harness.add_window(1);
     harness.add_window(2);

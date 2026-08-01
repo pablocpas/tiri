@@ -714,13 +714,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.set_layout_for_target(next, target, root_policy)
     }
 
-    /// Cycle focused container layout in sway-style order:
-    /// SplitH -> SplitV -> Stacked -> Tabbed -> SplitH.
-    #[cfg(test)]
-    pub(in crate::layout) fn toggle_layout_all(&mut self) -> bool {
-        let target = self.command_target(RootPolicy::MaterialContainer);
-        self.toggle_layout_all_for_target(target, RootPolicy::MaterialContainer)
-    }
 
     pub(in crate::layout) fn toggle_layout_all_for_target(
         &mut self,
