@@ -32,87 +32,55 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         }
 
-        let Some((move_path, preserve_selected_container)) = self.resolve_move_source(target)
-        else {
+        let Some((node_key, preserve_selected_container)) = self.resolve_move_source(target) else {
             return false;
         };
 
-        let Some(node_key) = self.get_node_key_at_path(&move_path) else {
-            return false;
-        };
-
-        let moved = self.perform_move(node_key, &move_path, direction);
+        let moved = self.perform_move(node_key, direction);
         if moved && preserve_selected_container {
             self.selected_key = Some(node_key);
         }
         moved
     }
 
-    /// Resolve the command target into the path of the node to actually move (escaping
-    /// single-child wrapper containers) and whether container selection should be preserved.
-    fn resolve_move_source(&mut self, target: TreeCommandTarget) -> Option<(Vec<usize>, bool)> {
-        let (sync_key, mut move_path, preserve_selected_container) = match target {
+    /// Resolve the command target into the node to actually move (escaping single-child
+    /// wrapper containers) and whether container selection should be preserved.
+    fn resolve_move_source(&mut self, target: TreeCommandTarget) -> Option<(NodeKey, bool)> {
+        let (mut move_key, preserve_selected_container) = match target {
             TreeCommandTarget::Workspace => return None,
             TreeCommandTarget::Container(key) => {
-                if !matches!(self.get_node(key), Some(NodeData::Container(_))) {
-                    return None;
-                }
-                (key, self.find_node_path(key)?, true)
+                matches!(self.get_node(key), Some(NodeData::Container(_))).then_some((key, true))?
             }
             TreeCommandTarget::Leaf(key) => {
-                if !matches!(self.get_node(key), Some(NodeData::Leaf(_))) {
-                    return None;
-                }
-                (key, self.find_node_path(key)?, false)
+                matches!(self.get_node(key), Some(NodeData::Leaf(_))).then_some((key, false))?
             }
         };
 
-        self.sync_container_focus_from_key(sync_key);
+        self.sync_container_focus_from_key(move_key);
 
         // Moving the only child of a non-material wrapper means moving the wrapper itself.
-        while !move_path.is_empty() {
-            let parent_path = &move_path[..move_path.len() - 1];
-            if parent_path.is_empty() {
+        // The root is never moved, so stop below it.
+        while let Some(parent_key) = self.parent_of(move_key) {
+            if self.parent_of(parent_key).is_none() {
                 break;
             }
-
-            let Some(parent_key) = self.get_node_key_at_path(parent_path) else {
+            let Some(parent) = self.get_container(parent_key) else {
                 break;
             };
-            let Some(parent_container) = self.get_container(parent_key) else {
-                break;
-            };
-
-            if parent_container.child_count() == 1 && !parent_container.preserve_on_single() {
-                move_path = parent_path.to_vec();
+            if parent.child_count() == 1 && !parent.preserve_on_single() {
+                move_key = parent_key;
                 continue;
             }
             break;
         }
 
-        if move_path.is_empty() {
-            return None;
-        }
-        Some((move_path, preserve_selected_container))
+        (Some(move_key) != self.root).then_some((move_key, preserve_selected_container))
     }
 
     /// Try the movement strategies in order: step within a parallel parent, enter an
     /// adjacent container across a parallel ancestor, or escape towards the root.
-    fn perform_move(
-        &mut self,
-        node_key: NodeKey,
-        move_path: &[usize],
-        direction: Direction,
-    ) -> bool {
-        let node_parent_path = &move_path[..move_path.len() - 1];
-        let node_idx = *move_path.last().unwrap();
-
-        let parent_key = if node_parent_path.is_empty() {
-            self.root
-        } else {
-            self.get_node_key_at_path(node_parent_path)
-        };
-        let Some(parent_key) = parent_key else {
+    fn perform_move(&mut self, node_key: NodeKey, direction: Direction) -> bool {
+        let Some(parent_key) = self.parent_of(node_key) else {
             return false;
         };
         let Some(parent_layout) = self.get_container(parent_key).map(|c| c.layout()) else {
@@ -122,34 +90,24 @@ impl<W: LayoutElement> ContainerTree<W> {
         if parent_layout.is_parallel_to(direction) {
             return self.move_within_parallel_parent(
                 node_key,
-                node_parent_path,
-                node_idx,
                 parent_key,
                 parent_layout,
                 direction,
             );
         }
 
-        if let Some(moved) =
-            self.try_move_via_parallel_ancestor(node_key, node_parent_path, node_idx, direction)
-        {
+        if let Some(moved) = self.try_move_via_parallel_ancestor(node_key, direction) {
             return moved;
         }
 
-        if node_parent_path.is_empty() {
+        if self.parent_of(parent_key).is_none() {
+            let Some(node_idx) = self.child_index(parent_key, node_key) else {
+                return false;
+            };
             return self.move_root_node_orthogonally_into_adjacent(node_key, node_idx, direction);
         }
 
-        let grandparent_path = &node_parent_path[..node_parent_path.len() - 1];
-        let parent_idx = *node_parent_path.last().unwrap();
-        self.move_node_to_grandparent(
-            node_key,
-            node_parent_path,
-            node_idx,
-            grandparent_path,
-            parent_idx,
-            direction,
-        )
+        self.move_node_to_grandparent(node_key, direction)
     }
 
     /// Move within a parent whose layout runs along `direction`: swap with the adjacent
@@ -157,43 +115,31 @@ impl<W: LayoutElement> ContainerTree<W> {
     fn move_within_parallel_parent(
         &mut self,
         node_key: NodeKey,
-        node_parent_path: &[usize],
-        node_idx: usize,
         parent_key: NodeKey,
         parent_layout: Layout,
         direction: Direction,
     ) -> bool {
-        let child_count = match self.get_container(parent_key) {
-            Some(container) => container.child_count(),
-            None => 0,
-        };
-        if child_count == 0 {
+        let Some(parent) = self.get_container(parent_key) else {
             return false;
-        }
+        };
+        let child_count = parent.child_count();
+        let Some(node_idx) = self.child_index(parent_key, node_key) else {
+            return false;
+        };
 
         let Some(target_idx) = direction.sibling_index(node_idx, child_count) else {
-            // At edge: escape to grandparent if possible.
-            if node_parent_path.is_empty() {
+            // At edge: escape to the grandparent, unless this parent is the root.
+            if self.parent_of(parent_key).is_none() {
                 return false;
             }
-            let grandparent_path = &node_parent_path[..node_parent_path.len() - 1];
-            let parent_idx = *node_parent_path.last().unwrap();
-            return self.move_node_to_grandparent(
-                node_key,
-                node_parent_path,
-                node_idx,
-                grandparent_path,
-                parent_idx,
-                direction,
-            );
+            return self.move_node_to_grandparent(node_key, direction);
         };
 
-        let target_key = match self
+        let Some(target_key) = self
             .get_container(parent_key)
             .and_then(|c| c.child_key(target_idx))
-        {
-            Some(key) => key,
-            None => return false,
+        else {
+            return false;
         };
 
         if matches!(parent_layout, Layout::SplitH | Layout::SplitV) {
@@ -201,14 +147,9 @@ impl<W: LayoutElement> ContainerTree<W> {
                 let should_enter = target_container.layout() != parent_layout
                     || target_container.preserve_on_single();
                 if should_enter {
-                    return self.move_node_into_container(
-                        node_key,
-                        node_parent_path,
-                        node_idx,
-                        target_key,
-                        direction,
-                        target_container.focused_child_index().unwrap_or(0),
-                    );
+                    let focus_idx = target_container.focused_child_index().unwrap_or(0);
+                    return self
+                        .move_node_into_container(node_key, target_key, direction, focus_idx);
                 }
             }
         }
@@ -227,74 +168,57 @@ impl<W: LayoutElement> ContainerTree<W> {
     fn try_move_via_parallel_ancestor(
         &mut self,
         node_key: NodeKey,
-        node_parent_path: &[usize],
-        node_idx: usize,
         direction: Direction,
     ) -> Option<bool> {
-        let mut ancestor_path = node_parent_path.to_vec();
-        while !ancestor_path.is_empty() {
-            let ancestor_parent_path = &ancestor_path[..ancestor_path.len() - 1];
-            let ancestor_idx = *ancestor_path.last().unwrap();
-            let ancestor_parent_key = if ancestor_parent_path.is_empty() {
-                self.root
-            } else {
-                self.get_node_key_at_path(ancestor_parent_path)
-            }?;
+        let mut ancestor_key = self.parent_of(node_key)?;
+        while let Some(ancestor_parent_key) = self.parent_of(ancestor_key) {
             let ancestor_parent_layout = self.get_container(ancestor_parent_key)?.layout();
 
             if !ancestor_parent_layout.is_parallel_to(direction) {
-                ancestor_path.pop();
+                ancestor_key = ancestor_parent_key;
                 continue;
             }
 
-            let ancestor_child_count = self
-                .get_container(ancestor_parent_key)
-                .map(|container| container.child_count())
-                .unwrap_or(0);
+            let ancestor_idx = self.child_index(ancestor_parent_key, ancestor_key)?;
+            let ancestor_child_count = self.get_container(ancestor_parent_key)?.child_count();
             let target_idx = direction.sibling_index(ancestor_idx, ancestor_child_count)?;
             let target_key = self
-                .get_container(ancestor_parent_key)
-                .and_then(|container| container.child_key(target_idx))?;
-            let target_container = self.get_container(target_key)?;
+                .get_container(ancestor_parent_key)?
+                .child_key(target_idx)?;
+            let focus_idx = self
+                .get_container(target_key)?
+                .focused_child_index()
+                .unwrap_or(0);
 
-            return Some(self.move_node_into_container(
-                node_key,
-                node_parent_path,
-                node_idx,
-                target_key,
-                direction,
-                target_container.focused_child_index().unwrap_or(0),
-            ));
+            return Some(self.move_node_into_container(node_key, target_key, direction, focus_idx));
         }
         None
     }
 
+    /// Move a node out of its parent and into its grandparent, next to that parent.
     pub(super) fn move_node_to_grandparent(
         &mut self,
         node_key: NodeKey,
-        node_parent_path: &[usize],
-        node_idx: usize,
-        grandparent_path: &[usize],
-        parent_idx: usize,
         direction: Direction,
     ) -> bool {
-        let node_parent_key = if node_parent_path.is_empty() {
-            match self.root {
-                Some(key) => key,
-                None => return false,
-            }
-        } else {
-            match self.get_node_key_at_path(node_parent_path) {
-                Some(key) => key,
-                None => return false,
-            }
+        let Some(node_parent_key) = self.parent_of(node_key) else {
+            return false;
+        };
+        let Some(grandparent_key) = self.parent_of(node_parent_key) else {
+            return false;
+        };
+        let Some(node_idx) = self.child_index(node_parent_key, node_key) else {
+            return false;
+        };
+        let Some(parent_idx) = self.child_index(grandparent_key, node_parent_key) else {
+            return false;
         };
 
-        let parent_child_count = self
+        // An only child leaves its parent empty, so the parent is about to be collapsed and
+        // the insertion index shifts accordingly.
+        let parent_will_be_removed = self
             .get_container(node_parent_key)
-            .map(|container| container.child_count())
-            .unwrap_or(0);
-        let parent_will_be_removed = parent_child_count == 1;
+            .is_some_and(|container| container.child_count() == 1);
 
         if let Some(container) = self.get_container_mut(node_parent_key) {
             let _ = container.remove_child(node_idx);
@@ -303,33 +227,16 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
         self.set_parent(node_key, None);
 
-        let grandparent_key = if grandparent_path.is_empty() {
-            match self.root {
-                Some(key) => key,
-                None => return false,
+        let insert_at = if direction.is_leading() {
+            if parent_will_be_removed {
+                parent_idx.saturating_sub(1)
+            } else {
+                parent_idx
             }
+        } else if parent_will_be_removed {
+            parent_idx + 2
         } else {
-            match self.get_node_key_at_path(grandparent_path) {
-                Some(key) => key,
-                None => return false,
-            }
-        };
-
-        let insert_at = match direction {
-            Direction::Left | Direction::Up => {
-                if parent_will_be_removed {
-                    parent_idx.saturating_sub(1)
-                } else {
-                    parent_idx
-                }
-            }
-            Direction::Right | Direction::Down => {
-                if parent_will_be_removed {
-                    parent_idx + 2
-                } else {
-                    parent_idx + 1
-                }
-            }
+            parent_idx + 1
         };
 
         if let Some(container) = self.get_container_mut(grandparent_key) {
@@ -346,54 +253,50 @@ impl<W: LayoutElement> ContainerTree<W> {
         true
     }
 
+    /// Move a node into `target_key`, entering it from `direction`.
     pub(super) fn move_node_into_container(
         &mut self,
         node_key: NodeKey,
-        node_parent_path: &[usize],
-        node_idx: usize,
         target_key: NodeKey,
         direction: Direction,
         target_focus_idx: usize,
     ) -> bool {
-        let (insert_idx, child_count) = if let Some(container) = self.get_container(target_key) {
-            let child_count = container.child_count();
-            let insert_idx = match container.layout() {
-                Layout::SplitH | Layout::SplitV => {
-                    let axis_matches = (container.layout() == Layout::SplitH
-                        && direction.is_horizontal())
-                        || (container.layout() == Layout::SplitV && direction.is_vertical());
-                    if axis_matches {
-                        match direction {
-                            Direction::Left | Direction::Up => child_count,
-                            Direction::Right | Direction::Down => 0,
-                        }
-                    } else {
-                        match direction {
-                            Direction::Left | Direction::Up => target_focus_idx + 1,
-                            Direction::Right | Direction::Down => target_focus_idx,
-                        }
-                    }
-                }
-                Layout::Tabbed | Layout::Stacked => match direction {
-                    Direction::Left | Direction::Up => target_focus_idx,
-                    Direction::Right | Direction::Down => target_focus_idx + 1,
-                },
-            };
-            (insert_idx, child_count)
-        } else {
+        let Some(target) = self.get_container(target_key) else {
             return false;
         };
+        let child_count = target.child_count();
+        let target_layout = target.layout();
 
-        let node_parent_key = if node_parent_path.is_empty() {
-            match self.root {
-                Some(key) => key,
-                None => return false,
+        // Entering along the container's own axis lands at the far edge; entering across it
+        // lands beside the container's focused child.
+        let insert_idx = match target_layout {
+            Layout::SplitH | Layout::SplitV => {
+                if target_layout.is_parallel_to(direction) {
+                    if direction.is_leading() {
+                        child_count
+                    } else {
+                        0
+                    }
+                } else if direction.is_leading() {
+                    target_focus_idx + 1
+                } else {
+                    target_focus_idx
+                }
             }
-        } else {
-            match self.get_node_key_at_path(node_parent_path) {
-                Some(key) => key,
-                None => return false,
+            Layout::Tabbed | Layout::Stacked => {
+                if direction.is_leading() {
+                    target_focus_idx
+                } else {
+                    target_focus_idx + 1
+                }
             }
+        };
+
+        let Some(node_parent_key) = self.parent_of(node_key) else {
+            return false;
+        };
+        let Some(node_idx) = self.child_index(node_parent_key, node_key) else {
+            return false;
         };
 
         if let Some(container) = self.get_container_mut(node_parent_key) {
@@ -403,8 +306,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         if let Some(container) = self.get_container_mut(target_key) {
-            let idx = insert_idx.min(child_count);
-            container.insert_child(idx, node_key);
+            container.insert_child(insert_idx.min(child_count), node_key);
         } else {
             return false;
         }
@@ -481,14 +383,8 @@ impl<W: LayoutElement> ContainerTree<W> {
             .and_then(|container| container.focused_child_index())
             .unwrap_or(0);
 
-        let moved = self.move_node_into_container(
-            node_key,
-            &[],
-            node_idx,
-            target_key,
-            direction,
-            target_focus_idx,
-        );
+        let moved =
+            self.move_node_into_container(node_key, target_key, direction, target_focus_idx);
         if moved && wrapped_target {
             let _ = self.promote_single_root_child();
         }

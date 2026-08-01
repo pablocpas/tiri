@@ -555,97 +555,52 @@ impl<W: LayoutElement> ContainerTree<W> {
             return true;
         }
 
-        let focus_path = self.focus_path();
-
-        // Special case: if root is a leaf, wrap it in a container immediately.
-        if focus_path.is_empty() {
-            return self.ensure_root_container_with_layout(layout);
-        }
-
-        let parent_path = &focus_path[..focus_path.len() - 1];
-        let child_idx = *focus_path.last().unwrap();
-
-        let Some(parent_key) = self.node_key_for_path_or_root(parent_path) else {
+        let Some(focused_key) = self.effective_focused_key() else {
             return false;
         };
 
-        let (parent_layout, parent_child_count, parent_preserve_on_single) =
-            match self.get_container(parent_key) {
-                Some(container) => (
-                    container.layout(),
-                    container.child_count(),
-                    container.preserve_on_single(),
-                ),
-                None => return false,
-            };
+        // Root is a leaf: wrap it in a container immediately.
+        let Some(parent_key) = self.parent_of(focused_key) else {
+            return self.ensure_root_container_with_layout(layout);
+        };
+        let Some(parent) = self.get_container(parent_key) else {
+            return false;
+        };
 
+        let parent_layout = parent.layout();
+        let is_lone_child = parent.child_count() == 1;
+        let restates_explicit_split =
+            parent_layout == layout && parent.preserve_on_single() && Some(parent_key) != self.root;
+
+        // The leaf either already sits alone in a split, or its container came from an
+        // explicit split of this same orientation. Either way the command only (re)states
+        // that container's orientation; wrapping again would add a redundant one-child
+        // level around the leaf.
         if matches!(parent_layout, Layout::SplitH | Layout::SplitV)
-            && parent_layout == layout
-            && (parent_child_count == 1
-                || (parent_preserve_on_single && Some(parent_key) != self.root))
+            && (is_lone_child || restates_explicit_split)
         {
             if let Some(container) = self.get_container_mut(parent_key) {
-                // Repeating the same split direction should only refresh explicit intent, not
-                // introduce an extra one-child wrapper around the focused leaf.
                 container.set_layout_explicit(layout);
             }
             return true;
         }
 
-        // Get the focused child key
-        let focused_child_key = if let Some(container) = self.get_container(parent_key) {
-            match container.child_key(child_idx) {
-                Some(key) => key,
-                None => return false,
-            }
-        } else {
+        // Otherwise put the leaf inside a new explicit split container in its own slot.
+        let Some(child_idx) = self.child_index(parent_key, focused_key) else {
             return false;
         };
-
-        // Only split if it's a leaf
-        if matches!(self.get_node(focused_child_key), Some(NodeData::Leaf(_))) {
-            let parent_child_count = self
-                .get_container(parent_key)
-                .map(|container| container.child_count())
-                .unwrap_or(0);
-
-            if parent_child_count == 1 && matches!(parent_layout, Layout::SplitH | Layout::SplitV) {
-                if let Some(container) = self.get_container_mut(parent_key) {
-                    // Explicit split command on a single-child split container
-                    // keeps that container around for future sibling inserts,
-                    // even if the requested split orientation matches the current one.
-                    container.set_layout_explicit(layout);
-                }
-                return true;
-            }
-
-            // Remove child from parent
-            if let Some(container) = self.get_container_mut(parent_key) {
-                container.remove_child(child_idx);
-            }
-            self.set_parent(focused_child_key, None);
-
-            // Create new container with the leaf
-            let mut new_container = ContainerData::new(layout);
-            new_container.mark_preserve_on_single();
-            new_container.add_child(focused_child_key);
-            let new_container_key = self.insert_node(NodeData::Container(new_container));
-            self.set_parent(focused_child_key, Some(new_container_key));
-
-            // Insert new container back at same position
-            if let Some(container) = self.get_container_mut(parent_key) {
-                container.insert_child(child_idx, new_container_key);
-            }
-            self.set_parent(new_container_key, Some(parent_key));
-
-            self.focus_node_key(focused_child_key);
-            return true;
+        let Some(wrapper_key) = self.wrap_child_in_container(parent_key, child_idx, layout) else {
+            return false;
+        };
+        if let Some(wrapper) = self.get_container_mut(wrapper_key) {
+            wrapper.mark_preserve_on_single();
         }
 
-        false
+        self.focus_node_key(focused_key);
+        true
     }
 
-    /// Change layout of focused container
+    /// Change the layout of the container holding the focused leaf.
     pub(in crate::layout) fn set_focused_layout(&mut self, layout: Layout) -> bool {
         if self.root.is_none() {
             self.pending_layout = Some(layout);
@@ -653,92 +608,55 @@ impl<W: LayoutElement> ContainerTree<W> {
             return true;
         }
 
-        let focus_path = self.focus_path();
+        let Some(focused_key) = self.effective_focused_key() else {
+            return false;
+        };
 
-        if focus_path.is_empty() {
-            // Root is a leaf: always wrap immediately with the requested layout.
-            let root_is_leaf = self
-                .root
-                .is_some_and(|root_key| matches!(self.get_node(root_key), Some(NodeData::Leaf(_))));
-            if root_is_leaf {
-                return self.ensure_root_container_with_layout(layout);
+        // Root is a leaf: wrap it so there is a container to carry the layout.
+        let Some(parent_key) = self.parent_of(focused_key) else {
+            return self.ensure_root_container_with_layout(layout);
+        };
+
+        // Tabbed and stacked address the outermost redundant single-child wrapper rather
+        // than the immediate parent, so the tab bar lands where the user expects it.
+        let target_key = if matches!(layout, Layout::Tabbed | Layout::Stacked) {
+            self.collapse_single_child_command_target_once(parent_key)
+                .unwrap_or(parent_key)
+        } else {
+            parent_key
+        };
+
+        let Some(target) = self.get_container(target_key) else {
+            return false;
+        };
+        let restates_explicit_lone_root = target.layout() == layout
+            && target.child_count() == 1
+            && target.preserve_on_single()
+            && Some(target_key) == self.root
+            && matches!(layout, Layout::SplitH | Layout::SplitV);
+
+        // Re-issuing the layout an explicit single-child root already has is asymmetric in
+        // i3: splitv nests one more level, so the next window stacks under the focused one,
+        // while splith keeps the shape flat. The layout_split* parity tests pin both.
+        if restates_explicit_lone_root && layout == Layout::SplitV {
+            let Some(child_idx) = self.child_index(target_key, focused_key) else {
+                return false;
+            };
+            let Some(nested_key) = self.wrap_child_in_container(target_key, child_idx, layout)
+            else {
+                return false;
+            };
+            if let Some(nested) = self.get_container_mut(nested_key) {
+                nested.mark_preserve_on_single();
             }
+
+            self.focus_node_key(focused_key);
+            return true;
         }
 
-        // If focus is on a leaf, use parent container
-        if let Some(node_key) = self.get_node_key_at_path(&focus_path) {
-            if matches!(self.get_node(node_key), Some(NodeData::Leaf(_))) {
-                // Get parent container
-                if focus_path.is_empty() {
-                    return false;
-                }
-
-                let parent_path = &focus_path[..focus_path.len() - 1];
-                let Some(parent_key) = self.node_key_for_path_or_root(parent_path) else {
-                    return false;
-                };
-
-                let target_key = if matches!(layout, Layout::Tabbed | Layout::Stacked) {
-                    self.collapse_single_child_command_target_once(parent_key)
-                        .unwrap_or(parent_key)
-                } else {
-                    parent_key
-                };
-                let target_is_root = Some(target_key) == self.root;
-
-                let (parent_layout, parent_child_count, parent_preserve_on_single) = self
-                    .get_container(target_key)
-                    .map(|container| {
-                        (
-                            container.layout(),
-                            container.child_count(),
-                            container.preserve_on_single(),
-                        )
-                    })
-                    .unwrap_or((layout, 0, false));
-
-                if parent_layout == layout
-                    && parent_child_count == 1
-                    && parent_preserve_on_single
-                    && target_is_root
-                    && matches!(layout, Layout::SplitH | Layout::SplitV)
-                {
-                    if layout == Layout::SplitV {
-                        let Some(child_idx) = self.child_index(target_key, node_key) else {
-                            return false;
-                        };
-                        let Some(nested_key) =
-                            self.wrap_child_in_container(target_key, child_idx, layout)
-                        else {
-                            return false;
-                        };
-                        if let Some(nested) = self.get_container_mut(nested_key) {
-                            nested.mark_preserve_on_single();
-                        }
-
-                        self.focus_node_key(node_key);
-                        return true;
-                    }
-
-                    if let Some(container) = self.get_container_mut(target_key) {
-                        // Regression path: layout_splith on this
-                        // explicit single-child root keeps the shape flat (no extra nesting).
-                        container.set_layout_explicit(layout);
-                    }
-                    return true;
-                }
-
-                if let Some(container) = self.get_container_mut(target_key) {
-                    container.set_layout_explicit(layout);
-                    return true;
-                }
-            } else {
-                // It's already a container, change its layout
-                if let Some(container) = self.get_container_mut(node_key) {
-                    container.set_layout_explicit(layout);
-                    return true;
-                }
-            }
+        if let Some(container) = self.get_container_mut(target_key) {
+            container.set_layout_explicit(layout);
+            return true;
         }
 
         false
