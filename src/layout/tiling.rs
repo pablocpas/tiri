@@ -103,13 +103,20 @@ type LeafHit = (NodeKey, Vec<usize>, Rectangle<f64, Logical>);
 
 /// Workspace-wide context shared by every tile in an `update_window_state` pass.
 struct WindowStateContext<'a, W: LayoutElement> {
-    /// Path of the focused leaf *as of this layout snapshot*.
+    /// Path of the focused leaf, compared against each snapshot entry's own path.
     ///
-    /// Deliberately a path and not a key: `layouts` may be pending (not yet committed)
-    /// layouts, and a tile counts as focused here only when its position in that snapshot
-    /// still matches where focus is now. Comparing keys instead marks a tile focused across
-    /// a structural change the snapshot predates, which desynchronizes the resize
-    /// transaction (covered by the egl_* animation snapshots).
+    /// This is a path rather than a key, and that is a workaround, not a design choice:
+    /// while a size transaction is in flight `layout_atomic` defers relayouts, so the
+    /// pending snapshot this pass runs over can describe a tree that no longer exists (in
+    /// the egl_* animation tests: a one-leaf snapshot while the tree already holds two
+    /// windows). Comparing stale path against current path simply fails to match, which
+    /// accidentally keeps the obsolete entry from being treated as focused and handed the
+    /// whole working area. Comparing keys removes that accident and the stale geometry gets
+    /// applied.
+    ///
+    /// The real fix is upstream of here — a structural change during a transaction should
+    /// invalidate the pending snapshot instead of being deferred — after which this can
+    /// become a key comparison like the rest of the layout module.
     focus_path: &'a [usize],
     workspace_active: bool,
     deactivate_unfocused: bool,
