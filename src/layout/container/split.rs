@@ -546,8 +546,10 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn split_focused(&mut self, layout: Layout) -> bool {
         self.clear_focus_history();
         if self.root.is_none() {
-            self.pending_layout = Some(layout);
-            self.pending_layout_wrap_on_split = true;
+            // Same rule as the workspace route: a split on an empty workspace only records
+            // the orientation. The first window is a plain child of the workspace and gets
+            // no wrapper; the orientation materializes when a second window arrives.
+            self.set_workspace_layout_hint(layout);
             return true;
         }
 

@@ -1282,33 +1282,64 @@ fn i3_122_repeated_split_without_new_window_keeps_tree_shape() {
 }
 #[test]
 fn i3_122_split_on_empty_workspace_applies_to_next_window() {
-    let mut harness = TreeHarness::new();
-    assert!(harness.tree.split_focused(ContainerLayout::SplitV));
-    harness.add_window(1);
+    // i3 #122: `split v` on an empty workspace sets the workspace orientation. The first
+    // window is a plain child of the workspace — no wrapper of its own — and the
+    // orientation shows once a second window arrives.
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::SplitVertical,
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+    ]);
 
-    let tree = harness.tree.debug_tree();
+    {
+        let workspace = layout.active_workspace().expect("active workspace");
+        assert_snapshot!(workspace.tiling().debug_tree().as_str(), @"Window 1 *");
+    }
+
+    check_ops_on_layout(
+        &mut layout,
+        [Op::AddWindow {
+            params: TestWindowParams::new(2),
+        }],
+    );
+
+    let workspace = layout.active_workspace().expect("active workspace");
     assert_snapshot!(
-        tree.as_str(),
+        workspace.tiling().debug_tree().as_str(),
         @"
     SplitV
-      Window 1 *
+      Window 1
+      Window 2 *
     "
     );
 }
 #[test]
 fn i3_122_split_on_single_window_persists_after_close() {
-    let mut harness = TreeHarness::new();
-    harness.add_window(1);
-    assert!(harness.tree.split_focused(ContainerLayout::SplitV));
-    let _ = harness.tree.remove_window(&1);
-    harness.add_window(2);
+    // i3 #122: the workspace orientation outlives the windows that were arranged by it.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::SplitVertical,
+        Op::CloseWindow(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+    ]);
 
-    let tree = harness.tree.debug_tree();
+    let workspace = layout.active_workspace().expect("active workspace");
     assert_snapshot!(
-        tree.as_str(),
+        workspace.tiling().debug_tree().as_str(),
         @"
     SplitV
-      Window 2 *
+      Window 2
+      Window 3 *
     "
     );
 }

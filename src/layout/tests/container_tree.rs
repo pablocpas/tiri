@@ -1114,26 +1114,44 @@ fn move_up_at_edge_is_noop() {
 }
 #[test]
 fn split_on_empty_workspace_applies_to_next_window() {
-    // Kept driving the tree directly on purpose: routing this through the public API
-    // produces a bare leaf instead, because the workspace path sets the layout hint
-    // without the wrap-on-split flag that split_focused sets. The two production
-    // paths disagree about whether the first window gets wrapped; until that is
-    // settled against real i3, this test pins the tree-level behaviour only.
-    let mut harness = TreeHarness::new();
-    assert!(harness.tree.split_focused(ContainerLayout::SplitV));
-    harness.add_window(1);
+    // i3: a split on an empty workspace sets the workspace's orientation. The first window
+    // is a plain child of the workspace, so it needs no wrapper of its own; the orientation
+    // becomes visible once a second window arrives.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::SplitVertical,
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+    ]);
 
-    let tree = harness.tree.debug_tree();
+    let workspace = layout.active_workspace().expect("active workspace");
+    assert_snapshot!(workspace.tiling().debug_tree().as_str(), @"Window 1 *");
+
+    let mut layout = layout;
+    check_ops_on_layout(
+        &mut layout,
+        [Op::AddWindow {
+            params: TestWindowParams::new(2),
+        }],
+    );
+
+    let workspace = layout.active_workspace().expect("active workspace");
     assert_snapshot!(
-        tree.as_str(),
+        workspace.tiling().debug_tree().as_str(),
         @"
     SplitV
-      Window 1 *
+      Window 1
+      Window 2 *
     "
     );
 }
 #[test]
 fn split_on_empty_workspace_applies_to_next_window_via_append() {
+    // Pins the append insertion path specifically, which materializes the workspace
+    // orientation as a preserved wrapper via ensure_root_container. The user-facing
+    // rule — first window gets no wrapper — is pinned by the tests above that go
+    // through the public API; this one covers the other insertion path.
     let mut harness = TreeHarness::new();
     assert!(harness.tree.split_focused(ContainerLayout::SplitV));
     harness.append_window(1);
@@ -1149,28 +1167,39 @@ fn split_on_empty_workspace_applies_to_next_window_via_append() {
 }
 #[test]
 fn layout_persists_after_last_window_closed() {
-    // Kept driving the tree directly on purpose: routing this through the public API
-    // produces a bare leaf instead, because the workspace path sets the layout hint
-    // without the wrap-on-split flag that split_focused sets. The two production
-    // paths disagree about whether the first window gets wrapped; until that is
-    // settled against real i3, this test pins the tree-level behaviour only.
-    let mut harness = TreeHarness::new();
-    assert!(harness.tree.split_focused(ContainerLayout::SplitV));
-    harness.add_window(1);
-    let _ = harness.tree.remove_window(&1);
-    harness.add_window(2);
+    // Closing the last window leaves the workspace orientation in place, so the windows
+    // opened afterwards are arranged by it.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::SplitVertical,
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::CloseWindow(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+    ]);
 
-    let tree = harness.tree.debug_tree();
+    let workspace = layout.active_workspace().expect("active workspace");
     assert_snapshot!(
-        tree.as_str(),
+        workspace.tiling().debug_tree().as_str(),
         @"
     SplitV
-      Window 2 *
+      Window 2
+      Window 3 *
     "
     );
 }
 #[test]
 fn layout_persists_after_last_window_closed_via_append() {
+    // Pins the append insertion path specifically, which materializes the workspace
+    // orientation as a preserved wrapper via ensure_root_container. The user-facing
+    // rule — first window gets no wrapper — is pinned by the tests above that go
+    // through the public API; this one covers the other insertion path.
     let mut harness = TreeHarness::new();
     assert!(harness.tree.split_focused(ContainerLayout::SplitV));
     harness.append_window(1);
