@@ -13,12 +13,70 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(super) fn cleanup_containers(&mut self, mut key: Option<NodeKey>) {
         while let Some(container_key) = key {
             let parent_key = self.parent_of(container_key);
+            // Flattening lifts a subtree a level, so carry on from what was promoted: it
+            // may itself be redundant now that it sits somewhere else.
+            if let Some(promoted) = self.flatten_redundant_split(container_key, parent_key) {
+                key = Some(promoted);
+                continue;
+            }
             self.cleanup_one_container(container_key, parent_key);
             key = parent_key;
         }
 
         self.remove_root_if_empty();
         self.collapse_singleton_root_chain();
+    }
+
+    /// Dissolve a lone wrapper that only re-states the orientation its grandparent already
+    /// has, lifting its grandchildren into its place.
+    ///
+    /// This is i3's `tree_flatten`, and the shape it targets is narrow on purpose: a
+    /// container holding exactly one child, that child a *split* whose layout matches the
+    /// grandparent's. `splith > [ splitv > [ splith > w ], … ]` is three ways of saying the
+    /// same arrangement, so sway keeps only the outer one.
+    ///
+    /// Everything just outside that shape is a state sway does keep, and each was measured:
+    /// a single-child split holding a window (`split` builds one and it survives), a tabbed
+    /// or stacked child (nesting two tab bars is meaningful), and a child whose orientation
+    /// differs from the grandparent's (it is what makes the layout two-dimensional).
+    fn flatten_redundant_split(
+        &mut self,
+        container_key: NodeKey,
+        parent_key: Option<NodeKey>,
+    ) -> Option<NodeKey> {
+        let parent_key = parent_key?;
+        let container = self.get_container(container_key)?;
+        if container.child_count() != 1 {
+            return None;
+        }
+        let container_layout = container.layout();
+        let child_key = container.child_key(0)?;
+        let child_layout = self.get_container(child_key)?.layout();
+        if !matches!(child_layout, Layout::SplitH | Layout::SplitV)
+            || child_layout == container_layout
+        {
+            return None;
+        }
+        if self.get_container(parent_key).map(|parent| parent.layout()) != Some(child_layout) {
+            return None;
+        }
+
+        let replaced = self
+            .get_container_mut(parent_key)
+            .is_some_and(|parent| parent.replace_child_preserving_focus(container_key, child_key));
+        if !replaced {
+            return None;
+        }
+        self.set_parent(child_key, Some(parent_key));
+        self.nodes.remove(container_key);
+        self.parents.remove(container_key);
+        if self.selected_key == Some(container_key) {
+            self.selected_key = Some(child_key);
+        }
+        if self.focused_key == Some(container_key) {
+            self.focused_key = Some(child_key);
+        }
+        Some(child_key)
     }
 
     /// Apply at most one normalization step to `container_key`.
@@ -38,11 +96,18 @@ impl<W: LayoutElement> ContainerTree<W> {
             parent_key.and_then(|key| self.get_container(key).map(|parent| parent.layout()));
 
         let single_child_key = container_children.first().copied();
+        // A lone wrapper is only redundant when it says nothing its parent does not already
+        // say: same orientation, one child. Holding a single window *across* the parent's
+        // orientation is a real arrangement — it is what a `split` builds, and what a move
+        // out of the workspace leaves behind — so that one stays.
+        //
         // A rootless single-child wrapper only dissolves onto a leaf; a container child
         // would become the root itself and is handled by collapse_singleton_root_chain.
         let can_replace_with_child = !container_preserve_on_single
             && match parent_key {
-                Some(_) => true,
+                Some(key) => {
+                    parent_layout == Some(container_layout) || self.get_container(key).is_none()
+                }
                 None => single_child_key.is_some_and(|child_key| {
                     matches!(self.get_node(child_key), Some(NodeData::Leaf(_)))
                 }),
@@ -236,7 +301,13 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    /// Promote through chains of non-material single-child roots.
+    /// Dissolve an implicit root that holds a single window.
+    ///
+    /// A workspace whose only child is a window has no container in sway either, so the
+    /// wrapper is representation and goes. A workspace whose only child is a *container* is
+    /// a different state and sway keeps both levels — collapsing it would promote that
+    /// container into the workspace and hand it the workspace's layout, which is how
+    /// closing tabs down to the last one used to leave the workspace itself tabbed.
     fn collapse_singleton_root_chain(&mut self) {
         while let Some(root_key) = self.root {
             let Some(root) = self.get_container(root_key) else {
@@ -249,10 +320,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             let Some(child_key) = root.child_key(0) else {
                 break;
             };
-            if self
-                .get_container(child_key)
-                .is_some_and(|child| child.child_count() > 1)
-            {
+            if self.get_container(child_key).is_some() {
                 break;
             }
             if self.selected_key == Some(root_key) {

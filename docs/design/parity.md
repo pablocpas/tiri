@@ -95,6 +95,24 @@ Two consequences worth stating, because both contradicted tests that claimed to 
   `splith > tabbed > tabbed > win` in sway too, so the wrappers tiri used to collapse as
   "redundant" were a level sway keeps.
 
+### Moving across the workspace, measured
+
+`move <direction>` where the direction crosses the workspace's own orientation:
+
+```
+splith / win 1, win 2      move down on 2  →  splitv / [splith / win 1], win 2
+```
+
+The workspace takes the direction's orientation, everything else moves under one container
+that keeps the old one, and the moved window becomes that container's sibling — before it
+going up or left, after it going down or right. Nothing wraps the window being moved.
+
+The wrapper is kept while it says something: holding one window *across* the workspace's
+orientation is a real arrangement. It goes when it only re-states what its grandparent
+already says, which is i3's `tree_flatten` — a container with one child, that child a split
+whose layout matches the grandparent's. Moving the window back out therefore leaves the
+workspace flat again, which is what sway does.
+
 ### Where the workspace level lives
 
 tiri's root container **is** the workspace, which is why the normalizer maps one onto the

@@ -104,7 +104,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             let Some(node_idx) = self.child_index(parent_key, node_key) else {
                 return false;
             };
-            return self.move_root_node_orthogonally_into_adjacent(node_key, node_idx, direction);
+            return self.move_root_node_across_workspace(node_key, node_idx, direction);
         }
 
         self.move_node_to_grandparent(node_key, direction)
@@ -345,7 +345,17 @@ impl<W: LayoutElement> ContainerTree<W> {
         Some(wrapper_key)
     }
 
-    pub(super) fn move_root_node_orthogonally_into_adjacent(
+    /// Move a top-level node across the workspace's own orientation.
+    ///
+    /// Measured against sway 1.11: the workspace flips to the direction's orientation, its
+    /// other children move under a single container that keeps the old one, and the moved
+    /// node becomes that container's sibling — before it going up or left, after it going
+    /// down or right. Nothing is wrapped around the node being moved.
+    ///
+    /// Whether the new wrapper survives is left to the normal cleanup: holding one window
+    /// under a workspace of the same orientation it already has, it dissolves, which is why
+    /// moving back out again leaves the workspace flat.
+    pub(super) fn move_root_node_across_workspace(
         &mut self,
         node_key: NodeKey,
         node_idx: usize,
@@ -354,69 +364,50 @@ impl<W: LayoutElement> ContainerTree<W> {
         let Some(root_key) = self.root else {
             return false;
         };
-
-        let child_count = self
-            .get_container(root_key)
-            .map(|container| container.child_count())
-            .unwrap_or(0);
-        if child_count <= 1 {
-            return false;
-        }
-
-        let Some(target_idx) = direction.sibling_index(node_idx, child_count) else {
-            return false;
-        };
-
-        let wrapped_target = !matches!(
-            self.get_container(root_key)
-                .and_then(|container| container.child_key(target_idx))
-                .and_then(|key| self.get_node(key)),
-            Some(NodeData::Container(_))
-        );
-        let Some(target_key) =
-            self.wrap_child_in_container(root_key, target_idx, direction.split_layout())
-        else {
-            return false;
-        };
-        let target_focus_idx = self
-            .get_container(target_key)
-            .and_then(|container| container.focused_child_index())
-            .unwrap_or(0);
-
-        let moved =
-            self.move_node_into_container(node_key, target_key, direction, target_focus_idx);
-        if moved && wrapped_target {
-            let _ = self.promote_single_root_child();
-        }
-        moved
-    }
-
-    pub(super) fn promote_single_root_child(&mut self) -> bool {
-        let Some(root_key) = self.root else {
-            return false;
-        };
         let Some(root) = self.get_container(root_key) else {
             return false;
         };
-        if root.child_count() != 1 {
+        if root.child_count() <= 1 {
             return false;
         }
-        let Some(child_key) = root.children().first().copied() else {
+        let previous = root.layout();
+
+        let Some(root) = self.get_container_mut(root_key) else {
             return false;
         };
-
-        self.set_parent(child_key, None);
-        self.root = Some(child_key);
-        self.nodes.remove(root_key);
-        self.parents.remove(root_key);
-
-        if self.selected_key == Some(root_key) {
-            self.selected_key = Some(child_key);
-        }
-        if self.focused_key == Some(root_key) {
-            self.focused_key = self.leaf_under_key(child_key).or(Some(child_key));
+        if root.remove_child(node_idx).is_none() {
+            return false;
         }
 
+        if !self.wrap_workspace_children(previous, direction.split_layout()) {
+            // Put it back rather than leave the tree short of a window.
+            if let Some(root) = self.get_container_mut(root_key) {
+                root.insert_child(node_idx, node_key);
+            }
+            return false;
+        }
+
+        let idx = usize::from(!direction.is_leading());
+        let Some(root) = self.get_container_mut(root_key) else {
+            return false;
+        };
+        root.insert_child(idx, node_key);
+        self.set_parent(node_key, Some(root_key));
+        self.sync_container_focus_from_key(node_key);
+
+        // The wrapper may only re-state an orientation already expressed above it, in which
+        // case it goes; cleanup decides, using the same rule it applies everywhere else.
+        let wrapper_key = self
+            .get_container(root_key)
+            .and_then(|root| root.child_key(1 - idx));
+        if let Some(wrapper_key) = wrapper_key {
+            // Not preserved: the user did not ask for this container, so it only lives as
+            // long as it expresses an orientation the workspace does not.
+            if let Some(wrapper) = self.get_container_mut(wrapper_key) {
+                wrapper.clear_preserve_on_single();
+            }
+            self.cleanup_containers(Some(wrapper_key));
+        }
         true
     }
 }

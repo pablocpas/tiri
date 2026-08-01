@@ -302,6 +302,11 @@ impl ContainerData {
         self.preserve_on_single = true;
     }
 
+    /// A wrapper the user did not ask for, and that cleanup may dissolve.
+    pub(super) fn clear_preserve_on_single(&mut self) {
+        self.preserve_on_single = false;
+    }
+
     /// Get children keys
     pub(super) fn children(&self) -> &[NodeKey] {
         &self.children

@@ -31,14 +31,20 @@ const KNOWN: &[Divergence] = &[
         reason: "A window's size when it starts floating is the size its client asked for, and the two harnesses run different clients — foot under sway, a synthetic window under tiri. This is a limitation of the comparison, not a difference in tiri: closing it needs a recorder client that requests a fixed size.",
     },
     Divergence {
+        fixture: "move-into-a-nested-container.parity",
+        step: 7,
+        reason: "\
+Deliberate. Moving a window into its sibling container leaves that container as the only \
+child of a split, and sway then splices it into the workspace — reversing the order of the \
+windows inside it as it goes (w2, w3 come back as w3, w2, and stay that way). Reordering \
+windows is not something a user asked for, and reproducing it would mean copying the loop \
+that does it. tiri keeps the container and leaves the order alone. The single-child case, \
+where there is no order to scramble, does match: see move-across-the-workspace.parity.",
+    },
+    Divergence {
         fixture: "move-and-focus.parity",
         step: 13,
         reason: "`move down` on a window whose parent is the workspace: sway turns the workspace vertical, wraps what was there in a horizontal container and puts the moved window beside it. tiri keeps one flat row and reorders inside it. A real difference in tiri, in the same family as the layout rules already fixed — a command aimed at a node whose parent is the workspace has to build a container rather than change the workspace.",
-    },
-    Divergence {
-        fixture: "tabbed-visibility.parity",
-        step: 9,
-        reason: "Closing tabs down to the last one: sway keeps the tabbed container under the workspace, tiri promotes it and the workspace itself becomes tabbed. The cleanup pass still collapses a single-child root, which erases the level the workspace occupies. A real difference in tiri.",
     },
 ];
 

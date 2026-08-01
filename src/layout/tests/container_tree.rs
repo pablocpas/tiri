@@ -609,7 +609,7 @@ fn move_down_enters_container_with_different_layout() {
     assert_snapshot!(
         tree.as_str(),
         @"
-    SplitV
+    SplitH
       SplitH
         Window 2
         Window 1 *
@@ -674,7 +674,7 @@ fn move_up_enters_container_with_different_layout() {
     assert_snapshot!(
         tree.as_str(),
         @"
-    SplitV
+    SplitH
       SplitH
         Window 1
         Window 3
@@ -1326,7 +1326,10 @@ fn split_parallel_with_siblings_wraps_focused_leaf_vertical() {
     );
 }
 #[test]
-fn removing_last_sibling_flattens_non_preserved_root_container() {
+fn removing_the_last_sibling_keeps_the_workspace_above_the_container() {
+    // Recorded from sway (tiri-parity/fixtures/tabbed-visibility.parity): closing down to
+    // one window leaves the container in place under the workspace. Promoting it would
+    // hand the workspace that container's layout.
     let mut harness = TreeHarness::new();
     harness.add_window(1);
     harness.add_window(2);
@@ -1342,8 +1345,9 @@ fn removing_last_sibling_flattens_non_preserved_root_container() {
     assert_snapshot!(
         tree.as_str(),
         @"
-    Stacked
-      Window 1 *
+    SplitH
+      Stacked
+        Window 1 *
     "
     );
 }
