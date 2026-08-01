@@ -227,13 +227,13 @@ fn tabs_with_different_border() {
         Op::AddOutput(1),
         Op::AddWindow {
             params: TestWindowParams {
-                rules: Some(ResolvedWindowRules {
+                rules: Some(Box::new(ResolvedWindowRules {
                     border: tiri_config::BorderRule {
                         on: true,
                         ..Default::default()
                     },
                     ..ResolvedWindowRules::default()
-                }),
+                })),
                 ..TestWindowParams::new(2)
             },
         },

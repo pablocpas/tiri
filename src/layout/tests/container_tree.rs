@@ -78,6 +78,25 @@ impl TreeHarness {
         );
         self.tree.append_leaf(tile, true);
     }
+
+    /// Settle the tree the way the spaces do — every mutation there goes through
+    /// `mutate_tree`, which relayouts — and then assert it is structurally sound.
+    ///
+    /// Called automatically on drop, so every test gets an end-state check even though it
+    /// drives the tree directly.
+    pub(super) fn verify(&mut self) {
+        self.tree.layout();
+        self.tree.verify_invariants();
+    }
+}
+
+impl Drop for TreeHarness {
+    fn drop(&mut self) {
+        // Don't mask the real failure if the test is already unwinding.
+        if !std::thread::panicking() {
+            self.verify();
+        }
+    }
 }
 #[derive(Debug, Clone, Copy)]
 enum TreeRandomOp {
@@ -130,7 +149,18 @@ pub(super) fn count_root_children_in_debug_tree(tree: &str) -> usize {
         .filter(|line| line.starts_with("  ") && !line.starts_with("    "))
         .count()
 }
+/// Apply one fuzz op and assert the tree is still sound, so a corruption is reported at
+/// the step that caused it rather than at the end of the sequence.
 fn apply_tree_random_op(harness: &mut TreeHarness, op: TreeRandomOp, next_window_id: &mut usize) {
+    apply_tree_random_op_inner(harness, op, next_window_id);
+    harness.verify();
+}
+
+fn apply_tree_random_op_inner(
+    harness: &mut TreeHarness,
+    op: TreeRandomOp,
+    next_window_id: &mut usize,
+) {
     use super::super::container::Direction;
 
     match op {

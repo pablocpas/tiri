@@ -96,8 +96,10 @@ struct TestWindowParams {
     bbox: Rectangle<i32, Logical>,
     #[proptest(strategy = "arbitrary_min_max_size()")]
     min_max_size: (Size<i32, Logical>, Size<i32, Logical>),
-    #[proptest(strategy = "prop::option::of(arbitrary_rules())")]
-    rules: Option<ResolvedWindowRules>,
+    /// Boxed: ResolvedWindowRules is ~1.5 KB, which would otherwise make every `Op` that
+    /// carries window params that large and blow the stack on long op sequences.
+    #[proptest(strategy = "prop::option::of(arbitrary_rules().prop_map(Box::new))")]
+    rules: Option<Box<ResolvedWindowRules>>,
 }
 
 impl TestWindowParams {
@@ -133,7 +135,7 @@ impl TestWindow {
             animate_next_configure: Cell::new(false),
             animation_snapshot: RefCell::new(None),
             is_urgent: Cell::new(params.is_urgent),
-            rules: params.rules.unwrap_or_default(),
+            rules: params.rules.map(|rules| *rules).unwrap_or_default(),
         }))
     }
 
@@ -674,6 +676,10 @@ enum Op {
         #[proptest(strategy = "proptest::option::of(1..=5usize)")]
         id: Option<usize>,
     },
+    /// Close whatever the current selection addresses (i3's `kill`).
+    CloseFocused,
+    /// Toggle fullscreen on the focused window.
+    ToggleFullscreenFocused,
     SetWindowFloating {
         #[proptest(strategy = "proptest::option::of(1..=5usize)")]
         id: Option<usize>,
@@ -1436,6 +1442,16 @@ impl Op {
             Op::ToggleWindowFloating { id } => {
                 let id = id.filter(|id| layout.has_window(id));
                 layout.toggle_window_floating(id.as_ref());
+            }
+            Op::CloseFocused => {
+                for id in layout.close_window_ids_for_active_selection() {
+                    layout.remove_window(&id, Transaction::new());
+                }
+            }
+            Op::ToggleFullscreenFocused => {
+                if let Some(id) = layout.focus().map(|win| *win.id()) {
+                    layout.toggle_fullscreen(&id);
+                }
             }
             Op::SetWindowFloating { id, floating } => {
                 let id = id.filter(|id| layout.has_window(id));
