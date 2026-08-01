@@ -2,3 +2,5 @@
 /result
 
 .idea
+# insta writes these while running tests; they are never part of the source.
+*.pending-snap
