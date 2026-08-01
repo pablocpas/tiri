@@ -103,21 +103,9 @@ type LeafHit = (NodeKey, Vec<usize>, Rectangle<f64, Logical>);
 
 /// Workspace-wide context shared by every tile in an `update_window_state` pass.
 struct WindowStateContext<'a, W: LayoutElement> {
-    /// Path of the focused leaf, compared against each snapshot entry's own path.
-    ///
-    /// This is a path rather than a key, and that is a workaround, not a design choice:
-    /// while a size transaction is in flight `layout_atomic` defers relayouts, so the
-    /// pending snapshot this pass runs over can describe a tree that no longer exists (in
-    /// the egl_* animation tests: a one-leaf snapshot while the tree already holds two
-    /// windows). Comparing stale path against current path simply fails to match, which
-    /// accidentally keeps the obsolete entry from being treated as focused and handed the
-    /// whole working area. Comparing keys removes that accident and the stale geometry gets
-    /// applied.
-    ///
-    /// The real fix is upstream of here — a structural change during a transaction should
-    /// invalidate the pending snapshot instead of being deferred — after which this can
-    /// become a key comparison like the rest of the layout module.
-    focus_path: &'a [usize],
+    /// The focused leaf. Callers must not run this pass over a stale snapshot, so this is
+    /// a plain identity comparison like everywhere else in the module.
+    focused_key: Option<NodeKey>,
     workspace_active: bool,
     deactivate_unfocused: bool,
     request_size: bool,
@@ -958,7 +946,6 @@ impl<W: LayoutElement> TilingSpace<W> {
             self.tree.leaf_layouts_cloned()
         };
         let workspace_view = Rectangle::from_size(self.view_size);
-        let focus_path = self.tree.focus_path();
         let focused_key = self.tree.effective_focused_key();
         let selection_is_container = self.tree.selected_is_container();
         let scale = Scale::from(self.scale);
@@ -995,7 +982,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             .collect();
 
         let ctx = WindowStateContext {
-            focus_path: &focus_path,
+            focused_key,
             workspace_active: is_active,
             deactivate_unfocused: self.options.deactivate_unfocused_windows,
             request_size: !has_pending,
@@ -1005,8 +992,15 @@ impl<W: LayoutElement> TilingSpace<W> {
             windowed_fullscreen_id: windowed_fullscreen_id.as_ref(),
             view_size: self.view_size,
         };
+        // A stale snapshot describes a tree that no longer exists; driving window state
+        // from it would flush configures carrying its obsolete bounds. The deferred
+        // relayout will run this pass again once the transaction resolves.
+        let skip_state_pass = self.tree.pending_layout_is_stale();
         let resize_data = self.interactive_resize_data_by_leaf(&state_layouts);
         for info in state_layouts {
+            if skip_state_pass {
+                break;
+            }
             // Use O(1) key lookup instead of O(depth) path lookup.
             if let Some(tile) = self.tree.get_tile_mut(info.key) {
                 let resize = resize_data.get(&info.key).copied();
@@ -3122,7 +3116,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         } else {
             self.tree.leaf_layouts_cloned()
         };
-        let focus_path = self.tree.focus_path();
+        let focused_key = self.tree.effective_focused_key();
         let fullscreen_id = self.pending_fullscreen_window().cloned();
         let windowed_fullscreen_id = if fullscreen_id.is_none() {
             self.tree.focused_tile().and_then(|tile| {
@@ -3135,7 +3129,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         };
 
         let ctx = WindowStateContext {
-            focus_path: &focus_path,
+            focused_key,
             workspace_active: is_active,
             deactivate_unfocused: self.options.deactivate_unfocused_windows && !is_focused,
             request_size: !has_pending,
@@ -3145,8 +3139,13 @@ impl<W: LayoutElement> TilingSpace<W> {
             windowed_fullscreen_id: windowed_fullscreen_id.as_ref(),
             view_size: self.view_size,
         };
+        // See the other state pass: never drive window state from a stale snapshot.
+        let skip_state_pass = self.tree.pending_layout_is_stale();
         let resize_data = self.interactive_resize_data_by_leaf(&layouts);
         for info in layouts {
+            if skip_state_pass {
+                break;
+            }
             // Use O(1) key lookup instead of O(depth) path lookup.
             if let Some(tile) = self.tree.get_tile_mut(info.key) {
                 let resize = resize_data.get(&info.key).copied();
@@ -3226,7 +3225,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         ctx: &WindowStateContext<'_, W>,
     ) {
         let &WindowStateContext {
-            focus_path,
+            focused_key,
             workspace_active,
             deactivate_unfocused,
             request_size,
@@ -3238,7 +3237,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         } = ctx;
 
         let window_id = tile.window().id().clone();
-        let is_focused_tile = info.path == focus_path;
+        let is_focused_tile = focused_key == Some(info.key);
         let is_fullscreen_tile = fullscreen_id.is_some_and(|id| id == &window_id);
         let is_windowed_fullscreen_tile = windowed_fullscreen_id.is_some_and(|id| id == &window_id);
         let is_fullscreen_like_tile = is_fullscreen_tile || is_windowed_fullscreen_tile;

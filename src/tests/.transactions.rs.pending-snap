@@ -1,0 +1,35 @@
+{"run_id":"1785590760-628718396","line":60,"new":{"module_name":"tiri__tests__transactions","snapshot_name":"column_resize_waits_for_both_windows","metadata":{"source":"src/tests/transactions.rs","assertion_line":60,"expression":"window.format_recent_configures()"},"snapshot":"size: 948 × 1064, bounds: 948 × 1064, states: [Activated]"},"old":{"module_name":"tiri__tests__transactions","metadata":{},"snapshot":""}}
+{"run_id":"1785590773-605630085","line":60,"new":{"module_name":"tiri__tests__transactions","snapshot_name":"column_resize_waits_for_both_windows","metadata":{"source":"src/tests/transactions.rs","assertion_line":60,"expression":"window.format_recent_configures()"},"snapshot":"size: 948 × 1064, bounds: 948 × 1064, states: [Activated]"},"old":{"module_name":"tiri__tests__transactions","metadata":{},"snapshot":""}}
+{"run_id":"1785590787-853085548","line":60,"new":{"module_name":"tiri__tests__transactions","snapshot_name":"column_resize_waits_for_both_windows","metadata":{"source":"src/tests/transactions.rs","assertion_line":60,"expression":"window.format_recent_configures()"},"snapshot":"size: 948 × 1064, bounds: 948 × 1064, states: [Activated]"},"old":{"module_name":"tiri__tests__transactions","metadata":{},"snapshot":""}}
+{"run_id":"1785590899-477305108","line":60,"new":{"module_name":"tiri__tests__transactions","snapshot_name":"column_resize_waits_for_both_windows","metadata":{"source":"src/tests/transactions.rs","assertion_line":60,"expression":"window.format_recent_configures()"},"snapshot":"size: 948 × 1064, bounds: 948 × 1064, states: [Activated]"},"old":{"module_name":"tiri__tests__transactions","metadata":{},"snapshot":""}}
+{"run_id":"1785590992-141474756","line":60,"new":{"module_name":"tiri__tests__transactions","snapshot_name":"column_resize_waits_for_both_windows","metadata":{"source":"src/tests/transactions.rs","assertion_line":60,"expression":"window.format_recent_configures()"},"snapshot":"size: 948 × 1064, bounds: 948 × 1064, states: [Activated]"},"old":{"module_name":"tiri__tests__transactions","metadata":{},"snapshot":""}}
+{"run_id":"1785591132-386228116","line":60,"new":null,"old":null}
+{"run_id":"1785591132-386228116","line":66,"new":null,"old":null}
+{"run_id":"1785591132-386228116","line":74,"new":null,"old":null}
+{"run_id":"1785591132-386228116","line":92,"new":null,"old":null}
+{"run_id":"1785591132-386228116","line":104,"new":null,"old":null}
+{"run_id":"1785591212-528650916","line":60,"new":null,"old":null}
+{"run_id":"1785591212-528650916","line":66,"new":null,"old":null}
+{"run_id":"1785591212-528650916","line":74,"new":null,"old":null}
+{"run_id":"1785591212-528650916","line":92,"new":null,"old":null}
+{"run_id":"1785591212-528650916","line":104,"new":null,"old":null}
+{"run_id":"1785591385-297819997","line":60,"new":null,"old":null}
+{"run_id":"1785591385-297819997","line":66,"new":null,"old":null}
+{"run_id":"1785591385-297819997","line":74,"new":null,"old":null}
+{"run_id":"1785591385-297819997","line":92,"new":null,"old":null}
+{"run_id":"1785591385-297819997","line":104,"new":null,"old":null}
+{"run_id":"1785591399-976397293","line":60,"new":null,"old":null}
+{"run_id":"1785591399-976397293","line":66,"new":null,"old":null}
+{"run_id":"1785591399-976397293","line":74,"new":null,"old":null}
+{"run_id":"1785591399-976397293","line":92,"new":null,"old":null}
+{"run_id":"1785591399-976397293","line":104,"new":null,"old":null}
+{"run_id":"1785591489-474950392","line":60,"new":null,"old":null}
+{"run_id":"1785591489-474950392","line":66,"new":null,"old":null}
+{"run_id":"1785591489-474950392","line":74,"new":null,"old":null}
+{"run_id":"1785591489-474950392","line":92,"new":null,"old":null}
+{"run_id":"1785591489-474950392","line":104,"new":null,"old":null}
+{"run_id":"1785591611-249776927","line":60,"new":null,"old":null}
+{"run_id":"1785591611-249776927","line":66,"new":null,"old":null}
+{"run_id":"1785591611-249776927","line":74,"new":null,"old":null}
+{"run_id":"1785591611-249776927","line":92,"new":null,"old":null}
+{"run_id":"1785591611-249776927","line":104,"new":null,"old":null}

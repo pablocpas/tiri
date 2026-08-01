@@ -82,6 +82,30 @@ impl<W: LayoutElement> ContainerTree<W> {
         area
     }
 
+    /// Whether the pending snapshot still covers exactly the tree's current leaves.
+    ///
+    /// While a size transaction is in flight `layout_atomic` defers relayouts, so windows
+    /// that came or went since the snapshot are not reflected in it. Passes that drive
+    /// window state must not run over such a snapshot: flushing a configure from it sends
+    /// the client bounds computed for a tree that no longer exists.
+    pub(in crate::layout) fn pending_layout_is_stale(&self) -> bool {
+        let Some(pending) = &self.pending_layouts else {
+            return false;
+        };
+
+        let snapshot: HashSet<NodeKey> = pending
+            .data
+            .leaf_layouts
+            .iter()
+            .map(|info| info.key)
+            .collect();
+        // Only leaves reachable from the root count: the slotmap can still hold nodes that
+        // were detached but not yet dropped.
+        let current: HashSet<NodeKey> = self.dfs_leaf_keys().into_iter().collect();
+
+        snapshot != current
+    }
+
     fn layout_atomic(&mut self, animate_resize: bool) {
         if self.pending_layouts.is_some() && !self.apply_pending_layouts_if_ready() {
             self.pending_relayout = true;
