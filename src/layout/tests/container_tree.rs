@@ -7,20 +7,27 @@ use super::*;
 
 #[test]
 fn removing_window_above_preserves_focused_window() {
-    let mut harness = TreeHarness::new();
-    harness.add_window(1);
-    harness.add_window(2);
-    harness.add_window(3);
-    assert!(harness.tree.set_focused_layout(ContainerLayout::SplitV));
-
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::SetLayoutSplitV,
+    ]);
     // Focus middle window and remove the window above it.
-    assert!(harness.tree.focus_window_by_id(&2));
-    assert_eq!(harness.tree.focused_window_id(), Some(2));
-
-    let _ = harness.tree.remove_window(&1);
-
+    check_ops_on_layout(&mut layout, [Op::FocusWindow(2)]);
+    let workspace = layout.active_workspace().expect("active workspace");
+    assert_eq!(workspace.tiling().focused_window_id(), Some(2));
+    check_ops_on_layout(&mut layout, [Op::CloseWindow(1)]);
+    let workspace = layout.active_workspace().expect("active workspace");
     assert_eq!(
-        harness.tree.focused_window_id(),
+        workspace.tiling().focused_window_id(),
         Some(2),
         "removing the window above should not move focus",
     );
@@ -1331,20 +1338,28 @@ fn wrap_root_for_sibling_insert_uses_pending_layout_hint() {
 }
 #[test]
 fn move_right_from_single_child_container_is_atomic() {
-    let mut harness = TreeHarness::new();
-    harness.add_window(1);
-    harness.add_window(2);
-    harness.add_window(3);
-
-    assert!(harness.tree.focus_root_child(0));
-    assert!(harness.tree.split_focused(ContainerLayout::SplitV));
-    harness.add_window(4);
-    let _ = harness.tree.remove_window(&4);
-
-    assert!(harness.tree.focus_root_child(0));
-    assert!(harness.tree.move_in_direction(Direction::Right));
-
-    let tree = harness.tree.debug_tree();
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::FocusColumn(1),
+        Op::SplitVertical,
+        Op::AddWindow {
+            params: TestWindowParams::new(4),
+        },
+        Op::CloseWindow(4),
+        Op::FocusColumn(1),
+        Op::MoveColumnRight,
+    ]);
+    let workspace = layout.active_workspace().expect("active workspace");
+    let tree = workspace.tiling().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1357,20 +1372,28 @@ fn move_right_from_single_child_container_is_atomic() {
 }
 #[test]
 fn move_left_swaps_single_child_container_immediately() {
-    let mut harness = TreeHarness::new();
-    harness.add_window(1);
-    harness.add_window(2);
-    harness.add_window(3);
-
-    assert!(harness.tree.focus_root_child(1));
-    assert!(harness.tree.split_focused(ContainerLayout::SplitV));
-    harness.add_window(4);
-    let _ = harness.tree.remove_window(&4);
-    assert!(harness.tree.focus_window_by_id(&2));
-
-    assert!(harness.tree.move_in_direction(Direction::Left));
-
-    let tree = harness.tree.debug_tree();
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::FocusColumn(2),
+        Op::SplitVertical,
+        Op::AddWindow {
+            params: TestWindowParams::new(4),
+        },
+        Op::CloseWindow(4),
+        Op::FocusWindow(2),
+        Op::MoveColumnLeft,
+    ]);
+    let workspace = layout.active_workspace().expect("active workspace");
+    let tree = workspace.tiling().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"

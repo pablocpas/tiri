@@ -1,7 +1,6 @@
 use insta::assert_snapshot;
 
-use super::super::container::{Direction, Layout as ContainerLayout};
-use super::container_tree::TreeHarness;
+use super::super::container::Layout as ContainerLayout;
 use super::*;
 
 #[test]
@@ -1283,15 +1282,22 @@ fn i3_122_toggle_split_switches_nested_container_orientation() {
 }
 #[test]
 fn i3_122_split_workspace_with_multiple_children_wraps_focused_branch() {
-    let mut harness = TreeHarness::new();
-    harness.add_window(1);
-    harness.add_window(2);
-
-    assert!(harness.tree.focus_root_child(0));
-    assert!(harness.tree.split_focused(ContainerLayout::SplitV));
-    harness.add_window(3);
-
-    let tree = harness.tree.debug_tree();
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::FocusColumn(1),
+        Op::SplitVertical,
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+    ]);
+    let workspace = layout.active_workspace().expect("active workspace");
+    let tree = workspace.tiling().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1305,18 +1311,25 @@ fn i3_122_split_workspace_with_multiple_children_wraps_focused_branch() {
 }
 #[test]
 fn i3_122_repeated_split_without_new_window_keeps_tree_shape() {
-    let mut harness = TreeHarness::new();
-    harness.add_window(1);
-    harness.add_window(2);
-
-    assert!(harness.tree.focus_root_child(0));
-    assert!(harness.tree.split_focused(ContainerLayout::SplitV));
-    harness.add_window(3);
-    let before = harness.tree.debug_tree().replace(" *", "");
-
-    let _ = harness.tree.split_focused(ContainerLayout::SplitV);
-    let after = harness.tree.debug_tree().replace(" *", "");
-
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::FocusColumn(1),
+        Op::SplitVertical,
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+    ]);
+    let workspace = layout.active_workspace().expect("active workspace");
+    let before = workspace.tiling().debug_tree().replace(" *", "");
+    check_ops_on_layout(&mut layout, [Op::SplitVertical]);
+    let workspace = layout.active_workspace().expect("active workspace");
+    let after = workspace.tiling().debug_tree().replace(" *", "");
     assert_eq!(
         after, before,
         "repeating split without opening a new window should not create extra container structure",
@@ -1539,33 +1552,40 @@ fn i3_145_move_up_then_right_flattens_back_to_root_siblings() {
 }
 #[test]
 fn i3_145_ticket_1053_sequence_flattens_after_second_move() {
-    let mut harness = TreeHarness::new();
-    harness.add_window(1);
-    harness.add_window(2);
-    harness.add_window(3);
-    harness.add_window(4);
-
-    assert!(harness.tree.focus_in_direction(Direction::Right));
-    assert!(harness.tree.split_focused(ContainerLayout::SplitV));
-    assert!(harness.tree.focus_in_direction(Direction::Right));
-    assert!(harness.tree.move_in_direction(Direction::Left));
-    assert!(harness.tree.set_focused_layout(ContainerLayout::Tabbed));
-    assert!(harness.tree.focus_parent());
-    assert!(harness.tree.split_focused(ContainerLayout::SplitV));
-
-    let before = harness.tree.debug_tree();
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(4),
+        },
+        Op::FocusColumnRight,
+        Op::SplitVertical,
+        Op::FocusColumnRight,
+        Op::MoveColumnLeft,
+        Op::SetLayoutTabbed,
+        Op::FocusParent,
+        Op::SplitVertical,
+    ]);
+    let workspace = layout.active_workspace().expect("active workspace");
+    let before = workspace.tiling().debug_tree();
     assert_eq!(
-        harness.tree.root_children_len(),
+        workspace.tiling().root_children_len(),
         3,
         "precondition: first phase of i3 145 ticket #1053 should still have 3 root children:\n{before}",
     );
-
-    assert!(harness.tree.focus_in_direction(Direction::Right));
-    assert!(harness.tree.move_in_direction(Direction::Left));
-
-    let after = harness.tree.debug_tree();
+    check_ops_on_layout(&mut layout, [Op::FocusColumnRight, Op::MoveColumnLeft]);
+    let workspace = layout.active_workspace().expect("active workspace");
+    let after = workspace.tiling().debug_tree();
     assert_eq!(
-        harness.tree.root_children_len(),
+        workspace.tiling().root_children_len(),
         2,
         "i3 145 ticket #1053 should flatten redundant wrappers after the second move:\n{after}",
     );
@@ -1804,58 +1824,64 @@ fn i3_130_moving_last_children_away_removes_empty_split_wrapper() {
 }
 #[test]
 fn i3_124_move_left_then_right_swaps_root_siblings_without_extra_changes() {
-    let mut harness = TreeHarness::new();
-    harness.add_window(1);
-    harness.add_window(2);
-
-    assert!(harness.tree.move_in_direction(Direction::Left));
-    let after_left = harness.tree.debug_tree();
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::MoveColumnLeft,
+    ]);
+    let workspace = layout.active_workspace().expect("active workspace");
+    let after_left = workspace.tiling().debug_tree();
     assert_eq!(
-        harness.tree.all_window_ids(),
+        workspace.tiling().all_window_ids(),
         vec![2, 1],
         "moving the second root sibling left should swap it before the first:\n{after_left}",
     );
     assert_eq!(
-        harness.tree.focused_window_id(),
+        workspace.tiling().focused_window_id(),
         Some(2),
         "moving the second root sibling left should swap it before the first:\n{after_left}",
     );
-
-    assert!(!harness.tree.move_in_direction(Direction::Left));
-    let after_second_left = harness.tree.debug_tree();
+    check_ops_on_layout(&mut layout, [Op::MoveColumnLeft]);
+    let workspace = layout.active_workspace().expect("active workspace");
+    let after_second_left = workspace.tiling().debug_tree();
     assert_eq!(
-        harness.tree.all_window_ids(),
+        workspace.tiling().all_window_ids(),
         vec![2, 1],
         "moving left again at the edge should be a no-op:\n{after_second_left}",
     );
     assert_eq!(
-        harness.tree.focused_window_id(),
+        workspace.tiling().focused_window_id(),
         Some(2),
         "moving left again at the edge should be a no-op:\n{after_second_left}",
     );
-
-    assert!(harness.tree.move_in_direction(Direction::Right));
-    let after_right = harness.tree.debug_tree();
+    check_ops_on_layout(&mut layout, [Op::MoveColumnRight]);
+    let workspace = layout.active_workspace().expect("active workspace");
+    let after_right = workspace.tiling().debug_tree();
     assert_eq!(
-        harness.tree.all_window_ids(),
+        workspace.tiling().all_window_ids(),
         vec![1, 2],
         "moving right should swap the root siblings back:\n{after_right}",
     );
     assert_eq!(
-        harness.tree.focused_window_id(),
+        workspace.tiling().focused_window_id(),
         Some(2),
         "moving right should swap the root siblings back:\n{after_right}",
     );
-
-    assert!(!harness.tree.move_in_direction(Direction::Right));
-    let after_second_right = harness.tree.debug_tree();
+    check_ops_on_layout(&mut layout, [Op::MoveColumnRight]);
+    let workspace = layout.active_workspace().expect("active workspace");
+    let after_second_right = workspace.tiling().debug_tree();
     assert_eq!(
-        harness.tree.all_window_ids(),
+        workspace.tiling().all_window_ids(),
         vec![1, 2],
         "moving right again at the edge should be a no-op:\n{after_second_right}",
     );
     assert_eq!(
-        harness.tree.focused_window_id(),
+        workspace.tiling().focused_window_id(),
         Some(2),
         "moving right again at the edge should be a no-op:\n{after_second_right}",
     );

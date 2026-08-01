@@ -714,7 +714,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.set_layout_for_target(next, target, root_policy)
     }
 
-
     pub(in crate::layout) fn toggle_layout_all_for_target(
         &mut self,
         target: TreeCommandTarget,
