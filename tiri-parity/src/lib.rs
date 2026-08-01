@@ -8,10 +8,12 @@
 //!
 //! See `docs/design/parity.md` for the measurements the normalization rules come from.
 
+pub mod fixture;
 pub mod model;
 pub mod sway;
 pub mod tiri;
 
+pub use fixture::Fixture;
 pub use model::{Container, Difference, FracRect, Layout, Node, Window, WindowId, Workspace};
 
 /// Erase decoration from a model, in place.
@@ -22,8 +24,15 @@ pub use model::{Container, Difference, FracRect, Layout, Node, Window, WindowId,
 /// behaviour, so comparing it would report a difference on every tabbed test for reasons
 /// nobody can act on.
 ///
-/// What remains observable under such a container is which child is on top and in what
-/// order the tabs sit, and those are compared normally.
+/// The erasure covers the whole subtree, not just the container's own children, because
+/// sway's numbers below such a container are not self-consistent: it subtracts one band
+/// from a leaf and two from the split holding it, so a window's rectangle can start above
+/// its parent's. There is no reading of that which says anything about layout.
+///
+/// The cost is stated plainly: a genuine geometry bug *inside* a tabbed container would not
+/// be caught here. What remains compared is the shape of the subtree, the order of the tabs,
+/// which child is on top, and where the container itself sits — which is what a tabbed
+/// layout is about.
 pub fn erase_decoration(workspace: &mut Workspace) {
     // The workspace is itself a container, so it can be the tabbed one.
     if matches!(workspace.layout, Layout::Tabbed | Layout::Stacked) {
@@ -34,7 +43,7 @@ pub fn erase_decoration(workspace: &mut Workspace) {
             h: 1.0,
         };
         for child in &mut workspace.nodes {
-            grow_to(child, area);
+            flatten_onto(child, area);
         }
     }
     erase_nodes(&mut workspace.nodes);
@@ -46,48 +55,22 @@ fn erase_nodes(nodes: &mut [Node]) {
             if matches!(container.layout, Layout::Tabbed | Layout::Stacked) {
                 let rect = container.rect;
                 for child in &mut container.nodes {
-                    grow_to(child, rect);
+                    flatten_onto(child, rect);
                 }
+                continue;
             }
             erase_nodes(&mut container.nodes);
         }
     }
 }
 
-/// Move and stretch `node`'s whole subtree so that `node` fills `target`.
-///
-/// The band a tab bar occupies shifts everything under it, not just the child itself, so
-/// erasing it has to carry the descendants along. Anything nested keeps its position
-/// *relative* to its parent, which is the part that is behaviour.
-fn grow_to(node: &mut Node, target: FracRect) {
-    let current = rect_of(node);
-    if current.w <= 0.0 || current.h <= 0.0 {
-        set_rect(node, target);
-        return;
-    }
-    let scale_x = target.w / current.w;
-    let scale_y = target.h / current.h;
-    remap(node, |r| FracRect {
-        x: target.x + (r.x - current.x) * scale_x,
-        y: target.y + (r.y - current.y) * scale_y,
-        w: r.w * scale_x,
-        h: r.h * scale_y,
-    });
-}
-
-fn remap(node: &mut Node, f: impl Fn(FracRect) -> FracRect + Copy) {
-    set_rect(node, f(rect_of(node)));
+/// Give `node` and everything below it the same rectangle.
+fn flatten_onto(node: &mut Node, rect: FracRect) {
+    set_rect(node, rect);
     if let Node::Container(container) = node {
         for child in &mut container.nodes {
-            remap(child, f);
+            flatten_onto(child, rect);
         }
-    }
-}
-
-fn rect_of(node: &Node) -> FracRect {
-    match node {
-        Node::Window(w) => w.rect,
-        Node::Container(c) => c.rect,
     }
 }
 

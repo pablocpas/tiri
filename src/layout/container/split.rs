@@ -24,32 +24,11 @@ impl<W: LayoutElement> ContainerTree<W> {
             if root_policy == RootPolicy::MaterialContainer {
                 return false;
             }
-
-            let focus_key = self.focused_key.or_else(|| self.first_leaf_key());
-
-            let mut outer = ContainerData::new(layout);
-            outer.add_child(container_key);
-            let outer_key = self.insert_node(NodeData::Container(outer));
-            self.set_parent(container_key, Some(outer_key));
-            self.set_parent(outer_key, None);
-            self.root = Some(outer_key);
-
-            if let Some(focus_key) = focus_key {
-                self.focus_node_key(focus_key);
-            }
-            // Preserve command context on the originally selected top-level container.
-            self.selected_key = Some(container_key);
-            return true;
+            // The workspace itself is selected, so it is what takes the layout.
+            return self.set_root_container_layout(layout);
         }
 
-        let Some(parent_key) = self.parent_of(container_key) else {
-            return false;
-        };
-        let Some(parent) = self.get_container_mut(parent_key) else {
-            return false;
-        };
-        parent.set_layout_explicit(layout);
-        true
+        self.set_layout_of_parent_of(container_key, layout, root_policy)
     }
 
     pub(in crate::layout) fn set_root_container_layout(&mut self, layout: Layout) -> bool {
@@ -573,17 +552,29 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         };
 
-        // Measured against sway 1.11: a window whose parent is the workspace cannot hand
-        // the workspace a layout — a container with the new layout takes the workspace's
-        // children instead, and the workspace keeps its own orientation. This holds for
-        // splits and for tabbed/stacked alike, with one child or several. A real container
-        // parent, floating roots included, just takes the layout.
-        //
-        // Restating the layout the workspace already has is the one exception, and it does
-        // nothing at all: there is no orientation to express that is not already expressed.
-        let parent_key = self.parent_of(focused_key);
+        self.set_layout_of_parent_of(focused_key, layout, root_policy)
+    }
+
+    /// Give `key`'s parent the layout `layout`.
+    ///
+    /// Measured against sway 1.11: this is what `layout X` does, whether `key` is a window
+    /// or a container that `focus parent` selected. The workspace is the one parent that
+    /// cannot be handed a layout this way — a container with the new layout takes the
+    /// workspace's children instead, and the workspace keeps its own orientation. That
+    /// holds for splits and tabbed/stacked alike, with one child or several.
+    ///
+    /// Restating the layout the workspace already has is the exception, and does nothing:
+    /// there is no orientation to express that is not already expressed.
+    fn set_layout_of_parent_of(
+        &mut self,
+        key: NodeKey,
+        layout: Layout,
+        root_policy: RootPolicy,
+    ) -> bool {
+        let parent_key = self.parent_of(key);
+
         if root_policy == RootPolicy::ImplicitWorkspace
-            && parent_key.is_none_or(|key| Some(key) == self.root)
+            && parent_key.is_none_or(|parent| Some(parent) == self.root)
         {
             let root_layout = self.root_container_layout();
             if root_layout == layout {
@@ -598,9 +589,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             return self.ensure_root_container_with_layout(layout);
         };
 
-        let target_key = parent_key;
-
-        if let Some(container) = self.get_container_mut(target_key) {
+        if let Some(container) = self.get_container_mut(parent_key) {
             container.set_layout_explicit(layout);
             return true;
         }

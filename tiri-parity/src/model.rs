@@ -258,3 +258,176 @@ fn vis(v: bool) -> String {
 fn float(v: bool) -> String {
     if v { "floating" } else { "tiled" }.into()
 }
+
+/// Read back what [`Workspace::render`] wrote.
+///
+/// Fixtures are stored as rendered text so a recording is reviewable in a diff, but they
+/// have to come back as a model to be compared with the geometry tolerance rather than
+/// character by character. Round-tripping is what keeps the two directions honest.
+pub fn parse(text: &str) -> Result<Workspace, ParseError> {
+    let mut lines = text
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty());
+
+    let (header_no, header) = lines.next().ok_or(ParseError {
+        line: 0,
+        reason: "empty",
+    })?;
+    let mut header = header.split_whitespace();
+    if header.next() != Some("workspace") {
+        return Err(ParseError {
+            line: header_no + 1,
+            reason: "expected a workspace line",
+        });
+    }
+    let layout = header
+        .next()
+        .and_then(Layout::from_sway)
+        .ok_or(ParseError {
+            line: header_no + 1,
+            reason: "unknown workspace layout",
+        })?;
+    let focused = match header.next() {
+        Some("focus=none") => None,
+        Some(field) => Some(
+            field
+                .strip_prefix("focus=")
+                .and_then(|id| id.parse().ok())
+                .ok_or(ParseError {
+                    line: header_no + 1,
+                    reason: "unreadable focus",
+                })?,
+        ),
+        None => {
+            return Err(ParseError {
+                line: header_no + 1,
+                reason: "missing focus",
+            })
+        }
+    };
+
+    // Depth is carried by indentation, so a stack of the containers still open is enough.
+    let mut root = Vec::new();
+    let mut open: Vec<(usize, Container)> = Vec::new();
+    for (idx, line) in lines {
+        let no = idx + 1;
+        let depth = (line.len() - line.trim_start().len()) / 2;
+        if depth == 0 {
+            return Err(ParseError {
+                line: no,
+                reason: "node outside the workspace",
+            });
+        }
+        while open.len() >= depth {
+            close_one(&mut open, &mut root);
+        }
+        if open.len() + 1 != depth {
+            return Err(ParseError {
+                line: no,
+                reason: "indentation skips a level",
+            });
+        }
+        match parse_node(line.trim_start(), no)? {
+            Node::Container(container) => open.push((depth, container)),
+            node => attach(&mut open, &mut root, node),
+        }
+    }
+    while !open.is_empty() {
+        close_one(&mut open, &mut root);
+    }
+
+    Ok(Workspace {
+        layout,
+        focused,
+        nodes: root,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseError {
+    pub line: usize,
+    pub reason: &'static str,
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "line {}: {}", self.line, self.reason)
+    }
+}
+
+fn close_one(open: &mut Vec<(usize, Container)>, root: &mut Vec<Node>) {
+    let Some((_, container)) = open.pop() else {
+        return;
+    };
+    attach(open, root, Node::Container(container));
+}
+
+fn attach(open: &mut [(usize, Container)], root: &mut Vec<Node>, node: Node) {
+    match open.last_mut() {
+        Some((_, container)) => container.nodes.push(node),
+        None => root.push(node),
+    }
+}
+
+fn parse_node(line: &str, no: usize) -> Result<Node, ParseError> {
+    let mut fields = line.split_whitespace();
+    let kind = fields.next().ok_or(ParseError {
+        line: no,
+        reason: "empty node",
+    })?;
+    let err = |reason| ParseError { line: no, reason };
+
+    if kind == "window" {
+        let id = fields
+            .next()
+            .and_then(|id| id.parse().ok())
+            .ok_or(err("unreadable window id"))?;
+        let rect = parse_rect(&mut fields, no)?;
+        let mut window = Window {
+            id,
+            rect,
+            visible: true,
+            floating: false,
+            marks: Vec::new(),
+        };
+        for flag in fields {
+            match flag {
+                "hidden" => window.visible = false,
+                "floating" => window.floating = true,
+                _ => match flag.strip_prefix("mark:") {
+                    Some(mark) => window.marks.push(mark.to_owned()),
+                    None => return Err(err("unknown window flag")),
+                },
+            }
+        }
+        return Ok(Node::Window(window));
+    }
+
+    let layout = Layout::from_sway(kind).ok_or(err("unknown node kind"))?;
+    Ok(Node::Container(Container {
+        layout,
+        rect: parse_rect(&mut fields, no)?,
+        nodes: Vec::new(),
+    }))
+}
+
+fn parse_rect<'a>(
+    fields: &mut impl Iterator<Item = &'a str>,
+    no: usize,
+) -> Result<FracRect, ParseError> {
+    let err = ParseError {
+        line: no,
+        reason: "unreadable rectangle",
+    };
+    let loc = fields.next().ok_or(err.clone())?;
+    let size = fields.next().ok_or(err.clone())?;
+    let (x, y) = loc.split_once(',').ok_or(err.clone())?;
+    let (w, h) = size.split_once('x').ok_or(err.clone())?;
+    Ok(FracRect {
+        x: x.parse().map_err(|_| err.clone())?,
+        y: y.parse().map_err(|_| err.clone())?,
+        w: w.parse().map_err(|_| err.clone())?,
+        h: h.parse().map_err(|_| err)?,
+    })
+}

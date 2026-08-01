@@ -10,4 +10,6 @@ mod script;
 pub(crate) use replay::replay;
 
 #[cfg(test)]
+mod fixtures;
+#[cfg(test)]
 mod tests;

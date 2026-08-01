@@ -115,15 +115,14 @@ same rule:
 
 ## Known divergences
 
-Differences that are real, understood, and not yet fixed. An entry here is a promise to fix
-or to justify, not permission to ignore.
+Differences that are real, understood, and not yet fixed. These live in code, as the `KNOWN`
+table in `src/layout/tests/parity/fixtures.rs`, so an entry has to name the fixture and step
+it silences and say why — and the suite fails if an entry stops diverging, which is what
+stops the list from rotting.
 
-- **Cached leaf geometry goes stale when a sibling leaves the tiling tree.** After floating
-  one of two tiled windows, the remaining window is *rendered* at full width but the layout
-  tree still reports the old half-width rectangle, so IPC consumers see geometry no longer
-  on screen. The renderer and the tree's `leaf_layouts` cache disagree because the removal
-  path never settles the pending layout. Pinned by
-  `layout::tests::parity::tests::a_floating_window_is_reported_as_floating`.
+The two entries this section originally held, `layout X` on a workspace child and stale
+cached geometry after a sibling leaves, were both closed by measurement. What the recorder
+found in their place is in the table.
 
 ## What already exists
 
@@ -243,7 +242,18 @@ whole suite — the other half of the whack-a-mole.
    layers and rewrote or removed the tests that disagreed.
 3. **Recorder against headless sway**; record fixtures for scripts covering the same ground.
    Every mismatch there is a real finding about tiri, about sway, or about a test's belief.
-4. **Minimizer and ledger.**
+   *(done)* `cargo run -p tiri-parity --bin record -- tiri-parity/fixtures/*.parity` needs
+   sway on the machine; comparing the recordings does not, so CI runs it everywhere. A
+   fixture is its own script — every `$ ` line is a command — so the input and the
+   expectation cannot drift apart, and re-recording after a sway upgrade is a reviewable
+   diff that says what changed in sway.
+
+   Recordings are stored before decoration is erased, on purpose: what counts as decoration
+   is a rule in `tiri-parity`, and baking it into the files would mean every improvement to
+   that rule needs a machine with sway to regenerate them.
+4. **Ledger** *(done, see above)*, and a **minimizer**: on a divergence, drop commands from
+   the script while it survives, so what lands in the table is the shortest script that
+   still shows it.
 5. **Widen the scripts** to the areas still only covered by hand-written expectations:
    floating transport, scratchpad, marks, fullscreen.
 

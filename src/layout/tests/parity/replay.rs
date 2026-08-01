@@ -62,14 +62,17 @@ pub(crate) fn replay(text: &str) -> Replay {
 }
 
 impl Replay {
-    /// The fixture text: each command followed by what the workspace looked like after it.
+    /// Each command followed by what the workspace looked like after it, with decoration
+    /// erased — the same view a recording is compared against.
     pub fn render(&self) -> String {
         let mut out = String::new();
         for step in &self.steps {
+            let mut model = step.model.clone();
+            erase_decoration(&mut model);
             out.push_str("$ ");
             out.push_str(&step.command);
             out.push('\n');
-            out.push_str(&step.model.render());
+            out.push_str(&model.render());
             out.push('\n');
         }
         out
@@ -89,6 +92,11 @@ fn settle(layout: &mut Layout<TestWindow>, window_count: usize) {
         for id in 1..=window_count {
             Op::Communicate(id).apply(layout);
         }
+        // A committed size only becomes the tree's current geometry when the frame that
+        // follows applies the pending layout, so the harness has to render like the
+        // compositor does. Without this, IPC would be read between the commit and the
+        // frame, which is a moment no user ever sees.
+        layout.update_render_elements(None);
         if observe(layout).render() == before {
             return;
         }
@@ -118,10 +126,8 @@ fn observe(layout: &Layout<TestWindow>) -> Workspace {
         .map(|id| (id, id as u32))
         .collect();
 
-    let mut model = tiri_model::normalize(&tree, workspace_layout, area, &order)
-        .unwrap_or_else(|err| panic!("cannot normalize tiri's layout tree: {err:?}"));
-    erase_decoration(&mut model);
-    model
+    tiri_model::normalize(&tree, workspace_layout, area, &order)
+        .unwrap_or_else(|err| panic!("cannot normalize tiri's layout tree: {err:?}"))
 }
 
 fn window_ids(root: &Option<tiri_ipc::LayoutTreeNode>) -> Vec<u64> {

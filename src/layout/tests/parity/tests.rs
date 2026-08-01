@@ -222,12 +222,8 @@ workspace splith focus=2
     );
 }
 
-/// A lone floating window is the window itself, not tiri's wrapper container.
-///
-/// The tiled window left behind is reported at half width even though it is rendered full
-/// width: the tree's cached leaf geometry is not refreshed when a sibling leaves. That is a
-/// real divergence, listed in `docs/design/parity.md`; it is written down here rather than
-/// asserted away, so fixing it fails this test and forces the update.
+/// A lone floating window is the window itself, not tiri's wrapper container, and the tiled
+/// window left behind grows into the space.
 #[test]
 fn a_floating_window_is_reported_as_floating() {
     assert_replay(
@@ -248,7 +244,7 @@ workspace splith focus=2
 
 $ floating toggle
 workspace splith focus=2
-  window 1 0.000,0.000 0.500x1.000
+  window 1 0.000,0.000 1.000x1.000
   window 2 0.250,0.125 0.500x0.750 floating
 ",
     );

@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use tiri_ipc::{LayoutTree, LayoutTreeLayout, LayoutTreeNode, LayoutTreeRect};
 
-use crate::model::Layout;
+use crate::model::{Layout, Node};
 use crate::{erase_decoration, sway, tiri};
 
 const AREA: LayoutTreeRect = LayoutTreeRect {
@@ -385,4 +385,94 @@ fn a_missing_window_is_reported_at_its_position() {
     assert_eq!(diff[0].at, "workspace");
     assert_eq!(diff[0].expected, "2 children");
     assert_eq!(diff[0].actual, "1 children");
+}
+
+/// The fixture format is only trustworthy if reading it back gives what was written.
+#[test]
+fn rendering_and_parsing_are_inverses() {
+    let cases = [
+        "workspace splith focus=none\n",
+        "\
+workspace splitv focus=2
+  window 1 0.000,0.000 1.000x0.500
+  window 2 0.000,0.500 1.000x0.500
+",
+        "\
+workspace splith focus=3
+  tabbed 0.000,0.000 0.500x1.000
+    window 1 0.000,0.000 0.500x1.000 hidden
+    splitv 0.000,0.000 0.500x1.000
+      window 2 0.000,0.000 0.500x0.500 mark:a mark:b
+      window 3 0.000,0.500 0.500x0.500
+  window 4 0.500,0.000 0.500x1.000 floating
+",
+    ];
+
+    for case in cases {
+        let parsed = crate::model::parse(case).unwrap_or_else(|err| panic!("{err}: {case}"));
+        assert_eq!(parsed.render(), case);
+        assert_eq!(parsed.diff(&parsed), Vec::new());
+    }
+}
+
+#[test]
+fn a_malformed_fixture_names_the_line_that_broke() {
+    let err =
+        crate::model::parse("workspace splith focus=1\n      window 1 0,0 1x1\n").unwrap_err();
+    assert_eq!(err.line, 2);
+    assert_eq!(err.reason, "indentation skips a level");
+}
+
+/// Rounding to three decimals must stay well inside the comparison tolerance, or fixtures
+/// would report differences that only exist in the file format.
+#[test]
+fn the_fixture_format_does_not_lose_enough_precision_to_matter() {
+    let mut ws =
+        crate::model::parse("workspace splith focus=1\n  window 1 0.000,0.000 1.000x1.000\n")
+            .unwrap();
+    let Node::Window(window) = &mut ws.nodes[0] else {
+        unreachable!()
+    };
+    window.rect.w = 0.333_49;
+
+    let round_tripped = crate::model::parse(&ws.render()).unwrap();
+    assert_eq!(ws.diff(&round_tripped), Vec::new());
+}
+
+#[test]
+fn a_fixture_round_trips_and_yields_its_script() {
+    let text = "\
+# recorded from sway 1.11
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ split v
+workspace splitv focus=1
+  window 1 0.000,0.000 1.000x1.000
+";
+
+    let fixture = crate::Fixture::parse(text).unwrap();
+    assert_eq!(fixture.source, "sway 1.11");
+    assert_eq!(fixture.script(), "open\nsplit v\n");
+    assert_eq!(fixture.render(), text);
+}
+
+#[test]
+fn a_fixture_without_a_source_is_rejected() {
+    let err = crate::Fixture::parse("$ open\nworkspace splith focus=none\n").unwrap_err();
+    assert!(err.reason.contains("recorded from"), "{err}");
+}
+
+#[test]
+fn a_broken_model_points_at_the_command_it_followed() {
+    let text = "\
+# recorded from sway 1.11
+
+$ split v
+workspace nonsense focus=none
+";
+    let err = crate::Fixture::parse(text).unwrap_err();
+    assert!(err.reason.contains("split v"), "{err}");
 }
