@@ -210,6 +210,32 @@ impl<W: LayoutElement> ContainerTree<W> {
         let Some(node_idx) = self.child_index(node_parent_key, node_key) else {
             return false;
         };
+
+        // Escaping into the workspace, across the orientation it lays its children out in,
+        // does not stop at the workspace: it crosses it. Measured against sway 1.11 — the
+        // workspace flips and everything else moves under one container.
+        let escapes_across_the_workspace = Some(grandparent_key) == self.root
+            && self
+                .get_container(grandparent_key)
+                .is_some_and(|root| !root.layout().is_parallel_to(direction));
+        if escapes_across_the_workspace {
+            if let Some(container) = self.get_container_mut(node_parent_key) {
+                let _ = container.remove_child(node_idx);
+            }
+            self.set_parent(node_key, None);
+            let Some(parent_idx) = self.child_index(grandparent_key, node_parent_key) else {
+                return false;
+            };
+            if let Some(root) = self.get_container_mut(grandparent_key) {
+                root.insert_child(parent_idx + 1, node_key);
+            }
+            self.set_parent(node_key, Some(grandparent_key));
+            self.cleanup_containers(Some(node_parent_key));
+            let Some(node_idx) = self.child_index(grandparent_key, node_key) else {
+                return false;
+            };
+            return self.move_root_node_across_workspace(node_key, node_idx, direction);
+        }
         let Some(parent_idx) = self.child_index(grandparent_key, node_parent_key) else {
             return false;
         };

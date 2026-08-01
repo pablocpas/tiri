@@ -31,6 +31,24 @@ const KNOWN: &[Divergence] = &[
         reason: "A window's size when it starts floating is the size its client asked for, and the two harnesses run different clients — foot under sway, a synthetic window under tiri. This is a limitation of the comparison, not a difference in tiri: closing it needs a recorder client that requests a fixed size.",
     },
     Divergence {
+        fixture: "move-at-an-edge.parity",
+        step: 5,
+        reason: "\
+The wrapper left behind holds one window in the orientation the workspace has just taken, \
+and sway drops it while tiri keeps it. tiri keeps single-child containers the user asked \
+for — `split h` builds one and sway keeps that too — so the question is which of the two \
+this one is, and that is not settled yet. Same family as the entry below.",
+    },
+    Divergence {
+        fixture: "move-and-focus.parity",
+        step: 14,
+        reason: "\
+Moving *into* a container: sway descends to where focus last was inside it, so a window \
+that left a nested split comes back to the same place. tiri stops at the container's own \
+level and becomes its sibling instead. A real difference in tiri, and the next one to \
+close; it was masked until step 13 started matching.",
+    },
+    Divergence {
         fixture: "move-into-a-nested-container.parity",
         step: 7,
         reason: "\
@@ -40,11 +58,6 @@ windows inside it as it goes (w2, w3 come back as w3, w2, and stay that way). Re
 windows is not something a user asked for, and reproducing it would mean copying the loop \
 that does it. tiri keeps the container and leaves the order alone. The single-child case, \
 where there is no order to scramble, does match: see move-across-the-workspace.parity.",
-    },
-    Divergence {
-        fixture: "move-and-focus.parity",
-        step: 13,
-        reason: "`move down` on a window whose parent is the workspace: sway turns the workspace vertical, wraps what was there in a horizontal container and puts the moved window beside it. tiri keeps one flat row and reorders inside it. A real difference in tiri, in the same family as the layout rules already fixed — a command aimed at a node whose parent is the workspace has to build a container rather than change the workspace.",
     },
 ];
 

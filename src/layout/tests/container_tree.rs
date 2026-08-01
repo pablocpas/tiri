@@ -1118,7 +1118,10 @@ fn move_left_at_edge_is_noop() {
     );
 }
 #[test]
-fn move_up_at_edge_is_noop() {
+fn move_up_at_an_edge_crosses_the_workspace() {
+    // Recorded from sway (tiri-parity/fixtures/move-at-an-edge.parity): moving towards an
+    // edge with nothing beyond it is not a no-op — it crosses the workspace, which flips.
+    // The wrapper tiri leaves behind is an open entry in that fixture's ledger.
     let layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow {
@@ -1137,7 +1140,7 @@ fn move_up_at_edge_is_noop() {
     assert_snapshot!(
         tree.as_str(),
         @"
-    SplitH
+    SplitV
       Window 1 *
       SplitV
         Window 2
