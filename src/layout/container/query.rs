@@ -115,6 +115,24 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
+    /// Whether any container in the tree uses `layout`.
+    ///
+    /// Tests use this instead of searching the debug dump for a layout name, which also
+    /// matches window titles and silently changes meaning with the dump's format.
+    #[cfg(test)]
+    pub(in crate::layout) fn contains_layout(&self, layout: Layout) -> bool {
+        self.nodes.values().any(|node| match node {
+            NodeData::Container(container) => container.layout() == layout,
+            NodeData::Leaf(_) => false,
+        })
+    }
+
+    /// The focused window's id, if any.
+    #[cfg(test)]
+    pub(in crate::layout) fn focused_window_id(&self) -> Option<W::Id> {
+        self.focused_window().map(|window| window.id().clone())
+    }
+
     /// Leaf node keys under `key`, in depth-first (visual) order.
     pub(in crate::layout) fn leaf_keys_under(&self, key: NodeKey) -> Vec<NodeKey> {
         let mut keys = Vec::new();

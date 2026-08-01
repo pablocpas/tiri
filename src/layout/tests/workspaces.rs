@@ -32,10 +32,7 @@ fn empty_workspace_layout_commands_do_not_wrap_next_open() {
     assert_eq!(workspace.tiling().tiles().count(), 1);
     let tree = workspace.tiling().debug_tree();
     assert!(
-        !tree.contains("SplitH")
-            && !tree.contains("SplitV")
-            && !tree.contains("Tabbed")
-            && !tree.contains("Stacked"),
+        !workspace.tiling().has_containers(),
         "open_window after empty-workspace layout commands should create a leaf root:\n{tree}",
     );
 }
@@ -60,7 +57,7 @@ fn empty_workspace_layout_applies_on_second_open() {
         let workspace = layout.active_workspace().expect("active workspace");
         let tree = workspace.tiling().debug_tree();
         assert!(
-            !tree.contains("Tabbed"),
+            !workspace.tiling().contains_layout(ContainerLayout::Tabbed),
             "first open on empty workspace must still be a leaf root:\n{tree}",
         );
     }
@@ -78,7 +75,7 @@ fn empty_workspace_layout_applies_on_second_open() {
     let workspace = layout.active_workspace().expect("active workspace");
     let tree = workspace.tiling().debug_tree().replace(" *", "");
     assert!(
-        tree.contains("Tabbed"),
+        workspace.tiling().contains_layout(ContainerLayout::Tabbed),
         "second open should apply pending empty-workspace layout:\n{tree}",
     );
 }
@@ -150,10 +147,11 @@ fn top_level_leaf_layout_noops_when_matching_workspace_layout_like_sway() {
         .tiling()
         .debug_tree();
     assert!(
-        !before.contains("SplitH")
-            && !before.contains("SplitV")
-            && !before.contains("Tabbed")
-            && !before.contains("Stacked"),
+        !layout
+            .active_workspace()
+            .expect("active workspace")
+            .tiling()
+            .has_containers(),
         "precondition: first tiling window should remain a leaf root:\n{before}",
     );
 
@@ -193,10 +191,11 @@ fn top_level_leaf_toggle_split_uses_workspace_layout_state_like_sway() {
         .tiling()
         .debug_tree();
     assert!(
-        !before.contains("SplitH")
-            && !before.contains("SplitV")
-            && !before.contains("Tabbed")
-            && !before.contains("Stacked"),
+        !layout
+            .active_workspace()
+            .expect("active workspace")
+            .tiling()
+            .has_containers(),
         "precondition: single top-level window should be a leaf root:\n{before}",
     );
 

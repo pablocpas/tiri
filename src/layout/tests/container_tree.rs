@@ -15,13 +15,15 @@ fn removing_window_above_preserves_focused_window() {
 
     // Focus middle window and remove the window above it.
     assert!(harness.tree.focus_window_by_id(&2));
-    let before = harness.tree.debug_tree();
-    assert!(before.contains("Window 2 *"));
+    assert_eq!(harness.tree.focused_window_id(), Some(2));
 
     let _ = harness.tree.remove_window(&1);
 
-    let after = harness.tree.debug_tree();
-    assert!(after.contains("Window 2 *"));
+    assert_eq!(
+        harness.tree.focused_window_id(),
+        Some(2),
+        "removing the window above should not move focus",
+    );
 }
 pub(super) struct TreeHarness {
     pub(super) tree: ContainerTree<TestWindow>,
@@ -118,37 +120,6 @@ enum TreeRandomOp {
     FocusParent,
     FocusChild,
 }
-pub(super) fn parse_debug_tree_windows(tree: &str) -> (Vec<usize>, usize, Option<usize>) {
-    let mut ids = Vec::new();
-    let mut focused_count = 0usize;
-    let mut focused_id = None;
-
-    for line in tree.lines() {
-        let trimmed = line.trim();
-        let Some(rest) = trimmed.strip_prefix("Window ") else {
-            continue;
-        };
-
-        let is_focused = rest.ends_with('*');
-        let id_text = rest.trim_end_matches('*').trim();
-        let id = id_text
-            .parse::<usize>()
-            .expect("window line in debug tree should contain a numeric id");
-
-        ids.push(id);
-        if is_focused {
-            focused_count += 1;
-            focused_id = Some(id);
-        }
-    }
-
-    (ids, focused_count, focused_id)
-}
-pub(super) fn count_root_children_in_debug_tree(tree: &str) -> usize {
-    tree.lines()
-        .filter(|line| line.starts_with("  ") && !line.starts_with("    "))
-        .count()
-}
 /// Apply one fuzz op and assert the tree is still sound, so a corruption is reported at
 /// the step that caused it rather than at the end of the sequence.
 fn apply_tree_random_op(harness: &mut TreeHarness, op: TreeRandomOp, next_window_id: &mut usize) {
@@ -169,9 +140,7 @@ fn apply_tree_random_op_inner(
             *next_window_id += 1;
         }
         TreeRandomOp::RemoveFocused => {
-            let tree = harness.tree.debug_tree();
-            let (_, _, focused_id) = parse_debug_tree_windows(&tree);
-            if let Some(id) = focused_id {
+            if let Some(id) = harness.tree.focused_window_id() {
                 let _ = harness.tree.remove_window(&id);
             }
         }
@@ -263,7 +232,7 @@ proptest! {
             apply_tree_random_op(&mut harness, op, &mut next_window_id);
 
             let tree = harness.tree.debug_tree();
-            let (ids, focused_count, _focused_id) = parse_debug_tree_windows(&tree);
+            let ids = harness.tree.all_window_ids();
             let unique = ids.iter().copied().collect::<std::collections::HashSet<_>>();
 
             prop_assert_eq!(
@@ -274,23 +243,13 @@ proptest! {
                 tree,
             );
 
-            if ids.is_empty() {
-                prop_assert_eq!(
-                    focused_count,
-                    0,
-                    "empty tree should not have focused windows after {:?}:\n{}",
-                    op,
-                    tree,
-                );
-            } else {
-                prop_assert_eq!(
-                    focused_count,
-                    1,
-                    "non-empty tree should have exactly one focused window after {:?}:\n{}",
-                    op,
-                    tree,
-                );
-            }
+            prop_assert_eq!(
+                harness.tree.focused_window_id().is_some(),
+                !ids.is_empty(),
+                "a tree should have a focused window exactly when it is non-empty, after {:?}:\n{}",
+                op,
+                tree,
+            );
         }
     }
 }
@@ -442,7 +401,7 @@ fn keep_tabbed_container_on_cleanup_with_split_parent() {
 
     let tree = harness.tree.debug_tree();
     assert!(
-        tree.contains("Tabbed"),
+        harness.tree.contains_layout(ContainerLayout::Tabbed),
         "tabbed container should be preserved on cleanup:\n{tree}"
     );
 }
@@ -460,7 +419,7 @@ fn keep_stacked_container_on_cleanup_with_split_parent() {
 
     let tree = harness.tree.debug_tree();
     assert!(
-        tree.contains("Stacked"),
+        harness.tree.contains_layout(ContainerLayout::Stacked),
         "stacked container should be preserved on cleanup:\n{tree}"
     );
 }

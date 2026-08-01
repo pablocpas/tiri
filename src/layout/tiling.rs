@@ -578,6 +578,35 @@ impl<W: LayoutElement> TilingSpace<W> {
         self.tree.verify_invariants();
     }
 
+    /// Whether any container in this space uses `layout`.
+    ///
+    /// Shape assertions use this instead of searching the debug dump for a layout name,
+    /// which also matches window titles and changes meaning with the dump's format.
+    #[cfg(test)]
+    pub fn contains_layout(&self, layout: Layout) -> bool {
+        self.tree.contains_layout(layout)
+    }
+
+    /// The focused window's id, for shape assertions that used to look for a `*` marker in
+    /// the debug dump.
+    #[cfg(test)]
+    pub fn focused_window_id(&self) -> Option<W::Id> {
+        self.tree.focused_window_id()
+    }
+
+    /// Whether the tree holds any container at all, as opposed to a lone window.
+    #[cfg(test)]
+    pub fn has_containers(&self) -> bool {
+        [
+            Layout::SplitH,
+            Layout::SplitV,
+            Layout::Tabbed,
+            Layout::Stacked,
+        ]
+        .into_iter()
+        .any(|layout| self.tree.contains_layout(layout))
+    }
+
     #[cfg(test)]
     pub fn debug_tree(&self) -> String
     where

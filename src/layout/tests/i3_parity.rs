@@ -1,9 +1,7 @@
 use insta::assert_snapshot;
 
 use super::super::container::{Direction, Layout as ContainerLayout};
-use super::container_tree::{
-    count_root_children_in_debug_tree, parse_debug_tree_windows, TreeHarness,
-};
+use super::container_tree::TreeHarness;
 use super::*;
 
 #[test]
@@ -319,7 +317,7 @@ fn i3_167_workspace_layout_tabbed_groups_second_open() {
     let workspace = layout.active_workspace().expect("active workspace");
     let tree = workspace.tiling().debug_tree();
     assert!(
-        tree.contains("Tabbed"),
+        workspace.tiling().contains_layout(ContainerLayout::Tabbed),
         "workspace layout tabbed should group the second open into a tabbed container:\n{tree}",
     );
 }
@@ -352,7 +350,7 @@ fn i3_167_workspace_layout_stacked_groups_second_open() {
     let workspace = layout.active_workspace().expect("active workspace");
     let tree = workspace.tiling().debug_tree();
     assert!(
-        tree.contains("Stacked"),
+        workspace.tiling().contains_layout(ContainerLayout::Stacked),
         "workspace layout stacked should group the second open into a stacked container:\n{tree}",
     );
 }
@@ -387,7 +385,7 @@ fn i3_167_workspace_layout_stacked_reinserts_after_floating_roundtrip() {
     let workspace = layout.active_workspace().expect("active workspace");
     let tree = workspace.tiling().debug_tree();
     assert!(
-        tree.contains("Stacked"),
+        workspace.tiling().contains_layout(ContainerLayout::Stacked),
         "workspace layout stacked should still apply after floating roundtrip reinsertion:\n{tree}",
     );
 }
@@ -441,7 +439,7 @@ fn i3_167_empty_workspace_layout_can_switch_back_to_splith() {
     let workspace = layout.active_workspace().expect("active workspace");
     let tree = workspace.tiling().debug_tree();
     assert!(
-        !tree.contains("Stacked"),
+        !workspace.tiling().contains_layout(ContainerLayout::Stacked),
         "after resetting empty workspace layout to splith, new opens should no longer land in stacked:\n{tree}",
     );
 }
@@ -495,11 +493,11 @@ fn i3_167_empty_workspace_layout_can_switch_back_to_splitv() {
     let workspace = layout.active_workspace().expect("active workspace");
     let tree = workspace.tiling().debug_tree();
     assert!(
-        tree.contains("SplitV"),
+        workspace.tiling().contains_layout(ContainerLayout::SplitV),
         "after resetting empty workspace layout to splitv, new opens should land in a vertical split:\n{tree}",
     );
     assert!(
-        !tree.contains("Tabbed"),
+        !workspace.tiling().contains_layout(ContainerLayout::Tabbed),
         "after resetting empty workspace layout to splitv, new opens should no longer land in tabbed:\n{tree}",
     );
 }
@@ -1449,7 +1447,7 @@ fn i3_145_ticket_1053_sequence_flattens_after_second_move() {
 
     let before = harness.tree.debug_tree();
     assert_eq!(
-        count_root_children_in_debug_tree(&before),
+        harness.tree.root_children_len(),
         3,
         "precondition: first phase of i3 145 ticket #1053 should still have 3 root children:\n{before}",
     );
@@ -1459,7 +1457,7 @@ fn i3_145_ticket_1053_sequence_flattens_after_second_move() {
 
     let after = harness.tree.debug_tree();
     assert_eq!(
-        count_root_children_in_debug_tree(&after),
+        harness.tree.root_children_len(),
         2,
         "i3 145 ticket #1053 should flatten redundant wrappers after the second move:\n{after}",
     );
@@ -1697,32 +1695,52 @@ fn i3_124_move_left_then_right_swaps_root_siblings_without_extra_changes() {
     assert!(harness.tree.move_in_direction(Direction::Left));
     let after_left = harness.tree.debug_tree();
     assert_eq!(
-        parse_debug_tree_windows(&after_left),
-        (vec![2, 1], 1, Some(2)),
+        harness.tree.all_window_ids(),
+        vec![2, 1],
+        "moving the second root sibling left should swap it before the first:\n{after_left}",
+    );
+    assert_eq!(
+        harness.tree.focused_window_id(),
+        Some(2),
         "moving the second root sibling left should swap it before the first:\n{after_left}",
     );
 
     assert!(!harness.tree.move_in_direction(Direction::Left));
     let after_second_left = harness.tree.debug_tree();
     assert_eq!(
-        parse_debug_tree_windows(&after_second_left),
-        (vec![2, 1], 1, Some(2)),
+        harness.tree.all_window_ids(),
+        vec![2, 1],
+        "moving left again at the edge should be a no-op:\n{after_second_left}",
+    );
+    assert_eq!(
+        harness.tree.focused_window_id(),
+        Some(2),
         "moving left again at the edge should be a no-op:\n{after_second_left}",
     );
 
     assert!(harness.tree.move_in_direction(Direction::Right));
     let after_right = harness.tree.debug_tree();
     assert_eq!(
-        parse_debug_tree_windows(&after_right),
-        (vec![1, 2], 1, Some(2)),
+        harness.tree.all_window_ids(),
+        vec![1, 2],
+        "moving right should swap the root siblings back:\n{after_right}",
+    );
+    assert_eq!(
+        harness.tree.focused_window_id(),
+        Some(2),
         "moving right should swap the root siblings back:\n{after_right}",
     );
 
     assert!(!harness.tree.move_in_direction(Direction::Right));
     let after_second_right = harness.tree.debug_tree();
     assert_eq!(
-        parse_debug_tree_windows(&after_second_right),
-        (vec![1, 2], 1, Some(2)),
+        harness.tree.all_window_ids(),
+        vec![1, 2],
+        "moving right again at the edge should be a no-op:\n{after_second_right}",
+    );
+    assert_eq!(
+        harness.tree.focused_window_id(),
+        Some(2),
         "moving right again at the edge should be a no-op:\n{after_second_right}",
     );
 }
@@ -1743,11 +1761,11 @@ fn i3_124_moving_all_children_out_of_split_removes_source_container() {
     assert!(harness.tree.move_in_direction(Direction::Right));
 
     let tree = harness.tree.debug_tree();
-    let mut ids = parse_debug_tree_windows(&tree).0;
+    let mut ids = harness.tree.all_window_ids();
     ids.sort_unstable();
 
     assert_eq!(
-        count_root_children_in_debug_tree(&tree),
+        harness.tree.root_children_len(),
         1,
         "after moving the last two children out of the left split, the source container should be removed:\n{tree}",
     );
@@ -2194,7 +2212,7 @@ fn i3_135_toggle_floating_for_nested_window_from_other_workspace_preserves_focus
     );
     let tree = workspace.tiling().debug_tree();
     assert!(
-        tree.contains("Window 3 *"),
+        workspace.tiling().focused_window_id() == Some(3),
         "after the roundtrip, the nested window should still be the focused tiling leaf:\n{tree}",
     );
 }
@@ -2253,7 +2271,7 @@ fn i3_135_deep_floating_roundtrip_from_other_workspace_preserves_focus_chain() {
         );
         let tree = workspace.tiling().debug_tree().replace(" *", "");
         assert!(
-            tree.contains("Window 5"),
+            workspace.tiling().windows().any(|win| *win.id() == 5),
             "the tiling tree should keep the sibling that replaced the floated window's slot:\n{tree}",
         );
     }
@@ -2277,7 +2295,7 @@ fn i3_135_deep_floating_roundtrip_from_other_workspace_preserves_focus_chain() {
         );
         let tree = workspace.tiling().debug_tree();
         assert!(
-            tree.contains("Window 4") && tree.contains("Window 5 *"),
+            workspace.tiling().windows().any(|win| *win.id() == 4) && workspace.tiling().focused_window_id() == Some(5),
             "after the roundtrip both deep siblings should exist and window 5 should still be focused:\n{tree}",
         );
     }

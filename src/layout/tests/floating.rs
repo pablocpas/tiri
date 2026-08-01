@@ -612,10 +612,7 @@ fn floating_single_window_roundtrip_does_not_reintroduce_implicit_split_wrapper(
         assert_eq!(workspace.tiling().tiles().count(), 1);
         let tree = workspace.tiling().debug_tree();
         assert!(
-            !tree.contains("SplitH")
-                && !tree.contains("SplitV")
-                && !tree.contains("Tabbed")
-                && !tree.contains("Stacked"),
+            !workspace.tiling().has_containers(),
             "floating->tiling roundtrip for a single implicit container should restore a leaf root:\n{tree}",
         );
     }

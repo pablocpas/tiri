@@ -794,7 +794,7 @@ fn fullscreen_directional_focus_stays_on_active_window_like_sway() {
     let workspace = layout.active_workspace().expect("active workspace");
     let tree = workspace.tiling().debug_tree();
     assert!(
-        tree.contains("Window 3 *"),
+        workspace.tiling().focused_window_id() == Some(3),
         "focus should remain on the fullscreen window after directional focus:\n{tree}"
     );
 }
@@ -833,7 +833,7 @@ fn fullscreen_focus_parent_is_noop_like_sway() {
 
     let tree = workspace.tiling().debug_tree();
     assert!(
-        tree.contains("Window 3 *"),
+        workspace.tiling().focused_window_id() == Some(3),
         "focus should remain on the fullscreen window after focus_parent:\n{tree}"
     );
 }
@@ -875,7 +875,7 @@ fn fullscreen_open_window_does_not_steal_focus_like_sway() {
     let workspace = layout.active_workspace().expect("active workspace");
     let tree = workspace.tiling().debug_tree();
     assert!(
-        tree.contains("Window 3 *"),
+        workspace.tiling().focused_window_id() == Some(3),
         "focus should remain on fullscreen window after opening a new tiling window:\n{tree}"
     );
 }
