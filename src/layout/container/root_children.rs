@@ -155,8 +155,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    /// Focus the first leaf in the currently focused root child.
-    pub(in crate::layout) fn focus_top_in_current_column(&mut self) -> bool {
+    /// Focus the first leaf under the focused root child, whatever its layout.
+    pub(in crate::layout) fn focus_first_leaf_in_focused_root_child(&mut self) -> bool {
         let idx = match self.focused_root_index() {
             Some(idx) => idx,
             None => return false,
@@ -164,8 +164,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.focus_leaf_in_root_child(idx, 1)
     }
 
-    /// Focus the last leaf in the currently focused root child.
-    pub(in crate::layout) fn focus_bottom_in_current_column(&mut self) -> bool {
+    /// Focus the last leaf under the focused root child, whatever its layout.
+    pub(in crate::layout) fn focus_last_leaf_in_focused_root_child(&mut self) -> bool {
         let idx = match self.focused_root_index() {
             Some(idx) => idx,
             None => return false,

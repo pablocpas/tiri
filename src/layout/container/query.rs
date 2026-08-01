@@ -40,20 +40,18 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    /// Get window IDs under the subtree at `path` (depth-first traversal).
-    ///
-    /// An empty `path` means the whole tree.
-    pub(in crate::layout) fn window_ids_under_path(&self, path: &[usize]) -> Vec<W::Id> {
+    /// All window IDs in the tree, depth-first.
+    pub(in crate::layout) fn all_window_ids(&self) -> Vec<W::Id> {
+        match self.root {
+            Some(root_key) => self.window_ids_under(root_key),
+            None => Vec::new(),
+        }
+    }
+
+    /// Window IDs in the subtree rooted at `key`, depth-first.
+    pub(in crate::layout) fn window_ids_under(&self, key: NodeKey) -> Vec<W::Id> {
         let mut ids = Vec::new();
-        let node_key = if path.is_empty() {
-            self.root
-        } else {
-            self.get_node_key_at_path(path)
-        };
-        let Some(node_key) = node_key else {
-            return ids;
-        };
-        self.collect_window_ids_from_node(node_key, &mut ids);
+        self.collect_window_ids_from_node(key, &mut ids);
         ids
     }
 
@@ -149,29 +147,12 @@ impl<W: LayoutElement> ContainerTree<W> {
         out
     }
 
-    /// Helper: get tile at a given path (immutable).
-    pub(in crate::layout) fn tile_at_path(&self, path: &[usize]) -> Option<&Tile<W>> {
-        let key = self.get_node_key_at_path(path)?;
-        self.get_tile(key)
-    }
-
-    /// Helper: get tile at a given path (mutable).
-    pub(in crate::layout) fn tile_at_path_mut(&mut self, path: &[usize]) -> Option<&mut Tile<W>> {
-        let key = self.get_node_key_at_path(path)?;
-        self.get_tile_mut(key)
-    }
-
+    /// Layout, geometry and child count of the container at `key`.
     pub(in crate::layout) fn container_info(
         &self,
-        path: &[usize],
+        key: NodeKey,
     ) -> Option<(Layout, Rectangle<f64, Logical>, usize)> {
-        let container_key = if path.is_empty() {
-            self.root?
-        } else {
-            self.get_node_key_at_path(path)?
-        };
-
-        let container = self.get_container(container_key)?;
+        let container = self.get_container(key)?;
         Some((
             container.layout(),
             container.geometry(),
@@ -179,28 +160,26 @@ impl<W: LayoutElement> ContainerTree<W> {
         ))
     }
 
-    pub(in crate::layout) fn container_is_meaningful_parent(&self, path: &[usize]) -> Option<bool> {
-        let container_key = if path.is_empty() {
-            self.root?
-        } else {
-            self.get_node_key_at_path(path)?
-        };
+    /// Layout, geometry and child count of the root, when the root is a container.
+    pub(in crate::layout) fn root_info(&self) -> Option<(Layout, Rectangle<f64, Logical>, usize)> {
+        self.container_info(self.root?)
+    }
 
-        let container = self.get_container(container_key)?;
+    /// Whether the root is a container the user can address. None when there is no root or
+    /// the root is a bare leaf.
+    pub(in crate::layout) fn root_is_meaningful_parent(&self) -> Option<bool> {
+        self.container_is_meaningful_parent(self.root?)
+    }
+
+    /// Whether the container at `key` is a container the user can address: it either holds
+    /// several children or was created by an explicit split.
+    pub(in crate::layout) fn container_is_meaningful_parent(&self, key: NodeKey) -> Option<bool> {
+        let container = self.get_container(key)?;
         Some(container.child_count() > 1 || container.preserve_on_single())
     }
 
-    pub(in crate::layout) fn child_rect_at(
-        &self,
-        parent_path: &[usize],
-        child_idx: usize,
-    ) -> Option<Rectangle<f64, Logical>> {
-        let container_key = self.node_key_for_path_or_root(parent_path)?;
-        self.child_rect_in(container_key, child_idx)
-    }
-
     /// Rect of the `child_idx`-th child of the container at `container_key`.
-    pub(super) fn child_rect_in(
+    pub(in crate::layout) fn child_rect_in(
         &self,
         container_key: NodeKey,
         child_idx: usize,
@@ -234,42 +213,29 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.child_rect_in(parent_key, child_idx)
     }
 
+    /// Nearest ancestor container of `key` whose layout is `layout`, plus the index of the
+    /// branch of `key` inside it.
     pub(in crate::layout) fn find_parent_with_layout(
         &self,
-        mut path: Vec<usize>,
+        key: NodeKey,
         layout: Layout,
-    ) -> Option<(Vec<usize>, usize)> {
-        while !path.is_empty() {
-            let child_idx = *path.last().unwrap();
-            let parent_path_vec = path[..path.len() - 1].to_vec();
-
-            let container_key = if parent_path_vec.is_empty() {
-                self.root?
-            } else {
-                self.get_node_key_at_path(&parent_path_vec)?
-            };
-
-            if let Some(container) = self.get_container(container_key) {
+    ) -> Option<(NodeKey, usize)> {
+        let mut current = key;
+        while let Some(parent_key) = self.parent_of(current) {
+            if let Some(container) = self.get_container(parent_key) {
                 if container.layout() == layout {
-                    return Some((parent_path_vec, child_idx));
+                    let child_idx = self.child_index(parent_key, current)?;
+                    return Some((parent_key, child_idx));
                 }
             }
-
-            path.pop();
+            current = parent_key;
         }
 
         None
     }
 
-    pub(in crate::layout) fn container_at_path_mut(
-        &mut self,
-        path: &[usize],
-    ) -> Option<&mut ContainerData> {
-        let key = if path.is_empty() {
-            self.root?
-        } else {
-            self.get_node_key_at_path(path)?
-        };
+    /// Mutable access to the container at `key`.
+    pub(in crate::layout) fn container_mut(&mut self, key: NodeKey) -> Option<&mut ContainerData> {
         self.get_container_mut(key)
     }
 

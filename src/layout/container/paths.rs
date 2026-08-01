@@ -6,6 +6,15 @@ use super::NodeData;
 use super::NodeKey;
 
 impl<W: LayoutElement> ContainerTree<W> {
+    /// Resolve a tree path to a node key.
+    ///
+    /// Paths address the tree positionally and are invalidated by any structural change, so
+    /// they only survive at the edges (IPC, drag-and-drop hit results, tests). This is the
+    /// single place where such a path re-enters the key-based world.
+    pub(in crate::layout) fn node_at_path(&self, path: &[usize]) -> Option<NodeKey> {
+        self.node_key_for_path_or_root(path)
+    }
+
     /// Helper: get node key at path
     pub(super) fn get_node_key_at_path(&self, path: &[usize]) -> Option<NodeKey> {
         if path.is_empty() {
@@ -88,6 +97,17 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     pub(super) fn clear_focus_history(&mut self) {
         // Focus history is tracked per-container via focus_stack.
+    }
+
+    /// Find a window by ID and return its node key.
+    ///
+    /// Prefer this over [`Self::find_window`] plus a path lookup: it avoids materializing a
+    /// path only to resolve it back into the key the caller actually wanted.
+    pub(in crate::layout) fn window_key(&self, window_id: &W::Id) -> Option<NodeKey> {
+        self.nodes.iter().find_map(|(key, node)| match node {
+            NodeData::Leaf(tile) if tile.window().id() == window_id => Some(key),
+            _ => None,
+        })
     }
 
     /// Find a window by ID and return path to it

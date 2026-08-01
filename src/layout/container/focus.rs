@@ -19,6 +19,17 @@ impl<W: LayoutElement> ContainerTree<W> {
             || (focus_path.len() == 1 && self.root_is_synthetic_workspace_container())
     }
 
+    /// The leaf that is effectively focused.
+    ///
+    /// Falls back to the first leaf when nothing is focused or the focused key went stale,
+    /// so callers see the same node [`Self::focus_path`] resolves to.
+    pub(in crate::layout) fn effective_focused_key(&self) -> Option<NodeKey> {
+        match self.focused_key {
+            Some(key) if self.get_node(key).is_some() => Some(key),
+            _ => self.first_leaf_key(),
+        }
+    }
+
     /// Current focus path within the tree.
     /// Uses cached path when generation and focused_key haven't changed.
     pub(in crate::layout) fn focus_path(&self) -> Vec<usize> {
@@ -34,16 +45,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         // Recompute path with fallback when focused key is invalid.
-        let path = if let Some(key) = self.focused_key {
-            self.find_node_path(key).or_else(|| {
-                self.first_leaf_key()
-                    .and_then(|first_key| self.find_node_path(first_key))
-            })
-        } else {
-            self.first_leaf_key()
-                .and_then(|first_key| self.find_node_path(first_key))
-        }
-        .unwrap_or_default();
+        let path = self
+            .effective_focused_key()
+            .and_then(|key| self.find_node_path(key))
+            .unwrap_or_default();
 
         // Update cache
         let mut cache = self.focus_path_cache.borrow_mut();
@@ -89,19 +94,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         matches!(self.get_node(key), Some(NodeData::Container(_))).then_some(key)
     }
 
-    pub(in crate::layout) fn set_selected_container_key(&mut self, key: NodeKey) -> bool {
-        if matches!(self.get_node(key), Some(NodeData::Container(_))) {
-            self.selected_key = Some(key);
-            true
-        } else {
-            false
-        }
-    }
-
-    pub(in crate::layout) fn select_container_at_path(&mut self, path: &[usize]) -> bool {
-        let Some(key) = self.node_key_for_path_or_root(path) else {
-            return false;
-        };
+    /// Select the container at `key` as the command target.
+    pub(in crate::layout) fn select_container(&mut self, key: NodeKey) -> bool {
         if matches!(self.get_node(key), Some(NodeData::Container(_))) {
             self.selected_key = Some(key);
             true

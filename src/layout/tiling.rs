@@ -103,6 +103,13 @@ type LeafHit = (NodeKey, Vec<usize>, Rectangle<f64, Logical>);
 
 /// Workspace-wide context shared by every tile in an `update_window_state` pass.
 struct WindowStateContext<'a, W: LayoutElement> {
+    /// Path of the focused leaf *as of this layout snapshot*.
+    ///
+    /// Deliberately a path and not a key: `layouts` may be pending (not yet committed)
+    /// layouts, and a tile counts as focused here only when its position in that snapshot
+    /// still matches where focus is now. Comparing keys instead marks a tile focused across
+    /// a structural change the snapshot predates, which desynchronizes the resize
+    /// transaction (covered by the egl_* animation snapshots).
     focus_path: &'a [usize],
     workspace_active: bool,
     deactivate_unfocused: bool,
@@ -166,8 +173,8 @@ pub enum WindowHeight {
 impl<W: LayoutElement> TilingSpace<W> {
     fn render_fullscreen_window(&self) -> Option<W::Id> {
         let id = self.fullscreen_window.as_ref()?;
-        let path = self.tree.find_window(id)?;
-        let tile = self.tree.tile_at_path(&path)?;
+        let key = self.tree.window_key(id)?;
+        let tile = self.tree.get_tile(key)?;
         tile.window()
             .sizing_mode()
             .is_fullscreen()
@@ -309,26 +316,18 @@ impl<W: LayoutElement> TilingSpace<W> {
         Some((target_width / available).clamp(0.0, 1.0))
     }
 
-    fn window_path(&self, window: Option<&W::Id>) -> Option<Vec<usize>> {
-        if let Some(id) = window {
-            self.tree.find_window(id)
-        } else {
-            let selected_path = self.tree.selected_path();
-            if selected_path.is_empty() {
-                self.tree
-                    .focused_window()
-                    .is_some()
-                    .then_some(selected_path)
-            } else {
-                Some(selected_path)
-            }
+    /// The node a window-addressed command targets: the named window, or the current
+    /// selection when none is given.
+    fn window_target(&self, window: Option<&W::Id>) -> Option<NodeKey> {
+        match window {
+            Some(id) => self.tree.window_key(id),
+            None => self.tree.selected_node_key(),
         }
     }
 
-    fn window_container_metrics(&self, path: &[usize], layout: Layout) -> Option<ContainerMetrics> {
-        let (parent_path, child_idx) = self.tree.find_parent_with_layout(path.to_vec(), layout)?;
-        let (container_layout, rect, child_count) =
-            self.tree.container_info(parent_path.as_slice())?;
+    fn window_container_metrics(&self, key: NodeKey, layout: Layout) -> Option<ContainerMetrics> {
+        let (parent_key, child_idx) = self.tree.find_parent_with_layout(key, layout)?;
+        let (container_layout, rect, child_count) = self.tree.container_info(parent_key)?;
         if container_layout != layout || child_count == 0 {
             return None;
         }
@@ -343,31 +342,28 @@ impl<W: LayoutElement> TilingSpace<W> {
             return None;
         }
 
-        Some((parent_path, child_idx, available, child_count, rect))
+        Some((parent_key, child_idx, available, child_count, rect))
     }
 
     fn selected_geometry(&self) -> Option<Rectangle<f64, Logical>> {
         if self.display_layouts().is_empty() {
             return None;
         }
-        let path = self.tree.selected_path();
+        let key = self.tree.selected_node_key()?;
 
-        if self.tree.is_leaf_at_path(&path) {
-            let info = self
-                .display_layouts()
-                .iter()
-                .find(|info| info.path == path)?;
+        if self.tree.is_leaf(key) {
+            let info = self.display_layouts().iter().find(|info| info.key == key)?;
             return Some(info.rect);
         }
 
         // For container selection visuals, prefer the on-screen leaf geometry under this
-        // container path. This stays in sync with what is currently rendered even when
-        // container cached geometry is in transition.
+        // container. This stays in sync with what is currently rendered even when the
+        // container's cached geometry is in transition.
         let mut bounds: Option<Rectangle<f64, Logical>> = None;
         for info in self
             .display_layouts()
             .iter()
-            .filter(|info| info.path.starts_with(&path))
+            .filter(|info| self.tree.is_descendant(info.key, key))
         {
             bounds = Some(match bounds {
                 Some(acc) => {
@@ -384,7 +380,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             });
         }
 
-        bounds.or_else(|| self.tree.container_info(&path).map(|(_, rect, _)| rect))
+        bounds.or_else(|| self.tree.container_info(key).map(|(_, rect, _)| rect))
     }
 
     pub fn selected_is_container(&self) -> bool {
@@ -393,8 +389,9 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     pub(super) fn close_window_ids_for_active_selection(&self) -> Vec<W::Id> {
         if self.tree.selected_is_container() {
-            let path = self.tree.selected_path();
-            return self.tree.window_ids_under_path(&path);
+            if let Some(key) = self.tree.selected_node_key() {
+                return self.tree.window_ids_under(key);
+            }
         }
 
         self.tree
@@ -404,9 +401,9 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub(super) fn take_selected_subtree(&mut self) -> Option<TakenSubtree<W>> {
-        let path = self.tree.selected_path();
+        let key = self.tree.selected_node_key()?;
         let rect = self.selected_geometry()?;
-        let (subtree, origin) = self.tree.take_subtree_at_path(&path)?;
+        let (subtree, origin) = self.tree.take_subtree_at(key)?;
         Some((subtree, origin, rect))
     }
 
@@ -429,7 +426,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                 }
             }
         } else {
-            let (subtree, _) = self.tree.take_subtree_at_path(&[])?;
+            let (subtree, _) = self.tree.take_subtree_at(self.tree.root_node_key()?)?;
             match subtree {
                 DetachedNode::Leaf(tile) => DetachedNode::Container(DetachedContainer::from_parts(
                     self.tree.workspace_layout(),
@@ -613,8 +610,12 @@ impl<W: LayoutElement> TilingSpace<W> {
         self.tree.selected_path()
     }
 
+    /// Select a container by tree path. Paths only enter here from the IPC/test edge.
     pub fn select_container_path(&mut self, path: &[usize]) -> bool {
-        self.tree.select_container_at_path(path)
+        let Some(key) = self.tree.node_at_path(path) else {
+            return false;
+        };
+        self.tree.select_container(key)
     }
 
     pub fn remove_window(&mut self, window: &W) -> Option<RemovedTile<W>> {
@@ -639,10 +640,10 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn update_window(&mut self, window: &W::Id, serial: Option<smithay::utils::Serial>) {
-        let Some(path) = self.tree.find_window(window) else {
+        let Some(key) = self.tree.window_key(window) else {
             return;
         };
-        let Some(tile) = self.tree.tile_at_path_mut(&path) else {
+        let Some(tile) = self.tree.get_tile_mut(key) else {
             return;
         };
 
@@ -666,7 +667,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         let mut elements = Vec::with_capacity(estimated_capacity);
         let mut active_elements = Vec::with_capacity(8);
         let scale = Scale::from(self.scale);
-        let focus_path = self.tree.focus_path();
+        let focused_key = self.tree.effective_focused_key();
         let selection_is_container = self.tree.selected_is_container();
         let fullscreen_id = self.render_fullscreen_window();
         let windowed_fullscreen_id = if fullscreen_id.is_none() {
@@ -694,7 +695,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                 if let Some(focus_info) = self
                     .display_layouts()
                     .iter()
-                    .find(|info| info.path == focus_path)
+                    .find(|info| Some(info.key) == focused_key)
                 {
                     if let Some(tile) = self.tree.get_tile(focus_info.key) {
                         if let Some(width) = tile.effective_border_width() {
@@ -744,9 +745,9 @@ impl<W: LayoutElement> TilingSpace<W> {
                 }
 
                 let is_focused =
-                    self.is_active && info.path == focus_path && !selection_is_container;
+                    self.is_active && Some(info.key) == focused_key && !selection_is_container;
                 let draw_focus = tiling_focus_ring && is_focused;
-                let target_elements = if info.path == focus_path {
+                let target_elements = if Some(info.key) == focused_key {
                     &mut active_elements
                 } else {
                     &mut elements
@@ -951,6 +952,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         };
         let workspace_view = Rectangle::from_size(self.view_size);
         let focus_path = self.tree.focus_path();
+        let focused_key = self.tree.effective_focused_key();
         let selection_is_container = self.tree.selected_is_container();
         let scale = Scale::from(self.scale);
         let logical_fullscreen_id = self.pending_fullscreen_window().cloned();
@@ -980,7 +982,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                     self.scale,
                     is_single_window,
                 );
-                let indicator_edge = split_indicator_edge_for_tile(&self.tree, &info.path, edges);
+                let indicator_edge = split_indicator_edge_for_tile(&self.tree, info.key, edges);
                 (edges, indicator_edge)
             })
             .collect();
@@ -1036,7 +1038,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                 };
                 if show_tile {
                     let is_focused =
-                        is_active && info.path == focus_path && !selection_is_container;
+                        is_active && Some(info.key) == focused_key && !selection_is_container;
                     tile.update_render_elements(
                         is_active,
                         is_focused,
@@ -1345,7 +1347,7 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     pub(super) fn root_layout_and_child_count(&self) -> Option<(Layout, usize)> {
         self.tree
-            .container_info(&[])
+            .container_info(self.tree.root_node_key()?)
             .map(|(layout, _rect, child_count)| (layout, child_count))
     }
 
@@ -1443,8 +1445,8 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     fn active_selection_layout(&self) -> Option<Layout> {
         if self.tree.selected_is_container() {
-            let path = self.tree.selected_path();
-            return self.tree.container_info(&path).map(|(layout, _, _)| layout);
+            let key = self.tree.selected_node_key()?;
+            return self.tree.container_info(key).map(|(layout, _, _)| layout);
         }
         self.tree.focused_layout()
     }
@@ -1491,8 +1493,8 @@ impl<W: LayoutElement> TilingSpace<W> {
         if !self.tree.selected_is_container() {
             return None;
         }
-        let path = self.tree.selected_path();
-        let (current, _, _) = self.tree.container_info(&path)?;
+        let key = self.tree.selected_node_key()?;
+        let (current, _, _) = self.tree.container_info(key)?;
         let target = self.tree.command_target(RootPolicy::ImplicitWorkspace);
         Some(
             self.tree
@@ -1695,8 +1697,11 @@ impl<W: LayoutElement> TilingSpace<W> {
         let Some(idx) = self.tree.focused_root_index() else {
             return;
         };
+        let Some(root_key) = self.tree.root_node_key() else {
+            return;
+        };
 
-        let Some((layout, rect, child_count)) = self.tree.container_info(&[]) else {
+        let Some((layout, rect, child_count)) = self.tree.container_info(root_key) else {
             return;
         };
         if layout != Layout::SplitH || child_count == 0 {
@@ -1708,28 +1713,28 @@ impl<W: LayoutElement> TilingSpace<W> {
             return;
         }
 
-        let current_percent = self.tree.child_percent_at(&[], idx).unwrap_or(1.0);
+        let current_percent = self.tree.child_percent(root_key, idx).unwrap_or(1.0);
         let new_percent = Self::percent_from_size_change(current_percent, available_width, change);
 
         if self
             .tree
-            .set_child_percent_at(&[], idx, Layout::SplitH, new_percent)
+            .set_child_percent(root_key, idx, Layout::SplitH, new_percent)
         {
             self.tree.layout();
         }
     }
     pub fn reset_window_height(&mut self, window: Option<&W::Id>) {
-        let Some(path) = self.window_path(window) else {
+        let Some(key) = self.window_target(window) else {
             return;
         };
 
         let Some((parent_path, _, _, _child_count, _rect)) =
-            self.window_container_metrics(&path, Layout::SplitV)
+            self.window_container_metrics(key, Layout::SplitV)
         else {
             return;
         };
 
-        if let Some(container) = self.tree.container_at_path_mut(parent_path.as_slice()) {
+        if let Some(container) = self.tree.container_mut(parent_path) {
             if container.layout() == Layout::SplitV {
                 container.recalculate_percentages();
                 self.tree.layout();
@@ -1746,8 +1751,11 @@ impl<W: LayoutElement> TilingSpace<W> {
         let Some(idx) = self.tree.focused_root_index() else {
             return;
         };
+        let Some(root_key) = self.tree.root_node_key() else {
+            return;
+        };
 
-        let Some((layout, rect, child_count)) = self.tree.container_info(&[]) else {
+        let Some((layout, rect, child_count)) = self.tree.container_info(root_key) else {
             return;
         };
         if layout != Layout::SplitH || child_count == 0 {
@@ -1759,13 +1767,13 @@ impl<W: LayoutElement> TilingSpace<W> {
             return;
         }
 
-        let current_percent = self.tree.child_percent_at(&[], idx).unwrap_or(1.0);
+        let current_percent = self.tree.child_percent(root_key, idx).unwrap_or(1.0);
         let presets = &self.options.layout.preset_column_widths;
 
         if let Some(percent) = self.cycle_presets(available, current_percent, presets, forwards) {
             if self
                 .tree
-                .set_child_percent_at(&[], idx, Layout::SplitH, percent)
+                .set_child_percent(root_key, idx, Layout::SplitH, percent)
             {
                 self.tree.layout();
             }
@@ -1966,14 +1974,11 @@ impl<W: LayoutElement> TilingSpace<W> {
             };
         }
 
-        let Some((_leaf_key, path, rect)) = self.closest_leaf_rect(pos) else {
+        let Some((leaf_key, path, rect)) = self.closest_leaf_rect(pos) else {
             return InsertPosition::NewColumn(0);
         };
 
-        let parent_layout = self
-            .tree
-            .parent_layout_for_path(&path)
-            .unwrap_or(Layout::SplitH);
+        let parent_layout = self.tree.parent_layout(leaf_key).unwrap_or(Layout::SplitH);
 
         if matches!(parent_layout, Layout::SplitH | Layout::Tabbed) {
             if pos.y < rect.loc.y + Self::DROP_LAYOUT_BORDER {
@@ -2146,10 +2151,10 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn window_loc(&self, window: &W) -> Option<Point<f64, Logical>> {
-        let path = self.tree.find_window(window.id())?;
+        let key = self.tree.window_key(window.id())?;
         let layouts = self.display_layouts();
-        let info = layouts.iter().find(|layout| layout.path == path)?;
-        let tile = self.tree.tile_at_path(&path)?;
+        let info = layouts.iter().find(|layout| layout.key == key)?;
+        let tile = self.tree.get_tile(key)?;
         let scale = Scale::from(self.scale);
 
         let mut tile_pos = info.rect.loc + tile.render_offset();
@@ -2159,8 +2164,8 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn window_size(&self, window: &W) -> Option<Size<f64, Logical>> {
-        let path = self.tree.find_window(window.id())?;
-        let tile = self.tree.tile_at_path(&path)?;
+        let key = self.tree.window_key(window.id())?;
+        let tile = self.tree.get_tile(key)?;
         Some(tile.window_size())
     }
 
@@ -2244,7 +2249,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         let legacy_positions = self.legacy_tiling_positions();
 
         self.tree.leaf_layouts().iter().filter_map(move |info| {
-            let tile = self.tree.tile_at_path(&info.path)?;
+            let tile = self.tree.get_tile(info.key)?;
             let mut layout = tile.ipc_layout_template();
             let tile_size = tile.tile_size();
             layout.tile_size = (tile_size.w, tile_size.h);
@@ -2436,11 +2441,14 @@ impl<W: LayoutElement> TilingSpace<W> {
         path: &[usize],
         tile: Tile<W>,
     ) -> Option<Tile<W>> {
-        self.tree.replace_leaf_at_path(path, tile)
+        let key = self.tree.node_at_path(path)?;
+        self.tree.replace_leaf(key, tile)
     }
 
     pub(super) fn is_leaf_at_path(&self, path: &[usize]) -> bool {
-        self.tree.is_leaf_at_path(path)
+        self.tree
+            .node_at_path(path)
+            .is_some_and(|key| self.tree.is_leaf(key))
     }
 
     pub(super) fn insert_tile_with_parent_info(
@@ -2458,6 +2466,8 @@ impl<W: LayoutElement> TilingSpace<W> {
         false
     }
 
+    /// Split-insert next to the leaf at `target_path`. Paths only enter here from the
+    /// drag-and-drop hit result.
     pub fn insert_tile_split(
         &mut self,
         target_path: &[usize],
@@ -2465,9 +2475,12 @@ impl<W: LayoutElement> TilingSpace<W> {
         tile: Tile<W>,
         activate: bool,
     ) -> bool {
+        let Some(target_key) = self.tree.node_at_path(target_path) else {
+            return false;
+        };
         if self
             .tree
-            .insert_leaf_split(target_path, direction, tile, activate)
+            .insert_leaf_split(target_key, direction, tile, activate)
         {
             self.sync_fullscreen_window();
             self.tree.layout();
@@ -2493,14 +2506,14 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn active_tile_visual_rectangle(&self) -> Option<Rectangle<f64, Logical>> {
-        let focus_path = self.tree.focus_path();
+        let focused_key = self.tree.effective_focused_key();
         self.tree
             .leaf_layouts()
             .iter()
-            .find(|info| info.path == focus_path)
+            .find(|info| Some(info.key) == focused_key)
             .and_then(|info| {
                 let mut rect = info.rect;
-                let tile = self.tree.tile_at_path(&info.path)?;
+                let tile = self.tree.get_tile(info.key)?;
                 rect.loc += tile.render_offset();
                 Some(rect)
             })
@@ -2574,7 +2587,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         let subtree = RootTilingSubtree::from_subtree(subtree);
 
         if let Some(full_id) = self.fullscreen_window.clone() {
-            if self.tree.find_window(&full_id).is_none() {
+            if self.tree.window_key(&full_id).is_none() {
                 self.fullscreen_window = None;
             }
         }
@@ -2703,11 +2716,11 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn focus_top(&mut self) {
-        self.tree.focus_top_in_current_column();
+        self.tree.focus_first_leaf_in_focused_root_child();
     }
 
     pub fn focus_bottom(&mut self) {
-        self.tree.focus_bottom_in_current_column();
+        self.tree.focus_last_leaf_in_focused_root_child();
     }
 
     fn move_root_child_with_layout(&mut self, current: usize, target: usize) -> bool {
@@ -2829,23 +2842,23 @@ impl<W: LayoutElement> TilingSpace<W> {
         presets: &[PresetSize],
         forwards: bool,
     ) {
-        let Some(path) = self.window_path(window) else {
+        let Some(key) = self.window_target(window) else {
             return;
         };
         let Some((parent_path, child_idx, available, _, _)) =
-            self.window_container_metrics(&path, layout)
+            self.window_container_metrics(key, layout)
         else {
             return;
         };
         let current_percent = self
             .tree
-            .child_percent_at(parent_path.as_slice(), child_idx)
+            .child_percent(parent_path, child_idx)
             .unwrap_or(1.0);
 
         if let Some(percent) = self.cycle_presets(available, current_percent, presets, forwards) {
             if self
                 .tree
-                .set_child_percent_at(parent_path.as_slice(), child_idx, layout, percent)
+                .set_child_percent(parent_path, child_idx, layout, percent)
             {
                 self.tree.layout();
             }
@@ -2872,24 +2885,24 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     /// Resize a window's share within its nearest ancestor split along `layout`'s axis.
     fn set_window_dimension(&mut self, window: Option<&W::Id>, change: SizeChange, layout: Layout) {
-        let Some(path) = self.window_path(window) else {
+        let Some(key) = self.window_target(window) else {
             return;
         };
         let Some((parent_path, child_idx, available, _, _)) =
-            self.window_container_metrics(&path, layout)
+            self.window_container_metrics(key, layout)
         else {
             return;
         };
 
         let current_percent = self
             .tree
-            .child_percent_at(parent_path.as_slice(), child_idx)
+            .child_percent(parent_path, child_idx)
             .unwrap_or(1.0);
         let percent = Self::percent_from_size_change(current_percent, available, change);
 
         if self
             .tree
-            .set_child_percent_at(parent_path.as_slice(), child_idx, layout, percent)
+            .set_child_percent(parent_path, child_idx, layout, percent)
         {
             self.tree.layout();
         }
@@ -2918,8 +2931,8 @@ impl<W: LayoutElement> TilingSpace<W> {
                 return false;
             }
 
-            if let Some(path) = self.tree.find_window(window) {
-                if let Some(tile) = self.tree.tile_at_path_mut(&path) {
+            if let Some(key) = self.tree.window_key(window) {
+                if let Some(tile) = self.tree.get_tile_mut(key) {
                     tile.pending_maximized |= tile.window().pending_sizing_mode().is_maximized();
                     tile.request_fullscreen(!self.options.animations.off, None);
                 }
@@ -2928,14 +2941,14 @@ impl<W: LayoutElement> TilingSpace<W> {
             self.fullscreen_window = Some(window.clone());
             self.tree.layout();
             if let Some(selected_key) = selected_container {
-                self.tree.set_selected_container_key(selected_key);
+                self.tree.select_container(selected_key);
             }
             true
         } else {
-            let Some(path) = self.tree.find_window(window) else {
+            let Some(key) = self.tree.window_key(window) else {
                 return false;
             };
-            let Some(tile) = self.tree.tile_at_path_mut(&path) else {
+            let Some(tile) = self.tree.get_tile_mut(key) else {
                 return false;
             };
             let is_window_fullscreen = tile.window().pending_sizing_mode().is_fullscreen();
@@ -2956,7 +2969,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             self.fullscreen_window = None;
             self.tree.layout();
             if let Some(selected_key) = selected_container {
-                self.tree.set_selected_container_key(selected_key);
+                self.tree.select_container(selected_key);
             }
             true
         }
@@ -2966,7 +2979,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         if let Some(id) = self.fullscreen_window.as_ref() {
             // Keep compositor-level fullscreen sticky while the tracked window still exists.
             // This matches sway behavior better than relying on pending_sizing_mode() snapshots.
-            if self.tree.find_window(id).is_some() {
+            if self.tree.window_key(id).is_some() {
                 return;
             }
         }
@@ -2979,10 +2992,10 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn set_maximized(&mut self, window: &W::Id, maximize: bool) -> bool {
-        let Some(path) = self.tree.find_window(window) else {
+        let Some(key) = self.tree.window_key(window) else {
             return false;
         };
-        let Some(tile) = self.tree.tile_at_path_mut(&path) else {
+        let Some(tile) = self.tree.get_tile_mut(key) else {
             return false;
         };
 
@@ -3001,9 +3014,12 @@ impl<W: LayoutElement> TilingSpace<W> {
         let Some(idx) = self.tree.focused_root_index() else {
             return;
         };
+        let Some(root_key) = self.tree.root_node_key() else {
+            return;
+        };
         if self
             .tree
-            .set_child_percent_at(&[], idx, Layout::SplitH, 1.0)
+            .set_child_percent(root_key, idx, Layout::SplitH, 1.0)
         {
             self.tree.layout();
         }
@@ -3014,10 +3030,10 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn start_open_animation(&mut self, id: &W::Id) -> bool {
-        let Some(path) = self.tree.find_window(id) else {
+        let Some(key) = self.tree.window_key(id) else {
             return false;
         };
-        if let Some(tile) = self.tree.tile_at_path_mut(&path) {
+        if let Some(tile) = self.tree.get_tile_mut(key) {
             tile.start_open_animation();
             return true;
         }
@@ -3029,7 +3045,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         window: &W::Id,
         blocker: crate::utils::transaction::TransactionBlocker,
     ) {
-        let Some(path) = self.tree.find_window(window) else {
+        let Some(key) = self.tree.window_key(window) else {
             return;
         };
 
@@ -3037,7 +3053,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             .tree
             .leaf_layouts()
             .iter()
-            .find(|info| info.path == path)
+            .find(|info| info.key == key)
             .map(|info| (info.rect, info.visible))
         else {
             return;
@@ -3047,7 +3063,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             return;
         }
 
-        let Some(tile) = self.tree.tile_at_path_mut(&path) else {
+        let Some(tile) = self.tree.get_tile_mut(key) else {
             return;
         };
 
@@ -3410,10 +3426,10 @@ fn edge_visibility_for_tile(
 
 fn split_indicator_edge_for_tile<W: LayoutElement>(
     tree: &ContainerTree<W>,
-    path: &[usize],
+    key: NodeKey,
     edges: FocusRingEdges,
 ) -> Option<FocusRingIndicatorEdge> {
-    let layout = tree.single_child_split_layout_for_path(path)?;
+    let layout = tree.single_child_split_layout(key)?;
     match layout {
         Layout::SplitH => edges.right.then_some(FocusRingIndicatorEdge::Right),
         Layout::SplitV => edges.bottom.then_some(FocusRingIndicatorEdge::Bottom),

@@ -277,22 +277,20 @@ impl<W: LayoutElement> ContainerTree<W> {
         })
     }
 
-    pub(in crate::layout) fn replace_leaf_at_path(
+    /// Swap the tile held by the leaf at `key`, returning the previous one.
+    pub(in crate::layout) fn replace_leaf(
         &mut self,
-        path: &[usize],
+        key: NodeKey,
         tile: Tile<W>,
     ) -> Option<Tile<W>> {
-        let key = self.get_node_key_at_path(path)?;
         match self.get_node_mut(key)? {
             NodeData::Leaf(existing) => Some(std::mem::replace(existing, tile)),
             _ => None,
         }
     }
 
-    pub(in crate::layout) fn is_leaf_at_path(&self, path: &[usize]) -> bool {
-        let Some(key) = self.get_node_key_at_path(path) else {
-            return false;
-        };
+    /// Whether `key` addresses a leaf (window) node.
+    pub(in crate::layout) fn is_leaf(&self, key: NodeKey) -> bool {
         matches!(self.get_node(key), Some(NodeData::Leaf(_)))
     }
 
@@ -371,7 +369,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     pub(in crate::layout) fn insert_leaf_split(
         &mut self,
-        target_path: &[usize],
+        target_key: NodeKey,
         direction: Direction,
         tile: Tile<W>,
         focus: bool,
@@ -383,7 +381,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         let desired_layout = direction.split_layout();
 
-        if target_path.is_empty() {
+        if Some(target_key) == self.root {
             let Some(root_key) = self.root else {
                 self.append_leaf(tile, focus);
                 return true;
@@ -402,31 +400,18 @@ impl<W: LayoutElement> ContainerTree<W> {
             return true;
         }
 
-        let parent_path = &target_path[..target_path.len() - 1];
-        let target_idx = *target_path.last().unwrap();
-        let parent_key = if parent_path.is_empty() {
-            self.root
-        } else {
-            self.get_node_key_at_path(parent_path)
-        };
-        let Some(parent_key) = parent_key else {
+        let Some(parent_key) = self.parent_of(target_key) else {
             self.append_leaf(tile, focus);
             return true;
         };
 
-        let parent = match self.get_container(parent_key) {
-            Some(container) => container,
-            None => {
-                self.append_leaf(tile, focus);
-                return true;
-            }
+        let Some(target_idx) = self.child_index(parent_key, target_key) else {
+            self.append_leaf(tile, focus);
+            return true;
         };
-        let target_key = match parent.child_key(target_idx) {
-            Some(key) => key,
-            None => {
-                self.append_leaf(tile, focus);
-                return true;
-            }
+        let Some(parent) = self.get_container(parent_key) else {
+            self.append_leaf(tile, focus);
+            return true;
         };
 
         let parent_layout = parent.layout();

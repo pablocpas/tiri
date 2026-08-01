@@ -747,7 +747,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     fn idx_of(&self, id: &W::Id) -> Option<usize> {
         self.containers
             .iter()
-            .position(|container| container.tree.find_window(id).is_some())
+            .position(|container| container.tree.window_key(id).is_some())
     }
 
     fn contains(&self, id: &W::Id) -> bool {
@@ -763,18 +763,21 @@ impl<W: LayoutElement> FloatingSpace<W> {
         self.containers[idx].wrapper_selected || self.containers[idx].tree.selected_is_container()
     }
 
-    fn selected_path_in(&self, idx: usize) -> Vec<usize> {
+    /// The node a command targets inside container `idx`: its root when the whole floating
+    /// wrapper is selected, otherwise the tree's own selection.
+    fn selected_key_in(&self, idx: usize) -> Option<NodeKey> {
+        let tree = &self.containers[idx].tree;
         if self.containers[idx].wrapper_selected {
-            Vec::new()
+            tree.root_node_key()
         } else {
-            self.containers[idx].tree.selected_path()
+            tree.selected_node_key()
         }
     }
 
     fn tile_at_mut(&mut self, id: &W::Id) -> Option<&mut Tile<W>> {
         for container in &mut self.containers {
-            if let Some(path) = container.tree.find_window(id) {
-                return container.tree.tile_at_path_mut(&path);
+            if let Some(key) = container.tree.window_key(id) {
+                return container.tree.get_tile_mut(key);
             }
         }
         None
@@ -797,7 +800,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     pub fn has_window(&self, id: &W::Id) -> bool {
         self.containers
             .iter()
-            .any(|container| container.tree.find_window(id).is_some())
+            .any(|container| container.tree.window_key(id).is_some())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -896,12 +899,13 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return Vec::new();
         };
         if self.containers[idx].wrapper_selected {
-            return self.containers[idx].tree.window_ids_under_path(&[]);
+            return self.containers[idx].tree.all_window_ids();
         }
 
         if self.containers[idx].tree.selected_is_container() {
-            let path = self.containers[idx].tree.selected_path();
-            return self.containers[idx].tree.window_ids_under_path(&path);
+            if let Some(key) = self.containers[idx].tree.selected_node_key() {
+                return self.containers[idx].tree.window_ids_under(key);
+            }
         }
 
         self.active_window_id
@@ -1258,7 +1262,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let mut container = self.containers.remove(idx);
         let rect = Rectangle::new(container.data.logical_pos, container.data.size);
         let origin = container.origin.take();
-        let (mut subtree, _insert_info) = container.tree.take_subtree_at_path(&[])?;
+        let root_key = container.tree.root_node_key()?;
+        let (mut subtree, _insert_info) = container.tree.take_subtree_at(root_key)?;
         subtree.for_each_tile_mut(&mut |tile| {
             Self::store_floating_size_for_restore(tile);
         });
@@ -1546,11 +1551,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
     fn container_metrics(
         &self,
         tree: &ContainerTree<W>,
-        path: &[usize],
+        key: NodeKey,
         layout: Layout,
     ) -> Option<ContainerMetrics> {
-        let (parent_path, child_idx) = tree.find_parent_with_layout(path.to_vec(), layout)?;
-        let (container_layout, rect, child_count) = tree.container_info(parent_path.as_slice())?;
+        let (parent_key, child_idx) = tree.find_parent_with_layout(key, layout)?;
+        let (container_layout, rect, child_count) = tree.container_info(parent_key)?;
         if container_layout != layout || child_count == 0 {
             return None;
         }
@@ -1565,7 +1570,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return None;
         }
 
-        Some((parent_path, child_idx, available, child_count, rect))
+        Some((parent_key, child_idx, available, child_count, rect))
     }
 
     fn available_span(&self, total: f64, child_count: usize) -> f64 {
@@ -1668,21 +1673,24 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return;
         }
 
-        let path = if let Some(id) = id {
-            match self.containers[idx].tree.find_window(id) {
-                Some(path) => path,
+        let key = if let Some(id) = id {
+            match self.containers[idx].tree.window_key(id) {
+                Some(key) => key,
                 None => return,
             }
         } else {
-            self.selected_path_in(idx)
+            match self.selected_key_in(idx) {
+                Some(key) => key,
+                None => return,
+            }
         };
 
-        if let Some(tile) = self.containers[idx].tree.tile_at_path_mut(&path) {
+        if let Some(tile) = self.containers[idx].tree.get_tile_mut(key) {
             tile.floating_preset_width_idx = None;
         }
 
         let Some((parent_path, child_idx, available, child_count, _)) =
-            self.container_metrics(&self.containers[idx].tree, &path, Layout::SplitH)
+            self.container_metrics(&self.containers[idx].tree, key, Layout::SplitH)
         else {
             self.resize_container_dimension(idx, change, true, animate);
             return;
@@ -1694,12 +1702,12 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         let current_percent = self.containers[idx]
             .tree
-            .child_percent_at(parent_path.as_slice(), child_idx)
+            .child_percent(parent_path, child_idx)
             .unwrap_or(1.0);
         let percent = Self::percent_from_size_change(current_percent, available, change);
 
-        if self.containers[idx].tree.set_child_percent_at(
-            parent_path.as_slice(),
+        if self.containers[idx].tree.set_child_percent(
+            parent_path,
             child_idx,
             Layout::SplitH,
             percent,
@@ -1725,21 +1733,24 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return;
         }
 
-        let path = if let Some(id) = id {
-            match self.containers[idx].tree.find_window(id) {
-                Some(path) => path,
+        let key = if let Some(id) = id {
+            match self.containers[idx].tree.window_key(id) {
+                Some(key) => key,
                 None => return,
             }
         } else {
-            self.selected_path_in(idx)
+            match self.selected_key_in(idx) {
+                Some(key) => key,
+                None => return,
+            }
         };
 
-        if let Some(tile) = self.containers[idx].tree.tile_at_path_mut(&path) {
+        if let Some(tile) = self.containers[idx].tree.get_tile_mut(key) {
             tile.floating_preset_height_idx = None;
         }
 
         let Some((parent_path, child_idx, available, child_count, _)) =
-            self.container_metrics(&self.containers[idx].tree, &path, Layout::SplitV)
+            self.container_metrics(&self.containers[idx].tree, key, Layout::SplitV)
         else {
             self.resize_container_dimension(idx, change, false, animate);
             return;
@@ -1751,12 +1762,12 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         let current_percent = self.containers[idx]
             .tree
-            .child_percent_at(parent_path.as_slice(), child_idx)
+            .child_percent(parent_path, child_idx)
             .unwrap_or(1.0);
         let percent = Self::percent_from_size_change(current_percent, available, change);
 
-        if self.containers[idx].tree.set_child_percent_at(
-            parent_path.as_slice(),
+        if self.containers[idx].tree.set_child_percent(
+            parent_path,
             child_idx,
             Layout::SplitV,
             percent,
@@ -2042,13 +2053,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
         if container.wrapper_selected {
             let root_child_count = container
                 .tree
-                .container_info(&[])
+                .root_info()
                 .map(|(_, _, count)| count)
                 .unwrap_or(0);
-            let root_meaningful = container
-                .tree
-                .container_is_meaningful_parent(&[])
-                .unwrap_or(false);
+            let root_meaningful = container.tree.root_is_meaningful_parent().unwrap_or(false);
             let preserve_on_single = container
                 .tree
                 .root_container()
@@ -2071,11 +2079,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 // No further parent in the container tree. Only expose wrapper selection
                 // if root is a meaningful container; otherwise let workspace fallback
                 // to tiling focus (sway behavior for redundant single-child wrappers).
-                let root_child_count = tree
-                    .container_info(&[])
-                    .map(|(_, _, count)| count)
-                    .unwrap_or(0);
-                let root_meaningful = tree.container_is_meaningful_parent(&[]).unwrap_or(false);
+                let root_child_count = tree.root_info().map(|(_, _, count)| count).unwrap_or(0);
+                let root_meaningful = tree.root_is_meaningful_parent().unwrap_or(false);
                 let preserve_on_single = tree
                     .root_container()
                     .is_some_and(|container| container.preserve_on_single())
@@ -2088,14 +2093,16 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 return false;
             }
 
-            let path = tree.selected_path();
-            let is_meaningful = tree.container_is_meaningful_parent(&path).unwrap_or(false);
+            let Some(key) = tree.selected_node_key() else {
+                return false;
+            };
+            let is_meaningful = tree.container_is_meaningful_parent(key).unwrap_or(false);
             let selected_child_count = tree
-                .container_info(&path)
+                .container_info(key)
                 .map(|(_, _, count)| count)
                 .unwrap_or(0);
             if is_meaningful {
-                let root_selected = path.is_empty();
+                let root_selected = Some(key) == tree.root_node_key();
                 let preserve_on_single = if root_selected {
                     tree.root_container()
                         .is_some_and(|container| container.preserve_on_single())
@@ -2115,7 +2122,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 return true;
             }
 
-            if path.is_empty() {
+            if Some(key) == tree.root_node_key() {
                 tree.clear_selection();
                 return false;
             }
@@ -2143,10 +2150,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
 
         if self.containers[idx].tree.selected_is_container() {
-            let path = self.containers[idx].tree.selected_path();
+            let key = self.containers[idx].tree.selected_node_key()?;
             return self.containers[idx]
                 .tree
-                .container_info(&path)
+                .container_info(key)
                 .map(|(layout, _, _)| layout);
         }
 
@@ -2320,23 +2327,25 @@ impl<W: LayoutElement> FloatingSpace<W> {
     }
 
     fn toggle_split_for_active_selection(&mut self, idx: usize) -> bool {
-        let target_path = if self.containers[idx].wrapper_selected {
+        // Toggling a selected container's split targets its *parent*, matching i3.
+        let target_key = if self.containers[idx].wrapper_selected {
             None
         } else if self.containers[idx].tree.selected_is_container() {
-            let path = self.containers[idx].tree.selected_path();
-            (!path.is_empty()).then(|| path[..path.len() - 1].to_vec())
+            let tree = &self.containers[idx].tree;
+            tree.selected_node_key()
+                .and_then(|key| tree.parent_of_node(key))
         } else {
             None
         };
 
-        if let Some(path) = target_path {
-            if let Some((current, _, _)) = self.containers[idx].tree.container_info(&path) {
+        if let Some(key) = target_key {
+            if let Some((current, _, _)) = self.containers[idx].tree.container_info(key) {
                 let next = match current {
                     Layout::SplitH => Layout::SplitV,
                     Layout::SplitV => Layout::SplitH,
                     Layout::Tabbed | Layout::Stacked => Layout::SplitH,
                 };
-                if let Some(container) = self.containers[idx].tree.container_at_path_mut(&path) {
+                if let Some(container) = self.containers[idx].tree.container_mut(key) {
                     container.set_layout_explicit(next);
                     return true;
                 }
@@ -2357,19 +2366,21 @@ impl<W: LayoutElement> FloatingSpace<W> {
     }
 
     fn toggle_layout_all_for_active_selection(&mut self, idx: usize) -> bool {
-        let target_path = if self.containers[idx].wrapper_selected {
+        // Cycling a selected container's layout targets its *parent*, matching i3.
+        let target_key = if self.containers[idx].wrapper_selected {
             None
         } else if self.containers[idx].tree.selected_is_container() {
-            let path = self.containers[idx].tree.selected_path();
-            (!path.is_empty()).then(|| path[..path.len() - 1].to_vec())
+            let tree = &self.containers[idx].tree;
+            tree.selected_node_key()
+                .and_then(|key| tree.parent_of_node(key))
         } else {
             None
         };
 
-        if let Some(path) = target_path {
-            if let Some((current, _, _)) = self.containers[idx].tree.container_info(&path) {
+        if let Some(key) = target_key {
+            if let Some((current, _, _)) = self.containers[idx].tree.container_info(key) {
                 let next = current.next_in_cycle();
-                if let Some(container) = self.containers[idx].tree.container_at_path_mut(&path) {
+                if let Some(container) = self.containers[idx].tree.container_mut(key) {
                     container.set_layout_explicit(next);
                     return true;
                 }
@@ -2556,10 +2567,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         {
             let container = &mut self.containers[container_idx];
-            let Some(path) = container.tree.find_window(id) else {
+            let Some(key) = container.tree.window_key(id) else {
                 return false;
             };
-            let Some(tile) = container.tree.tile_at_path_mut(&path) else {
+            let Some(tile) = container.tree.get_tile_mut(key) else {
                 return false;
             };
 
@@ -2583,10 +2594,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
         container.tree.layout();
 
         if container.tree.window_count() == 1 {
-            let Some(path) = container.tree.find_window(id) else {
+            let Some(key) = container.tree.window_key(id) else {
                 return true;
             };
-            let Some(tile) = container.tree.tile_at_path(&path) else {
+            let Some(tile) = container.tree.get_tile(key) else {
                 return true;
             };
             let tile_size = tile.tile_size();
@@ -2629,8 +2640,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
             && self.fullscreen_window.is_none()
         {
             if let Some(idx) = self.active_container_idx() {
-                let path = self.selected_path_in(idx);
-                if let Some((_, local_rect, _)) = self.containers[idx].tree.container_info(&path) {
+                if let Some((_, local_rect, _)) = self
+                    .selected_key_in(idx)
+                    .and_then(|key| self.containers[idx].tree.container_info(key))
+                {
                     let rect = Rectangle::new(
                         self.containers[idx].data.logical_pos + local_rect.loc,
                         local_rect.size,
@@ -2795,10 +2808,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
         };
 
         let container = &self.containers[idx];
-        let Some(path) = container.tree.find_window(&window) else {
+        let Some(key) = container.tree.window_key(&window) else {
             return false;
         };
-        let Some(tile) = container.tree.tile_at_path(&path) else {
+        let Some(tile) = container.tree.get_tile(key) else {
             return false;
         };
 
@@ -2807,7 +2820,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let original_container_size = container.data.size;
         let resize_container_edges = Self::display_layouts(&container.tree)
             .iter()
-            .find(|info| info.path == path)
+            .find(|info| info.key == key)
             .map(|info| Self::external_edges_for_rect(container.data.size, info.rect, edges))
             .unwrap_or(ResizeEdge::empty());
 
@@ -2830,9 +2843,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
         delta: Point<f64, Logical>,
     ) -> bool {
         let Some(idx) = self.idx_of(window) else {
-            return false;
-        };
-        let Some(path) = self.containers[idx].tree.find_window(window) else {
             return false;
         };
 
@@ -2859,7 +2869,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
         };
         let (mut min_size, mut max_size, resize_container_h, resize_container_v) = {
             let container = &self.containers[idx];
-            let Some(tile) = container.tree.tile_at_path(&path) else {
+            let Some(tile) = container
+                .tree
+                .window_key(window)
+                .and_then(|key| container.tree.get_tile(key))
+            else {
                 return false;
             };
             let resize_container_h = resize_container_edges.intersects(ResizeEdge::LEFT_RIGHT);

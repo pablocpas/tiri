@@ -174,8 +174,8 @@ pub(super) type TakenSubtree<W> = (
     Rectangle<f64, Logical>,
 );
 
-/// Parent path, child index, available span, child count and rect of a window's container.
-pub(super) type ContainerMetrics = (Vec<usize>, usize, f64, usize, Rectangle<f64, Logical>);
+/// Container key, child index, available span, child count and rect of a window's container.
+pub(super) type ContainerMetrics = (NodeKey, usize, f64, usize, Rectangle<f64, Logical>);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum InactiveTilingReference {
@@ -796,49 +796,36 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    pub(super) fn child_percent_at(&self, parent_path: &[usize], child_idx: usize) -> Option<f64> {
-        let container_key = if parent_path.is_empty() {
-            self.root?
-        } else {
-            self.get_node_key_at_path(parent_path)?
-        };
-
+    /// Size share of the `child_idx`-th child of the container at `container_key`.
+    pub(in crate::layout) fn child_percent(
+        &self,
+        container_key: NodeKey,
+        child_idx: usize,
+    ) -> Option<f64> {
         let container = self.get_container(container_key)?;
-
         if child_idx >= container.child_count() {
             return None;
         }
         Some(container.child_percent(child_idx))
     }
 
-    pub(super) fn set_child_percent_at(
+    /// Give the `child_idx`-th child of `container_key` a `percent` share, provided the
+    /// container still splits along `layout`'s axis.
+    pub(in crate::layout) fn set_child_percent(
         &mut self,
-        parent_path: &[usize],
+        container_key: NodeKey,
         child_idx: usize,
         layout: Layout,
         percent: f64,
     ) -> bool {
-        let container_key = if parent_path.is_empty() {
-            match self.root {
-                Some(key) => key,
-                None => return false,
-            }
-        } else {
-            match self.get_node_key_at_path(parent_path) {
-                Some(key) => key,
-                None => return false,
-            }
+        let Some(container) = self.get_container_mut(container_key) else {
+            return false;
         };
-
-        if let Some(container) = self.get_container_mut(container_key) {
-            if container.layout() != layout || child_idx >= container.child_count() {
-                return false;
-            }
-            container.set_child_percent(child_idx, percent);
-            true
-        } else {
-            false
+        if container.layout() != layout || child_idx >= container.child_count() {
+            return false;
         }
+        container.set_child_percent(child_idx, percent);
+        true
     }
 }
 

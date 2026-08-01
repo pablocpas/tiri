@@ -133,4 +133,28 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.root
             .is_some_and(|root_key| self.is_synthetic_root_container_key(root_key))
     }
+
+    /// Parent of a node, or None for the root.
+    pub(in crate::layout) fn parent_of_node(&self, key: NodeKey) -> Option<NodeKey> {
+        self.parent_of(key)
+    }
+
+    /// Whether `key` is `ancestor` or sits somewhere below it.
+    pub(in crate::layout) fn is_descendant(&self, key: NodeKey, ancestor: NodeKey) -> bool {
+        self.is_descendant_of(key, ancestor)
+    }
+
+    /// Whether `key` is `ancestor` or sits somewhere below it.
+    pub(super) fn is_descendant_of(&self, key: NodeKey, ancestor: NodeKey) -> bool {
+        let mut current = key;
+        loop {
+            if current == ancestor {
+                return true;
+            }
+            match self.parent_of(current) {
+                Some(parent) => current = parent,
+                None => return false,
+            }
+        }
+    }
 }

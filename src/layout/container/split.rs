@@ -130,34 +130,15 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    pub(in crate::layout) fn parent_layout_for_path(&self, path: &[usize]) -> Option<Layout> {
-        if path.is_empty() {
-            return None;
-        }
-
-        let parent_path = &path[..path.len() - 1];
-        let parent_key = if parent_path.is_empty() {
-            self.root?
-        } else {
-            self.get_node_key_at_path(parent_path)?
-        };
+    /// Layout of the container holding `key`.
+    pub(in crate::layout) fn parent_layout(&self, key: NodeKey) -> Option<Layout> {
+        let parent_key = self.parent_of(key)?;
         self.get_container(parent_key).map(|c| c.layout())
     }
 
-    pub(in crate::layout) fn single_child_split_layout_for_path(
-        &self,
-        path: &[usize],
-    ) -> Option<Layout> {
-        if path.is_empty() {
-            return None;
-        }
-
-        let parent_path = &path[..path.len() - 1];
-        let parent_key = if parent_path.is_empty() {
-            self.root?
-        } else {
-            self.get_node_key_at_path(parent_path)?
-        };
+    /// If `key`'s parent is an explicit split holding only `key`, that split's layout.
+    pub(in crate::layout) fn single_child_split_layout(&self, key: NodeKey) -> Option<Layout> {
+        let parent_key = self.parent_of(key)?;
 
         let container = self.get_container(parent_key)?;
         if container.child_count() != 1 || !container.preserve_on_single() {

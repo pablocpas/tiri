@@ -56,43 +56,43 @@ impl<W: LayoutElement> ContainerTree<W> {
         Some(tile)
     }
 
-    pub(in crate::layout) fn take_subtree_at_path(
+    /// Detach the subtree rooted at `node_key`, returning it along with enough information
+    /// to put it back where it was.
+    pub(in crate::layout) fn take_subtree_at(
         &mut self,
-        path: &[usize],
+        node_key: NodeKey,
     ) -> Option<(DetachedNode<W>, Option<InsertParentInfo>)> {
-        let node_key = self.get_node_key_at_path(path)?;
-        let insert_info = self.insert_parent_info_for_path(path);
+        self.get_node(node_key)?;
+        let insert_info = self
+            .find_node_path(node_key)
+            .and_then(|path| self.insert_parent_info_for_path(&path));
 
-        let focused_path = self.focus_path();
-        let focused_in_subtree =
-            focused_path.len() >= path.len() && focused_path[..path.len()] == *path;
+        let focused_in_subtree = self
+            .focused_key
+            .is_some_and(|key| self.is_descendant_of(key, node_key));
 
         if let Some(selected_key) = self.selected_key {
-            if let Some(selected_path) = self.find_node_path(selected_key) {
-                if selected_path.len() >= path.len() && selected_path[..path.len()] == *path {
-                    self.selected_key = None;
-                }
+            if self.is_descendant_of(selected_key, node_key) {
+                self.selected_key = None;
             }
         }
 
-        let cleanup_key = if path.is_empty() {
-            self.root = None;
-            self.set_parent(node_key, None);
-            None
-        } else {
-            let parent_path = &path[..path.len() - 1];
-            let parent_key = if parent_path.is_empty() {
-                self.root?
-            } else {
-                self.get_node_key_at_path(parent_path)?
-            };
-
-            if let Some(container) = self.get_container_mut(parent_key) {
-                let idx = *path.last().unwrap();
-                container.remove_child(idx);
+        let parent_key = self.parent_of(node_key);
+        let cleanup_key = match parent_key {
+            None => {
+                self.root = None;
+                self.set_parent(node_key, None);
+                None
             }
-            self.set_parent(node_key, None);
-            Some(parent_key)
+            Some(parent_key) => {
+                if let Some(idx) = self.child_index(parent_key, node_key) {
+                    if let Some(container) = self.get_container_mut(parent_key) {
+                        container.remove_child(idx);
+                    }
+                }
+                self.set_parent(node_key, None);
+                Some(parent_key)
+            }
         };
 
         let subtree = self.extract_subtree(node_key);

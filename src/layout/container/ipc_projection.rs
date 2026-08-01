@@ -172,7 +172,7 @@ impl ContainerTree<Mapped> {
                         return Some(self.layout_area());
                     }
                     let (&child_idx, parent_path) = path.split_last()?;
-                    self.child_rect_at(parent_path, child_idx)
+                    self.child_rect_in(self.node_at_path(parent_path)?, child_idx)
                 })?,
             NodeData::Container(container) => container.geometry(),
         };
