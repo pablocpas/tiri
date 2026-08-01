@@ -1142,8 +1142,7 @@ fn move_up_at_an_edge_crosses_the_workspace() {
         @"
     SplitV
       Window 1 *
-      SplitV
-        Window 2
+      Window 2
     "
     );
 }
@@ -1324,7 +1323,8 @@ fn split_parallel_with_siblings_wraps_focused_leaf_vertical() {
     SplitH
       SplitV
         Window 1
-        Window 2 *
+        SplitV
+          Window 2 *
     "
     );
 }

@@ -235,8 +235,12 @@ impl Sway {
     /// error, since a missing window would otherwise read as agreement.
     fn open(&mut self) -> Result<(), String> {
         let before = self.leaves()?;
-        let client = std::env::var("TIRI_PARITY_CLIENT")
-            .unwrap_or_else(|_| "foot sh -c 'while :; do sleep 1; done'".to_owned());
+        // Fixed size on purpose: sway gives a window floated out of tiling the size its
+        // client asked for, so a client whose size depends on fonts or terminal defaults
+        // would make the recording depend on the machine it was made on.
+        let client = std::env::var("TIRI_PARITY_CLIENT").unwrap_or_else(|_| {
+            "foot --window-size-pixels=400x300 sh -c 'while :; do sleep 1; done'".to_owned()
+        });
         self.msg(&["exec", &client])?;
 
         let started = Instant::now();

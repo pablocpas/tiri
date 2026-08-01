@@ -272,9 +272,13 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
         self.set_parent(node_key, Some(grandparent_key));
 
+        // Cleanup may dissolve the very node that moved — a lone wrapper carried up with its
+        // window is exactly the shape it removes — so remember a leaf to focus first.
+        let leaf_key = self.leaf_under_key(node_key);
         self.cleanup_containers(Some(node_parent_key));
-
-        self.focus_node_key(node_key);
+        if let Some(leaf_key) = leaf_key {
+            self.focus_node_key(leaf_key);
+        }
 
         true
     }
@@ -287,6 +291,30 @@ impl<W: LayoutElement> ContainerTree<W> {
         direction: Direction,
         target_focus_idx: usize,
     ) -> bool {
+        // Entering across a container's axis means landing beside its focused child — and
+        // when that child is itself a container, the move carries on into it. Measured
+        // against sway 1.11: a window that left a nested split comes back to the same place
+        // rather than stopping beside it.
+        let mut target_key = target_key;
+        let mut target_focus_idx = target_focus_idx;
+        while let Some(target) = self.get_container(target_key) {
+            if target.layout().is_parallel_to(direction) {
+                break;
+            }
+            let Some(child_key) = target.child_key(target_focus_idx) else {
+                break;
+            };
+            // Never descend into what is being moved: a node cannot land inside itself.
+            if child_key == node_key || self.is_descendant(child_key, node_key) {
+                break;
+            }
+            let Some(child) = self.get_container(child_key) else {
+                break;
+            };
+            target_focus_idx = child.focused_child_index().unwrap_or(0);
+            target_key = child_key;
+        }
+
         let Some(target) = self.get_container(target_key) else {
             return false;
         };
@@ -338,9 +366,12 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
         self.set_parent(node_key, Some(target_key));
 
+        // As above: what moved may not survive cleanup, but the window inside it does.
+        let leaf_key = self.leaf_under_key(node_key);
         self.cleanup_containers(Some(node_parent_key));
-
-        self.focus_node_key(node_key);
+        if let Some(leaf_key) = leaf_key {
+            self.focus_node_key(leaf_key);
+        }
 
         true
     }

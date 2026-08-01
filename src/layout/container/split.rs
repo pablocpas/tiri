@@ -227,7 +227,13 @@ impl<W: LayoutElement> ContainerTree<W> {
         wrapper.focus_stack = old_focus_stack;
         wrapper.child_percents = old_child_percents;
         wrapper.geometry = root_geometry;
-        wrapper.mark_preserve_on_single();
+        // Only a wrapper that holds a single node is worth protecting from cleanup: it is
+        // saying something the workspace does not. One holding several is an ordinary
+        // container, and if windows later leave it until one remains, it is as redundant as
+        // any other — which is what sway does with it.
+        if wrapper.child_count() == 1 {
+            wrapper.mark_preserve_on_single();
+        }
         wrapper.ensure_focus_stack();
 
         let wrapper_children = wrapper.children.clone();

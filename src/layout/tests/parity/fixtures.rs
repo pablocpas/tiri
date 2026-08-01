@@ -28,25 +28,14 @@ const KNOWN: &[Divergence] = &[
     Divergence {
         fixture: "floating.parity",
         step: 3,
-        reason: "A window's size when it starts floating is the size its client asked for, and the two harnesses run different clients — foot under sway, a synthetic window under tiri. This is a limitation of the comparison, not a difference in tiri: closing it needs a recorder client that requests a fixed size.",
-    },
-    Divergence {
-        fixture: "move-at-an-edge.parity",
-        step: 5,
         reason: "\
-The wrapper left behind holds one window in the orientation the workspace has just taken, \
-and sway drops it while tiri keeps it. tiri keeps single-child containers the user asked \
-for — `split h` builds one and sway keeps that too — so the question is which of the two \
-this one is, and that is not settled yet. Same family as the entry below.",
-    },
-    Divergence {
-        fixture: "move-and-focus.parity",
-        step: 14,
-        reason: "\
-Moving *into* a container: sway descends to where focus last was inside it, so a window \
-that left a nested split comes back to the same place. tiri stops at the container's own \
-level and becomes its sibling instead. A real difference in tiri, and the next one to \
-close; it was masked until step 13 started matching.",
+The size a window gets when it starts floating. Measured with a client asking for 400x300: \
+sway gives it 396x288 — its own size, centred. tiri gives every floating window 50% by 75% \
+of the working area, whatever it asked for. That default is inherited from niri rather than \
+broken here, and changing it is a visible product decision rather than a parity fix, so it \
+is written down with the measurement for someone to decide. Everything else about the \
+transfer matches: which tree the window sits in, what the tiled side does without it, and \
+where it lands on the way back.",
     },
     Divergence {
         fixture: "move-into-a-nested-container.parity",
