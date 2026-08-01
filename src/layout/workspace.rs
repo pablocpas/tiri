@@ -767,7 +767,7 @@ impl<W: LayoutElement> Workspace<W> {
         // Command routing: no floating command context exists when there are
         // no floating containers in the workspace.
         if self.floating.is_empty() || !self.floating_is_active.get() {
-            if self.tiling.is_empty() || self.focus_is_elevated() {
+            if self.tiling_targets_workspace() {
                 return CommandTarget::Workspace;
             }
             return if self.tiling.selected_is_container() {
@@ -2039,8 +2039,20 @@ impl<W: LayoutElement> Workspace<W> {
         self.floating_is_active.get() && self.focus_is_elevated()
     }
 
+    /// Whether tiling commands are aimed at the workspace itself.
+    ///
+    /// Read from the tree's selection wherever the tree can express it, so the routing can
+    /// never disagree with what the command will actually do. The stored elevation is only
+    /// consulted for the one state the tree has no node for — a workspace whose single child
+    /// is a window — and it stops applying as soon as the tree gains a root container,
+    /// which is what opening a second window does.
+    pub(super) fn tiling_targets_workspace(&self) -> bool {
+        self.tiling.workspace_is_selected()
+            || (self.tiling.focus_is_root_leaf() && self.focus_is_elevated())
+    }
+
     pub(super) fn is_tiling_workspace_context_active(&self) -> bool {
-        !self.floating_is_active.get() && self.focus_is_elevated()
+        !self.floating_is_active.get() && self.tiling_targets_workspace()
     }
 
     pub fn focus_window_by_id(&mut self, id: &W::Id) -> bool {
@@ -2283,7 +2295,9 @@ impl<W: LayoutElement> Workspace<W> {
                     }
                     return;
                 }
-                if self.focus_is_elevated() && !self.tiling.is_empty() {
+                // Reaching this arm without the floating side active already means the
+                // workspace is what the tree has selected, so there is nothing else to ask.
+                if !self.tiling.is_empty() {
                     let _ = self.tiling.focus_child();
                     self.sync_tiling_focus_context_from_tiling();
                 }

@@ -4,293 +4,6 @@ use super::super::container::Layout as ContainerLayout;
 use super::*;
 
 #[test]
-fn parity_seed2_step60_toggle_floating_restores_the_subtree_it_took() {
-    let mut layout = check_ops([
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(2),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(3),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(4),
-        },
-    ]);
-
-    check_ops_on_layout(
-        &mut layout,
-        [
-            Op::FocusColumnRight,
-            Op::FocusColumnRight,
-            Op::FocusColumnRight,
-            Op::SetLayoutTabbed,
-            Op::FocusWindowDown,
-            Op::SetLayoutSplitV,
-            Op::SplitVertical,
-            Op::AddWindow {
-                params: TestWindowParams::new(5),
-            },
-            Op::SplitHorizontal,
-            Op::AddWindow {
-                params: TestWindowParams::new(6),
-            },
-            Op::FocusColumnLeft,
-            Op::CloseFocused,
-            Op::FocusWindowDown,
-            Op::FocusParent,
-            Op::AddWindow {
-                params: TestWindowParams::new(7),
-            },
-            Op::FocusParent,
-            Op::ToggleWindowFloating { id: None },
-            Op::SetLayoutStacked,
-            Op::SwitchFocusFloatingTiling,
-            Op::FocusChild,
-            Op::ToggleWindowFloating { id: None },
-            Op::SetLayoutSplitH,
-            Op::FocusColumnLeft,
-            Op::FocusColumnLeft,
-            Op::SetLayoutTabbed,
-            Op::FocusChild,
-            Op::ToggleSplitLayout,
-            Op::SetLayoutStacked,
-            Op::FocusParent,
-            Op::SwitchFocusFloatingTiling,
-            Op::FocusWindowDown,
-            Op::ToggleFullscreenFocused,
-            Op::FocusWindowDown,
-            Op::SplitVertical,
-            Op::SplitVertical,
-            Op::FocusColumnLeft,
-            Op::FocusWindowDown,
-            Op::ToggleSplitLayout,
-            Op::FocusWindowDown,
-            Op::FocusWindowUp,
-            Op::ToggleWindowFloating { id: None },
-            Op::ToggleWindowFloating { id: None },
-            Op::SetLayoutTabbed,
-            Op::ToggleWindowFloating { id: None },
-            Op::ToggleFullscreenFocused,
-            Op::FocusWindowDown,
-            Op::FocusChild,
-            Op::FocusParent,
-            Op::SwitchFocusFloatingTiling,
-            Op::SetLayoutTabbed,
-            Op::AddWindow {
-                params: TestWindowParams::new(8),
-            },
-            Op::SetLayoutTabbed,
-            Op::SetLayoutTabbed,
-            Op::FocusChild,
-            Op::FocusWindowDown,
-            Op::FocusParent,
-            Op::FocusChild,
-            Op::SwitchFocusFloatingTiling,
-            Op::SplitVertical,
-        ],
-    );
-
-    check_ops_on_layout(&mut layout, [Op::ToggleWindowFloating { id: None }]);
-
-    let ws = layout.active_workspace().expect("active workspace");
-    let tree = ws.tiling().debug_tree().replace(" *", "");
-    // Unverified against sway: this is a fuzz seed replay kept as a regression pin until
-    // the recorder can replay the same script against sway and say what it really does.
-    // What it does pin is that unfloating puts the subtree back where it came from, whole.
-    assert!(
-        tree.starts_with("Tabbed\n  Window 8\n  Tabbed\n    SplitV\n"),
-        "step60 toggle_floating should restore the floating subtree under the workspace root:\n{tree}"
-    );
-    assert!(
-        tree.contains("Tabbed\n    SplitV\n      Window 1")
-            && tree.contains("    SplitV\n      Window 7"),
-        "step60 toggle_floating should restore the subtree with the splitv child holding window 7:\n{tree}"
-    );
-    assert_eq!(
-        ws.tiling().focus_path(),
-        vec![1, 1, 0],
-        "step60 focus should land on the restored floating leaf like sway",
-    );
-}
-#[test]
-fn parity_seed1_focus_parent_on_single_child_floating_wrapper_keeps_floating_mode() {
-    let mut layout = Layout::default();
-    check_ops_on_layout(
-        &mut layout,
-        [
-            Op::AddOutput(1),
-            Op::AddWindow {
-                params: TestWindowParams::new(1),
-            },
-            Op::AddWindow {
-                params: TestWindowParams::new(2),
-            },
-            Op::AddWindow {
-                params: TestWindowParams::new(3),
-            },
-            Op::AddWindow {
-                params: TestWindowParams::new(4),
-            },
-        ],
-    );
-
-    let ops = [
-        "focus_up",
-        "close_focused",
-        "focus_right",
-        "split_v",
-        "focus_up",
-        "toggle_floating",
-        "focus_child",
-        "focus_child",
-        "layout_stacked",
-        "split_h",
-        "focus_up",
-        "toggle_floating",
-        "focus_left",
-        "layout_stacked",
-        "focus_parent",
-        "open_window",
-        "focus_left",
-        "focus_child",
-        "layout_splith",
-        "split_v",
-        "open_window",
-        "focus_up",
-        "layout_toggle_split",
-        "focus_left",
-        "focus_left",
-        "focus_left",
-        "toggle_focus_mode",
-        "focus_left",
-        "layout_stacked",
-        "split_h",
-        "focus_parent",
-        "focus_left",
-        "toggle_focus_mode",
-        "split_h",
-        "focus_child",
-        "toggle_floating",
-        "toggle_fullscreen",
-        "split_v",
-        "layout_tabbed",
-        "split_v",
-        "split_h",
-        "focus_child",
-        "layout_splitv",
-        "focus_left",
-        "focus_parent",
-        "toggle_fullscreen",
-        "open_window",
-        "focus_up",
-        "focus_down",
-        "open_window",
-        "layout_splitv",
-        "focus_up",
-        "layout_toggle_split",
-        "toggle_floating",
-        "focus_parent",
-        "toggle_floating",
-        "split_h",
-        "layout_splitv",
-        "layout_splith",
-        "open_window",
-        "toggle_floating",
-        "toggle_floating",
-    ];
-
-    let mut next_id = 5usize;
-    for op in ops {
-        match op {
-            "focus_left" => layout.focus_left(),
-            "focus_right" => layout.focus_right(),
-            "focus_up" => layout.focus_up(),
-            "focus_down" => layout.focus_down(),
-            "split_h" => layout.split_horizontal(),
-            "split_v" => layout.split_vertical(),
-            "layout_splith" => layout.set_layout_mode(ContainerLayout::SplitH),
-            "layout_splitv" => layout.set_layout_mode(ContainerLayout::SplitV),
-            "layout_toggle_split" => layout.toggle_split_layout(),
-            "layout_tabbed" => layout.set_layout_mode(ContainerLayout::Tabbed),
-            "layout_stacked" => layout.set_layout_mode(ContainerLayout::Stacked),
-            "focus_parent" => layout.focus_parent(),
-            "focus_child" => layout.focus_child(),
-            "toggle_floating" => layout.toggle_window_floating(None),
-            "toggle_focus_mode" => layout.switch_focus_floating_tiling(),
-            "toggle_fullscreen" => {
-                if let Some(id) = layout.focus().map(|win| *win.id()) {
-                    layout.toggle_fullscreen(&id);
-                }
-            }
-            "close_focused" => {
-                if let Some(id) = layout.focus().map(|win| *win.id()) {
-                    layout.remove_window(&id, Transaction::new());
-                }
-            }
-            "open_window" => {
-                layout.add_window(
-                    TestWindow::new(TestWindowParams::new(next_id)),
-                    AddWindowTarget::Auto,
-                    None,
-                    None,
-                    false,
-                    false,
-                    ActivateWindow::default(),
-                );
-                next_id += 1;
-            }
-            _ => panic!("unsupported op in replay: {op}"),
-        }
-    }
-
-    let workspace = layout.active_workspace().expect("active workspace");
-    let focus_id = layout.focus().map(|w| *w.id());
-    assert!(workspace.floating_is_active());
-    if let Some(id) = focus_id {
-        assert!(!workspace.floating().selected_is_container(Some(&id)));
-        assert!(!workspace.floating().wrapper_selected_for_window(&id));
-    }
-
-    layout.focus_parent();
-
-    let workspace = layout.active_workspace().expect("active workspace");
-    assert!(
-        workspace.floating_is_active(),
-        "focus_parent on this redundant single-child floating wrapper should keep floating mode (sway parity)",
-    );
-    let focus_id = layout.focus().map(|w| *w.id()).expect("focused window");
-    assert!(!workspace.floating().selected_is_container(Some(&focus_id)));
-    assert!(!workspace.floating().wrapper_selected_for_window(&focus_id));
-
-    layout.add_window(
-        TestWindow::new(TestWindowParams::new(next_id)),
-        AddWindowTarget::Auto,
-        None,
-        None,
-        false,
-        false,
-        ActivateWindow::Yes,
-    );
-
-    let workspace_after_open = layout.active_workspace().expect("active workspace");
-    assert!(
-        workspace_after_open.floating_is_active(),
-        "open_window after focus_parent in this scenario should keep floating mode (sway parity)",
-    );
-    let focus_id_after_open = layout
-        .focus()
-        .map(|w| *w.id())
-        .expect("focused window after open");
-    assert_eq!(
-        focus_id_after_open, focus_id,
-        "open_window should not steal focus from active floating window in this scenario"
-    );
-}
-#[test]
 fn i3_167_workspace_layout_tabbed_groups_second_open() {
     let mut layout = Layout::default();
     check_ops_on_layout(&mut layout, [Op::AddOutput(1)]);
@@ -501,464 +214,6 @@ fn i3_167_empty_workspace_layout_can_switch_back_to_splitv() {
     assert!(
         !workspace.tiling().contains_layout(ContainerLayout::Tabbed),
         "after resetting empty workspace layout to splitv, new opens should no longer land in tabbed:\n{tree}",
-    );
-}
-#[test]
-fn parity_seed2_toggle_fullscreen_keeps_tiling_container_selection() {
-    let mut layout = check_ops([
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(2),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(3),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(4),
-        },
-    ]);
-
-    check_ops_on_layout(
-        &mut layout,
-        [
-            Op::FocusColumnRight,
-            Op::FocusColumnRight,
-            Op::FocusColumnRight,
-            Op::SetLayoutTabbed,
-            Op::FocusWindowDown,
-            Op::SetLayoutSplitV,
-            Op::SplitVertical,
-            Op::AddWindow {
-                params: TestWindowParams::new(5),
-            },
-            Op::SplitHorizontal,
-            Op::AddWindow {
-                params: TestWindowParams::new(6),
-            },
-            Op::FocusColumnLeft,
-            Op::CloseFocused,
-            Op::FocusWindowDown,
-            Op::FocusParent,
-            Op::AddWindow {
-                params: TestWindowParams::new(7),
-            },
-            Op::FocusParent,
-            Op::ToggleWindowFloating { id: None },
-            Op::SetLayoutStacked,
-            Op::SwitchFocusFloatingTiling,
-            Op::FocusChild,
-            Op::ToggleWindowFloating { id: None },
-            Op::SetLayoutSplitH,
-            Op::FocusColumnLeft,
-            Op::FocusColumnLeft,
-            Op::SetLayoutTabbed,
-            Op::FocusChild,
-            Op::ToggleSplitLayout,
-            Op::SetLayoutStacked,
-            Op::FocusParent,
-            Op::SwitchFocusFloatingTiling,
-            Op::FocusWindowDown,
-        ],
-    );
-
-    {
-        let workspace = layout.active_workspace().expect("active workspace");
-        assert!(
-            workspace.tiling().selected_is_container(),
-            "replay precondition: focus-parent selection must be active before toggle_fullscreen",
-        );
-    }
-
-    check_ops_on_layout(&mut layout, [Op::ToggleFullscreenFocused]);
-
-    let workspace = layout.active_workspace().expect("active workspace");
-    assert!(
-        workspace.tiling().selected_is_container(),
-        "toggle_fullscreen should not clear the active tiling container selection in this sway parity path",
-    );
-}
-#[test]
-fn parity_seed2_step42_toggle_floating_restores_workspace_subtree_to_tiling() {
-    let mut layout = check_ops([
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(2),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(3),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(4),
-        },
-    ]);
-
-    check_ops_on_layout(
-        &mut layout,
-        [
-            Op::FocusColumnRight,
-            Op::FocusColumnRight,
-            Op::FocusColumnRight,
-            Op::SetLayoutTabbed,
-            Op::FocusWindowDown,
-            Op::SetLayoutSplitV,
-            Op::SplitVertical,
-            Op::AddWindow {
-                params: TestWindowParams::new(5),
-            },
-            Op::SplitHorizontal,
-            Op::AddWindow {
-                params: TestWindowParams::new(6),
-            },
-            Op::FocusColumnLeft,
-            Op::CloseFocused,
-            Op::FocusWindowDown,
-            Op::FocusParent,
-            Op::AddWindow {
-                params: TestWindowParams::new(7),
-            },
-            Op::FocusParent,
-            Op::ToggleWindowFloating { id: None },
-            Op::SetLayoutStacked,
-            Op::SwitchFocusFloatingTiling,
-            Op::FocusChild,
-            Op::ToggleWindowFloating { id: None },
-            Op::SetLayoutSplitH,
-            Op::FocusColumnLeft,
-            Op::FocusColumnLeft,
-            Op::SetLayoutTabbed,
-            Op::FocusChild,
-            Op::ToggleSplitLayout,
-            Op::SetLayoutStacked,
-            Op::FocusParent,
-            Op::SwitchFocusFloatingTiling,
-            Op::FocusWindowDown,
-            Op::ToggleFullscreenFocused,
-            Op::FocusWindowDown,
-            Op::SplitVertical,
-            Op::SplitVertical,
-            Op::FocusColumnLeft,
-            Op::FocusWindowDown,
-            Op::ToggleSplitLayout,
-            Op::FocusWindowDown,
-            Op::FocusWindowUp,
-            Op::ToggleWindowFloating { id: None },
-            Op::ToggleWindowFloating { id: None },
-        ],
-    );
-
-    let workspace = layout.active_workspace().expect("active workspace");
-    assert!(
-        !workspace.floating_is_active(),
-        "step 42 second toggle_floating should restore focus mode to tiling (sway parity)",
-    );
-    assert_eq!(
-        workspace.floating().tiles().count(),
-        0,
-        "step 42 second toggle_floating should empty floating workspace subtree",
-    );
-    assert_eq!(
-        workspace.tiling().tiles().count(),
-        6,
-        "step 42 second toggle_floating should restore all windows to tiling",
-    );
-}
-#[test]
-fn parity_seed2_step42_unfloat_from_floating_workspace_context_preserves_workspace_context() {
-    let mut layout = check_ops([
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(2),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(3),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(4),
-        },
-    ]);
-
-    check_ops_on_layout(
-        &mut layout,
-        [
-            Op::FocusColumnRight,
-            Op::FocusColumnRight,
-            Op::FocusColumnRight,
-            Op::SetLayoutTabbed,
-            Op::FocusWindowDown,
-            Op::SetLayoutSplitV,
-            Op::SplitVertical,
-            Op::AddWindow {
-                params: TestWindowParams::new(5),
-            },
-            Op::SplitHorizontal,
-            Op::AddWindow {
-                params: TestWindowParams::new(6),
-            },
-            Op::FocusColumnLeft,
-            Op::CloseFocused,
-            Op::FocusWindowDown,
-            Op::FocusParent,
-            Op::AddWindow {
-                params: TestWindowParams::new(7),
-            },
-            Op::FocusParent,
-            Op::ToggleWindowFloating { id: None },
-            Op::SetLayoutStacked,
-            Op::SwitchFocusFloatingTiling,
-            Op::FocusChild,
-            Op::ToggleWindowFloating { id: None },
-            Op::SetLayoutSplitH,
-            Op::FocusColumnLeft,
-            Op::FocusColumnLeft,
-            Op::SetLayoutTabbed,
-            Op::FocusChild,
-            Op::ToggleSplitLayout,
-            Op::SetLayoutStacked,
-            Op::FocusParent,
-            Op::SwitchFocusFloatingTiling,
-            Op::FocusWindowDown,
-            Op::ToggleFullscreenFocused,
-            Op::FocusWindowDown,
-            Op::SplitVertical,
-            Op::SplitVertical,
-            Op::FocusColumnLeft,
-            Op::FocusWindowDown,
-            Op::ToggleSplitLayout,
-            Op::FocusWindowDown,
-            Op::FocusWindowUp,
-            Op::ToggleWindowFloating { id: None },
-            Op::ToggleWindowFloating { id: None },
-        ],
-    );
-
-    let workspace = layout.active_workspace().expect("active workspace");
-    assert_eq!(
-        workspace.debug_command_context(),
-        "workspace",
-        "restoring from floating workspace context should keep workspace command context like sway",
-    );
-}
-#[test]
-fn parity_seed2_step43_layout_tabbed_wraps_the_restored_workspace_subtree() {
-    let mut layout = check_ops([
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(2),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(3),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(4),
-        },
-    ]);
-
-    check_ops_on_layout(
-        &mut layout,
-        [
-            Op::FocusColumnRight,
-            Op::FocusColumnRight,
-            Op::FocusColumnRight,
-            Op::SetLayoutTabbed,
-            Op::FocusWindowDown,
-            Op::SetLayoutSplitV,
-            Op::SplitVertical,
-            Op::AddWindow {
-                params: TestWindowParams::new(5),
-            },
-            Op::SplitHorizontal,
-            Op::AddWindow {
-                params: TestWindowParams::new(6),
-            },
-            Op::FocusColumnLeft,
-            Op::CloseFocused,
-            Op::FocusWindowDown,
-            Op::FocusParent,
-            Op::AddWindow {
-                params: TestWindowParams::new(7),
-            },
-            Op::FocusParent,
-            Op::ToggleWindowFloating { id: None },
-            Op::SetLayoutStacked,
-            Op::SwitchFocusFloatingTiling,
-            Op::FocusChild,
-            Op::ToggleWindowFloating { id: None },
-            Op::SetLayoutSplitH,
-            Op::FocusColumnLeft,
-            Op::FocusColumnLeft,
-            Op::SetLayoutTabbed,
-            Op::FocusChild,
-            Op::ToggleSplitLayout,
-            Op::SetLayoutStacked,
-            Op::FocusParent,
-            Op::SwitchFocusFloatingTiling,
-            Op::FocusWindowDown,
-            Op::ToggleFullscreenFocused,
-            Op::FocusWindowDown,
-            Op::SplitVertical,
-            Op::SplitVertical,
-            Op::FocusColumnLeft,
-            Op::FocusWindowDown,
-            Op::ToggleSplitLayout,
-            Op::FocusWindowDown,
-            Op::FocusWindowUp,
-            Op::ToggleWindowFloating { id: None },
-            Op::ToggleWindowFloating { id: None },
-        ],
-    );
-
-    {
-        let workspace = layout.active_workspace().expect("active workspace");
-        assert_eq!(
-            workspace.debug_command_context(),
-            "workspace",
-            "step 42 should leave layout commands targeting the workspace like sway",
-        );
-    }
-
-    layout.set_layout_mode(ContainerLayout::Tabbed);
-
-    let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree().replace(" *", "");
-    // Unverified against sway: fuzz seed replay, kept as a regression pin until the
-    // recorder can settle it. What it pins is that a workspace-context layout command
-    // reaches the restored tiling subtree rather than being swallowed.
-    assert!(
-        tree.starts_with("Tabbed\n  SplitV\n"),
-        "workspace-context layout_tabbed should wrap the restored tiling subtree:\n{tree}"
-    );
-    // By identity, not by path: which path a leaf sits at is representation, and this
-    // seed's tree shape is exactly what the parity work keeps revising.
-    assert_eq!(
-        layout.focus().map(|win| *win.id()),
-        Some(7),
-        "the layout command must not move focus off the leaf it was issued from",
-    );
-}
-#[test]
-fn parity_seed2_step50_open_window_targets_tiling_from_floating_workspace_context_like_sway() {
-    let mut layout = check_ops([
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(2),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(3),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(4),
-        },
-    ]);
-
-    check_ops_on_layout(
-        &mut layout,
-        [
-            Op::FocusColumnRight,
-            Op::FocusColumnRight,
-            Op::FocusColumnRight,
-            Op::SetLayoutTabbed,
-            Op::FocusWindowDown,
-            Op::SetLayoutSplitV,
-            Op::SplitVertical,
-            Op::AddWindow {
-                params: TestWindowParams::new(5),
-            },
-            Op::SplitHorizontal,
-            Op::AddWindow {
-                params: TestWindowParams::new(6),
-            },
-            Op::FocusColumnLeft,
-            Op::CloseFocused,
-            Op::FocusWindowDown,
-            Op::FocusParent,
-            Op::AddWindow {
-                params: TestWindowParams::new(7),
-            },
-            Op::FocusParent,
-            Op::ToggleWindowFloating { id: None },
-            Op::SetLayoutStacked,
-            Op::SwitchFocusFloatingTiling,
-            Op::FocusChild,
-            Op::ToggleWindowFloating { id: None },
-            Op::SetLayoutSplitH,
-            Op::FocusColumnLeft,
-            Op::FocusColumnLeft,
-            Op::SetLayoutTabbed,
-            Op::FocusChild,
-            Op::ToggleSplitLayout,
-            Op::SetLayoutStacked,
-            Op::FocusParent,
-            Op::SwitchFocusFloatingTiling,
-            Op::FocusWindowDown,
-            Op::ToggleFullscreenFocused,
-            Op::FocusWindowDown,
-            Op::SplitVertical,
-            Op::SplitVertical,
-            Op::FocusColumnLeft,
-            Op::FocusWindowDown,
-            Op::ToggleSplitLayout,
-            Op::FocusWindowDown,
-            Op::FocusWindowUp,
-            Op::ToggleWindowFloating { id: None },
-            Op::ToggleWindowFloating { id: None },
-            Op::SetLayoutTabbed,
-            Op::ToggleWindowFloating { id: None },
-            Op::ToggleFullscreenFocused,
-            Op::FocusWindowDown,
-            Op::FocusChild,
-            Op::FocusParent,
-            Op::SwitchFocusFloatingTiling,
-            Op::SetLayoutTabbed,
-        ],
-    );
-
-    {
-        let workspace = layout.active_workspace().expect("active workspace");
-        assert!(
-            workspace.floating_is_active(),
-            "precondition: step 49 should still have floating active",
-        );
-        assert_eq!(workspace.tiling().tiles().count(), 0);
-        assert_eq!(workspace.floating().tiles().count(), 6);
-        assert_eq!(
-            workspace.debug_command_context(),
-            "floating",
-            "precondition: step 49 should target a floating container path, not workspace",
-        );
-    }
-
-    check_ops_on_layout(
-        &mut layout,
-        [Op::AddWindow {
-            params: TestWindowParams::new(8),
-        }],
-    );
-
-    let workspace = layout.active_workspace().expect("active workspace");
-    assert_eq!(
-        workspace.tiling().tiles().count(),
-        1,
-        "open_window from floating workspace context should create tiling like sway",
-    );
-    assert_eq!(
-        workspace.floating().tiles().count(),
-        6,
-        "open_window from floating workspace context should not join floating subtree",
     );
 }
 #[test]
@@ -1250,10 +505,11 @@ fn i3_122_split_inside_stacked_creates_nested_split() {
     assert_snapshot!(
         tree.as_str(),
         @"
-    Stacked
-      SplitH
-        Window 1
-        Window 2 *
+    SplitH
+      Stacked
+        SplitH
+          Window 1
+          Window 2 *
     "
     );
 }
@@ -2965,8 +2221,9 @@ fn i3_550_tabbed_then_stacked_on_single_leaf_keeps_single_wrapper() {
     assert_snapshot!(
         tree.as_str(),
         @"
-    Stacked
-      Window 1 *
+    SplitH
+      Stacked
+        Window 1 *
     "
     );
 }
@@ -2986,14 +2243,15 @@ fn i3_550_split_inside_tabbed_keeps_single_nested_split_wrapper() {
     assert_snapshot!(
         tree.as_str(),
         @"
-    Tabbed
-      SplitV
-        Window 1 *
+    SplitH
+      Tabbed
+        SplitV
+          Window 1 *
     "
     );
 }
 #[test]
-fn i3_550_toggle_split_inside_tabbed_does_not_create_redundant_wrappers() {
+fn i3_550_split_inside_tabbed_nests_a_level_each_time_like_sway() {
     let layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow {
@@ -3010,9 +2268,11 @@ fn i3_550_toggle_split_inside_tabbed_does_not_create_redundant_wrappers() {
     assert_snapshot!(
         tree.as_str(),
         @"
-    Tabbed
-      SplitV
-        Window 1 *
+    SplitH
+      Tabbed
+        Tabbed
+          SplitV
+            Window 1 *
     "
     );
 }
@@ -3036,10 +2296,11 @@ fn i3_550_tabbed_with_two_nodes_inside_other_tabbed_stays_two_level() {
     assert_snapshot!(
         tree.as_str(),
         @"
-    Tabbed
+    SplitH
       Tabbed
-        Window 1
-        Window 2 *
+        Tabbed
+          Window 1
+          Window 2 *
     "
     );
 }
@@ -3063,13 +2324,14 @@ fn i3_550_repeat_tabbed_layout_does_not_create_redundant_wrappers() {
     assert_snapshot!(
         tree.as_str(),
         @"
-    Tabbed
-      Window 1 *
+    SplitH
+      Tabbed
+        Window 1 *
     "
     );
 }
 #[test]
-fn i3_550_split_inside_tabbed_then_back_to_tabbed_flattens_split_wrapper() {
+fn i3_550_layout_tabbed_on_a_split_wrapper_retypes_it_like_sway() {
     // Mirrors i3_test_cases/t/550-split-redundant-containers.t
     // ("split v inside tabbed and back to just tabbed").
     let layout = check_ops([
@@ -3087,8 +2349,10 @@ fn i3_550_split_inside_tabbed_then_back_to_tabbed_flattens_split_wrapper() {
     assert_snapshot!(
         tree.as_str(),
         @"
-    Tabbed
-      Window 1 *
+    SplitH
+      Tabbed
+        Tabbed
+          Window 1 *
     "
     );
 }

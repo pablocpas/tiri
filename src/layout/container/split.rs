@@ -10,18 +10,6 @@ use super::RootPolicy;
 use super::TreeCommandTarget;
 
 impl<W: LayoutElement> ContainerTree<W> {
-    /// Apply a layout command to the selected container command target.
-    ///
-    /// A selected top-level tiling container resolves through the implicit
-    /// workspace parent, so the root is wrapped and the previous selection is
-    /// preserved as command context.
-    pub(in crate::layout) fn set_layout_for_selected_container(&mut self, layout: Layout) -> bool {
-        let Some(selected_key) = self.selected_container_key() else {
-            return false;
-        };
-        self.set_layout_for_container_target(selected_key, layout, RootPolicy::ImplicitWorkspace)
-    }
-
     pub(super) fn set_layout_for_container_target(
         &mut self,
         container_key: NodeKey,
@@ -91,7 +79,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     return false;
                 }
                 self.focus_node_key(key);
-                self.set_focused_layout(layout)
+                self.set_focused_layout_with_policy(layout, root_policy)
             }
         }
     }
@@ -207,13 +195,23 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.ensure_selected_root_has_parent_for_sibling_insert()
     }
 
-    /// Move the workspace's children under a wrapper that keeps the current layout, and
-    /// give the workspace `layout`.
+    /// Move the workspace's children under a new container, giving the wrapper and the
+    /// workspace a layout each.
     ///
-    /// This is what `split` does when the workspace itself is selected. Measured against
-    /// sway 1.11: the container is built unconditionally — one child or several, orientation
-    /// changed or not. It is also how a subtree is grouped before being floated as a whole.
-    pub(in crate::layout) fn wrap_workspace_children(&mut self, layout: Layout) -> bool {
+    /// `split` and `layout` on a workspace are the same surgery with the two layouts
+    /// swapped, which is the whole of their difference. Measured against sway 1.11:
+    ///
+    /// - `split X` keeps the old layout on the wrapper and puts X on the workspace, and
+    ///   builds the container unconditionally — one child or several, orientation changed
+    ///   or not;
+    /// - `layout X` puts X on the wrapper and leaves the workspace as it was.
+    ///
+    /// It is also how a subtree is grouped before being floated as a whole.
+    pub(in crate::layout) fn wrap_workspace_children(
+        &mut self,
+        wrapper_layout: Layout,
+        root_layout: Layout,
+    ) -> bool {
         let Some(root_key) = self.root else {
             return false;
         };
@@ -229,7 +227,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         };
 
-        let (old_layout, old_children, old_focus_stack, old_child_percents, root_geometry) = {
+        let (old_children, old_focus_stack, old_child_percents, root_geometry) = {
             let Some(root) = self.get_container_mut(root_key) else {
                 return false;
             };
@@ -238,7 +236,6 @@ impl<W: LayoutElement> ContainerTree<W> {
             }
 
             (
-                root.layout,
                 std::mem::take(&mut root.children),
                 std::mem::take(&mut root.focus_stack),
                 std::mem::take(&mut root.child_percents),
@@ -246,7 +243,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             )
         };
 
-        let mut wrapper = ContainerData::new(old_layout);
+        let mut wrapper = ContainerData::new(wrapper_layout);
         wrapper.children = old_children;
         wrapper.focus_stack = old_focus_stack;
         wrapper.child_percents = old_child_percents;
@@ -263,7 +260,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let Some(root) = self.get_container_mut(root_key) else {
             return false;
         };
-        root.layout = layout;
+        root.layout = root_layout;
         root.children.push(wrapper_key);
         root.focus_stack.push(wrapper_key);
         root.child_percents.push(1.0);
@@ -323,55 +320,6 @@ impl<W: LayoutElement> ContainerTree<W> {
             (parent, child),
             (Layout::SplitH, Layout::SplitH) | (Layout::SplitV, Layout::SplitV)
         )
-    }
-
-    /// Collapse a one-child command target whose parent is also a one-child
-    /// container, then return the parent that now owns the promoted child.
-    pub(super) fn collapse_single_child_command_target_once(
-        &mut self,
-        container_key: NodeKey,
-    ) -> Option<NodeKey> {
-        let child_key = self.get_container(container_key).and_then(|container| {
-            (container.child_count() == 1)
-                .then(|| container.children().first().copied())
-                .flatten()
-        })?;
-
-        let parent_key = self.parent_of(container_key)?;
-        let parent_child_count = self
-            .get_container(parent_key)
-            .map(|container| container.child_count())?;
-        if parent_child_count != 1 {
-            return None;
-        }
-
-        let parent_idx = self.child_index(parent_key, container_key)?;
-        if let Some(parent) = self.get_container_mut(parent_key) {
-            parent.children[parent_idx] = child_key;
-            if let Some(pos) = parent
-                .focus_stack
-                .iter()
-                .position(|key| *key == container_key)
-            {
-                parent.focus_stack[pos] = child_key;
-            } else if !parent.focus_stack.contains(&child_key) {
-                parent.focus_stack.push(child_key);
-            }
-            parent.ensure_focus_stack();
-        }
-
-        self.set_parent(child_key, Some(parent_key));
-        self.nodes.remove(container_key);
-        self.parents.remove(container_key);
-
-        if self.selected_key == Some(container_key) {
-            self.selected_key = Some(child_key);
-        }
-        if self.focused_key == Some(container_key) {
-            self.focused_key = self.leaf_under_key(child_key).or(Some(child_key));
-        }
-
-        Some(parent_key)
     }
 
     pub(super) fn split_selected_container(
@@ -610,7 +558,11 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Change the layout of the container holding the focused leaf.
-    pub(in crate::layout) fn set_focused_layout(&mut self, layout: Layout) -> bool {
+    pub(in crate::layout) fn set_focused_layout_with_policy(
+        &mut self,
+        layout: Layout,
+        root_policy: RootPolicy,
+    ) -> bool {
         if self.root.is_none() {
             self.pending_layout = Some(layout);
             self.pending_layout_wrap_on_split = false;
@@ -621,49 +573,32 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         };
 
-        // Root is a leaf: wrap it so there is a container to carry the layout.
-        let Some(parent_key) = self.parent_of(focused_key) else {
+        // Measured against sway 1.11: a window whose parent is the workspace cannot hand
+        // the workspace a layout — a container with the new layout takes the workspace's
+        // children instead, and the workspace keeps its own orientation. This holds for
+        // splits and for tabbed/stacked alike, with one child or several. A real container
+        // parent, floating roots included, just takes the layout.
+        //
+        // Restating the layout the workspace already has is the one exception, and it does
+        // nothing at all: there is no orientation to express that is not already expressed.
+        let parent_key = self.parent_of(focused_key);
+        if root_policy == RootPolicy::ImplicitWorkspace
+            && parent_key.is_none_or(|key| Some(key) == self.root)
+        {
+            let root_layout = self.root_container_layout();
+            if root_layout == layout {
+                return false;
+            }
+            return self.wrap_workspace_children(layout, root_layout);
+        }
+
+        // The root is a leaf under a policy that wants a material container: wrap it so
+        // there is a container to carry the layout.
+        let Some(parent_key) = parent_key else {
             return self.ensure_root_container_with_layout(layout);
         };
 
-        // Tabbed and stacked address the outermost redundant single-child wrapper rather
-        // than the immediate parent, so the tab bar lands where the user expects it.
-        let target_key = if matches!(layout, Layout::Tabbed | Layout::Stacked) {
-            self.collapse_single_child_command_target_once(parent_key)
-                .unwrap_or(parent_key)
-        } else {
-            parent_key
-        };
-
-        let Some(target) = self.get_container(target_key) else {
-            return false;
-        };
-        let restates_explicit_lone_root = target.layout() == layout
-            && target.child_count() == 1
-            && target.preserve_on_single()
-            && Some(target_key) == self.root
-            && matches!(layout, Layout::SplitH | Layout::SplitV);
-
-        // Measured against sway 1.11: `layout X` on a window whose parent is the workspace
-        // builds a container with layout X holding the workspace's children. This covers
-        // only the splitv-restating corner of that rule; the general case is listed as a
-        // known divergence in docs/design/parity.md. There is no splith/splitv asymmetry —
-        // an earlier comment here claimed one, and sway does not have it.
-        if restates_explicit_lone_root && layout == Layout::SplitV {
-            let Some(child_idx) = self.child_index(target_key, focused_key) else {
-                return false;
-            };
-            let Some(nested_key) = self.wrap_child_in_container(target_key, child_idx, layout)
-            else {
-                return false;
-            };
-            if let Some(nested) = self.get_container_mut(nested_key) {
-                nested.mark_preserve_on_single();
-            }
-
-            self.focus_node_key(focused_key);
-            return true;
-        }
+        let target_key = parent_key;
 
         if let Some(container) = self.get_container_mut(target_key) {
             container.set_layout_explicit(layout);
@@ -698,26 +633,21 @@ impl<W: LayoutElement> ContainerTree<W> {
             return true;
         }
 
-        let Some(target_key) = self.layout_container_key_for_target(target, root_policy) else {
+        let Some((target_key, current)) = self.toggle_source(target, root_policy) else {
             return false;
-        };
-
-        let current = match self.get_container(target_key) {
-            Some(container) => container.layout(),
-            None => return false,
         };
 
         let next = match current {
             Layout::SplitH => Layout::SplitV,
             Layout::SplitV => Layout::SplitH,
-            Layout::Tabbed | Layout::Stacked => self
-                .get_container(target_key)
+            Layout::Tabbed | Layout::Stacked => target_key
+                .and_then(|key| self.get_container(key))
                 .and_then(|container| container.prev_split_layout())
-                .unwrap_or(Layout::SplitH),
+                .unwrap_or_else(|| self.workspace_prev_split_layout()),
         };
 
         if matches!(current, Layout::Tabbed | Layout::Stacked) {
-            if let Some(container) = self.get_container_mut(target_key) {
+            if let Some(container) = target_key.and_then(|key| self.get_container_mut(key)) {
                 container.set_layout_explicit(next);
                 return true;
             }
@@ -745,22 +675,36 @@ impl<W: LayoutElement> ContainerTree<W> {
             return true;
         }
 
-        let Some(target_key) = self.layout_container_key_for_target(target, root_policy) else {
+        let Some((target_key, current)) = self.toggle_source(target, root_policy) else {
             return false;
         };
 
-        let current = match self.get_container(target_key) {
-            Some(container) => container.layout(),
-            None => return false,
-        };
-
         let next = current.next_in_cycle();
-
-        if let Some(container) = self.get_container_mut(target_key) {
+        if let Some(container) = target_key.and_then(|key| self.get_container_mut(key)) {
             container.set_layout_explicit(next);
-            true
-        } else {
-            false
+            return true;
+        }
+
+        self.set_layout_for_target(next, target, root_policy)
+    }
+
+    /// The container a layout toggle reads its current layout from, and that layout.
+    ///
+    /// A leaf sitting directly on the workspace has no container between it and the
+    /// workspace, so the toggle starts from the workspace's own orientation — and lands
+    /// through `set_layout_for_target`, which knows to build the container sway builds.
+    fn toggle_source(
+        &self,
+        target: TreeCommandTarget,
+        root_policy: RootPolicy,
+    ) -> Option<(Option<NodeKey>, Layout)> {
+        let key = self.layout_container_key_for_target(target, root_policy);
+        match key.and_then(|key| self.get_container(key)) {
+            Some(container) => Some((key, container.layout())),
+            None if root_policy == RootPolicy::ImplicitWorkspace => {
+                Some((None, self.root_container_layout()))
+            }
+            None => None,
         }
     }
 

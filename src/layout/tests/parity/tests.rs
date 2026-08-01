@@ -159,6 +159,9 @@ workspace tabbed focus=2
 
 /// Under a tabbed container only the selected child is visible, and moving focus moves which
 /// one that is. Tab bar height is erased, so the two children share a rectangle.
+///
+/// The tabbed container sits *under* the workspace, which keeps splith: a layout command
+/// issued from a window never hands the workspace a layout.
 #[test]
 fn focus_moves_which_tab_is_on_top() {
     assert_replay(
@@ -179,14 +182,16 @@ workspace splith focus=2
   window 2 0.500,0.000 0.500x1.000
 
 $ layout tabbed
-workspace tabbed focus=2
-  window 1 0.000,0.000 1.000x1.000 hidden
-  window 2 0.000,0.000 1.000x1.000
+workspace splith focus=2
+  tabbed 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000 hidden
+    window 2 0.000,0.000 1.000x1.000
 
 $ focus left
-workspace tabbed focus=1
-  window 1 0.000,0.000 1.000x1.000
-  window 2 0.000,0.000 1.000x1.000 hidden
+workspace splith focus=1
+  tabbed 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+    window 2 0.000,0.000 1.000x1.000 hidden
 ",
     );
 }
@@ -245,6 +250,128 @@ $ floating toggle
 workspace splith focus=2
   window 1 0.000,0.000 0.500x1.000
   window 2 0.250,0.125 0.500x0.750 floating
+",
+    );
+}
+
+/// Measured: `layout X` on a window whose parent is the workspace cannot hand the layout to
+/// the workspace. A container takes the workspace's children instead, and the workspace
+/// keeps its own orientation — this is what makes `layout splitv` and `split v` different
+/// commands here.
+#[test]
+fn layout_on_a_workspace_child_builds_a_container_instead() {
+    assert_replay(
+        "\
+open
+layout stacking
+",
+        "\
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ layout stacking
+workspace splith focus=1
+  stacked 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+",
+    );
+}
+
+/// Measured: repeating a layout never nests. The second command targets the container the
+/// first one built, which already has that layout.
+#[test]
+fn repeating_a_layout_command_changes_nothing() {
+    let once = replay("open\nlayout tabbed\n").render();
+    let thrice = replay("open\nlayout tabbed\nlayout tabbed\nlayout tabbed\n").render();
+
+    let last = |text: &str| text.trim_end().rsplit("$ ").next().unwrap().to_owned();
+    assert_eq!(last(&once), last(&thrice));
+}
+
+/// Measured: each `layout`/`split` pair inside a tabbed container adds a level, and sway
+/// adds them too. tiri used to collapse these into one wrapper.
+#[test]
+fn splitting_inside_a_tabbed_container_nests_a_level_each_time() {
+    assert_replay(
+        "\
+open
+layout tabbed
+split v
+layout tabbed
+",
+        "\
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ layout tabbed
+workspace splith focus=1
+  tabbed 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+
+$ split v
+workspace splith focus=1
+  tabbed 0.000,0.000 1.000x1.000
+    splitv 0.000,0.000 1.000x1.000
+      window 1 0.000,0.000 1.000x1.000
+
+$ layout tabbed
+workspace splith focus=1
+  tabbed 0.000,0.000 1.000x1.000
+    tabbed 0.000,0.000 1.000x1.000
+      window 1 0.000,0.000 1.000x1.000
+",
+    );
+}
+
+/// Measured: `split X` with the workspace selected always builds a container holding its
+/// children, keeping the old orientation, while the workspace takes the new one. Existing
+/// windows do not reflow — that is the observable difference from `layout X`.
+///
+/// `focus parent` reports no focused window because the focus is the workspace itself, which
+/// is exactly what sway's tree shows.
+#[test]
+fn split_on_the_workspace_wraps_its_children() {
+    assert_replay(
+        "\
+split v
+open
+open
+focus parent
+split h
+open
+",
+        "\
+$ split v
+workspace splitv focus=none
+
+$ open
+workspace splitv focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splitv focus=2
+  window 1 0.000,0.000 1.000x0.500
+  window 2 0.000,0.500 1.000x0.500
+
+$ focus parent
+workspace splitv focus=none
+  window 1 0.000,0.000 1.000x0.500
+  window 2 0.000,0.500 1.000x0.500
+
+$ split h
+workspace splith focus=none
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.500
+    window 2 0.000,0.500 1.000x0.500
+
+$ open
+workspace splith focus=3
+  splitv 0.000,0.000 0.500x1.000
+    window 1 0.000,0.000 0.500x0.500
+    window 2 0.000,0.500 0.500x0.500
+  window 3 0.500,0.000 0.500x1.000
 ",
     );
 }

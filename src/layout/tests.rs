@@ -2129,11 +2129,15 @@ fn single_leaf_stacked_layout_wraps_immediately() {
 
     layout.set_layout_mode(ContainerLayout::Stacked);
 
+    // Measured against sway 1.11: the window gets a stacked container of its own and the
+    // workspace keeps its orientation. The workspace is not what becomes stacked — only a
+    // command aimed at the workspace itself does that.
     let workspace = layout.active_workspace().expect("active workspace");
     let tree = workspace.tiling().debug_tree().replace(" *", "");
-    assert!(
-        tree.starts_with("Stacked\n  Window 1"),
-        "layout_stacked on a single tiling leaf should wrap immediately:\n{tree}",
+    assert_eq!(
+        tree.trim_end(),
+        "SplitH\n  Stacked\n    Window 1",
+        "layout stacking on a single tiling leaf should wrap it",
     );
 }
 
@@ -2150,21 +2154,19 @@ fn repeated_layout_split_on_nested_single_child_split_is_noop() {
         ],
     );
 
-    // Build sway-like base shape: SplitV(root) -> Window via pending layout + split command.
     layout.set_layout_mode(ContainerLayout::SplitV);
     layout.split_horizontal();
-
-    // First explicit layout_splitv on the focused leaf under preserved single-child root wraps once.
     layout.set_layout_mode(ContainerLayout::SplitV);
-    // Repeating it should be a no-op (must not keep nesting splitv wrappers).
     layout.set_layout_mode(ContainerLayout::SplitV);
 
+    // Measured against sway 1.11: one splitv container under the workspace, no matter how
+    // many times the layout is restated. Repeating a layout never nests.
     let workspace = layout.active_workspace().expect("active workspace");
     let tree = workspace.tiling().debug_tree().replace(" *", "");
-    let splitv_count = tree.match_indices("SplitV").count();
     assert_eq!(
-        splitv_count, 2,
-        "repeated layout_splitv should not keep nesting single-child SplitV wrappers:\n{tree}",
+        tree.trim_end(),
+        "SplitH\n  SplitV\n    Window 1",
+        "repeated layout splitv should not keep nesting single-child wrappers",
     );
 }
 

@@ -1,7 +1,7 @@
 use insta::assert_snapshot;
 use proptest::prelude::*;
 
-use super::super::container::{ContainerTree, Direction, Layout as ContainerLayout};
+use super::super::container::{ContainerTree, Direction, Layout as ContainerLayout, RootPolicy};
 use super::super::tile::Tile;
 use super::*;
 
@@ -158,10 +158,16 @@ fn apply_tree_random_op_inner(
             harness.tree.split_focused(ContainerLayout::SplitV);
         }
         TreeRandomOp::SetTabbed => {
-            harness.tree.set_focused_layout(ContainerLayout::Tabbed);
+            harness.tree.set_focused_layout_with_policy(
+                ContainerLayout::Tabbed,
+                RootPolicy::ImplicitWorkspace,
+            );
         }
         TreeRandomOp::SetStacked => {
-            harness.tree.set_focused_layout(ContainerLayout::Stacked);
+            harness.tree.set_focused_layout_with_policy(
+                ContainerLayout::Stacked,
+                RootPolicy::ImplicitWorkspace,
+            );
         }
         TreeRandomOp::ToggleSplit => {
             harness.tree.toggle_split_layout();
@@ -383,11 +389,12 @@ fn preserve_explicit_same_layout_container_on_cleanup() {
     assert_snapshot!(
         tree.as_str(),
         @"
-    SplitV
+    SplitH
       SplitV
-        Window 1
-        Window 4
-      Window 2 *
+        SplitV
+          Window 1
+          Window 4
+        Window 2 *
     "
     );
 }
@@ -410,7 +417,7 @@ fn cleanup_reuses_last_root_layout_after_tree_becomes_empty() {
     assert_snapshot!(
         tree.as_str(),
         @"
-    Tabbed
+    SplitH
       Window 2 *
     "
     );
@@ -471,7 +478,9 @@ fn keep_stacked_container_on_cleanup_with_split_parent() {
     let mut harness = TreeHarness::new();
     harness.add_window(1);
     harness.add_window(2);
-    assert!(harness.tree.set_focused_layout(ContainerLayout::SplitV));
+    assert!(harness
+        .tree
+        .set_focused_layout_with_policy(ContainerLayout::SplitV, RootPolicy::ImplicitWorkspace));
     assert!(harness.tree.focus_window_by_id(&2));
     harness.tree.split_focused(ContainerLayout::Stacked);
     harness.add_window(3);
@@ -568,10 +577,11 @@ fn move_down_swaps_in_splitv() {
     assert_snapshot!(
         tree.as_str(),
         @"
-    SplitV
-      Window 1
-      Window 3
-      Window 2 *
+    SplitH
+      SplitV
+        Window 1
+        Window 3
+        Window 2 *
     "
     );
 }
@@ -696,11 +706,12 @@ fn move_up_escapes_to_grandparent_on_layout_mismatch() {
     assert_snapshot!(
         tree.as_str(),
         @"
-    SplitV
-      Window 1
-      Window 2 *
-      SplitH
-        Window 3
+    SplitH
+      SplitV
+        Window 1
+        Window 2 *
+        SplitH
+          Window 3
     "
     );
 }
@@ -809,10 +820,11 @@ fn move_left_swaps_in_tabbed_layout() {
     assert_snapshot!(
         tree.as_str(),
         @"
-    Tabbed
-      Window 1
-      Window 3 *
-      Window 2
+    SplitH
+      Tabbed
+        Window 1
+        Window 3 *
+        Window 2
     "
     );
 }
@@ -839,11 +851,12 @@ fn split_inside_tabbed_creates_nested_split() {
     assert_snapshot!(
         tree.as_str(),
         @"
-    Tabbed
-      SplitH
-        Window 1
-        Window 3 *
-      Window 2
+    SplitH
+      Tabbed
+        SplitH
+          Window 1
+          Window 3 *
+        Window 2
     "
     );
 }
@@ -852,7 +865,9 @@ fn direct_tabbed_tiles_use_content_rect_without_tile_tab_offset() {
     let mut harness = TreeHarness::new();
     harness.add_window(1);
     harness.add_window(2);
-    assert!(harness.tree.set_focused_layout(ContainerLayout::Tabbed));
+    assert!(harness
+        .tree
+        .set_focused_layout_with_policy(ContainerLayout::Tabbed, RootPolicy::ImplicitWorkspace));
     harness.tree.layout();
 
     let tiles = harness.tree.all_tiles();
@@ -879,7 +894,9 @@ fn tabbed_container_marks_urgent_tab() {
     urgent.is_urgent = true;
     harness.add_window_with_params(urgent);
     harness.add_window(2);
-    assert!(harness.tree.set_focused_layout(ContainerLayout::Tabbed));
+    assert!(harness
+        .tree
+        .set_focused_layout_with_policy(ContainerLayout::Tabbed, RootPolicy::ImplicitWorkspace));
     harness.tree.layout();
 
     let tab_bar = harness
@@ -902,7 +919,9 @@ fn tabbed_context_propagates_to_nested_split_tiles() {
     let mut harness = TreeHarness::new();
     harness.add_window(1);
     harness.add_window(2);
-    assert!(harness.tree.set_focused_layout(ContainerLayout::Tabbed));
+    assert!(harness
+        .tree
+        .set_focused_layout_with_policy(ContainerLayout::Tabbed, RootPolicy::ImplicitWorkspace));
     assert!(harness.tree.focus_window_by_id(&1));
     assert!(harness.tree.split_focused(ContainerLayout::SplitV));
     harness.add_window(3);
@@ -960,9 +979,10 @@ fn toggle_split_layout_switches_orientation() {
     assert_snapshot!(
         tree.as_str(),
         @"
-    SplitV
-      Window 1
-      Window 2 *
+    SplitH
+      SplitV
+        Window 1
+        Window 2 *
     "
     );
 }
@@ -1016,10 +1036,11 @@ fn move_down_swaps_in_stacked_layout() {
     assert_snapshot!(
         tree.as_str(),
         @"
-    Stacked
-      Window 1
-      Window 3
-      Window 2 *
+    SplitH
+      Stacked
+        Window 1
+        Window 3
+        Window 2 *
     "
     );
 }
@@ -1028,7 +1049,9 @@ fn move_up_escapes_tabbed_layout() {
     let mut harness = TreeHarness::new();
     harness.add_window(1);
     harness.add_window(2);
-    assert!(harness.tree.set_focused_layout(ContainerLayout::SplitV));
+    assert!(harness
+        .tree
+        .set_focused_layout_with_policy(ContainerLayout::SplitV, RootPolicy::ImplicitWorkspace));
     harness.tree.split_focused(ContainerLayout::Tabbed);
     harness.add_window(3);
     assert!(harness.tree.focus_window_by_id(&2));
@@ -1038,11 +1061,12 @@ fn move_up_escapes_tabbed_layout() {
     assert_snapshot!(
         tree.as_str(),
         @"
-    SplitV
-      Window 1
-      Window 2 *
-      Tabbed
-        Window 3
+    SplitH
+      SplitV
+        Window 1
+        Window 2 *
+        Tabbed
+          Window 3
     "
     );
 }
@@ -1113,9 +1137,10 @@ fn move_up_at_edge_is_noop() {
     assert_snapshot!(
         tree.as_str(),
         @"
-    SplitV
+    SplitH
       Window 1 *
-      Window 2
+      SplitV
+        Window 2
     "
     );
 }
@@ -1293,9 +1318,9 @@ fn split_parallel_with_siblings_wraps_focused_leaf_vertical() {
     assert_snapshot!(
         tree.as_str(),
         @"
-    SplitV
-      Window 1
+    SplitH
       SplitV
+        Window 1
         Window 2 *
     "
     );

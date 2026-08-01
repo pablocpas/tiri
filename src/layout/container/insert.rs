@@ -96,13 +96,18 @@ impl<W: LayoutElement> ContainerTree<W> {
             self.focus_node_key(old_root_key);
         }
 
-        self.ensure_selected_root_has_parent_for_sibling_insert();
-
         // Prefer the selected container/leaf target (focus-parent semantics): i3/sway insert
         // new windows as siblings of the selected node. Fall back to the focused leaf.
         let selected_target = self.selected_key.and_then(|selected_key| {
             self.get_node(selected_key)?;
-            let parent_key = self.parent_of(selected_key)?;
+            // The workspace has no parent to be a sibling of, so a window opened with it
+            // selected becomes its child — measured against sway 1.11.
+            let Some(parent_key) = self.parent_of(selected_key) else {
+                return Some((
+                    selected_key,
+                    self.get_container(selected_key)?.child_count(),
+                ));
+            };
             let selected_idx = self.child_index(parent_key, selected_key)?;
             Some((parent_key, selected_idx + 1))
         });

@@ -116,15 +116,6 @@ struct WindowStateContext<'a, W: LayoutElement> {
     view_size: Size<f64, Logical>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WorkspaceLayoutTargetKind {
-    RootLeaf,
-    SyntheticRootContainer,
-    SelectedRootContainer,
-    SelectedContainer,
-    FocusedContainer,
-}
-
 #[derive(Debug, Clone)]
 struct InteractiveResizeState<W: LayoutElement> {
     window: W::Id,
@@ -189,44 +180,21 @@ impl<W: LayoutElement> TilingSpace<W> {
         self.options.layout.tab_bar.clone()
     }
 
-    fn workspace_layout_target_kind(&self) -> WorkspaceLayoutTargetKind {
-        if self.tree.selected_is_container() {
-            if self.tree.selected_container_is_root() {
-                if self.tree.root_is_synthetic_workspace_container() {
-                    return WorkspaceLayoutTargetKind::SyntheticRootContainer;
-                }
-                return WorkspaceLayoutTargetKind::SelectedRootContainer;
-            }
-
-            return WorkspaceLayoutTargetKind::SelectedContainer;
-        }
-
-        if self.tree.focused_leaf_targets_workspace_layout() {
-            if self.tree.focus_path().is_empty() {
-                return WorkspaceLayoutTargetKind::RootLeaf;
-            }
-            return WorkspaceLayoutTargetKind::SyntheticRootContainer;
-        }
-
-        WorkspaceLayoutTargetKind::FocusedContainer
+    /// Whether the workspace itself is what the tree currently has selected.
+    ///
+    /// An empty workspace has nothing else a command could be aimed at; otherwise this is
+    /// what `focus parent` on a top-level node leaves behind. A focused *leaf* never selects
+    /// the workspace, even when its parent is the workspace — measured against sway 1.11,
+    /// which builds a container for such a command instead of retargeting the workspace.
+    pub fn workspace_is_selected(&self) -> bool {
+        self.tree.is_empty()
+            || (self.tree.selected_is_container() && self.tree.selected_container_is_root())
     }
 
+    /// Give the workspace `layout`, without ever building a container for it.
     fn apply_workspace_layout_target(&mut self, layout: Layout) -> bool {
-        if self.tree.workspace_layout() == layout {
-            return false;
-        }
-
-        match self.workspace_layout_target_kind() {
-            WorkspaceLayoutTargetKind::RootLeaf => self.tree.set_focused_layout(layout),
-            WorkspaceLayoutTargetKind::SyntheticRootContainer => {
-                self.tree.set_root_container_layout(layout)
-            }
-            WorkspaceLayoutTargetKind::SelectedRootContainer => {
-                self.tree.set_layout_for_selected_container(layout)
-            }
-            WorkspaceLayoutTargetKind::SelectedContainer
-            | WorkspaceLayoutTargetKind::FocusedContainer => false,
-        }
+        self.set_workspace_layout_hint(layout);
+        self.tree.set_root_container_layout(layout)
     }
 
     fn available_span(&self, total: f64, child_count: usize) -> f64 {
@@ -412,9 +380,10 @@ impl<W: LayoutElement> TilingSpace<W> {
                 0 => return None,
                 1 => self.tree.take_root_child_subtree(0)?,
                 _ => {
+                    let wrapper_layout = self.tree.root_container_layout();
                     if !self
                         .tree
-                        .wrap_workspace_children(self.tree.workspace_layout())
+                        .wrap_workspace_children(wrapper_layout, self.tree.workspace_layout())
                     {
                         return None;
                     }
@@ -1501,30 +1470,13 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     fn set_layout_for_active_selection(&mut self, layout: Layout) -> bool {
-        match self.workspace_layout_target_kind() {
-            WorkspaceLayoutTargetKind::SelectedContainer
-            | WorkspaceLayoutTargetKind::FocusedContainer => {
-                let target = self.tree.command_target(RootPolicy::ImplicitWorkspace);
-                self.tree
-                    .set_layout_for_target(layout, target, RootPolicy::ImplicitWorkspace)
-            }
-            WorkspaceLayoutTargetKind::RootLeaf
-            | WorkspaceLayoutTargetKind::SyntheticRootContainer
-            | WorkspaceLayoutTargetKind::SelectedRootContainer => {
-                self.apply_workspace_layout_target(layout)
-            }
+        if self.workspace_is_selected() {
+            return self.apply_workspace_layout_target(layout);
         }
-    }
 
-    /// Whether layout commands currently target the workspace layout itself rather than a
-    /// container inside the tree.
-    fn targets_workspace_layout(&self) -> bool {
-        matches!(
-            self.workspace_layout_target_kind(),
-            WorkspaceLayoutTargetKind::RootLeaf
-                | WorkspaceLayoutTargetKind::SyntheticRootContainer
-                | WorkspaceLayoutTargetKind::SelectedRootContainer
-        )
+        let target = self.tree.command_target(RootPolicy::ImplicitWorkspace);
+        self.tree
+            .set_layout_for_target(layout, target, RootPolicy::ImplicitWorkspace)
     }
 
     /// If a container is selected (focus-parent semantics), set its layout to
@@ -1546,7 +1498,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     fn toggle_split_for_active_selection(&mut self) -> bool {
-        if self.targets_workspace_layout() {
+        if self.workspace_is_selected() {
             let next = match self.tree.workspace_layout() {
                 Layout::SplitH => Layout::SplitV,
                 Layout::SplitV => Layout::SplitH,
@@ -1569,7 +1521,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     fn toggle_layout_all_for_active_selection(&mut self) -> bool {
-        if self.targets_workspace_layout() {
+        if self.workspace_is_selected() {
             let next = self.tree.workspace_layout().next_in_cycle();
             return self.apply_workspace_layout_target(next);
         }
@@ -1654,7 +1606,10 @@ impl<W: LayoutElement> TilingSpace<W> {
     /// It is the counterpart of [`Self::set_workspace_layout_mode`], which never wraps; the
     /// difference between `split v` and `layout splitv` on a workspace is exactly this.
     fn split_workspace(&mut self, layout: Layout) {
-        self.mutate_tree(|tree| tree.wrap_workspace_children(layout));
+        self.mutate_tree(|tree| {
+            let previous = tree.root_container_layout();
+            tree.wrap_workspace_children(previous, layout)
+        });
         self.set_workspace_layout_hint(layout);
     }
 

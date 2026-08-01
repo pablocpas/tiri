@@ -223,10 +223,14 @@ fn change_layout_to_tabbed_keeps_all_windows_and_moves_focus() {
     f.niri().layout.set_layout_mode(ContainerLayout::Tabbed);
     f.double_roundtrip(id);
 
+    // Measured against sway 1.11: a layout command issued from a window builds a container
+    // holding the workspace's children; the workspace keeps its own orientation.
     let root = layout_root(&mut f);
-    assert_eq!(root.layout, Some(LayoutTreeLayout::Tabbed));
+    assert_eq!(root.layout, Some(LayoutTreeLayout::SplitH));
+    assert_eq!(root.children.len(), 1);
+    assert_eq!(root.children[0].layout, Some(LayoutTreeLayout::Tabbed));
+    assert_eq!(root.children[0].children.len(), 3);
     assert_eq!(leaf_count(&root), 3);
-    assert_eq!(root.children.len(), 3);
     assert_eq!(focused_leaf_count(&root), 1);
 }
 
@@ -240,10 +244,13 @@ fn change_layout_to_stacked_keeps_all_windows_and_moves_focus() {
     f.niri().layout.set_layout_mode(ContainerLayout::Stacked);
     f.double_roundtrip(id);
 
+    // Measured against sway 1.11: see the tabbed test above — same rule.
     let root = layout_root(&mut f);
-    assert_eq!(root.layout, Some(LayoutTreeLayout::Stacked));
+    assert_eq!(root.layout, Some(LayoutTreeLayout::SplitH));
+    assert_eq!(root.children.len(), 1);
+    assert_eq!(root.children[0].layout, Some(LayoutTreeLayout::Stacked));
+    assert_eq!(root.children[0].children.len(), 3);
     assert_eq!(leaf_count(&root), 3);
-    assert_eq!(root.children.len(), 3);
     assert_eq!(focused_leaf_count(&root), 1);
 }
 
@@ -257,17 +264,29 @@ fn toggle_split_layout_twice_restores_root_layout() {
     assert_eq!(initial_root.layout, Some(LayoutTreeLayout::SplitH));
     assert_eq!(initial_root.children.len(), 2);
 
+    // Measured against sway 1.11: the toggle builds a container under the workspace and
+    // then flips that container, so the workspace itself stays splith throughout.
     f.niri().layout.toggle_split_layout();
     f.double_roundtrip(id);
     let toggled_root = layout_root(&mut f);
-    assert_eq!(toggled_root.layout, Some(LayoutTreeLayout::SplitV));
+    assert_eq!(toggled_root.layout, Some(LayoutTreeLayout::SplitH));
+    assert_eq!(toggled_root.children.len(), 1);
+    assert_eq!(
+        toggled_root.children[0].layout,
+        Some(LayoutTreeLayout::SplitV)
+    );
     assert_eq!(leaf_count(&toggled_root), 2);
 
     f.niri().layout.toggle_split_layout();
     f.double_roundtrip(id);
     let restored_root = layout_root(&mut f);
     assert_eq!(restored_root.layout, Some(LayoutTreeLayout::SplitH));
-    assert_eq!(restored_root.children.len(), 2);
+    assert_eq!(restored_root.children.len(), 1);
+    assert_eq!(
+        restored_root.children[0].layout,
+        Some(LayoutTreeLayout::SplitH)
+    );
+    assert_eq!(leaf_count(&restored_root), 2);
     assert_eq!(leaf_count(&restored_root), 2);
 }
 

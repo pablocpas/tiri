@@ -203,9 +203,12 @@ fn top_level_leaf_toggle_split_uses_workspace_layout_state_like_sway() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     let after = workspace.tiling().debug_tree().replace(" *", "");
-    assert!(
-        after.starts_with("SplitV\n  Window 1"),
-        "toggle_split on top-level leaf should wrap using workspace split state:\n{after}",
+    // Measured against sway 1.11: `layout toggle split` on a lone window builds a splitv
+    // container for it while the workspace keeps splith.
+    assert_eq!(
+        after.trim_end(),
+        "SplitH\n  SplitV\n    Window 1",
+        "toggle split on a top-level leaf should wrap it using the workspace split state",
     );
 }
 #[test]
@@ -322,10 +325,11 @@ fn tiling_workspace_context_keeps_root_selection_and_focus_child_returns_to_it()
 }
 
 #[test]
-fn adding_window_while_tiling_workspace_context_keeps_the_elevation() {
-    // Regression lock for the focus-context refactor: opening a window while focus is elevated
-    // to the workspace on the tiling side must not silently drop that elevation. The active
-    // layer stays tiling (was not floating), so the tiling workspace context is preserved.
+fn adding_window_while_tiling_workspace_context_drops_the_elevation() {
+    // Measured against sway 1.11: `focus parent` onto the workspace, then opening a window,
+    // leaves commands aimed at that window — `layout stacking` afterwards builds a container
+    // rather than making the workspace stacked. Opening a window answers the question the
+    // elevation was asking.
     let mut layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow {
@@ -356,9 +360,10 @@ fn adding_window_while_tiling_workspace_context_keeps_the_elevation() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert!(
-        workspace.is_tiling_workspace_context_active(),
-        "adding a tiling window while tiling-elevated must preserve the workspace context",
+        !workspace.is_tiling_workspace_context_active(),
+        "the new window is what commands target now, not the workspace",
     );
+    assert_eq!(workspace.debug_command_target(), "tiling_window");
 }
 
 #[test]
@@ -1922,8 +1927,10 @@ fn killing_workspace_selection_does_not_leave_new_windows_stuck_in_workspace_con
     {
         let workspace = layout.active_workspace().expect("active workspace");
         assert_eq!(workspace.windows().count(), 0);
+        // An empty workspace is the only thing a command could be aimed at, so the context
+        // is trivially the workspace. What matters is that it does not survive the next
+        // window, which the second half of this test checks.
         assert_eq!(workspace.debug_command_target(), "workspace");
-        assert!(!workspace.is_tiling_workspace_context_active());
         assert!(!workspace.tiling().selected_is_container());
     }
 
@@ -1991,7 +1998,10 @@ fn layout_matching_workspace_on_top_level_leaf_keeps_workspace_root_implicit() {
     );
 }
 #[test]
-fn layout_on_top_level_leaf_materializes_explicit_root_wrapper_when_workspace_changes() {
+fn layout_on_top_level_leaf_builds_a_wrapper_and_leaves_the_workspace_alone() {
+    // Measured against sway 1.11: a layout command issued from a window cannot change the
+    // workspace's own layout. A container takes the workspace's children instead, so the
+    // root stays the implicit workspace and the tabbed wrapper below it is the explicit one.
     let layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow {
@@ -2005,19 +2015,20 @@ fn layout_on_top_level_leaf_materializes_explicit_root_wrapper_when_workspace_ch
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert!(
-        !workspace
+        workspace
             .tiling()
             .debug_root_is_synthetic_workspace_container(),
-        "changing workspace-target layout from a top-level leaf must explicitize the root wrapper",
+        "the workspace root must stay implicit: the command was aimed at a window",
     );
 
     let tree = workspace.tiling().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
-    Tabbed
-      Window 1
-      Window 2 *
+    SplitH
+      Tabbed
+        Window 1
+        Window 2 *
     "
     );
 }

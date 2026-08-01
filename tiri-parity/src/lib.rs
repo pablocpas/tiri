@@ -34,31 +34,67 @@ pub fn erase_decoration(workspace: &mut Workspace) {
             h: 1.0,
         };
         for child in &mut workspace.nodes {
-            set_rect(child, area);
+            grow_to(child, area);
         }
     }
     erase_nodes(&mut workspace.nodes);
+}
+
+fn erase_nodes(nodes: &mut [Node]) {
+    for node in nodes {
+        if let Node::Container(container) = node {
+            if matches!(container.layout, Layout::Tabbed | Layout::Stacked) {
+                let rect = container.rect;
+                for child in &mut container.nodes {
+                    grow_to(child, rect);
+                }
+            }
+            erase_nodes(&mut container.nodes);
+        }
+    }
+}
+
+/// Move and stretch `node`'s whole subtree so that `node` fills `target`.
+///
+/// The band a tab bar occupies shifts everything under it, not just the child itself, so
+/// erasing it has to carry the descendants along. Anything nested keeps its position
+/// *relative* to its parent, which is the part that is behaviour.
+fn grow_to(node: &mut Node, target: FracRect) {
+    let current = rect_of(node);
+    if current.w <= 0.0 || current.h <= 0.0 {
+        set_rect(node, target);
+        return;
+    }
+    let scale_x = target.w / current.w;
+    let scale_y = target.h / current.h;
+    remap(node, |r| FracRect {
+        x: target.x + (r.x - current.x) * scale_x,
+        y: target.y + (r.y - current.y) * scale_y,
+        w: r.w * scale_x,
+        h: r.h * scale_y,
+    });
+}
+
+fn remap(node: &mut Node, f: impl Fn(FracRect) -> FracRect + Copy) {
+    set_rect(node, f(rect_of(node)));
+    if let Node::Container(container) = node {
+        for child in &mut container.nodes {
+            remap(child, f);
+        }
+    }
+}
+
+fn rect_of(node: &Node) -> FracRect {
+    match node {
+        Node::Window(w) => w.rect,
+        Node::Container(c) => c.rect,
+    }
 }
 
 fn set_rect(node: &mut Node, rect: FracRect) {
     match node {
         Node::Window(w) => w.rect = rect,
         Node::Container(c) => c.rect = rect,
-    }
-}
-
-fn erase_nodes(nodes: &mut [Node]) {
-    for node in nodes {
-        if let Node::Container(container) = node {
-            let stacked = matches!(container.layout, Layout::Tabbed | Layout::Stacked);
-            let rect = container.rect;
-            if stacked {
-                for child in &mut container.nodes {
-                    set_rect(child, rect);
-                }
-            }
-            erase_nodes(&mut container.nodes);
-        }
     }
 }
 

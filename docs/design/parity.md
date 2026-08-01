@@ -81,7 +81,8 @@ the following were run against sway 1.11 headless:
 | `layout X` | empty workspace | no — the workspace takes the layout |
 | `layout X` | the workspace (after `focus parent`) | no — the workspace takes the layout and its children reflow in place |
 | `layout X` | a window whose parent is a real container | no — that container takes the layout |
-| `layout X` | a window whose parent is the workspace | yes — a container with layout X takes all the workspace's children |
+| `layout X` | a window whose parent is the workspace | yes — a container with layout X takes all the workspace's children, unless X is already the workspace's layout, which does nothing |
+| `layout X` | a window, after `focus parent` then opening a window | as a plain window: opening a window ends the elevation |
 
 Two consequences worth stating, because both contradicted tests that claimed to encode sway:
 
@@ -90,17 +91,32 @@ Two consequences worth stating, because both contradicted tests that claimed to 
 - repeating a layout does not nest. `layout splith; layout splith` on a single-child split
   leaves it exactly as it was, and so does `layout splitv` — the asymmetry a comment in
   `split.rs` claimed (splitv nests one more level) is not sway's behaviour.
+- nesting that *does* happen is real. `layout tabbed; split v; layout tabbed` builds
+  `splith > tabbed > tabbed > win` in sway too, so the wrappers tiri used to collapse as
+  "redundant" were a level sway keeps.
+
+### Where the workspace level lives
+
+tiri's root container **is** the workspace, which is why the normalizer maps one onto the
+other. Everything above follows from taking that seriously: a command aimed at a window can
+never change the root container's layout, because in sway that command cannot change the
+workspace's layout either.
+
+Three separate layers each had their own theory of this and each has been pointed at the
+same rule:
+
+- the tree, in `set_focused_layout_with_policy`;
+- the tiling space's routing, which had a five-variant `WorkspaceLayoutTargetKind` deciding
+  between four shapes;
+- the workspace's command routing, which read a stored `workspace_focus` elevation that
+  nothing cleared when a window opened. It is now derived from the tree's selection, and
+  the stored flag is consulted only for the one state the tree cannot express — a workspace
+  whose single child is a window.
 
 ## Known divergences
 
 Differences that are real, understood, and not yet fixed. An entry here is a promise to fix
 or to justify, not permission to ignore.
-
-- **`layout X` on a window whose parent is the workspace does not build a container.**
-  Sway builds one, holding all the workspace's children (see the table above). tiri covers
-  only pieces of this: it wraps for `tabbed`/`stacking`, and for `splitv` only when
-  restating the layout the root already has. The rule needs implementing uniformly, which
-  is a behavioural change with its own test fallout rather than a normalizer question.
 
 - **Cached leaf geometry goes stale when a sibling leaves the tiling tree.** After floating
   one of two tiled windows, the remaining window is *rendered* at full width but the layout
@@ -221,16 +237,23 @@ whole suite — the other half of the whack-a-mole.
 ## Plan
 
 1. **Observable model and normalizer**, with its own unit tests. Nothing else can be
-   trusted before this is.
-2. **Script format and tiri replayer**, driven through `Op`. Re-express the existing 74
-   parity tests as scripts and check they pass without recording anything — they already
-   encode believed-correct behaviour, so this validates the replayer against known ground.
-3. **Recorder against headless sway**; record fixtures for those same scripts. Every
-   mismatch here is a real finding about tiri, about sway, or about a test's belief. Expect
-   findings: this is the step that pays for the phase.
+   trusted before this is. *(done)*
+2. **Script format and tiri replayer**, driven through `Op`. *(done)* Validating it meant
+   settling the workspace rules above by measurement, which changed behaviour in three
+   layers and rewrote or removed the tests that disagreed.
+3. **Recorder against headless sway**; record fixtures for scripts covering the same ground.
+   Every mismatch there is a real finding about tiri, about sway, or about a test's belief.
 4. **Minimizer and ledger.**
-5. **Pilot: the seven `parity_seed*` tests.** They are the whack-a-mole survivors, so they
-   are the honest test of whether the normalizer holds.
+5. **Widen the scripts** to the areas still only covered by hand-written expectations:
+   floating transport, scratchpad, marks, fullscreen.
+
+The seven `parity_seed*` tests that used to be the pilot for step 5 are gone. They came out
+of the whack-a-mole attempt, so their expectations were snapshots of whatever tiri did at
+the time rather than anything measured — several of them turned out to encode the stale
+workspace-context bug fixed here, and one asserted that opening a window preserves an
+elevation sway drops. Re-freezing their numbers would have re-asserted those beliefs under
+names claiming sway's authority. What was worth keeping about them was the *scenarios*, and
+those belong to the recorder in step 3, where sway answers instead of a snapshot.
 
 ## Risks
 

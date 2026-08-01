@@ -155,6 +155,14 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.workspace_layout
     }
 
+    /// The layout carried by the root container, or the recorded workspace orientation when
+    /// there is no root container to carry it.
+    pub(in crate::layout) fn root_container_layout(&self) -> Layout {
+        self.root
+            .and_then(|key| self.get_container(key))
+            .map_or(self.workspace_layout, |root| root.layout())
+    }
+
     /// The split layout to fall back to when toggling out of tabbed/stacked, mirroring
     /// i3's `layout toggle split` on the workspace.
     pub(in crate::layout) fn workspace_prev_split_layout(&self) -> Layout {
