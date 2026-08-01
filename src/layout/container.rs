@@ -92,6 +92,9 @@ pub struct TabBarTab {
 
 #[derive(Debug, Clone)]
 pub struct TabBarInfo {
+    /// The container this bar belongs to.
+    pub key: NodeKey,
+    /// Its path, kept for the render cache key and the IPC-facing consumers.
     pub path: Vec<usize>,
     pub layout: Layout,
     pub rect: Rectangle<f64, Logical>,
@@ -192,8 +195,10 @@ impl InactiveTilingReference {
     }
 }
 
+/// A reference resolved against the live tree: the node it names, plus its path for the
+/// path-shaped `InsertParentInfo` the restore path still speaks.
 enum ResolvedInactiveTilingReference {
-    Leaf { path: Vec<usize> },
+    Leaf { key: NodeKey, path: Vec<usize> },
     Container { key: NodeKey, path: Vec<usize> },
 }
 

@@ -13,6 +13,14 @@ impl<W: LayoutElement> ContainerTree<W> {
             .is_some_and(|selected_key| Some(selected_key) == self.root)
     }
 
+    /// Whether focus resolves to the tree root itself rather than to a node inside it.
+    pub(in crate::layout) fn focus_is_root(&self) -> bool {
+        match self.effective_focused_key() {
+            Some(key) => self.parent_of(key).is_none(),
+            None => true,
+        }
+    }
+
     pub(in crate::layout) fn focused_leaf_targets_workspace_layout(&self) -> bool {
         let focus_path = self.focus_path();
         focus_path.is_empty()
@@ -173,33 +181,31 @@ impl<W: LayoutElement> ContainerTree<W> {
             self.sync_container_focus_from_key(key);
         }
 
-        let focus_path = self.selected_path();
+        let Some(selected_key) = self.selected_node_key() else {
+            return false;
+        };
         let mut wrap_candidate: Option<(NodeKey, usize)> = None;
 
         // Walk ancestors from the innermost container outwards, trying a direct sibling
         // step at every level whose layout runs along `direction`.
-        for depth in (0..focus_path.len()).rev() {
-            let parent_path = &focus_path[..depth];
-            let current_idx = focus_path[depth];
-
-            let parent_key = if parent_path.is_empty() {
-                self.root
-            } else {
-                self.get_node_key_at_path(parent_path)
-            };
-            let Some(parent_key) = parent_key else {
-                continue;
-            };
+        let mut current = selected_key;
+        while let Some(parent_key) = self.parent_of(current) {
             let Some(container) = self.get_container(parent_key) else {
+                current = parent_key;
                 continue;
             };
             if !container.layout.is_parallel_to(direction) {
+                current = parent_key;
                 continue;
             }
+            let Some(current_idx) = self.child_index(parent_key, current) else {
+                current = parent_key;
+                continue;
+            };
 
             // Remember a wrap candidate at the first matching container, but only use it
             // if no direct movement was possible at this or any ancestor.
-            let child_count = container.children.len();
+            let child_count = container.child_count();
             if allow_wrap
                 && wrap_candidate.is_none()
                 && child_count > 1
@@ -215,12 +221,13 @@ impl<W: LayoutElement> ContainerTree<W> {
 
             // First try direct movement without wrapping.
             if let Some(new_idx) = direction.sibling_index(current_idx, child_count) {
-                let Some(target_key) = container.child_key(new_idx) else {
-                    continue;
-                };
-                self.focus_node_key(target_key);
-                return true;
+                if let Some(target_key) = container.child_key(new_idx) {
+                    self.focus_node_key(target_key);
+                    return true;
+                }
             }
+
+            current = parent_key;
         }
 
         if let Some((container_key, wrap_idx)) = wrap_candidate {
@@ -239,10 +246,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Focus window by its ID if present.
     pub(in crate::layout) fn focus_window_by_id(&mut self, window_id: &W::Id) -> bool {
         self.clear_focus_history();
-        let Some(path) = self.find_window(window_id) else {
-            return false;
-        };
-        let Some(key) = self.get_node_key_at_path(&path) else {
+        let Some(key) = self.window_key(window_id) else {
             return false;
         };
         self.focus_node_key(key);

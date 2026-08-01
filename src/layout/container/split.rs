@@ -120,12 +120,8 @@ impl<W: LayoutElement> ContainerTree<W> {
                 if !matches!(self.get_node(key), Some(NodeData::Leaf(_))) {
                     return None;
                 }
-                let path = self.find_node_path(key)?;
-                if path.is_empty() {
-                    self.root
-                } else {
-                    self.node_key_for_path_or_root(&path[..path.len() - 1])
-                }
+                // A root leaf has no owning container, so the root itself is the target.
+                self.parent_of(key).or(self.root)
             }
         }
     }
@@ -519,7 +515,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             };
         }
 
-        if root_policy == RootPolicy::MaterialContainer && self.focus_path().is_empty() {
+        if root_policy == RootPolicy::MaterialContainer && self.focus_is_root() {
             return self.wrap_root_node_with_layout(layout, false);
         }
 
@@ -763,47 +759,28 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Layout of the container that currently owns the focused leaf (if any).
     pub(in crate::layout) fn focused_layout(&self) -> Option<Layout> {
-        let focus_path = self.focus_path();
-        if focus_path.is_empty() {
-            let root_key = self.root?;
-            self.get_container(root_key).map(|c| c.layout())
-        } else {
-            let parent_path = &focus_path[..focus_path.len() - 1];
-            let parent_key = if parent_path.is_empty() {
-                self.root?
-            } else {
-                self.get_node_key_at_path(parent_path)?
-            };
-            self.get_container(parent_key).map(|c| c.layout())
-        }
+        let focused_key = self.effective_focused_key()?;
+        // A root leaf has no owning container, so the root's own layout is what applies.
+        let container_key = self.parent_of(focused_key).unwrap_or(self.root?);
+        self.get_container(container_key).map(|c| c.layout())
     }
 
     /// Whether the focused container should accept new splits.
     pub(in crate::layout) fn focused_container_allows_splits(&self) -> bool {
-        let focus_path = self.focus_path();
-        let container_key = if focus_path.is_empty() {
-            let root_key = match self.root {
-                Some(key) => key,
-                None => return false,
-            };
-            if matches!(self.get_node(root_key), Some(NodeData::Container(_))) {
-                root_key
-            } else {
-                return false;
-            }
-        } else {
-            let parent_path = &focus_path[..focus_path.len() - 1];
-            if parent_path.is_empty() {
-                match self.root {
-                    Some(key) => key,
-                    None => return false,
+        let Some(focused_key) = self.effective_focused_key() else {
+            return false;
+        };
+        // A root leaf has no owning container to split into.
+        let container_key = match self.parent_of(focused_key) {
+            Some(parent_key) => parent_key,
+            None => match self.root {
+                Some(root_key)
+                    if matches!(self.get_node(root_key), Some(NodeData::Container(_))) =>
+                {
+                    root_key
                 }
-            } else {
-                match self.get_node_key_at_path(parent_path) {
-                    Some(key) => key,
-                    None => return false,
-                }
-            }
+                _ => return false,
+            },
         };
 
         let Some(container) = self.get_container(container_key) else {

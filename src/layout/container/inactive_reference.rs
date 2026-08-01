@@ -68,7 +68,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     return None;
                 }
                 let path = self.find_node_path(key)?;
-                Some(ResolvedInactiveTilingReference::Leaf { path })
+                Some(ResolvedInactiveTilingReference::Leaf { key, path })
             }
         }
     }
@@ -91,7 +91,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     return None;
                 }
                 let path = self.find_node_path(*key)?;
-                Some(ResolvedInactiveTilingReference::Leaf { path })
+                Some(ResolvedInactiveTilingReference::Leaf { key: *key, path })
             }
         }
     }
@@ -168,8 +168,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         &self,
         window_id: &W::Id,
     ) -> Option<InactiveTilingReference> {
-        let path = self.find_window(window_id)?;
-        let node_key = self.get_node_key_at_path(&path)?;
+        let node_key = self.window_key(window_id)?;
         let parent_key = self.parent_of(node_key)?;
         self.inactive_tiling_container_reference_for_key(parent_key)
     }
@@ -277,12 +276,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         let key = match resolved {
             ResolvedInactiveTilingReference::Container { key, .. } => key,
-            ResolvedInactiveTilingReference::Leaf { path } => {
-                let Some(key) = self.get_node_key_at_path(&path) else {
-                    return false;
-                };
-                key
-            }
+            ResolvedInactiveTilingReference::Leaf { key, .. } => key,
         };
 
         self.focus_node_key(key);
@@ -301,12 +295,11 @@ impl<W: LayoutElement> ContainerTree<W> {
             self.resolve_inactive_tiling_reference(reference)
         }?;
 
-        let path = match resolved {
-            ResolvedInactiveTilingReference::Leaf { path } => path,
+        let key = match resolved {
+            ResolvedInactiveTilingReference::Leaf { key, .. } => key,
             ResolvedInactiveTilingReference::Container { .. } => return None,
         };
 
-        let key = self.get_node_key_at_path(&path)?;
         match self.get_node(key)? {
             NodeData::Leaf(tile) => Some(tile.window()),
             NodeData::Container(_) => None,

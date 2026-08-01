@@ -49,8 +49,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         mut edges: ResizeEdge,
         pos: Option<Point<f64, Logical>>,
     ) -> Option<(ResizeEdge, Option<ResizeTarget>, Option<ResizeTarget>)> {
-        let path = self.find_window(window)?;
-        let leaf_key = self.get_node_key_at_path(&path)?;
+        let leaf_key = self.window_key(window)?;
         let tile = self.get_tile(leaf_key)?;
 
         if !tile.window().pending_sizing_mode().is_normal() {

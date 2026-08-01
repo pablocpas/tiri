@@ -47,12 +47,19 @@ impl<W: LayoutElement> ContainerTree<W> {
         match self.get_node(root_key) {
             Some(NodeData::Leaf(_)) => Some(0),
             Some(NodeData::Container(container)) => {
-                let focus_path = self.focus_path();
-                if focus_path.is_empty() {
-                    container.focused_child_index()
-                } else {
-                    Some(focus_path[0])
+                // Nothing focused yet: fall back to the container's own focus history.
+                let Some(focused_key) = self.effective_focused_key() else {
+                    return container.focused_child_index();
+                };
+                // Walk up from the focused leaf to the root child that holds it.
+                let mut child = focused_key;
+                while let Some(parent) = self.parent_of(child) {
+                    if parent == root_key {
+                        return self.child_index(root_key, child);
+                    }
+                    child = parent;
                 }
+                container.focused_child_index()
             }
             None => None,
         }
@@ -139,20 +146,19 @@ impl<W: LayoutElement> ContainerTree<W> {
         if leaf_idx == 0 {
             return false;
         }
-        let mut paths = self.leaf_paths_under(&[child_idx]);
-        if paths.is_empty() {
+        let Some(child_key) = self
+            .root
+            .and_then(|root_key| self.get_container(root_key))
+            .and_then(|root| root.child_key(child_idx))
+        else {
             return false;
-        }
-        if leaf_idx > paths.len() {
+        };
+        let leaves = self.leaf_keys_under(child_key);
+        let Some(&key) = leaves.get(leaf_idx - 1) else {
             return false;
-        }
-        let path = paths.remove(leaf_idx - 1);
-        if let Some(key) = self.get_node_key_at_path(&path) {
-            self.focus_node_key(key);
-            true
-        } else {
-            false
-        }
+        };
+        self.focus_node_key(key);
+        true
     }
 
     /// Focus the first leaf under the focused root child, whatever its layout.
@@ -170,16 +176,18 @@ impl<W: LayoutElement> ContainerTree<W> {
             Some(idx) => idx,
             None => return false,
         };
-        let paths = self.leaf_paths_under(&[idx]);
-        if let Some(path) = paths.last() {
-            if let Some(key) = self.get_node_key_at_path(path) {
-                self.focus_node_key(key);
-                return true;
-            }
-            false
-        } else {
-            false
-        }
+        let Some(child_key) = self
+            .root
+            .and_then(|root_key| self.get_container(root_key))
+            .and_then(|root| root.child_key(idx))
+        else {
+            return false;
+        };
+        let Some(&key) = self.leaf_keys_under(child_key).last() else {
+            return false;
+        };
+        self.focus_node_key(key);
+        true
     }
 
     pub(in crate::layout) fn append_leaf(&mut self, tile: Tile<W>, focus: bool) {

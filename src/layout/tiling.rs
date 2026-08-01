@@ -2084,7 +2084,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                 continue;
             };
 
-            if let Some(window) = self.tree.window_for_tab(&info.path, tab_idx) {
+            if let Some(window) = self.tree.window_for_tab(info.key, tab_idx) {
                 return Some((
                     window,
                     super::HitType::Activate {

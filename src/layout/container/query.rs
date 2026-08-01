@@ -115,6 +115,13 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
+    /// Leaf node keys under `key`, in depth-first (visual) order.
+    pub(in crate::layout) fn leaf_keys_under(&self, key: NodeKey) -> Vec<NodeKey> {
+        let mut keys = Vec::new();
+        self.collect_leaf_keys(key, &mut keys);
+        keys
+    }
+
     /// All tiles mutably, in depth-first (visual) order.
     pub(in crate::layout) fn all_tiles_mut(&mut self) -> Vec<&mut Tile<W>> {
         let keys = self.dfs_leaf_keys();

@@ -55,6 +55,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     .collect();
 
                 out.push(TabBarInfo {
+                    key: node_key,
                     path: path.clone(),
                     layout: container.layout,
                     rect,
@@ -78,21 +79,16 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     pub(in crate::layout) fn window_for_tab(
         &self,
-        container_path: &[usize],
+        container_key: NodeKey,
         tab_idx: usize,
     ) -> Option<&W> {
-        let key = if container_path.is_empty() {
-            self.root?
-        } else {
-            self.get_node_key_at_path(container_path)?
-        };
-        if let Some(container) = self.get_container(key) {
+        if let Some(container) = self.get_container(container_key) {
             let child_key = container.child_key(tab_idx)?;
             return self.focused_window_in_subtree(child_key);
         }
 
         if tab_idx == 0 {
-            if let Some(NodeData::Leaf(tile)) = self.get_node(key) {
+            if let Some(NodeData::Leaf(tile)) = self.get_node(container_key) {
                 return Some(tile.window());
             }
         }

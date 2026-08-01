@@ -15,26 +15,24 @@ use crate::layout::tile::Tile;
 impl<W: LayoutElement> ContainerTree<W> {
     /// Remove a window by ID, returns the removed tile
     pub(in crate::layout) fn remove_window(&mut self, window_id: &W::Id) -> Option<Tile<W>> {
-        let path = self.find_window(window_id)?;
-        let node_key = self.get_node_key_at_path(&path)?;
+        let node_key = self.window_key(window_id)?;
         let cleanup_key = self.parent_of(node_key);
         let was_focused = self.focused_key == Some(node_key);
 
-        // First, remove from parent's children list BEFORE removing from slotmap
-        if !path.is_empty() {
-            let parent_path = &path[..path.len() - 1];
-            let child_idx = *path.last().unwrap();
-
-            if let Some(parent_key) = self.get_node_key_at_path(parent_path) {
-                if let Some(container) = self.get_container_mut(parent_key) {
-                    container.remove_child(child_idx);
+        // Detach from the parent's child list before dropping the node itself.
+        match self.parent_of(node_key) {
+            Some(parent_key) => {
+                if let Some(child_idx) = self.child_index(parent_key, node_key) {
+                    if let Some(container) = self.get_container_mut(parent_key) {
+                        container.remove_child(child_idx);
+                    }
                 }
+                self.set_parent(node_key, None);
             }
-            self.set_parent(node_key, None);
-        } else {
-            // Was root
-            self.root = None;
-            self.set_parent(node_key, None);
+            None => {
+                self.root = None;
+                self.set_parent(node_key, None);
+            }
         }
 
         // Now remove from slotmap (only the leaf, not recursive)
