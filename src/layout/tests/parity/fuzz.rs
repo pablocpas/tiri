@@ -17,6 +17,32 @@ use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 use tiri_parity::session::Sway;
+
+/// Stops the session whatever happens to the test.
+///
+/// The comparison replays scripts through tiri, and a panic there — a broken invariant, say,
+/// which is exactly what this is meant to find — would otherwise leave a headless sway
+/// running for every aborted run.
+struct Session(Sway);
+
+impl std::ops::Deref for Session {
+    type Target = Sway;
+    fn deref(&self) -> &Sway {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Session {
+    fn deref_mut(&mut self) -> &mut Sway {
+        &mut self.0
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.0.stop();
+    }
+}
 use tiri_parity::Workspace;
 
 use super::known::{self, Signature};
@@ -201,7 +227,7 @@ fn differential_fuzz_against_sway() {
     let known = known::signatures();
 
     let mut rng = Rng(seed);
-    let mut sway = Sway::start().expect("cannot start sway");
+    let mut sway = Session(Sway::start().expect("cannot start sway"));
     let started = Instant::now();
     let mut scripts = 0usize;
     let mut skipped = 0usize;
@@ -215,14 +241,12 @@ fn differential_fuzz_against_sway() {
             Ok(Some(divergence)) if known.contains(&divergence.signature) => skipped += 1,
             Ok(Some(divergence)) => found = Some((script, divergence.signature)),
             Err(err) => {
-                sway.stop();
                 panic!("the harness broke after {scripts} scripts: {err}");
             }
         }
     }
 
     let Some((script, signature)) = found else {
-        sway.stop();
         eprintln!(
             "{scripts} scripts, seed {seed:#x}: no divergence \
              ({skipped} were already in the ledger)"
@@ -232,7 +256,6 @@ fn differential_fuzz_against_sway() {
 
     let script = shrink(&mut sway, script, &signature).expect("shrinking failed");
     let report = compare(&mut sway, &script).expect("the shrunk script stopped running");
-    sway.stop();
 
     let Some(divergence) = report else {
         panic!("the divergence vanished while shrinking; that is a bug in the harness");
