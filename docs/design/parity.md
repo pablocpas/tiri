@@ -178,7 +178,25 @@ established the following, and stopped short of landing:
   of the container, and no flag is needed to express it. tiri already does the structural
   part of both.
 
-The trap to avoid is visible in the attempt itself: two changes that looked like progress
+### Where the replacement stands
+
+The first stage is done and committed: the flag's two questions are separated, and only
+`is_user_container` — "the user asked for this container", which is what `focus parent` stops
+at — has readers outside cleanup and movement. Three sites still read the other meaning.
+
+Replacing those three was attempted twice and reverted twice. The second attempt was much
+closer: the whole suite stayed green, every fixture passed, and two ledger entries closed on
+their own. It was reverted for a different reason — splicing moves every remaining leaf up a
+level, and the cached leaf geometry is left describing paths that no longer exist, which the
+differential fuzz catches as a broken invariant within seconds. Forcing a relayout inside the
+splice does not fix it, because the cleanup that runs afterwards promotes further and nothing
+relayouts again.
+
+So the next attempt should start from the cache, not from the rule: a structural change that
+reparents leaves has to invalidate what describes them, and today only a completed relayout
+does that. With that in place the rest of the change is already known to work.
+
+The trap to avoid is visible in the first attempt: two changes that looked like progress
 each broke behaviour that had already been measured, because `wrap_workspace_children` serves
 both `split` and `layout` and they disagree about the one-child case. Any replacement has to
 be validated against the whole fixture set, not against the divergence in hand — which is

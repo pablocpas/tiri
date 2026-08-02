@@ -73,6 +73,15 @@ first six steps of this fixture pin the shape question it was recorded for, and 
 this is the redistribution rule, which nothing has measured yet.",
     },
     Divergence {
+        fixture: "move-up-then-right.parity",
+        step: 5,
+        reason: "\
+i3 #145, and two known differences meeting again: the order sway leaves the spliced children \
+in (w2, w1 against tiri's w1, w2), which is its reversing loop and deliberately not copied, \
+and the size shares. Recorded while measuring what `preserve_on_single` was approximating, \
+and kept because it is the shortest script that reaches the splice at all.",
+    },
+    Divergence {
         fixture: "move-into-a-nested-container.parity",
         step: 7,
         reason: "\
