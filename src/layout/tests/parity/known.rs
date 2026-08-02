@@ -89,14 +89,6 @@ had; tiri returns it to splitv. The container's own `prev_split_layout` is unset
 fallback reaches for the *workspace's* — another node's memory of another command.",
     },
     Divergence {
-        fixture: "toggle-split-on-a-workspace-of-windows.parity",
-        step: 4,
-        reason: "\
-`layout toggle split` with the workspace selected and two windows in it. sway turns splith \
-into splitv; tiri leaves it splith. The same memory as the entry above, read for the \
-workspace itself rather than for a container.",
-    },
-    Divergence {
         fixture: "move-dissolves-containers-around-a-lone-window.parity",
         step: 5,
         reason: "\
@@ -112,14 +104,6 @@ nothing\" where sway reads it as \"there is nothing left for these containers to
 The same as above, reached through a `close`, and it also turns the workspace: sway ends \
 splitv, tiri splith. Recorded separately because it pins both halves — the containers going \
 and the workspace facing the move — where the other fixture only shows the first.",
-    },
-    Divergence {
-        fixture: "toggle-split-on-a-mixed-workspace.parity",
-        step: 5,
-        reason: "\
-`layout toggle split` on a workspace holding a container and a window. sway goes to splith, \
-tiri to splitv. Third shape of the same memory, kept because it is the one where the \
-workspace has children of both kinds.",
     },
     // The two below are the same question answered in both directions, which is why neither
     // is a rule about dissolving containers: sway drops the split in one and keeps a whole

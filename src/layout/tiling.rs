@@ -191,12 +191,6 @@ impl<W: LayoutElement> TilingSpace<W> {
             || (self.tree.selected_is_container() && self.tree.selected_container_is_root())
     }
 
-    /// Give the workspace `layout`, without ever building a container for it.
-    fn apply_workspace_layout_target(&mut self, layout: Layout) -> bool {
-        self.set_workspace_layout_hint(layout);
-        self.tree.set_root_container_layout(layout)
-    }
-
     fn available_span(&self, total: f64, child_count: usize) -> f64 {
         super::tree_space::available_span(self.options.layout.gaps, total, child_count)
     }
@@ -1443,7 +1437,7 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     fn set_layout_for_active_selection(&mut self, layout: Layout) -> bool {
         if self.workspace_is_selected() {
-            return self.apply_workspace_layout_target(layout);
+            return self.set_workspace_layout_mode(layout);
         }
 
         let target = self.tree.command_target(RootPolicy::ImplicitWorkspace);
@@ -1476,7 +1470,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                 Layout::SplitV => Layout::SplitH,
                 Layout::Tabbed | Layout::Stacked => self.tree.workspace_prev_split_layout(),
             };
-            return self.apply_workspace_layout_target(next);
+            return self.set_workspace_layout_mode(next);
         }
 
         if let Some(result) = self.set_selected_container_layout(|current| match current {
@@ -1495,7 +1489,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     fn toggle_layout_all_for_active_selection(&mut self) -> bool {
         if self.workspace_is_selected() {
             let next = self.tree.workspace_layout().next_in_cycle();
-            return self.apply_workspace_layout_target(next);
+            return self.set_workspace_layout_mode(next);
         }
 
         if let Some(result) = self.set_selected_container_layout(Layout::next_in_cycle) {
@@ -1568,28 +1562,10 @@ impl<W: LayoutElement> TilingSpace<W> {
         self.split_workspace(Layout::SplitV);
     }
 
-    /// `split` with the workspace itself selected.
-    ///
-    /// Measured against sway 1.11: this always builds a container. The workspace's current
-    /// children move under a wrapper that keeps the old orientation and the workspace takes
-    /// the new one — with a single child, and even when the orientation does not change.
-    /// Only an empty workspace is exempt, having nothing to wrap.
-    ///
-    /// It is the counterpart of [`Self::set_workspace_layout_mode`], which never wraps; the
-    /// difference between `split v` and `layout splitv` on a workspace is exactly this.
-    /// The wrapper is left selected, so a `layout` or a second `split` straight after lands
-    /// on it rather than on the window inside — measured, and what `focus parent` would have
-    /// had to be repeated for otherwise.
+    /// `split` with the workspace itself selected. The rule lives on the tree; this is the
+    /// space's relayout contract around it.
     fn split_workspace(&mut self, layout: Layout) {
-        self.mutate_tree(|tree| {
-            let previous = tree.root_container_layout();
-            let Some(wrapper_key) = tree.wrap_workspace_children(previous, layout) else {
-                return false;
-            };
-            tree.select_node_key(wrapper_key);
-            true
-        });
-        self.set_workspace_layout_hint(layout);
+        self.mutate_tree(|tree| tree.split_workspace_container(layout));
     }
 
     /// Set layout mode for focused container
@@ -1605,17 +1581,8 @@ impl<W: LayoutElement> TilingSpace<W> {
     /// container carrying the orientation, so the change lands on the root container when
     /// there is one and on the recorded orientation otherwise — an empty workspace and a
     /// lone window are the same case. See `docs/design/parity.md`, scenarios A–D.
-    pub fn set_workspace_layout_mode(&mut self, layout: Layout) {
-        self.set_workspace_layout_hint(layout);
-        self.mutate_tree(|tree| tree.set_root_container_layout(layout));
-    }
-
-    pub fn set_root_layout_mode(&mut self, layout: Layout) -> bool {
+    pub fn set_workspace_layout_mode(&mut self, layout: Layout) -> bool {
         self.mutate_tree(|tree| tree.set_root_container_layout(layout))
-    }
-
-    pub fn collapse_redundant_root_single_child_split(&mut self) -> bool {
-        self.mutate_tree(|tree| tree.collapse_redundant_root_single_child_split())
     }
 
     /// Toggle between horizontal and vertical split for the focused container.
@@ -1631,7 +1598,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             Layout::SplitV => Layout::SplitH,
             Layout::Tabbed | Layout::Stacked => self.tree.workspace_prev_split_layout(),
         };
-        self.set_workspace_layout_hint(next);
+        self.set_workspace_layout_mode(next);
     }
 
     /// Cycle focused container layout in sway-style order.
@@ -2261,10 +2228,6 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     pub fn is_empty(&self) -> bool {
         self.tree.is_empty()
-    }
-
-    pub fn set_workspace_layout_hint(&mut self, layout: Layout) {
-        self.tree.set_workspace_layout_hint(layout);
     }
 
     pub fn focus_is_root_leaf(&self) -> bool {

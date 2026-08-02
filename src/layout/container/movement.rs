@@ -532,7 +532,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             if layout == previous {
                 return false;
             }
-            self.set_workspace_layout_hint(layout);
+            self.set_root_container_layout(layout);
             self.set_root_container_layout(layout);
             return true;
         }

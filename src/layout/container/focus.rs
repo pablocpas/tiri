@@ -84,11 +84,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.focused_key.or_else(|| self.first_leaf_key())
     }
 
-    /// Make `key` what a command with no explicit target acts on.
-    pub(in crate::layout) fn select_node_key(&mut self, key: NodeKey) {
-        self.selected_key = Some(key);
-    }
-
     pub(in crate::layout) fn focused_node_key(&self) -> Option<NodeKey> {
         self.focused_key
     }

@@ -2342,7 +2342,9 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn set_layout_mode(&mut self, layout: Layout) {
         self.dispatch_layout(
-            |t| t.set_workspace_layout_mode(layout),
+            |t| {
+                t.set_workspace_layout_mode(layout);
+            },
             |t| t.set_layout_mode(layout),
             |f| f.set_layout_mode(layout),
         );

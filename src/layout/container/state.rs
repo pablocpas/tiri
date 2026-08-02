@@ -164,14 +164,6 @@ impl<W: LayoutElement> ContainerTree<W> {
             .unwrap_or(Layout::SplitH)
     }
 
-    /// Give the workspace `layout`, remembering the split it had for `layout toggle split`.
-    pub(in crate::layout) fn set_workspace_layout_hint(&mut self, layout: Layout) {
-        let root_key = self.root;
-        if let Some(root) = self.get_container_mut(root_key) {
-            root.set_layout(layout);
-        }
-    }
-
     pub(in crate::layout) fn take_pending_relayout(&mut self) -> bool {
         std::mem::take(&mut self.pending_relayout)
     }

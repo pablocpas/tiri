@@ -410,7 +410,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             // Same rule as the workspace route: a split on an empty workspace only records
             // the orientation. The first window is a plain child of the workspace and gets
             // no wrapper; the orientation materializes when a second window arrives.
-            self.set_workspace_layout_hint(layout);
+            self.set_root_container_layout(layout);
             return true;
         }
 
