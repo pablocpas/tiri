@@ -776,6 +776,10 @@ fn replace_single_child_container_with_same_layout() {
 }
 #[test]
 fn move_right_enters_tabbed_container() {
+    // Recorded from sway (tiri-parity/fixtures/move-sideways-into-a-tabbed.parity): a window
+    // entering a tabbed container takes the focused tab's place rather than joining at the
+    // end. Tabs have no axis to arrive along, so the direction says nothing about where in
+    // the stack the newcomer belongs.
     let mut harness = TreeHarness::new();
     harness.add_window(1);
     harness.add_window(2);
@@ -791,8 +795,8 @@ fn move_right_enters_tabbed_container() {
     SplitH
       Tabbed
         Window 2
-        Window 3
         Window 1 *
+        Window 3
     "
     );
 }

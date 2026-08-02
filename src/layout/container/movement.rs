@@ -398,13 +398,10 @@ impl<W: LayoutElement> ContainerTree<W> {
                     target_focus_idx
                 }
             }
-            Layout::Tabbed | Layout::Stacked => {
-                if direction.is_leading() {
-                    target_focus_idx
-                } else {
-                    target_focus_idx + 1
-                }
-            }
+            // Tabs have no axis to enter along, so the direction says nothing about where
+            // in the stack the newcomer belongs. Measured: it takes the focused child's
+            // place and pushes it back, whichever side it arrived from.
+            Layout::Tabbed | Layout::Stacked => target_focus_idx,
         };
 
         let Some(node_parent_key) = self.parent_of(node_key) else {
