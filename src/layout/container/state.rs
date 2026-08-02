@@ -153,14 +153,16 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// The layout carried by the root container.
     pub(in crate::layout) fn root_container_layout(&self) -> Layout {
         self.get_container(self.root)
-            .map_or(Layout::SplitH, |root| root.layout())
+            .expect("workspace root must be a container")
+            .layout()
     }
 
     /// The split layout to fall back to when toggling out of tabbed/stacked, mirroring
     /// i3's `layout toggle split` on the workspace.
     pub(in crate::layout) fn workspace_prev_split_layout(&self) -> Layout {
         self.get_container(self.root)
-            .and_then(|root| root.prev_split_layout())
+            .expect("workspace root must be a container")
+            .prev_split_layout()
             .unwrap_or(Layout::SplitH)
     }
 

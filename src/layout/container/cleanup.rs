@@ -135,8 +135,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    /// Remove a container with no children. Removing the root remembers its layout as the
-    /// workspace's pending layout, matching i3's workspace_layout persistence.
+    /// Remove a non-root container with no children.
     fn remove_empty_container(&mut self, container_key: NodeKey, parent_key: NodeKey) {
         let Some(parent_idx) = self.child_index(parent_key, container_key) else {
             return;

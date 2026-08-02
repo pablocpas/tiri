@@ -522,8 +522,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         // With nothing to move past, there is still an orientation to take: measured, sway
         // turns the workspace to face the direction and leaves the window where it is. The
-        // wrap below would have nothing to wrap. A workspace whose only child is a window
-        // has no root container at all, and lands here too.
+        // wrap below would have nothing to wrap.
         let alone = self
             .get_container(root_key)
             .is_none_or(|root| root.child_count() <= 1);
@@ -532,7 +531,6 @@ impl<W: LayoutElement> ContainerTree<W> {
             if layout == previous {
                 return false;
             }
-            self.set_root_container_layout(layout);
             self.set_root_container_layout(layout);
             return true;
         }

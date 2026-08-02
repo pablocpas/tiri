@@ -135,6 +135,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let children = container.children.clone();
         let focus_stack = container.focus_stack.clone();
         let percents = container.child_percents_slice().to_vec();
+        let prev_split_layout = container.prev_split_layout;
 
         let root_key = self.root;
         if let Some(root) = self.get_container_mut(root_key) {
@@ -142,6 +143,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             root.children = children.clone();
             root.focus_stack = focus_stack;
             root.child_percents = percents;
+            root.prev_split_layout = prev_split_layout;
             root.ensure_focus_stack();
         }
         for child in children {

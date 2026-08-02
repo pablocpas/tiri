@@ -6,6 +6,20 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn verify_invariants(&self) {
         let root_key = self.root;
 
+        assert!(
+            self.nodes.contains_key(root_key),
+            "root key must point to an existing node"
+        );
+        assert!(
+            matches!(self.get_node(root_key), Some(NodeData::Container(_))),
+            "workspace root must be a container"
+        );
+        assert_eq!(
+            self.parents.get(root_key).copied().flatten(),
+            None,
+            "root parent must be None"
+        );
+
         if self.is_empty() {
             // The workspace itself stays: an empty workspace is a container with no
             // children, holding the orientation the next window will be laid out by.
@@ -28,16 +42,6 @@ impl<W: LayoutElement> ContainerTree<W> {
             );
             return;
         }
-
-        assert!(
-            self.nodes.contains_key(root_key),
-            "root key must point to an existing node"
-        );
-        assert_eq!(
-            self.parents.get(root_key).copied().flatten(),
-            None,
-            "root parent must be None"
-        );
 
         let mut visited = HashSet::new();
         let mut leaves = HashSet::new();

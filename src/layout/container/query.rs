@@ -187,8 +187,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.container_info(self.root)
     }
 
-    /// Whether the root is a container the user can address. None when there is no root or
-    /// the root is a bare leaf.
+    /// Whether the permanent workspace root is meaningful as a user-addressable parent.
     pub(in crate::layout) fn root_is_meaningful_parent(&self) -> Option<bool> {
         self.container_is_meaningful_parent(self.root)
     }

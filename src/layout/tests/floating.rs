@@ -588,6 +588,41 @@ fn floating_toggle_workspace_subtree_roundtrips_all_windows_back_to_tiling() {
         );
     }
 }
+
+#[test]
+fn floating_workspace_roundtrip_preserves_previous_split_layout() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::FocusParent,
+        Op::FocusParent,
+        Op::SetLayoutSplitV,
+        Op::SetLayoutTabbed,
+        Op::ToggleWindowFloating { id: None },
+    ]);
+
+    check_ops_on_layout(
+        &mut layout,
+        [
+            Op::FocusParent,
+            Op::ToggleWindowFloating { id: None },
+            Op::ToggleSplitLayout,
+        ],
+    );
+
+    let workspace = layout.active_workspace().expect("active workspace");
+    let tree = workspace.tiling().debug_tree().replace(" *", "");
+    assert!(
+        tree.starts_with("SplitV\n"),
+        "floating the whole workspace and restoring it must preserve the split remembered by layout toggle split:\n{tree}",
+    );
+}
+
 #[test]
 fn floating_single_window_roundtrip_does_not_reintroduce_implicit_split_wrapper() {
     let mut layout = check_ops([
