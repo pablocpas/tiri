@@ -22,7 +22,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         // Explicit root wrappers created by root-level layout commands are real
         // restore/focus targets. Only the implicit workspace backing root should
         // be treated as synthetic.
-        !container.preserve_on_single()
+        !container.is_user_container()
     }
 
     /// Get node data by key

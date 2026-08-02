@@ -152,7 +152,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         if matches!(parent_layout, Layout::SplitH | Layout::SplitV) {
             if let Some(target_container) = self.get_container(target_key) {
                 let should_enter = target_container.layout() != parent_layout
-                    || target_container.preserve_on_single();
+                    || target_container.is_user_container();
                 if should_enter {
                     let focus_idx = target_container.focused_child_index().unwrap_or(0);
                     return self

@@ -85,7 +85,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                 .get_container(root_key)
                 .expect("synthetic root must be a container");
             assert!(
-                !root.preserve_on_single(),
+                !root.is_user_container(),
                 "synthetic workspace root must not be explicit"
             );
         }

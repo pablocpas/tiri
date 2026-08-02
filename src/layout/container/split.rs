@@ -104,7 +104,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let parent_key = self.parent_of(key)?;
 
         let container = self.get_container(parent_key)?;
-        if container.child_count() != 1 || !container.preserve_on_single() {
+        if container.child_count() != 1 || !container.is_user_container() {
             return None;
         }
 
@@ -730,6 +730,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         let Some(container) = self.get_container(container_key) else {
             return false;
         };
-        container.child_count() > 1 || container.preserve_on_single()
+        container.child_count() > 1 || container.is_user_container()
     }
 }

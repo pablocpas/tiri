@@ -2060,7 +2060,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             let preserve_on_single = container
                 .tree
                 .root_container()
-                .is_some_and(|container| container.preserve_on_single())
+                .is_some_and(|container| container.is_user_container())
                 && !container.workspace_floated;
             if !root_meaningful || (root_child_count <= 1 && !preserve_on_single) {
                 container.wrapper_selected = false;
@@ -2083,7 +2083,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 let root_meaningful = tree.root_is_meaningful_parent().unwrap_or(false);
                 let preserve_on_single = tree
                     .root_container()
-                    .is_some_and(|container| container.preserve_on_single())
+                    .is_some_and(|container| container.is_user_container())
                     && !container.workspace_floated;
                 if root_meaningful && (root_child_count > 1 || preserve_on_single) {
                     container.wrapper_selected = true;
@@ -2105,7 +2105,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 let root_selected = Some(key) == tree.root_node_key();
                 let preserve_on_single = if root_selected {
                     tree.root_container()
-                        .is_some_and(|container| container.preserve_on_single())
+                        .is_some_and(|container| container.is_user_container())
                         && !container.workspace_floated
                 } else {
                     false
@@ -2177,7 +2177,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         };
 
         root.child_count() == 1
-            && !root.preserve_on_single()
+            && !root.is_user_container()
             && matches!(root.layout(), Layout::SplitH | Layout::SplitV)
     }
 

@@ -294,6 +294,17 @@ impl ContainerData {
         self.preserve_on_single
     }
 
+    /// Whether this container is one a user asked for, rather than scaffolding.
+    ///
+    /// The same bit as `preserve_on_single`, read for the other question it has been
+    /// answering all along: `focus parent` stops at a container the user built, a floating
+    /// wrapper is selectable when it is one, and a split is addressable when it is one.
+    /// Splitting the two readings apart is what makes it possible to remove the first —
+    /// see the `preserve_on_single` section of `docs/design/parity.md`.
+    pub(super) fn is_user_container(&self) -> bool {
+        self.preserve_on_single
+    }
+
     pub(super) fn prev_split_layout(&self) -> Option<Layout> {
         self.prev_split_layout
     }

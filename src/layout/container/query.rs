@@ -200,7 +200,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// several children or was created by an explicit split.
     pub(in crate::layout) fn container_is_meaningful_parent(&self, key: NodeKey) -> Option<bool> {
         let container = self.get_container(key)?;
-        Some(container.child_count() > 1 || container.preserve_on_single())
+        Some(container.child_count() > 1 || container.is_user_container())
     }
 
     /// Rect of the `child_idx`-th child of the container at `container_key`.
