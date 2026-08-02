@@ -37,7 +37,7 @@ workspace splith focus=4
   window 3 0.667,0.000 0.333x1.000
 
 $ focus parent
-workspace splith focus=none
+workspace splith focus=@1
   window 1 0.000,0.000 0.334x1.000
   splitv 0.334,0.000 0.334x1.000
     window 2 0.334,0.000 0.334x0.500

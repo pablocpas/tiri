@@ -25,7 +25,7 @@ fn a_script_that_opens_nothing_still_has_a_workspace() {
         "split v",
         "\
 $ split v
-workspace splitv focus=none
+workspace splitv focus=@
 ",
     );
 }
@@ -43,7 +43,7 @@ open
 ",
         "\
 $ split v
-workspace splitv focus=none
+workspace splitv focus=@
 
 $ open
 workspace splitv focus=1
@@ -79,7 +79,7 @@ workspace splitv focus=1
   window 1 0.000,0.000 1.000x1.000
 
 $ close
-workspace splitv focus=none
+workspace splitv focus=@
 
 $ open
 workspace splitv focus=2
@@ -143,7 +143,7 @@ open
 ",
         "\
 $ layout tabbed
-workspace tabbed focus=none
+workspace tabbed focus=@
 
 $ open
 workspace tabbed focus=1
@@ -325,8 +325,10 @@ workspace splith focus=1
 /// children, keeping the old orientation, while the workspace takes the new one. Existing
 /// windows do not reflow — that is the observable difference from `layout X`.
 ///
-/// `focus parent` reports no focused window because the focus is the workspace itself, which
-/// is exactly what sway's tree shows.
+/// `focus parent` reports `focus=@`: the workspace itself, which is what sway's tree shows
+/// too. The model addresses a focused container by position, so `@0/1` is the second child
+/// of the first — two states that differ only in which container is selected do not look
+/// alike, and that is what makes a `focus parent` too many findable at all.
 #[test]
 fn split_on_the_workspace_wraps_its_children() {
     assert_replay(
@@ -340,7 +342,7 @@ open
 ",
         "\
 $ split v
-workspace splitv focus=none
+workspace splitv focus=@
 
 $ open
 workspace splitv focus=1
@@ -352,12 +354,12 @@ workspace splitv focus=2
   window 2 0.000,0.500 1.000x0.500
 
 $ focus parent
-workspace splitv focus=none
+workspace splitv focus=@
   window 1 0.000,0.000 1.000x0.500
   window 2 0.000,0.500 1.000x0.500
 
 $ split h
-workspace splith focus=none
+workspace splith focus=@
   splitv 0.000,0.000 1.000x1.000
     window 1 0.000,0.000 1.000x0.500
     window 2 0.000,0.500 1.000x0.500

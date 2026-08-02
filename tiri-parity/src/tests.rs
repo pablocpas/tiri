@@ -139,7 +139,8 @@ fn a_bare_leaf_root_in_tiri_equals_a_workspace_with_one_child_in_sway() {
         root: Some(leaf(10, true, rect(0.0, 0.0, 1920.0, 1080.0))),
         floating: Vec::new(),
     };
-    let from_tiri = tiri::normalize(&tree, Layout::SplitV, AREA, &tiri_order(&[(10, 1)])).unwrap();
+    let from_tiri =
+        tiri::normalize(&tree, Layout::SplitV, false, AREA, &tiri_order(&[(10, 1)])).unwrap();
 
     let sway_json = r#"
     {"id":1,"type":"root","layout":"splith","focused":false,"rect":{"x":0,"y":0,"width":1920,"height":1080},
@@ -174,6 +175,7 @@ fn tiri_container_root_supplies_the_workspace_layout() {
     let from_tiri = tiri::normalize(
         &tree,
         Layout::SplitH,
+        false,
         AREA,
         &tiri_order(&[(10, 1), (11, 2)]),
     )
@@ -210,6 +212,7 @@ fn an_explicit_single_child_split_is_kept_because_sway_keeps_it_too() {
     let ws = tiri::normalize(
         &tree,
         Layout::SplitH,
+        false,
         AREA,
         &tiri_order(&[(10, 1), (11, 2)]),
     )
@@ -262,6 +265,7 @@ fn tab_bar_height_is_not_a_difference() {
     let mut from_tiri = tiri::normalize(
         &tree,
         Layout::Tabbed,
+        false,
         AREA,
         &tiri_order(&[(10, 1), (11, 2)]),
     )
@@ -300,8 +304,8 @@ fn which_tab_is_on_top_is_still_a_difference() {
     };
     let order = tiri_order(&[(10, 1), (11, 2)]);
 
-    let mut a = tiri::normalize(&base(true), Layout::Tabbed, AREA, &order).unwrap();
-    let mut b = tiri::normalize(&base(false), Layout::Tabbed, AREA, &order).unwrap();
+    let mut a = tiri::normalize(&base(true), Layout::Tabbed, false, AREA, &order).unwrap();
+    let mut b = tiri::normalize(&base(false), Layout::Tabbed, false, AREA, &order).unwrap();
     erase_decoration(&mut a);
     erase_decoration(&mut b);
 
@@ -335,7 +339,7 @@ fn geometry_differences_survive_the_tolerance() {
         floating: Vec::new(),
     };
     let order = tiri_order(&[(10, 1), (11, 2)]);
-    let at = |s| tiri::normalize(&build(s), Layout::SplitH, AREA, &order).unwrap();
+    let at = |s| tiri::normalize(&build(s), Layout::SplitH, false, AREA, &order).unwrap();
 
     assert_eq!(
         at(960.0).diff(&at(961.0)),
@@ -378,8 +382,8 @@ fn a_missing_window_is_reported_at_its_position() {
     };
     let order = tiri_order(&[(10, 1), (11, 2)]);
 
-    let a = tiri::normalize(&two, Layout::SplitH, AREA, &order).unwrap();
-    let b = tiri::normalize(&one, Layout::SplitH, AREA, &order).unwrap();
+    let a = tiri::normalize(&two, Layout::SplitH, false, AREA, &order).unwrap();
+    let b = tiri::normalize(&one, Layout::SplitH, false, AREA, &order).unwrap();
 
     let diff = a.diff(&b);
     assert_eq!(diff[0].at, "workspace");
@@ -475,4 +479,69 @@ workspace nonsense focus=none
 ";
     let err = crate::Fixture::parse(text).unwrap_err();
     assert!(err.reason.contains("split v"), "{err}");
+}
+
+/// The point of recording focus as a position: two states that differ only in which
+/// container is selected must not look the same.
+#[test]
+fn focus_on_a_container_is_distinguishable_from_focus_on_another() {
+    let json = |focused_path: &str| {
+        let (ws, outer, inner) = match focused_path {
+            "workspace" => ("true", "false", "false"),
+            "outer" => ("false", "true", "false"),
+            _ => ("false", "false", "true"),
+        };
+        format!(
+            r#"{{"id":1,"type":"root","layout":"splith","focused":false,
+                 "rect":{{"x":0,"y":0,"width":1920,"height":1080}},
+             "nodes":[{{"id":4,"type":"workspace","name":"1","layout":"splith","focused":{ws},
+                       "rect":{{"x":0,"y":0,"width":1920,"height":1080}},
+                       "nodes":[{{"id":5,"type":"con","layout":"splitv","focused":{outer},
+                                 "rect":{{"x":0,"y":0,"width":1920,"height":1080}},
+                        "nodes":[{{"id":6,"type":"con","layout":"splith","focused":{inner},
+                                  "rect":{{"x":0,"y":0,"width":1920,"height":1080}},
+                          "nodes":[{{"id":7,"type":"con","layout":"none","focused":false,
+                                    "visible":true,
+                                    "rect":{{"x":0,"y":0,"width":1920,"height":1080}},
+                                    "nodes":[]}}]}}]}}]}}]}}"#
+        )
+    };
+    let order = sway_order(&[(7, 1)]);
+    let at = |which| sway::normalize(&json(which), &order).unwrap();
+
+    let workspace = at("workspace");
+    let outer = at("outer");
+    let inner = at("inner");
+
+    assert_eq!(workspace.focused, crate::model::Focus::Container(vec![]));
+    assert_eq!(outer.focused, crate::model::Focus::Container(vec![0]));
+    assert_eq!(inner.focused, crate::model::Focus::Container(vec![0, 0]));
+
+    // The trees are identical; only focus differs, and that must be reported.
+    for (a, b) in [(&workspace, &outer), (&outer, &inner), (&workspace, &inner)] {
+        let diff = a.diff(b);
+        assert_eq!(diff.len(), 1, "{diff:?}");
+        assert_eq!(diff[0].at, "workspace/focus");
+    }
+}
+
+#[test]
+fn a_focused_container_round_trips_through_the_fixture_format() {
+    let text = "\
+workspace splith focus=@0/1
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.500
+    splith 0.000,0.500 1.000x0.500
+      window 2 0.000,0.500 1.000x0.500
+";
+    let parsed = crate::model::parse(text).unwrap();
+    assert_eq!(parsed.focused, crate::model::Focus::Container(vec![0, 1]));
+    assert_eq!(parsed.render(), text);
+
+    let workspace_focused = crate::model::parse("workspace splith focus=@\n").unwrap();
+    assert_eq!(
+        workspace_focused.focused,
+        crate::model::Focus::Container(vec![])
+    );
+    assert_eq!(workspace_focused.render(), "workspace splith focus=@\n");
 }

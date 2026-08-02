@@ -131,6 +131,26 @@ same rule:
   the stored flag is consulted only for the one state the tree cannot express — a workspace
   whose single child is a window.
 
+### What the model can see
+
+The comparison can only report a difference the model can express, so the model's resolution
+is the ceiling on any amount of searching. Two things were raised to that ceiling after
+being found blind:
+
+- **Which node holds focus, not just which window.** A focused container was originally
+  recorded as "no window focused", which made every such state look alike — `focus parent`
+  once and twice were indistinguishable, though they send the next command somewhere else,
+  and that is where most of the findings so far have come from. Focus is now a position:
+  `focus=3` for a window, `focus=@0/1` for a container, `focus=@` for the workspace itself.
+  Both compositors already published it; the normalizers were dropping it.
+
+Still outside what it compares, each for a stated reason:
+
+- geometry strictly inside a tabbed or stacked container, because sway's own numbers there
+  are not self-consistent (see `erase_decoration`);
+- the size share of each child as a number, rather than as the rectangles it produces;
+- anything a single workspace on a single output cannot reach.
+
 ## Known divergences
 
 Differences that are real, understood, and not yet fixed. These live in code, as the `KNOWN`

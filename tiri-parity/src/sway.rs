@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use crate::model::{Container, FracRect, Layout, Node, Window, WindowId, Workspace};
+use crate::model::{Container, Focus, FracRect, Layout, Node, Window, WindowId, Workspace};
 
 /// The subset of a `get_tree` node this model needs.
 #[derive(Debug, Deserialize)]
@@ -65,18 +65,17 @@ pub fn normalize(json: &str, order: &OpenOrder) -> Result<Workspace, Error> {
     let layout = Layout::from_sway(&ws.layout).unwrap_or(Layout::SplitH);
     let area = ws.rect;
 
-    let mut focused = None;
     let mut nodes = Vec::new();
     for child in &ws.nodes {
-        nodes.push(convert(child, area, order, false, &mut focused)?);
+        nodes.push(convert(child, area, order, false)?);
     }
     for child in &ws.floating_nodes {
-        nodes.push(convert(child, area, order, true, &mut focused)?);
+        nodes.push(convert(child, area, order, true)?);
     }
 
     Ok(Workspace {
         layout,
-        focused,
+        focused: focus_of(ws, order),
         nodes,
     })
 }
@@ -105,21 +104,49 @@ fn contains_focus(node: &SwayNode) -> bool {
             .any(contains_focus)
 }
 
+/// Which node carries focus, as a position rather than an id.
+///
+/// sway marks exactly one node, and it can be a container or the workspace itself. Ids are
+/// not comparable across compositors, so a container is addressed by where it sits.
+fn focus_of(ws: &SwayNode, order: &OpenOrder) -> Focus {
+    fn walk(node: &SwayNode, path: &mut Vec<usize>, order: &OpenOrder) -> Option<Focus> {
+        if node.focused {
+            let is_leaf = node.nodes.is_empty() && node.floating_nodes.is_empty();
+            return Some(match order.get(&node.id) {
+                Some(id) if is_leaf => Focus::Window(*id),
+                _ => Focus::Container(path.clone()),
+            });
+        }
+        for (idx, child) in node
+            .nodes
+            .iter()
+            .chain(node.floating_nodes.iter())
+            .enumerate()
+        {
+            path.push(idx);
+            let found = walk(child, path, order);
+            path.pop();
+            if found.is_some() {
+                return found;
+            }
+        }
+        None
+    }
+
+    walk(ws, &mut Vec::new(), order).unwrap_or(Focus::Nothing)
+}
+
 fn convert(
     node: &SwayNode,
     area: SwayRect,
     order: &OpenOrder,
     floating: bool,
-    focused: &mut Option<WindowId>,
 ) -> Result<Node, Error> {
     // A leaf is a node with no children of its own. sway reports `layout: none` for them.
     let is_leaf = node.nodes.is_empty() && node.floating_nodes.is_empty();
 
     if is_leaf {
         let id = *order.get(&node.id).ok_or(Error::UnknownWindow(node.id))?;
-        if node.focused {
-            *focused = Some(id);
-        }
         return Ok(Node::Window(Window {
             id,
             rect: frac(node.rect, area),
@@ -134,7 +161,7 @@ fn convert(
     let layout = Layout::from_sway(&node.layout).unwrap_or(Layout::SplitH);
     let mut nodes = Vec::new();
     for child in node.nodes.iter().chain(node.floating_nodes.iter()) {
-        nodes.push(convert(child, area, order, floating, focused)?);
+        nodes.push(convert(child, area, order, floating)?);
     }
 
     Ok(Node::Container(Container {

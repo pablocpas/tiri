@@ -116,6 +116,9 @@ fn observe(layout: &Layout<TestWindow>) -> Workspace {
         height: area.size.h,
     };
     let workspace_layout = model_layout(workspace.debug_workspace_layout());
+    // The tree has no node for "the workspace is what focus parent selected" when its only
+    // child is a window, so the workspace answers that separately.
+    let workspace_selected = workspace.tiling_targets_workspace();
 
     // TestWindow ids are the order the script opened them, which is exactly the identity the
     // model wants, so the map is the identity over the windows that exist.
@@ -126,7 +129,7 @@ fn observe(layout: &Layout<TestWindow>) -> Workspace {
         .map(|id| (id, id as u32))
         .collect();
 
-    tiri_model::normalize(&tree, workspace_layout, area, &order)
+    tiri_model::normalize(&tree, workspace_layout, workspace_selected, area, &order)
         .unwrap_or_else(|err| panic!("cannot normalize tiri's layout tree: {err:?}"))
 }
 

@@ -93,6 +93,57 @@ pub struct Container {
     pub nodes: Vec<Node>,
 }
 
+/// What holds focus.
+///
+/// A container can, which is what `focus parent` leaves behind, and it matters: two states
+/// that differ only in *which* container is selected send the next command somewhere else.
+/// Recording only the focused window would make those states indistinguishable, and a
+/// difference nothing can express is a difference nothing can find.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Focus {
+    /// An empty workspace, with nothing to focus.
+    Nothing,
+    Window(WindowId),
+    /// A container, addressed by position. The workspace is itself a container, and it is
+    /// the empty path.
+    Container(Vec<usize>),
+}
+
+impl Focus {
+    fn render(&self) -> String {
+        match self {
+            Focus::Nothing => "none".into(),
+            Focus::Window(id) => id.to_string(),
+            Focus::Container(path) => {
+                let mut out = String::from("@");
+                for (idx, step) in path.iter().enumerate() {
+                    if idx > 0 {
+                        out.push('/');
+                    }
+                    let _ = write!(out, "{step}");
+                }
+                out
+            }
+        }
+    }
+
+    fn parse(field: &str) -> Option<Self> {
+        if field == "none" {
+            return Some(Focus::Nothing);
+        }
+        let Some(path) = field.strip_prefix('@') else {
+            return field.parse().ok().map(Focus::Window);
+        };
+        if path.is_empty() {
+            return Some(Focus::Container(Vec::new()));
+        }
+        path.split('/')
+            .map(|step| step.parse().ok())
+            .collect::<Option<Vec<usize>>>()
+            .map(Focus::Container)
+    }
+}
+
 /// A workspace: a container with an orientation, plus what is focused.
 ///
 /// Both compositors normalize into this. In sway the workspace node already is such a
@@ -100,7 +151,7 @@ pub struct Container {
 #[derive(Debug, Clone)]
 pub struct Workspace {
     pub layout: Layout,
-    pub focused: Option<WindowId>,
+    pub focused: Focus,
     pub nodes: Vec<Node>,
 }
 
@@ -130,8 +181,8 @@ impl Workspace {
         if self.focused != other.focused {
             out.push(Difference {
                 at: "workspace/focus".into(),
-                expected: format!("{:?}", self.focused),
-                actual: format!("{:?}", other.focused),
+                expected: self.focused.render(),
+                actual: other.focused.render(),
             });
         }
         diff_nodes("workspace", &self.nodes, &other.nodes, &mut out);
@@ -141,11 +192,12 @@ impl Workspace {
     /// A stable one-line-per-node rendering, for snapshots and failure messages.
     pub fn render(&self) -> String {
         let mut out = String::new();
-        let focus = match self.focused {
-            Some(id) => format!(" focus={id}"),
-            None => " focus=none".to_string(),
-        };
-        let _ = writeln!(out, "workspace {}{}", self.layout.as_str(), focus);
+        let _ = writeln!(
+            out,
+            "workspace {} focus={}",
+            self.layout.as_str(),
+            self.focused.render()
+        );
         render_nodes(&self.nodes, 1, &mut out);
         out
     }
@@ -288,24 +340,14 @@ pub fn parse(text: &str) -> Result<Workspace, ParseError> {
             line: header_no + 1,
             reason: "unknown workspace layout",
         })?;
-    let focused = match header.next() {
-        Some("focus=none") => None,
-        Some(field) => Some(
-            field
-                .strip_prefix("focus=")
-                .and_then(|id| id.parse().ok())
-                .ok_or(ParseError {
-                    line: header_no + 1,
-                    reason: "unreadable focus",
-                })?,
-        ),
-        None => {
-            return Err(ParseError {
-                line: header_no + 1,
-                reason: "missing focus",
-            })
-        }
-    };
+    let focused = header
+        .next()
+        .and_then(|field| field.strip_prefix("focus="))
+        .and_then(Focus::parse)
+        .ok_or(ParseError {
+            line: header_no + 1,
+            reason: "unreadable focus",
+        })?;
 
     // Depth is carried by indentation, so a stack of the containers still open is enough.
     let mut root = Vec::new();

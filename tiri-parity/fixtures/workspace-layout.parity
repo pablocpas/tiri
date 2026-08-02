@@ -37,14 +37,14 @@ workspace splith focus=3
     window 3 0.000,0.667 1.000x0.333
 
 $ focus parent
-workspace splith focus=none
+workspace splith focus=@0
   splitv 0.000,0.000 1.000x1.000
     window 1 0.000,0.000 1.000x0.333
     window 2 0.000,0.333 1.000x0.333
     window 3 0.000,0.667 1.000x0.333
 
 $ layout tabbed
-workspace splith focus=none
+workspace splith focus=@0/0
   tabbed 0.000,0.000 1.000x1.000
     splitv 0.000,0.075 1.000x0.925
       window 1 0.000,0.037 1.000x0.321
@@ -52,7 +52,7 @@ workspace splith focus=none
       window 3 0.000,0.679 1.000x0.321
 
 $ layout splitv
-workspace splith focus=none
+workspace splith focus=@0/0
   splitv 0.000,0.000 1.000x1.000
     splitv 0.000,0.000 1.000x1.000
       window 1 0.000,0.000 1.000x0.333

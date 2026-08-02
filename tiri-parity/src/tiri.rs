@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use tiri_ipc::{LayoutTree, LayoutTreeLayout, LayoutTreeNode, LayoutTreeRect};
 
-use crate::model::{Container, FracRect, Layout, Node, Window, WindowId, Workspace};
+use crate::model::{Container, Focus, FracRect, Layout, Node, Window, WindowId, Workspace};
 
 /// Maps tiri window ids to the order the harness opened them.
 pub type OpenOrder = HashMap<u64, WindowId>;
@@ -35,6 +35,7 @@ fn layout_of(l: LayoutTreeLayout) -> Layout {
 pub fn normalize(
     tree: &LayoutTree,
     workspace_layout: Layout,
+    workspace_selected: bool,
     area: LayoutTreeRect,
     order: &OpenOrder,
 ) -> Result<Workspace, Error> {
@@ -42,26 +43,51 @@ pub fn normalize(
         return Err(Error::NoArea);
     }
 
-    let mut focused = None;
     let mut nodes = Vec::new();
 
     // When the root is itself a container, its children are the workspace's children and
     // its layout is the workspace layout. When it is a bare leaf, it is the workspace's
     // only child.
+    // The root container is the workspace, so focus on it is focus on the workspace and its
+    // children's positions are the workspace's.
+    let mut focused = Focus::Nothing;
     let layout = match &tree.root {
         Some(root) if root.window_id.is_none() => {
             let layout = root.layout.map(layout_of).unwrap_or(workspace_layout);
-            for child in &root.children {
-                nodes.push(convert(child, area, order, false, &mut focused)?);
+            if root.focused {
+                focused = Focus::Container(Vec::new());
+            }
+            for (idx, child) in root.children.iter().enumerate() {
+                nodes.push(convert(
+                    child,
+                    area,
+                    order,
+                    false,
+                    &mut vec![idx],
+                    &mut focused,
+                )?);
             }
             layout
         }
         Some(root) => {
-            nodes.push(convert(root, area, order, false, &mut focused)?);
+            nodes.push(convert(
+                root,
+                area,
+                order,
+                false,
+                &mut vec![0],
+                &mut focused,
+            )?);
             workspace_layout
         }
         None => workspace_layout,
     };
+
+    // A workspace whose only child is a window has no node for tiri to mark, so the tree
+    // cannot say the workspace is what `focus parent` selected. The caller knows.
+    if workspace_selected {
+        focused = Focus::Container(Vec::new());
+    }
 
     for root in &tree.floating {
         // tiri gives every floating group a container root; sway reports a lone floating
@@ -71,7 +97,8 @@ pub fn normalize(
             [only] if root.window_id.is_none() => only,
             _ => root,
         };
-        nodes.push(convert(root, area, order, true, &mut focused)?);
+        let mut path = vec![nodes.len()];
+        nodes.push(convert(root, area, order, true, &mut path, &mut focused)?);
     }
 
     Ok(Workspace {
@@ -86,14 +113,15 @@ fn convert(
     area: LayoutTreeRect,
     order: &OpenOrder,
     floating: bool,
-    focused: &mut Option<WindowId>,
+    path: &mut Vec<usize>,
+    focused: &mut Focus,
 ) -> Result<Node, Error> {
     if let Some(window_id) = node.window_id {
         let id = *order
             .get(&window_id)
             .ok_or(Error::UnknownWindow(window_id))?;
         if node.focused {
-            *focused = Some(id);
+            *focused = Focus::Window(id);
         }
         return Ok(Node::Window(Window {
             id,
@@ -105,9 +133,15 @@ fn convert(
     }
 
     let layout = node.layout.map(layout_of).unwrap_or(Layout::SplitH);
+    if node.focused {
+        *focused = Focus::Container(path.clone());
+    }
     let mut nodes = Vec::new();
-    for child in &node.children {
-        nodes.push(convert(child, area, order, floating, focused)?);
+    for (idx, child) in node.children.iter().enumerate() {
+        path.push(idx);
+        let converted = convert(child, area, order, floating, path, focused);
+        path.pop();
+        nodes.push(converted?);
     }
 
     Ok(Node::Container(Container {
