@@ -419,7 +419,10 @@ fn a_container_leaves_nothing_behind_when_its_last_window_closes() {
     assert_eq!(workspace.debug_workspace_layout(), ContainerLayout::SplitH);
     assert_snapshot!(
         workspace.tiling().debug_tree().as_str(),
-        @"Window 2 *"
+        @r"
+    SplitH
+      Window 2 *
+    "
     );
 }
 #[test]
@@ -1162,7 +1165,13 @@ fn split_on_empty_workspace_applies_to_next_window() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert_snapshot!(workspace.tiling().debug_tree().as_str(), @"Window 1 *");
+    assert_snapshot!(
+        workspace.tiling().debug_tree().as_str(),
+        @r"
+    SplitV
+      Window 1 *
+    "
+    );
 
     let mut layout = layout;
     check_ops_on_layout(
@@ -1273,7 +1282,10 @@ fn split_on_single_window_persists_after_close() {
     let tree = workspace.tiling().debug_tree();
     assert_snapshot!(
         tree.as_str(),
-        @"Window 2 *"
+        @r"
+    SplitV
+      Window 2 *
+    "
     );
 }
 #[test]
@@ -1354,21 +1366,6 @@ fn removing_the_last_sibling_keeps_the_workspace_above_the_container() {
       Stacked
         Window 1 *
     "
-    );
-}
-#[test]
-fn wrap_root_for_sibling_insert_uses_pending_layout_hint() {
-    let mut harness = TreeHarness::new();
-    harness.add_window(1);
-    harness.add_window(2);
-
-    harness.tree.set_pending_layout(ContainerLayout::Tabbed);
-    assert!(harness.tree.wrap_root_for_sibling_insert());
-
-    let tree = harness.tree.debug_tree().replace(" *", "");
-    assert!(
-        tree.contains("Tabbed\n  SplitH\n    Window 1\n    Window 2"),
-        "wrapping root for sibling insert should honor pending layout hint:\n{tree}"
     );
 }
 #[test]

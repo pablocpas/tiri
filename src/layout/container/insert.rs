@@ -22,32 +22,6 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn insert_window_with_focus(&mut self, tile: Tile<W>, focus: bool) {
         self.clear_focus_history();
 
-        if self.root.is_none() {
-            let tile_key = self.insert_node(NodeData::Leaf(tile));
-
-            if self.pending_layout_wrap_on_split {
-                let layout = self.layout_for_workspace_container();
-                self.pending_layout_wrap_on_split = false;
-
-                let mut container = ContainerData::new(layout);
-                container.mark_user_created();
-                container.add_child(tile_key);
-
-                let container_key = self.insert_node(NodeData::Container(container));
-                self.set_parent(tile_key, Some(container_key));
-                self.set_parent(container_key, None);
-                self.root = Some(container_key);
-            } else {
-                // Match i3/sway: layout commands issued on an empty workspace apply when a
-                // second window arrives (root-leaf conversion), not to the first opened window.
-                self.set_parent(tile_key, None);
-                self.root = Some(tile_key);
-            }
-
-            self.settle_focus_after_insert(tile_key, focus);
-            return;
-        }
-
         let tile_key = self.insert_node(NodeData::Leaf(tile));
         self.insert_key_as_focus_sibling(tile_key, focus);
     }
@@ -61,41 +35,44 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.clear_focus_history();
 
         let node_key = self.insert_subtree(subtree);
+        self.insert_key_as_focus_sibling(node_key, focus);
+    }
 
-        let tree_has_no_leaves = self.first_leaf_key().is_none();
-        if self.root.is_none() || tree_has_no_leaves {
-            if let Some(old_root) = self.root.take() {
-                self.remove_node_recursive(old_root);
-            }
+    /// Make `subtree` the whole tree, replacing whatever root is there.
+    ///
+    /// For a floating container, where the tree's root *is* the container the user sees: a
+    /// grouped subtree arriving is that container, not something to put inside one. Inserting
+    /// it under the root instead would add a level the floating side has to see through, and
+    /// `focus parent` counts levels.
+    pub(in crate::layout) fn adopt_subtree_as_root(
+        &mut self,
+        subtree: DetachedNode<W>,
+        focus: bool,
+    ) {
+        self.clear_focus_history();
+
+        let old_root = self.root;
+        let node_key = self.insert_subtree(subtree);
+        if matches!(self.get_node(node_key), Some(NodeData::Container(_))) {
+            self.remove_node_recursive(old_root);
             self.set_parent(node_key, None);
-            self.root = Some(node_key);
-            self.settle_focus_after_insert(node_key, focus);
+            self.root = node_key;
+            self.focused_key = None;
+            self.selected_key = None;
+            self.focus_first_leaf();
+            if !focus {
+                self.focused_key = self.first_leaf_key();
+            }
             return;
         }
 
+        // A lone window still needs the container to live in.
         self.insert_key_as_focus_sibling(node_key, focus);
     }
 
     /// Insert an already-materialized node as a sibling of the selected/focused node,
-    /// following i3's focus-parent semantics. The tree must have a non-empty root.
-    fn insert_key_as_focus_sibling(&mut self, node_key: NodeKey, focus: bool) {
-        // Ensure the root is a container so we can insert siblings easily.
-        let root_key = self.expect_root();
-        if matches!(self.get_node(root_key), Some(NodeData::Leaf(_))) {
-            // Convert the root leaf into a container.
-            let old_root_key = self.take_root();
-            let layout = self.layout_for_workspace_container();
-            self.pending_layout_wrap_on_split = false;
-            let mut container = ContainerData::new(layout);
-            container.add_child(old_root_key);
-
-            let container_key = self.insert_node(NodeData::Container(container));
-            self.set_parent(old_root_key, Some(container_key));
-            self.set_parent(container_key, None);
-            self.root = Some(container_key);
-            self.focus_node_key(old_root_key);
-        }
-
+    /// following i3's focus-parent semantics.
+    pub(super) fn insert_key_as_focus_sibling(&mut self, node_key: NodeKey, focus: bool) {
         // Prefer the selected container/leaf target (focus-parent semantics): i3/sway insert
         // new windows as siblings of the selected node. Fall back to the focused leaf.
         let selected_target = self.selected_key.and_then(|selected_key| {
@@ -122,7 +99,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                 });
 
         let insert_target = selected_target.or(focus_target).or_else(|| {
-            let root_key = self.root?;
+            let root_key = self.root;
             let root = self.get_container(root_key)?;
             Some((root_key, root.child_count()))
         });
@@ -136,14 +113,13 @@ impl<W: LayoutElement> ContainerTree<W> {
             }
         }
 
-        // Fallback: append to the root container.
-        if let Some(root_key) = self.root {
-            if let Some(NodeData::Container(container)) = self.get_node_mut(root_key) {
-                let insert_idx = container.children.len();
-                container.insert_child(insert_idx, node_key);
-                self.set_parent(node_key, Some(root_key));
-                self.settle_focus_after_insert(node_key, focus);
-            }
+        // Fallback: append to the workspace.
+        let root_key = self.root;
+        if let Some(NodeData::Container(container)) = self.get_node_mut(root_key) {
+            let insert_idx = container.children.len();
+            container.insert_child(insert_idx, node_key);
+            self.set_parent(node_key, Some(root_key));
+            self.settle_focus_after_insert(node_key, focus);
         }
     }
 
@@ -169,11 +145,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let parent_path = &path[..path.len() - 1];
         let current_idx = *path.last().unwrap();
 
-        let parent_key = if parent_path.is_empty() {
-            self.root
-        } else {
-            self.get_node_key_at_path(parent_path)
-        };
+        let parent_key = self.get_node_key_at_path(parent_path);
 
         if let Some(parent_key) = parent_key {
             let insert_idx = current_idx + 1;
@@ -197,7 +169,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         tile: Tile<W>,
         focus: bool,
     ) -> bool {
-        let root_key = self.ensure_root_container();
+        let root_key = self.root;
 
         let root_container = match self.get_container(root_key) {
             Some(c) => c,
@@ -269,7 +241,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let mut parent_path = path.to_vec();
         let insert_idx = parent_path.pop().unwrap();
         let parent_key = if parent_path.is_empty() {
-            self.root?
+            self.root
         } else {
             self.get_node_key_at_path(&parent_path)?
         };
@@ -379,32 +351,14 @@ impl<W: LayoutElement> ContainerTree<W> {
         tile: Tile<W>,
         focus: bool,
     ) -> bool {
-        if self.root.is_none() {
+        if self.is_empty() {
             self.append_leaf(tile, focus);
             return true;
         }
 
         let desired_layout = direction.split_layout();
 
-        if Some(target_key) == self.root {
-            let Some(root_key) = self.root else {
-                self.append_leaf(tile, focus);
-                return true;
-            };
-            if !matches!(self.get_node(root_key), Some(NodeData::Leaf(_))) {
-                self.append_leaf(tile, focus);
-                return true;
-            }
-
-            let tile_key = self.insert_node(NodeData::Leaf(tile));
-            let container_key = self.new_split_pair_container(root_key, tile_key, direction);
-            self.set_parent(container_key, None);
-            self.root = Some(container_key);
-
-            self.settle_focus_after_insert(tile_key, focus);
-            return true;
-        }
-
+        // The workspace has no sibling slot to split into, so the window simply joins it.
         let Some(parent_key) = self.parent_of(target_key) else {
             self.append_leaf(tile, focus);
             return true;
@@ -463,34 +417,27 @@ impl<W: LayoutElement> ContainerTree<W> {
         tile: Tile<W>,
         focus: bool,
     ) -> bool {
-        let Some(root_key) = self.root else {
-            self.append_leaf(tile, focus);
-            return true;
-        };
+        let root_key = self.root;
 
-        let tile_key = self.insert_node(NodeData::Leaf(tile));
-
-        if let Some(root_container) = self.get_container(root_key) {
-            if root_container.layout() == direction.split_layout() {
-                // The root already splits along this axis: insert at the edge.
-                let insert_idx = if direction.is_leading() {
-                    0
-                } else {
-                    root_container.child_count()
-                };
-                if let Some(container) = self.get_container_mut(root_key) {
-                    container.insert_child(insert_idx, tile_key);
-                }
-
-                self.set_parent(tile_key, Some(root_key));
-                self.settle_focus_after_insert(tile_key, focus);
-                return true;
-            }
+        // The workspace has to face the direction for an edge to mean anything. When it does
+        // not, its children move under one container and it turns — the same surgery a move
+        // across the workspace does, and the reason it is one call rather than a rule here.
+        if self.root_container_layout() != direction.split_layout() && !self.is_empty() {
+            let previous = self.root_container_layout();
+            self.wrap_workspace_children(previous, direction.split_layout());
         }
 
-        let new_container_key = self.new_split_pair_container(root_key, tile_key, direction);
-        self.set_parent(new_container_key, None);
-        self.root = Some(new_container_key);
+        let tile_key = self.insert_node(NodeData::Leaf(tile));
+        let insert_idx = match direction.is_leading() {
+            true => 0,
+            false => self
+                .get_container(root_key)
+                .map_or(0, |root| root.child_count()),
+        };
+        if let Some(container) = self.get_container_mut(root_key) {
+            container.insert_child(insert_idx, tile_key);
+        }
+        self.set_parent(tile_key, Some(root_key));
 
         self.settle_focus_after_insert(tile_key, focus);
 

@@ -209,19 +209,18 @@ pub struct ContainerTree<W: LayoutElement> {
     nodes: SlotMap<NodeKey, NodeData<W>>,
     /// Parent pointer for each node (None for root)
     parents: SecondaryMap<NodeKey, Option<NodeKey>>,
-    /// Root node key
-    root: Option<NodeKey>,
-    /// Layout to apply when the tree is empty (i3 workspace_layout equivalent).
-    pending_layout: Option<Layout>,
-    /// The workspace's own layout: what a layout command targets when it addresses the
-    /// workspace rather than a container inside the tree. Single source of truth; the
-    /// spaces read it through `workspace_layout()`.
-    workspace_layout: Layout,
-    /// Last split layout the workspace had, for i3's `layout toggle split`.
-    workspace_prev_split_layout: Option<Layout>,
-    /// Whether pending_layout should be consumed by the next split on a root leaf.
-    /// This is used for i3/sway semantics after `layout split*` on a single tiled leaf.
-    pending_layout_wrap_on_split: bool,
+    /// The workspace.
+    ///
+    /// Always present and always a container, empty tree included.
+    ///
+    /// sway keeps `sway_workspace` and `sway_container` as separate structs, but the
+    /// workspace carries the same `layout` and `prev_split_layout` and answers the same
+    /// questions — it is a container's worth of state under another type, which is why i3,
+    /// where a workspace is an ordinary `Con`, gets the same answers out of one code path.
+    /// Modelling it as a node here buys that same uniformity: every rule that used to ask
+    /// "is the parent the workspace?" was working around its absence, and each of those
+    /// workarounds disagreed with sway somewhere.
+    root: NodeKey,
     /// Focused leaf node key (source of truth for focus).
     focused_key: Option<NodeKey>,
     /// Currently selected node key (container selection via focus-parent).
@@ -786,14 +785,15 @@ impl<W: LayoutElement> ContainerTree<W> {
         scale: f64,
         options: Rc<Options>,
     ) -> Self {
+        let mut nodes = SlotMap::with_key();
+        let mut parents = SecondaryMap::new();
+        let root = nodes.insert(NodeData::Container(ContainerData::new(Layout::SplitH)));
+        parents.insert(root, None);
+
         Self {
-            nodes: SlotMap::with_key(),
-            parents: SecondaryMap::new(),
-            root: None,
-            pending_layout: None,
-            workspace_layout: Layout::SplitH,
-            workspace_prev_split_layout: None,
-            pending_layout_wrap_on_split: false,
+            nodes,
+            parents,
+            root,
             focused_key: None,
             selected_key: None,
             leaf_layouts: Vec::new(),

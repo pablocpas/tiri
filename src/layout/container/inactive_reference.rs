@@ -3,7 +3,6 @@
 use super::ContainerTree;
 use super::InactiveTilingReference;
 use super::InsertParentInfo;
-use super::Layout;
 use super::LayoutElement;
 use super::NodeData;
 use super::NodeKey;
@@ -42,7 +41,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         if self.get_node(key).is_some() {
             Some(key)
         } else if path_hint.is_empty() {
-            self.root
+            Some(self.root)
         } else {
             self.get_node_key_at_path(path_hint)
         }
@@ -198,17 +197,13 @@ impl<W: LayoutElement> ContainerTree<W> {
                     return Some(InsertParentInfo {
                         parent_path: Vec::new(),
                         insert_idx: 1,
-                        layout: self.pending_layout.unwrap_or(Layout::SplitH),
+                        layout: self.root_container_layout(),
                         child_percents: Vec::new(),
                     });
                 }
 
                 let parent_path = path[..path.len() - 1].to_vec();
-                let parent_key = if parent_path.is_empty() {
-                    self.root?
-                } else {
-                    self.get_node_key_at_path(&parent_path)?
-                };
+                let parent_key = self.get_node_key_at_path(&parent_path)?;
                 let parent = self.get_container(parent_key)?;
                 let leaf_idx = *path.last().unwrap();
                 Some(InsertParentInfo {

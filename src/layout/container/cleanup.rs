@@ -22,9 +22,6 @@ impl<W: LayoutElement> ContainerTree<W> {
             self.cleanup_one_container(container_key, parent_key);
             key = parent_key;
         }
-
-        self.remove_root_if_empty();
-        self.collapse_singleton_root_chain();
     }
 
     /// Dissolve a lone wrapper that only re-states the orientation its grandparent already
@@ -109,37 +106,25 @@ impl<W: LayoutElement> ContainerTree<W> {
         let container_is_user_made = container.is_user_container();
         let child_count = container_children.len();
 
-        let parent_layout =
-            parent_key.and_then(|key| self.get_container(key).map(|parent| parent.layout()));
-
-        let single_child_key = container_children.first().copied();
-        // A container with a parent is never dissolved here, whatever its layout and however
-        // few children it has left. Measured: a `split` builds one holding a single window
-        // and it survives, a `close` that empties one down to a single child leaves it
-        // alone, and so does a move elsewhere in the tree. The only lone wrapper that goes
-        // is a *root* one holding a window, because a workspace whose only child is a window
-        // has no container in sway either.
-        let can_replace_with_child = parent_key.is_none()
-            && single_child_key.is_some_and(|child_key| {
-                matches!(self.get_node(child_key), Some(NodeData::Leaf(_)))
-            });
+        // A container is never dissolved here, whatever its layout and however few children
+        // it has left. Measured: a `split` builds one holding a single window and it
+        // survives, a `close` that empties one down to a single child leaves it alone, and so
+        // does a move elsewhere in the tree. The workspace is no exception — it is a
+        // container that happens to have no parent, and an empty one is an empty workspace.
+        let Some(parent_key) = parent_key else {
+            return;
+        };
+        let Some(parent_layout) = self.get_container(parent_key).map(|parent| parent.layout())
+        else {
+            return;
+        };
 
         if child_count == 0 {
-            self.remove_empty_container(container_key, parent_key, container_layout);
-        } else if child_count == 1 && can_replace_with_child {
-            let Some(child_key) = single_child_key else {
-                return;
-            };
-            self.replace_container_with_child(container_key, parent_key, child_key);
+            self.remove_empty_container(container_key, parent_key);
         } else if child_count > 1
             && !container_is_user_made
-            && parent_layout
-                .map(|layout| Self::layouts_squashable(layout, container_layout))
-                .unwrap_or(false)
+            && Self::layouts_squashable(parent_layout, container_layout)
         {
-            let Some(parent_key) = parent_key else {
-                return;
-            };
             self.squash_container_into_parent(
                 container_key,
                 parent_key,
@@ -152,56 +137,15 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Remove a container with no children. Removing the root remembers its layout as the
     /// workspace's pending layout, matching i3's workspace_layout persistence.
-    fn remove_empty_container(
-        &mut self,
-        container_key: NodeKey,
-        parent_key: Option<NodeKey>,
-        container_layout: Layout,
-    ) {
-        if let Some(parent_key) = parent_key {
-            let Some(parent_idx) = self.child_index(parent_key, container_key) else {
-                return;
-            };
-            if let Some(parent) = self.get_container_mut(parent_key) {
-                parent.remove_child(parent_idx);
-            }
-            self.set_parent(container_key, None);
-            self.remove_node_recursive(container_key);
-        } else {
-            self.pending_layout = Some(container_layout);
-            self.pending_layout_wrap_on_split = false;
-            self.remove_node_recursive(container_key);
-            self.root = None;
+    fn remove_empty_container(&mut self, container_key: NodeKey, parent_key: NodeKey) {
+        let Some(parent_idx) = self.child_index(parent_key, container_key) else {
+            return;
+        };
+        if let Some(parent) = self.get_container_mut(parent_key) {
+            parent.remove_child(parent_idx);
         }
-    }
-
-    /// Dissolve a single-child wrapper by promoting its only child into its place.
-    fn replace_container_with_child(
-        &mut self,
-        container_key: NodeKey,
-        parent_key: Option<NodeKey>,
-        child_key: NodeKey,
-    ) {
-        if let Some(parent_key) = parent_key {
-            if self.child_index(parent_key, container_key).is_none() {
-                return;
-            }
-            if let Some(parent) = self.get_container_mut(parent_key) {
-                parent.replace_child_preserving_focus(container_key, child_key);
-            }
-            self.set_parent(child_key, Some(parent_key));
-        } else {
-            if self.selected_key == Some(container_key) {
-                self.selected_key = Some(child_key);
-            }
-            if self.focused_key == Some(container_key) {
-                self.focused_key = Some(child_key);
-            }
-            self.set_parent(child_key, None);
-            self.root = Some(child_key);
-        }
-        self.nodes.remove(container_key);
-        self.parents.remove(container_key);
+        self.set_parent(container_key, None);
+        self.remove_node_recursive(container_key);
     }
 
     /// Splice a container's children into its parent in place of the container itself,
@@ -290,111 +234,13 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.parents.remove(container_key);
     }
 
-    /// Drop the root container once it has no children left.
-    fn remove_root_if_empty(&mut self) {
-        let Some(root_key) = self.root else {
-            return;
-        };
-        let Some(container) = self.get_container(root_key) else {
-            return;
-        };
-        if container.children.is_empty() {
-            self.pending_layout = None;
-            self.pending_layout_wrap_on_split = false;
-            self.remove_node_recursive(root_key);
-            self.root = None;
-        }
-    }
-
-    /// Dissolve an implicit root that holds a single window.
-    ///
-    /// A workspace whose only child is a window has no container in sway either, so the
-    /// wrapper is representation and goes. A workspace whose only child is a *container* is
-    /// a different state and sway keeps both levels — collapsing it would promote that
-    /// container into the workspace and hand it the workspace's layout, which is how
-    /// closing tabs down to the last one used to leave the workspace itself tabbed.
-    fn collapse_singleton_root_chain(&mut self) {
-        while let Some(root_key) = self.root {
-            let Some(root) = self.get_container(root_key) else {
-                break;
-            };
-            if root.child_count() != 1 {
-                break;
-            }
-
-            let Some(child_key) = root.child_key(0) else {
-                break;
-            };
-            if self.get_container(child_key).is_some() {
-                break;
-            }
-            if self.selected_key == Some(root_key) {
-                self.selected_key = Some(child_key);
-            }
-            if self.focused_key == Some(root_key) {
-                self.focused_key = Some(child_key);
-            }
-
-            self.set_parent(child_key, None);
-            self.nodes.remove(root_key);
-            self.parents.remove(root_key);
-            self.root = Some(child_key);
-        }
-    }
-
-    pub(super) fn ensure_root_container(&mut self) -> NodeKey {
-        if self.root.is_none() {
-            let explicit_layout = self.pending_layout.is_some();
-            let layout = self.layout_for_workspace_container();
-            self.pending_layout_wrap_on_split = false;
-            let mut container = ContainerData::new(layout);
-            if explicit_layout {
-                container.mark_user_created();
-            }
-            let container_key = self.insert_node(NodeData::Container(container));
-            self.set_parent(container_key, None);
-            self.root = Some(container_key);
-            self.focused_key = None;
-            return container_key;
-        }
-
-        let root_key = self.expect_root();
-        let needs_conversion = matches!(self.get_node(root_key), Some(NodeData::Leaf(_)));
-
-        if needs_conversion {
-            let old_root_key = self.take_root();
-            let mut container = ContainerData::new(Layout::SplitH);
-            container.add_child(old_root_key);
-            let container_key = self.insert_node(NodeData::Container(container));
-            self.set_parent(old_root_key, Some(container_key));
-            self.set_parent(container_key, None);
-            self.root = Some(container_key);
-            self.focus_node_key(old_root_key);
-            container_key
-        } else {
-            root_key
-        }
-    }
-
     pub(super) fn ensure_container_at_path(
         &mut self,
         path: &[usize],
         layout: Layout,
     ) -> Option<NodeKey> {
-        let root_key = self.root?;
         if path.is_empty() {
-            if matches!(self.get_node(root_key), Some(NodeData::Container(_))) {
-                return Some(root_key);
-            }
-
-            let mut container = ContainerData::new(layout);
-            container.mark_user_created();
-            container.add_child(root_key);
-            let container_key = self.insert_node(NodeData::Container(container));
-            self.set_parent(root_key, Some(container_key));
-            self.set_parent(container_key, None);
-            self.root = Some(container_key);
-            return Some(container_key);
+            return Some(self.root);
         }
 
         let key = self.get_node_key_at_path(path)?;
@@ -404,7 +250,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         let parent_path = &path[..path.len() - 1];
         let parent_key = if parent_path.is_empty() {
-            self.root?
+            self.root
         } else {
             self.get_node_key_at_path(parent_path)?
         };

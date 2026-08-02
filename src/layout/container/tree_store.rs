@@ -11,18 +11,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// The implicit workspace-root container is an implementation detail and
     /// should be ignored in inactive-tiling reference resolution.
     pub(super) fn is_synthetic_root_container_key(&self, key: NodeKey) -> bool {
-        if self.root != Some(key) {
-            return false;
-        }
-
-        let Some(container) = self.get_container(key) else {
-            return false;
-        };
-
-        // Explicit root wrappers created by root-level layout commands are real
-        // restore/focus targets. Only the implicit workspace backing root should
-        // be treated as synthetic.
-        !container.is_user_container()
+        self.root == key
     }
 
     /// Get node data by key
@@ -108,30 +97,17 @@ impl<W: LayoutElement> ContainerTree<W> {
         Some(node)
     }
 
-    /// Check if tree is empty
-    pub(in crate::layout) fn is_empty(&self) -> bool {
-        self.root.is_none()
-    }
-
-    /// The root key, asserting the tree is non-empty.
+    /// Whether the workspace holds no windows.
     ///
-    /// Callers must have already established that the tree has a root (typically via an
-    /// `is_none()` early return). Use this instead of `self.root.unwrap()` so the precondition
-    /// is named at the panic site.
-    pub(super) fn expect_root(&self) -> NodeKey {
-        self.root.expect("container tree root must exist here")
-    }
-
-    /// Take the root key out, asserting the tree is non-empty. See [`Self::expect_root`].
-    pub(super) fn take_root(&mut self) -> NodeKey {
-        self.root
-            .take()
-            .expect("container tree root must exist here")
+    /// Asks for a leaf rather than for the root's children: the root is always there, and a
+    /// container that has just been emptied can still be hanging off it when this is called.
+    /// Every caller means "is there a window here".
+    pub(in crate::layout) fn is_empty(&self) -> bool {
+        self.first_leaf_key().is_none()
     }
 
     pub(in crate::layout) fn root_is_synthetic_workspace_container(&self) -> bool {
-        self.root
-            .is_some_and(|root_key| self.is_synthetic_root_container_key(root_key))
+        true
     }
 
     /// Parent of a node, or None for the root.

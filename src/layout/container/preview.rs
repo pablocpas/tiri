@@ -13,25 +13,14 @@ use super::PreviewLeafGeometry;
 impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn preview_new_leaf_geometry(&self) -> Option<PreviewLeafGeometry> {
         let root_rect = self.layout_area();
-        let Some(root_key) = self.root else {
-            if let Some(layout) = self.pending_layout {
-                let (rect, tab_bar_offset) =
-                    self.preview_child_rect(layout, root_rect, 1, &[1.0], 0, true);
-                return Some(PreviewLeafGeometry {
-                    rect,
-                    tab_bar_offset,
-                });
-            }
-            return Some(PreviewLeafGeometry {
-                rect: root_rect,
-                tab_bar_offset: 0.0,
-            });
-        };
+        let root_key = self.root;
 
-        if matches!(self.get_node(root_key), Some(NodeData::Leaf(_))) {
-            let percents = self.preview_inserted_child_percents(&[], 1, 1);
+        // Nothing in the workspace yet: the window arriving gets it all, laid out by the
+        // workspace's own orientation.
+        if self.is_empty() {
+            let layout = self.root_container_layout();
             let (rect, tab_bar_offset) =
-                self.preview_child_rect(Layout::SplitH, root_rect, 2, &percents, 1, true);
+                self.preview_child_rect(layout, root_rect, 1, &[1.0], 0, true);
             return Some(PreviewLeafGeometry {
                 rect,
                 tab_bar_offset,

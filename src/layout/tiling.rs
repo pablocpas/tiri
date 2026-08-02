@@ -370,36 +370,12 @@ impl<W: LayoutElement> TilingSpace<W> {
         Some((subtree, origin, rect))
     }
 
+    /// The whole tiling workspace as one subtree, for floating it in one piece.
     pub(super) fn take_workspace_subtree_for_floating(
         &mut self,
     ) -> Option<(DetachedNode<W>, Rectangle<f64, Logical>)> {
         let rect = self.working_area;
-
-        let subtree = if self.tree.root_is_synthetic_workspace_container() {
-            match self.tree.root_children_len() {
-                0 => return None,
-                1 => self.tree.take_root_child_subtree(0)?,
-                _ => {
-                    let wrapper_layout = self.tree.root_container_layout();
-                    self.tree
-                        .wrap_workspace_children(wrapper_layout, self.tree.workspace_layout())?;
-                    self.tree.take_root_child_subtree(0)?
-                }
-            }
-        } else {
-            let (subtree, _) = self.tree.take_subtree_at(self.tree.root_node_key()?)?;
-            match subtree {
-                DetachedNode::Leaf(tile) => DetachedNode::Container(DetachedContainer::from_parts(
-                    self.tree.workspace_layout(),
-                    vec![DetachedNode::Leaf(tile)],
-                    vec![1.0],
-                    vec![0],
-                    true,
-                    Some(self.tree.workspace_layout()),
-                )),
-                subtree => subtree,
-            }
-        };
+        let subtree = self.tree.take_whole_tree()?;
 
         self.sync_fullscreen_window();
         self.tree.layout();
@@ -1451,10 +1427,6 @@ impl<W: LayoutElement> TilingSpace<W> {
             .window_for_inactive_tiling_reference(reference, strict)
     }
 
-    pub fn wrap_root_for_sibling_insert(&mut self) -> bool {
-        self.mutate_tree(|tree| tree.wrap_root_for_sibling_insert())
-    }
-
     fn active_selection_layout(&self) -> Option<Layout> {
         if self.tree.selected_is_container() {
             let key = self.tree.selected_node_key()?;
@@ -2291,14 +2263,6 @@ impl<W: LayoutElement> TilingSpace<W> {
         self.tree.is_empty()
     }
 
-    pub fn clear_pending_layout_hint(&mut self) {
-        self.tree.clear_pending_layout();
-    }
-
-    pub fn set_pending_layout_hint(&mut self, layout: Layout) {
-        self.tree.set_pending_layout(layout);
-    }
-
     pub fn set_workspace_layout_hint(&mut self, layout: Layout) {
         self.tree.set_workspace_layout_hint(layout);
     }
@@ -2381,6 +2345,14 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     pub fn insert_subtree_with_focus(&mut self, subtree: DetachedNode<W>, focus: bool) {
         self.tree.insert_subtree_with_focus(subtree, focus);
+        self.sync_fullscreen_window();
+        self.tree.layout();
+    }
+
+    /// Put back what [`Self::take_whole_tree`] took: the subtree *is* the workspace's
+    /// contents, so it is absorbed rather than nested under a second container.
+    pub fn restore_workspace_subtree(&mut self, subtree: DetachedNode<W>, focus: bool) {
+        self.tree.restore_whole_tree(subtree, focus);
         self.sync_fullscreen_window();
         self.tree.layout();
     }

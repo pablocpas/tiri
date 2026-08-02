@@ -2598,6 +2598,7 @@ impl<W: LayoutElement> Workspace<W> {
             // Floating -> Tiling inserts directly using the inactive tiling
             // reference. No tree collapse/normalization.
             if !explicit_window {
+                let was_the_workspace = self.floating.active_container_is_workspace_floated();
                 if let Some((subtree, origin, _rect)) = self.floating.take_container_subtree(&id) {
                     // Internal implicit single-child split wrappers from
                     // floating must not materialize in tiling.
@@ -2616,7 +2617,12 @@ impl<W: LayoutElement> Workspace<W> {
                             None => origin.as_ref(),
                         }
                     };
-                    if let Some(info) = restore_info {
+                    if was_the_workspace && tiling_was_empty {
+                        // It was the whole workspace on the way out; it is the whole
+                        // workspace on the way back.
+                        self.tiling
+                            .restore_workspace_subtree(subtree, target_is_active);
+                    } else if let Some(info) = restore_info {
                         self.tiling.insert_subtree_with_parent_info(
                             info,
                             subtree,

@@ -79,21 +79,7 @@ in (w2, w1 against tiri's w1, w2), which is its reversing loop and deliberately 
 and the size shares. Recorded while measuring what `preserve_on_single` was approximating, \
 and kept because it is the shortest script that reaches the splice at all.",
     },
-    // The three below are open findings from the differential fuzz, recorded but not yet
-    // fixed. The first two are one cause: the workspace's layout lives outside the tree, in
-    // `workspace_layout` / `pending_layout` / `workspace_prev_split_layout`, so every rule
-    // phrased as "the parent is the workspace" has to re-derive it and they disagree. Fixing
-    // them one at a time is what the collecting is meant to avoid.
-    Divergence {
-        fixture: "split-inside-a-tabbed-workspace.parity",
-        step: 5,
-        reason: "\
-`split v` on the only window of a tabbed workspace. sway builds a splitv container inside the \
-workspace and leaves the workspace tabbed; tiri overwrites the workspace's layout with splitv \
-and builds nothing. With one window tiri's root is the leaf itself and `tabbed` is held \
-outside the tree, so `split_focused` sees a window with no parent and takes the \
-empty-workspace route.",
-    },
+    // `layout toggle split` and the memory it reads.
     Divergence {
         fixture: "toggle-split-returns-to-the-previous-split.parity",
         step: 7,

@@ -4,15 +4,23 @@ use super::{ContainerTree, LayoutElement, LeafLayoutInfo, NodeData, NodeKey};
 
 impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn verify_invariants(&self) {
-        if self.root.is_none() {
-            assert!(self.nodes.is_empty(), "empty tree must not retain nodes");
+        let root_key = self.root;
+
+        if self.is_empty() {
+            // The workspace itself stays: an empty workspace is a container with no
+            // children, holding the orientation the next window will be laid out by.
+            assert_eq!(
+                self.nodes.len(),
+                1,
+                "empty tree must retain the workspace and nothing else"
+            );
             assert!(
                 self.focused_key.is_none(),
                 "empty tree must not retain focused_key"
             );
             assert!(
-                self.selected_key.is_none(),
-                "empty tree must not retain selected_key"
+                self.selected_key.is_none_or(|key| key == root_key),
+                "empty tree must not retain a selected_key below the workspace"
             );
             assert!(
                 self.leaf_layouts.is_empty(),
@@ -21,7 +29,6 @@ impl<W: LayoutElement> ContainerTree<W> {
             return;
         }
 
-        let root_key = self.root.expect("checked above");
         assert!(
             self.nodes.contains_key(root_key),
             "root key must point to an existing node"
@@ -80,15 +87,10 @@ impl<W: LayoutElement> ContainerTree<W> {
             );
         }
 
-        if self.root_is_synthetic_workspace_container() {
-            let root = self
-                .get_container(root_key)
-                .expect("synthetic root must be a container");
-            assert!(
-                !root.is_user_container(),
-                "synthetic workspace root must not be explicit"
-            );
-        }
+        assert!(
+            self.get_container(root_key).is_some(),
+            "the workspace must be a container"
+        );
     }
 
     fn verify_node(

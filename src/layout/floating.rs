@@ -1181,7 +1181,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             self.scale,
             self.container_tree_options(&self.options),
         );
-        tree.insert_subtree_with_focus(subtree, activate);
+        tree.adopt_subtree_as_root(subtree, activate);
         if let Some(id) = focus {
             tree.focus_window_by_id(id);
         }
@@ -1262,8 +1262,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let mut container = self.containers.remove(idx);
         let rect = Rectangle::new(container.data.logical_pos, container.data.size);
         let origin = container.origin.take();
-        let root_key = container.tree.root_node_key()?;
-        let (mut subtree, _insert_info) = container.tree.take_subtree_at(root_key)?;
+        let mut subtree = container.tree.take_whole_tree()?;
         subtree.for_each_tile_mut(&mut |tile| {
             Self::store_floating_size_for_restore(tile);
         });

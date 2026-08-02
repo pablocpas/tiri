@@ -97,10 +97,11 @@ impl<W: LayoutElement> ContainerTree<W> {
         W::Id: std::fmt::Display,
     {
         let mut out = String::new();
-        let Some(root_key) = self.root else {
+        let root_key = self.root;
+        if self.is_empty() {
             out.push_str("(empty)\n");
             return out;
-        };
+        }
 
         let mut path = Vec::new();
         let focused_path = self.focus_path();

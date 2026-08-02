@@ -36,49 +36,9 @@ fn empty_workspace_layout_commands_do_not_wrap_next_open() {
         "open_window after empty-workspace layout commands should create a leaf root:\n{tree}",
     );
 }
-#[test]
-fn empty_workspace_layout_applies_on_second_open() {
-    let mut layout = Layout::default();
-    check_ops_on_layout(&mut layout, [Op::AddOutput(1)]);
-
-    layout.set_layout_mode(ContainerLayout::Tabbed);
-
-    layout.add_window(
-        TestWindow::new(TestWindowParams::new(1)),
-        AddWindowTarget::Auto,
-        None,
-        None,
-        false,
-        false,
-        ActivateWindow::default(),
-    );
-
-    {
-        let workspace = layout.active_workspace().expect("active workspace");
-        let tree = workspace.tiling().debug_tree();
-        assert!(
-            !workspace.tiling().contains_layout(ContainerLayout::Tabbed),
-            "first open on empty workspace must still be a leaf root:\n{tree}",
-        );
-    }
-
-    layout.add_window(
-        TestWindow::new(TestWindowParams::new(2)),
-        AddWindowTarget::Auto,
-        None,
-        None,
-        false,
-        false,
-        ActivateWindow::default(),
-    );
-
-    let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree().replace(" *", "");
-    assert!(
-        workspace.tiling().contains_layout(ContainerLayout::Tabbed),
-        "second open should apply pending empty-workspace layout:\n{tree}",
-    );
-}
+// `layout X` on an empty workspace is recorded rather than written out here: it used to
+// claim the layout waited for a *second* window, which is not what sway does. See
+// fixtures/layout-tabbed-on-an-empty-workspace.parity.
 #[test]
 fn empty_workspace_uses_workspace_command_context_like_sway() {
     let mut layout = Layout::default();

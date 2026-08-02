@@ -57,8 +57,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Count total number of windows in tree
     pub(in crate::layout) fn window_count(&self) -> usize {
-        self.root
-            .map_or(0, |root_key| self.count_windows_in_node(root_key))
+        self.count_windows_in_node(self.root)
     }
 
     /// Helper: count windows in a node
@@ -142,58 +141,35 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.get_tile_mut(key)
     }
 
-    pub(in crate::layout) fn set_pending_layout(&mut self, layout: Layout) {
-        self.pending_layout = Some(layout);
-        // External layout hints (workspace parity plumbing) should be consumable by
-        // the next split command on a single root leaf.
-        self.pending_layout_wrap_on_split = true;
-    }
-
-    /// The workspace's layout: what layout commands target when addressing the workspace
-    /// itself rather than a container.
-    pub(in crate::layout) fn workspace_layout(&self) -> Layout {
-        self.workspace_layout
-    }
-
-    /// The layout a container standing in for the workspace should be built with.
+    /// The workspace's layout.
     ///
-    /// A pending hint if one is waiting — that is a `split` on an empty workspace, which the
-    /// first window materializes — and otherwise the workspace's own orientation. Falling
-    /// back to `SplitH` instead loses a workspace that was made tabbed or stacked the moment
-    /// its last window closes and a new one arrives.
-    pub(in crate::layout) fn layout_for_workspace_container(&mut self) -> Layout {
-        self.pending_layout.take().unwrap_or(self.workspace_layout)
+    /// The root container carries it, empty workspace included, so there is nothing to
+    /// remember on the side and nothing to reconcile: a `split` on an empty workspace is a
+    /// `split` on the root container, and the first window arriving reads the same field.
+    pub(in crate::layout) fn workspace_layout(&self) -> Layout {
+        self.root_container_layout()
     }
 
-    /// The layout carried by the root container, or the recorded workspace orientation when
-    /// there is no root container to carry it.
+    /// The layout carried by the root container.
     pub(in crate::layout) fn root_container_layout(&self) -> Layout {
-        self.root
-            .and_then(|key| self.get_container(key))
-            .map_or(self.workspace_layout, |root| root.layout())
+        self.get_container(self.root)
+            .map_or(Layout::SplitH, |root| root.layout())
     }
 
     /// The split layout to fall back to when toggling out of tabbed/stacked, mirroring
     /// i3's `layout toggle split` on the workspace.
     pub(in crate::layout) fn workspace_prev_split_layout(&self) -> Layout {
-        self.workspace_prev_split_layout.unwrap_or(Layout::SplitH)
+        self.get_container(self.root)
+            .and_then(|root| root.prev_split_layout())
+            .unwrap_or(Layout::SplitH)
     }
 
+    /// Give the workspace `layout`, remembering the split it had for `layout toggle split`.
     pub(in crate::layout) fn set_workspace_layout_hint(&mut self, layout: Layout) {
-        if self.workspace_layout != layout
-            && matches!(self.workspace_layout, Layout::SplitH | Layout::SplitV)
-        {
-            self.workspace_prev_split_layout = Some(self.workspace_layout);
+        let root_key = self.root;
+        if let Some(root) = self.get_container_mut(root_key) {
+            root.set_layout(layout);
         }
-        self.workspace_layout = layout;
-
-        self.pending_layout = Some(layout);
-        self.pending_layout_wrap_on_split = false;
-    }
-
-    pub(in crate::layout) fn clear_pending_layout(&mut self) {
-        self.pending_layout = None;
-        self.pending_layout_wrap_on_split = false;
     }
 
     pub(in crate::layout) fn take_pending_relayout(&mut self) -> bool {

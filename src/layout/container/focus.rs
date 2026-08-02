@@ -10,7 +10,7 @@ use super::NodeKey;
 impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn selected_container_is_root(&self) -> bool {
         self.selected_container_key()
-            .is_some_and(|selected_key| Some(selected_key) == self.root)
+            .is_some_and(|selected_key| selected_key == self.root)
     }
 
     /// Whether focus resolves to the tree root itself rather than to a node inside it.
@@ -94,7 +94,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     pub(in crate::layout) fn root_node_key(&self) -> Option<NodeKey> {
-        self.root
+        Some(self.root)
     }
 
     pub(in crate::layout) fn selected_is_container(&self) -> bool {
@@ -122,9 +122,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     pub(in crate::layout) fn select_root_container(&mut self) -> bool {
-        let Some(root_key) = self.root else {
-            return false;
-        };
+        let root_key = self.root;
         if matches!(self.get_node(root_key), Some(NodeData::Container(_))) {
             self.selected_key = Some(root_key);
             true
@@ -178,7 +176,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         allow_wrap: bool,
     ) -> bool {
         self.clear_focus_history();
-        if self.root.is_none() {
+        if self.is_empty() {
             return false;
         }
 
@@ -299,7 +297,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     pub(super) fn reconcile_focus_after_change(&mut self, focused_removed: bool) {
-        if self.root.is_none() {
+        if self.is_empty() {
             self.focused_key = None;
         } else if focused_removed {
             self.focused_key = None;

@@ -17,11 +17,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Helper: get node key at path
     pub(super) fn get_node_key_at_path(&self, path: &[usize]) -> Option<NodeKey> {
-        if path.is_empty() {
-            return self.root;
-        }
-
-        let mut current_key = self.root?;
+        let mut current_key = self.root;
 
         for &idx in path {
             match self.get_node(current_key)? {
@@ -60,7 +56,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     pub(super) fn first_leaf_key(&self) -> Option<NodeKey> {
-        let root_key = self.root?;
+        let root_key = self.root;
         self.leaf_under_key(root_key)
     }
 
@@ -77,7 +73,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Find a node by key and return path to it.
     pub(super) fn find_node_path(&self, target_key: NodeKey) -> Option<Vec<usize>> {
-        let root_key = self.root?;
+        let root_key = self.root;
         if target_key == root_key {
             return Some(Vec::new());
         }
@@ -112,7 +108,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Find a window by ID and return path to it
     pub(in crate::layout) fn find_window(&self, window_id: &W::Id) -> Option<Vec<usize>> {
-        let root_key = self.root?;
+        let root_key = self.root;
         let mut path = Vec::new();
         self.find_window_in_node(root_key, window_id, &mut path)
     }
@@ -146,10 +142,6 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     pub(super) fn node_key_for_path_or_root(&self, path: &[usize]) -> Option<NodeKey> {
-        if path.is_empty() {
-            self.root
-        } else {
-            self.get_node_key_at_path(path)
-        }
+        self.get_node_key_at_path(path)
     }
 }

@@ -29,11 +29,14 @@ fn i3_167_workspace_layout_tabbed_groups_second_open() {
         ActivateWindow::default(),
     );
 
+    // Recorded: fixtures/layout-tabbed-on-an-empty-workspace.parity. sway makes the
+    // *workspace* tabbed and both windows are its tabs; no container is built for them.
     let workspace = layout.active_workspace().expect("active workspace");
     let tree = workspace.tiling().debug_tree();
+    assert_eq!(workspace.debug_workspace_layout(), ContainerLayout::Tabbed);
     assert!(
-        workspace.tiling().contains_layout(ContainerLayout::Tabbed),
-        "workspace layout tabbed should group the second open into a tabbed container:\n{tree}",
+        !workspace.tiling().has_containers(),
+        "a tabbed workspace holds its windows directly:\n{tree}",
     );
 }
 #[test]
@@ -65,9 +68,10 @@ fn i3_167_workspace_layout_stacked_groups_second_open() {
     let workspace = layout.active_workspace().expect("active workspace");
     let tree = workspace.tiling().debug_tree();
     assert!(
-        workspace.tiling().contains_layout(ContainerLayout::Stacked),
-        "workspace layout stacked should group the second open into a stacked container:\n{tree}",
+        !workspace.tiling().has_containers(),
+        "a stacked workspace holds its windows directly:\n{tree}",
     );
+    assert_eq!(workspace.debug_workspace_layout(), ContainerLayout::Stacked);
 }
 #[test]
 fn i3_167_workspace_layout_stacked_reinserts_after_floating_roundtrip() {
@@ -100,9 +104,10 @@ fn i3_167_workspace_layout_stacked_reinserts_after_floating_roundtrip() {
     let workspace = layout.active_workspace().expect("active workspace");
     let tree = workspace.tiling().debug_tree();
     assert!(
-        workspace.tiling().contains_layout(ContainerLayout::Stacked),
-        "workspace layout stacked should still apply after floating roundtrip reinsertion:\n{tree}",
+        !workspace.tiling().has_containers(),
+        "a stacked workspace holds its windows directly:\n{tree}",
     );
+    assert_eq!(workspace.debug_workspace_layout(), ContainerLayout::Stacked);
 }
 #[test]
 fn i3_167_empty_workspace_layout_can_switch_back_to_splith() {
@@ -208,9 +213,10 @@ fn i3_167_empty_workspace_layout_can_switch_back_to_splitv() {
     let workspace = layout.active_workspace().expect("active workspace");
     let tree = workspace.tiling().debug_tree();
     assert!(
-        workspace.tiling().contains_layout(ContainerLayout::SplitV),
-        "after resetting empty workspace layout to splitv, new opens should land in a vertical split:\n{tree}",
+        !workspace.tiling().has_containers(),
+        "the workspace carries the orientation itself:\n{tree}",
     );
+    assert_eq!(workspace.debug_workspace_layout(), ContainerLayout::SplitV);
     assert!(
         !workspace.tiling().contains_layout(ContainerLayout::Tabbed),
         "after resetting empty workspace layout to splitv, new opens should no longer land in tabbed:\n{tree}",
@@ -626,7 +632,13 @@ fn i3_122_split_on_empty_workspace_applies_to_next_window() {
 
     {
         let workspace = layout.active_workspace().expect("active workspace");
-        assert_snapshot!(workspace.tiling().debug_tree().as_str(), @"Window 1 *");
+        assert_snapshot!(
+            workspace.tiling().debug_tree().as_str(),
+            @r"
+        SplitV
+          Window 1 *
+        "
+        );
     }
 
     check_ops_on_layout(
@@ -693,11 +705,15 @@ fn i3_124_move_single_window_is_noop() {
             Op::MoveWindowDown,
         ],
     );
+    // Recorded: fixtures/move-a-lone-window.parity. Nothing shifts — there is nothing to
+    // shift past — but the workspace turns to face each move, so the last one decides.
     let workspace = layout.active_workspace().expect("active workspace");
     let after = workspace.tiling().debug_tree();
+    assert_eq!(workspace.debug_workspace_layout(), ContainerLayout::SplitV);
     assert_eq!(
-        after, before,
-        "moving a single container in any direction should be a no-op",
+        after.replace("SplitV", "SplitH"),
+        before,
+        "a lone window stays where it is:\n{after}",
     );
 }
 #[test]
@@ -1060,8 +1076,9 @@ fn i3_130_closing_last_children_removes_empty_split_wrapper() {
     let tree = workspace.tiling().debug_tree();
     assert_snapshot!(
         tree.as_str(),
-        @"
-    Window 2 *
+        @r"
+    SplitH
+      Window 2 *
     "
     );
 }
@@ -1093,8 +1110,9 @@ fn i3_130_moving_last_children_away_removes_empty_split_wrapper() {
     let tree = workspace.tiling().debug_tree();
     assert_snapshot!(
         tree.as_str(),
-        @"
-    Window 2 *
+        @r"
+    SplitH
+      Window 2 *
     "
     );
 }
@@ -1231,8 +1249,9 @@ fn i3_127_killing_parent_chain_then_disabling_floating_reinserts_cleanly() {
     assert_eq!(workspace.tiling().tiles().count(), 1);
     assert_snapshot!(
         workspace.tiling().debug_tree().as_str(),
-        @"
-    Window 3 *
+        @r"
+    SplitH
+      Window 3 *
     "
     );
 }

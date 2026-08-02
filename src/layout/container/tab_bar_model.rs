@@ -12,9 +12,7 @@ use tiri_config::BlockOutFrom;
 impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn tab_bar_layouts(&self) -> Vec<TabBarInfo> {
         let mut out = Vec::new();
-        let Some(root_key) = self.root else {
-            return out;
-        };
+        let root_key = self.root;
 
         let mut path = Vec::new();
         self.collect_tab_bar_layouts(root_key, &mut path, &mut out, true);

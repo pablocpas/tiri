@@ -11,10 +11,7 @@ use crate::layout::tile::Tile;
 impl<W: LayoutElement> ContainerTree<W> {
     /// Number of root-level children (columns).
     pub(in crate::layout) fn root_children_len(&self) -> usize {
-        let root_key = match self.root {
-            Some(key) => key,
-            None => return 0,
-        };
+        let root_key = self.root;
 
         match self.get_node(root_key) {
             Some(NodeData::Leaf(_)) => 1,
@@ -24,13 +21,13 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     pub(in crate::layout) fn root_container(&self) -> Option<&ContainerData> {
-        let root_key = self.root?;
+        let root_key = self.root;
         self.get_container(root_key)
     }
 
     /// Index of currently focused root child, if any.
     pub(in crate::layout) fn focused_root_index(&self) -> Option<usize> {
-        let root_key = self.root?;
+        let root_key = self.root;
         if let Some(key) = self.focused_key {
             if key == root_key {
                 return Some(0);
@@ -68,10 +65,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Focus root child at index, descending to the first leaf.
     pub(in crate::layout) fn focus_root_child(&mut self, idx: usize) -> bool {
         self.clear_focus_history();
-        let root_key = match self.root {
-            Some(key) => key,
-            None => return false,
-        };
+        let root_key = self.root;
 
         match self.get_node(root_key) {
             Some(NodeData::Leaf(_)) => {
@@ -101,10 +95,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Move a root child from one index to another
     pub(in crate::layout) fn move_root_child(&mut self, from: usize, to: usize) -> bool {
         self.clear_focus_history();
-        let root_key = match self.root {
-            Some(key) => key,
-            None => return false,
-        };
+        let root_key = self.root;
 
         let container = match self.get_container_mut(root_key) {
             Some(c) => c,
@@ -147,8 +138,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         }
         let Some(child_key) = self
-            .root
-            .and_then(|root_key| self.get_container(root_key))
+            .get_container(self.root)
             .and_then(|root| root.child_key(child_idx))
         else {
             return false;
@@ -177,8 +167,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             None => return false,
         };
         let Some(child_key) = self
-            .root
-            .and_then(|root_key| self.get_container(root_key))
+            .get_container(self.root)
             .and_then(|root| root.child_key(idx))
         else {
             return false;
@@ -201,7 +190,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     pub(super) fn insert_key_at_root(&mut self, index: usize, node_key: NodeKey, focus: bool) {
         let insert_idx = {
-            let container_key = self.ensure_root_container();
+            let container_key = self.root;
             let container = self.get_container(container_key).unwrap();
             let idx = index.min(container.children.len());
 
@@ -213,7 +202,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                 idx
             }
         };
-        let container_key = self.ensure_root_container();
+        let container_key = self.root;
         if let Some(container) = self.get_container(container_key) {
             if container.child_key(insert_idx) == Some(node_key) {
                 self.set_parent(node_key, Some(container_key));

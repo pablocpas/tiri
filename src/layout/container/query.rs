@@ -17,9 +17,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Get all windows in the tree (depth-first traversal)
     pub(in crate::layout) fn all_windows(&self) -> Vec<&W> {
         let mut windows = Vec::new();
-        if let Some(root_key) = self.root {
-            self.collect_windows_from_node(root_key, &mut windows);
-        }
+        self.collect_windows_from_node(self.root, &mut windows);
         windows
     }
 
@@ -42,10 +40,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// All window IDs in the tree, depth-first.
     pub(in crate::layout) fn all_window_ids(&self) -> Vec<W::Id> {
-        match self.root {
-            Some(root_key) => self.window_ids_under(root_key),
-            None => Vec::new(),
-        }
+        self.window_ids_under(self.root)
     }
 
     /// Window IDs in the subtree rooted at `key`, depth-first.
@@ -70,9 +65,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Get all tiles in the tree (depth-first traversal)
     pub(in crate::layout) fn all_tiles(&self) -> Vec<&Tile<W>> {
         let mut tiles = Vec::new();
-        if let Some(root_key) = self.root {
-            self.collect_tiles_from_node(root_key, &mut tiles);
-        }
+        self.collect_tiles_from_node(self.root, &mut tiles);
         tiles
     }
 
@@ -97,9 +90,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Leaf node keys in depth-first (visual) order.
     pub(super) fn dfs_leaf_keys(&self) -> Vec<NodeKey> {
         let mut keys = Vec::new();
-        if let Some(root_key) = self.root {
-            self.collect_leaf_keys(root_key, &mut keys);
-        }
+        self.collect_leaf_keys(self.root, &mut keys);
         keys
     }
 
@@ -120,9 +111,15 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Tests use this instead of searching the debug dump for a layout name, which also
     /// matches window titles and silently changes meaning with the dump's format.
     #[cfg(test)]
+    /// Whether some container inside the workspace carries `layout`.
+    ///
+    /// The workspace itself does not count. It always exists and always has a layout, so
+    /// including it would answer "yes" to a question that is asking whether a *container was
+    /// built* — which is what every caller wants to know. Its own layout is
+    /// [`Self::workspace_layout`].
     pub(in crate::layout) fn contains_layout(&self, layout: Layout) -> bool {
-        self.nodes.values().any(|node| match node {
-            NodeData::Container(container) => container.layout() == layout,
+        self.nodes.iter().any(|(key, node)| match node {
+            NodeData::Container(container) => key != self.root && container.layout() == layout,
             NodeData::Leaf(_) => false,
         })
     }
@@ -187,13 +184,13 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Layout, geometry and child count of the root, when the root is a container.
     pub(in crate::layout) fn root_info(&self) -> Option<(Layout, Rectangle<f64, Logical>, usize)> {
-        self.container_info(self.root?)
+        self.container_info(self.root)
     }
 
     /// Whether the root is a container the user can address. None when there is no root or
     /// the root is a bare leaf.
     pub(in crate::layout) fn root_is_meaningful_parent(&self) -> Option<bool> {
-        self.container_is_meaningful_parent(self.root?)
+        self.container_is_meaningful_parent(self.root)
     }
 
     /// Whether the container at `key` is a container the user can address: it either holds

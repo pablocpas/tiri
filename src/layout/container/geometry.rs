@@ -115,14 +115,15 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
         self.pending_relayout = false;
 
-        let Some(root_key) = self.root else {
+        let root_key = self.root;
+        if self.is_empty() {
             self.leaf_layouts.clear();
             self.pending_layouts = None;
             self.pending_transaction = None;
             self.pending_relayout = false;
             self.debug_layout_state("layout_atomic_empty");
             return;
-        };
+        }
 
         let data = self.collect_layout_data(root_key);
         let changed = self.changed_layout_keys(&data);

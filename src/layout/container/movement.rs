@@ -28,7 +28,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         target: TreeCommandTarget,
     ) -> bool {
         self.clear_focus_history();
-        if self.root.is_none() {
+        if self.is_empty() {
             return false;
         }
 
@@ -37,6 +37,14 @@ impl<W: LayoutElement> ContainerTree<W> {
         };
 
         let moved = self.perform_move(node_key, direction);
+        if moved {
+            // sway's `workspace_squash`, at the end of a directional move and nowhere else.
+            // The workspace is the one container the cleanup walk cannot flatten — it has no
+            // parent to be redundant against — and a move is the only command that leaves it
+            // holding a single split saying what it already says. A `close` that leaves the
+            // same shape keeps both levels, measured.
+            self.collapse_redundant_root_single_child_split();
+        }
         if moved && preserve_selected_container {
             self.selected_key = Some(node_key);
         }
@@ -65,8 +73,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         // A window that is the whole workspace can still be moved: nothing shifts, but the
         // workspace takes the direction's orientation, which is what sway does. A root
         // *container* cannot — moving the workspace itself is not one of these commands.
-        let root_container = Some(move_key) == self.root
-            && !matches!(self.get_node(move_key), Some(NodeData::Leaf(_)));
+        let root_container =
+            move_key == self.root && !matches!(self.get_node(move_key), Some(NodeData::Leaf(_)));
         (!root_container).then_some((move_key, preserve_selected_container))
     }
 
@@ -296,7 +304,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         // Escaping into the workspace, across the orientation it lays its children out in,
         // does not stop at the workspace: it crosses it. Measured against sway 1.11 — the
         // workspace flips and everything else moves under one container.
-        let escapes_across_the_workspace = Some(grandparent_key) == self.root
+        let escapes_across_the_workspace = grandparent_key == self.root
             && self
                 .get_container(grandparent_key)
                 .is_some_and(|root| !root.layout().is_parallel_to(direction));
@@ -317,10 +325,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             // cleanup can dissolve the container it left *and* collapse the root onto the
             // node itself, and asking the old root for an index then answers nothing — which
             // used to skip the crossing below and leave the workspace facing the way it was.
-            let node_idx = self
-                .root
-                .and_then(|root_key| self.child_index(root_key, node_key))
-                .unwrap_or(0);
+            let node_idx = self.child_index(self.root, node_key).unwrap_or(0);
             // The escape above already restructured the tree, so this reports a change
             // whatever the crossing decides — a mutation that reports none skips the
             // relayout that keeps the cached geometry addressed to the right nodes.
@@ -512,9 +517,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         node_idx: usize,
         direction: Direction,
     ) -> bool {
-        let Some(root_key) = self.root else {
-            return false;
-        };
+        let root_key = self.root;
         let previous = self.root_container_layout();
 
         // With nothing to move past, there is still an orientation to take: measured, sway
