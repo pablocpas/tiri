@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 33a911ab2f7e1e710fc0e6d04df39c2d4554fffdbb7415719911706271dc48a6 # shrinks to ops = [AddWindow, RemoveFocused, SplitH, AddWindow, SplitH, SplitH]
+cc c6ccf31b9fa98a823b5d9420c120b63be1dd62b0f4ce523fd84af6ead3bc1c55 # shrinks to ops = [RemoveFocused, SplitH]
+cc 8d61c0c1b207a6b5c0e74f814d6bd3beb9167048f33efc45f2f7f01ceaa7c697 # shrinks to ops = [SplitV, AddWindow, MoveLeft, SetTabbed, MoveUp, FocusUp, MoveLeft]
