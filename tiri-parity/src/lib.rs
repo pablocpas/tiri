@@ -44,7 +44,7 @@ pub fn erase_decoration(workspace: &mut Workspace) {
             h: 1.0,
         };
         for child in &mut workspace.nodes {
-            flatten_onto(child, area);
+            reseat(child, area);
         }
     }
     erase_nodes(&mut workspace.nodes);
@@ -56,22 +56,77 @@ fn erase_nodes(nodes: &mut [Node]) {
             if matches!(container.layout, Layout::Tabbed | Layout::Stacked) {
                 let rect = container.rect;
                 for child in &mut container.nodes {
-                    flatten_onto(child, rect);
+                    reseat(child, rect);
                 }
-                continue;
             }
             erase_nodes(&mut container.nodes);
         }
     }
 }
 
-/// Give `node` and everything below it the same rectangle.
-fn flatten_onto(node: &mut Node, rect: FracRect) {
+/// Move `node` onto `rect`, and lay its subtree out inside it in the same proportions.
+///
+/// The children are mapped from *the box they actually occupy* onto the new rectangle,
+/// rather than from their parent's declared one. That distinction is the whole trick: sway
+/// subtracts one decoration band from a leaf and two from the split holding it, so a
+/// window's rectangle can start above its parent's and no scaling relative to the parent
+/// would cancel it. The extent the children share is a number both compositors agree on,
+/// and dividing by it leaves exactly the proportions — which is the part that is layout.
+fn reseat(node: &mut Node, rect: FracRect) {
     set_rect(node, rect);
-    if let Node::Container(container) = node {
+    let Node::Container(container) = node else {
+        return;
+    };
+    let Some(extent) = extent_of(&container.nodes) else {
+        return;
+    };
+    if extent.w <= 0.0 || extent.h <= 0.0 {
         for child in &mut container.nodes {
-            flatten_onto(child, rect);
+            reseat(child, rect);
         }
+        return;
+    }
+
+    let scale_x = rect.w / extent.w;
+    let scale_y = rect.h / extent.h;
+    for child in &mut container.nodes {
+        let r = rect_of(child);
+        reseat(
+            child,
+            FracRect {
+                x: rect.x + (r.x - extent.x) * scale_x,
+                y: rect.y + (r.y - extent.y) * scale_y,
+                w: r.w * scale_x,
+                h: r.h * scale_y,
+            },
+        );
+    }
+}
+
+/// The smallest box containing all of `nodes`.
+fn extent_of(nodes: &[Node]) -> Option<FracRect> {
+    let mut nodes = nodes.iter().map(rect_of);
+    let first = nodes.next()?;
+    let (mut x0, mut y0) = (first.x, first.y);
+    let (mut x1, mut y1) = (first.x + first.w, first.y + first.h);
+    for r in nodes {
+        x0 = x0.min(r.x);
+        y0 = y0.min(r.y);
+        x1 = x1.max(r.x + r.w);
+        y1 = y1.max(r.y + r.h);
+    }
+    Some(FracRect {
+        x: x0,
+        y: y0,
+        w: x1 - x0,
+        h: y1 - y0,
+    })
+}
+
+fn rect_of(node: &Node) -> FracRect {
+    match node {
+        Node::Window(w) => w.rect,
+        Node::Container(c) => c.rect,
     }
 }
 

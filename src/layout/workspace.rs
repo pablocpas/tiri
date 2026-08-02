@@ -1139,7 +1139,7 @@ impl<W: LayoutElement> Workspace<W> {
                             && !wants_floating
                             && !workspace_command_context)
                     {
-                        self.activate_tiling_keeping_tiling_elevation();
+                        self.activate_tiling_for_new_content();
                     }
                 }
             }
@@ -1153,7 +1153,7 @@ impl<W: LayoutElement> Workspace<W> {
                     .add_tile(Some(col_idx), tile, activate, width, is_full_width, None);
 
                 if activate {
-                    self.activate_tiling_keeping_tiling_elevation();
+                    self.activate_tiling_for_new_content();
                 }
             }
             WorkspaceAddWindowTarget::NextTo(next_to) => {
@@ -1214,7 +1214,7 @@ impl<W: LayoutElement> Workspace<W> {
                         .add_tile(None, tile, activate, width, is_full_width, None);
 
                     if activate {
-                        self.activate_tiling_keeping_tiling_elevation();
+                        self.activate_tiling_for_new_content();
                     }
                 } else {
                     if self
@@ -2022,17 +2022,15 @@ impl<W: LayoutElement> Workspace<W> {
         self.workspace_focus == WorkspaceFocus::OnWorkspace
     }
 
-    /// Switch the active layer to tiling while preserving an existing tiling-side workspace
-    /// elevation (focus-parent intent), but dropping a floating-side one.
+    /// Switch the active layer to tiling, with the new window as what commands are aimed at.
     ///
-    /// This mirrors the historical behavior of the add/activate paths, which cleared the
-    /// floating workspace context but left the tiling workspace context untouched.
-    fn activate_tiling_keeping_tiling_elevation(&mut self) {
-        let was_floating = self.floating_is_active.get();
+    /// Measured against sway 1.11: `focus parent` selects the workspace, but opening a
+    /// window ends that — the next command goes to the window. The elevation records that
+    /// the user asked for the workspace at some point; a window taking focus answers the
+    /// question.
+    fn activate_tiling_for_new_content(&mut self) {
         self.floating_is_active = FloatingActive::No;
-        if was_floating {
-            self.workspace_focus = WorkspaceFocus::OnContent;
-        }
+        self.workspace_focus = WorkspaceFocus::OnContent;
     }
 
     pub(super) fn is_floating_workspace_context_active(&self) -> bool {

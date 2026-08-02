@@ -545,3 +545,66 @@ workspace splith focus=@0/1
     );
     assert_eq!(workspace_focused.render(), "workspace splith focus=@\n");
 }
+
+/// Erasing the tab bar must not erase the layout underneath it.
+#[test]
+fn a_split_inside_a_tab_keeps_its_proportions() {
+    // Both sides put a splith inside a tabbed container. sway's numbers below a tab are not
+    // self-consistent — the leaves are inset by one decoration band and the split holding
+    // them by two — so the erasure has to divide that out rather than flatten it away.
+    let sway_json = r#"
+    {"id":1,"type":"root","layout":"splith","focused":false,"rect":{"x":0,"y":0,"width":1000,"height":1000},
+     "nodes":[{"id":4,"type":"workspace","name":"1","layout":"splith","focused":false,
+               "rect":{"x":0,"y":0,"width":1000,"height":1000},
+      "nodes":[{"id":5,"type":"con","layout":"tabbed","focused":false,
+                "rect":{"x":0,"y":0,"width":1000,"height":1000},
+        "nodes":[{"id":6,"type":"con","layout":"splith","focused":false,
+                  "rect":{"x":0,"y":40,"width":1000,"height":960},
+          "nodes":[{"id":7,"type":"con","layout":"none","focused":true,"visible":true,
+                    "rect":{"x":0,"y":20,"width":500,"height":980},"nodes":[]},
+                   {"id":8,"type":"con","layout":"none","focused":false,"visible":true,
+                    "rect":{"x":500,"y":20,"width":500,"height":980},"nodes":[]}]}]}]}]}
+    "#;
+
+    let tiri = |split: f64| LayoutTree {
+        workspace_id: None,
+        workspace_name: None,
+        output: None,
+        root: Some(container(
+            LayoutTreeLayout::SplitH,
+            rect(0.0, 0.0, 1920.0, 1080.0),
+            vec![container(
+                LayoutTreeLayout::Tabbed,
+                rect(0.0, 0.0, 1920.0, 1080.0),
+                vec![container(
+                    LayoutTreeLayout::SplitH,
+                    // A different tab bar height, and a different one again inside.
+                    rect(0.0, 30.0, 1920.0, 1050.0),
+                    vec![
+                        leaf(10, true, rect(0.0, 30.0, split, 1050.0)),
+                        leaf(11, false, rect(split, 30.0, 1920.0 - split, 1050.0)),
+                    ],
+                )],
+            )],
+        )),
+        floating: Vec::new(),
+    };
+    let order = tiri_order(&[(10, 1), (11, 2)]);
+    let normalized = |split| {
+        let mut model = tiri::normalize(&tiri(split), Layout::SplitH, false, AREA, &order).unwrap();
+        erase_decoration(&mut model);
+        model
+    };
+    let mut from_sway = sway::normalize(sway_json, &sway_order(&[(7, 1), (8, 2)])).unwrap();
+    erase_decoration(&mut from_sway);
+
+    // Same 50/50 split, despite three different decoration bands between them.
+    assert_eq!(from_sway.diff(&normalized(960.0)), Vec::new());
+
+    // And a different split is still reported — this is what flattening used to hide.
+    let differences = from_sway.diff(&normalized(1730.0));
+    assert!(
+        !differences.is_empty(),
+        "a 90/10 split inside a tab must not compare equal to 50/50"
+    );
+}

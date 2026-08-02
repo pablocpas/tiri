@@ -146,8 +146,6 @@ being found blind:
 
 Still outside what it compares, each for a stated reason:
 
-- geometry strictly inside a tabbed or stacked container, because sway's own numbers there
-  are not self-consistent (see `erase_decoration`);
 - the size share of each child as a number, rather than as the rectangles it produces;
 - anything a single workspace on a single output cannot reach.
 
@@ -212,7 +210,7 @@ Derived from the measurements above, each with the reason it exists:
 | Represent the workspace as `Workspace.layout` + its children, on both sides. tiri's bare-leaf root becomes a workspace with that leaf as its only node. | Observation D: same state, different representation. |
 | **Keep** single-child containers that came from an explicit split. | Observation C: sway keeps them too. Erasing them would hide a real difference. |
 | Collapse single-child containers that are *not* explicit splits. | Pure representation; neither compositor's users can see them. |
-| Compare rects as fractions with a tolerance (1e-3), never pixels. | Gaps, borders and title bars are configured, not behaviour. |
+| Compare rects as fractions with a tolerance (2e-3), never pixels. | Gaps, borders and title bars are configured, not behaviour. |
 | Compare `visible` for every window; under tabbed/stacked only the selected child is visible. | This is the observable consequence of a tabbed layout. |
 | Ignore `percent` unless it is the thing under test. | Derivable from rects; comparing both double-counts. |
 

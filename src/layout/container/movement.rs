@@ -74,14 +74,21 @@ impl<W: LayoutElement> ContainerTree<W> {
             break;
         }
 
-        (Some(move_key) != self.root).then_some((move_key, preserve_selected_container))
+        // A window that is the whole workspace can still be moved: nothing shifts, but the
+        // workspace takes the direction's orientation, which is what sway does. A root
+        // *container* cannot — moving the workspace itself is not one of these commands.
+        let root_container = Some(move_key) == self.root
+            && !matches!(self.get_node(move_key), Some(NodeData::Leaf(_)));
+        (!root_container).then_some((move_key, preserve_selected_container))
     }
 
     /// Try the movement strategies in order: step within a parallel parent, enter an
     /// adjacent container across a parallel ancestor, or escape towards the root.
     fn perform_move(&mut self, node_key: NodeKey, direction: Direction) -> bool {
+        // The whole workspace is this one node, so there is nothing to move past — but the
+        // workspace can still take the direction's orientation, which is what sway does.
         let Some(parent_key) = self.parent_of(node_key) else {
-            return false;
+            return self.move_root_node_across_workspace(node_key, 0, direction);
         };
         let Some(parent_layout) = self.get_container(parent_key).map(|c| c.layout()) else {
             return false;
@@ -171,6 +178,9 @@ impl<W: LayoutElement> ContainerTree<W> {
         direction: Direction,
     ) -> Option<bool> {
         let mut ancestor_key = self.parent_of(node_key)?;
+        // The outermost ancestor laid out along the direction, remembered while climbing:
+        // if nothing anywhere has room, that is where the move ends up, at its far edge.
+        let mut outermost_parallel = None;
         while let Some(ancestor_parent_key) = self.parent_of(ancestor_key) {
             let ancestor_parent_layout = self.get_container(ancestor_parent_key)?.layout();
 
@@ -179,9 +189,17 @@ impl<W: LayoutElement> ContainerTree<W> {
                 continue;
             }
 
+            outermost_parallel = Some((ancestor_parent_key, ancestor_key));
             let ancestor_idx = self.child_index(ancestor_parent_key, ancestor_key)?;
             let ancestor_child_count = self.get_container(ancestor_parent_key)?.child_count();
-            let target_idx = direction.sibling_index(ancestor_idx, ancestor_child_count)?;
+            // No room at this level: keep climbing rather than give up. Measured against
+            // sway 1.11 — a move bubbles until it can happen, and only stops for good at
+            // the workspace, which the caller handles by crossing it.
+            let Some(target_idx) = direction.sibling_index(ancestor_idx, ancestor_child_count)
+            else {
+                ancestor_key = ancestor_parent_key;
+                continue;
+            };
             let target_key = self
                 .get_container(ancestor_parent_key)?
                 .child_key(target_idx)?;
@@ -192,7 +210,52 @@ impl<W: LayoutElement> ContainerTree<W> {
 
             return Some(self.move_node_into_container(node_key, target_key, direction, focus_idx));
         }
-        None
+
+        // Nothing above had room, so the move ends beside the outermost thing that faces the
+        // right way — measured against sway 1.11, where a move keeps climbing until it can
+        // happen rather than stopping at the first ancestor that cannot take it.
+        let (container_key, through_key) = outermost_parallel?;
+        let through_idx = self.child_index(container_key, through_key)?;
+        let insert_at = if direction.is_leading() {
+            through_idx
+        } else {
+            through_idx + 1
+        };
+        Some(self.move_node_to(node_key, container_key, insert_at))
+    }
+
+    /// Take `node_key` out of wherever it is and put it in `container_key` at `insert_at`.
+    fn move_node_to(
+        &mut self,
+        node_key: NodeKey,
+        container_key: NodeKey,
+        insert_at: usize,
+    ) -> bool {
+        let Some(parent_key) = self.parent_of(node_key) else {
+            return false;
+        };
+        let Some(idx) = self.child_index(parent_key, node_key) else {
+            return false;
+        };
+        if self
+            .get_container_mut(parent_key)
+            .and_then(|parent| parent.remove_child(idx))
+            .is_none()
+        {
+            return false;
+        }
+        let Some(container) = self.get_container_mut(container_key) else {
+            return false;
+        };
+        container.insert_child(insert_at, node_key);
+        self.set_parent(node_key, Some(container_key));
+
+        let leaf_key = self.leaf_under_key(node_key);
+        self.cleanup_containers(Some(parent_key));
+        if let Some(leaf_key) = leaf_key {
+            self.focus_node_key(leaf_key);
+        }
+        true
     }
 
     /// Move a node out of its parent and into its grandparent, next to that parent.
@@ -427,13 +490,24 @@ impl<W: LayoutElement> ContainerTree<W> {
         let Some(root_key) = self.root else {
             return false;
         };
-        let Some(root) = self.get_container(root_key) else {
-            return false;
-        };
-        if root.child_count() <= 1 {
-            return false;
+        let previous = self.root_container_layout();
+
+        // With nothing to move past, there is still an orientation to take: measured, sway
+        // turns the workspace to face the direction and leaves the window where it is. The
+        // wrap below would have nothing to wrap. A workspace whose only child is a window
+        // has no root container at all, and lands here too.
+        let alone = self
+            .get_container(root_key)
+            .is_none_or(|root| root.child_count() <= 1);
+        if alone {
+            let layout = direction.split_layout();
+            if layout == previous {
+                return false;
+            }
+            self.set_workspace_layout_hint(layout);
+            self.set_root_container_layout(layout);
+            return true;
         }
-        let previous = root.layout();
 
         let Some(root) = self.get_container_mut(root_key) else {
             return false;

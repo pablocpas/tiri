@@ -14,4 +14,6 @@ mod fixtures;
 #[cfg(test)]
 mod fuzz;
 #[cfg(test)]
+mod known;
+#[cfg(test)]
 mod tests;

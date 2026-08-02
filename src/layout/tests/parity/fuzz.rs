@@ -17,8 +17,9 @@ use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 use tiri_parity::session::Sway;
-use tiri_parity::{erase_decoration, Workspace};
+use tiri_parity::Workspace;
 
+use super::known::{self, Signature};
 use super::replay;
 
 /// Commands the generator draws from, with the weight each is drawn at.
@@ -91,9 +92,12 @@ fn generate(rng: &mut Rng) -> Vec<String> {
         match command {
             "open" if windows >= MAX_WINDOWS => continue,
             "open" => windows += 1,
-            // Emptying the workspace makes the rest of the script test nothing.
+            // `close` takes the whole focused subtree, so it can empty the workspace from
+            // any count once a container is selected. Counting it as "all of them" keeps
+            // the rest of the script testing something; the alternative is a script whose
+            // tail runs on an empty workspace and compares nothing.
             "close" if windows <= 1 => continue,
-            "close" => windows -= 1,
+            "close" => windows = 1,
             _ => {}
         }
         script.push(command.to_owned());
@@ -107,6 +111,7 @@ struct Comparison {
     command: String,
     expected: Workspace,
     actual: Workspace,
+    signature: Signature,
 }
 
 fn compare(sway: &mut Sway, script: &[String]) -> Result<Option<Comparison>, String> {
@@ -126,17 +131,16 @@ fn compare(sway: &mut Sway, script: &[String]) -> Result<Option<Comparison>, Str
         ));
     }
 
-    for (step, ((command, expected), got)) in recorded.into_iter().zip(replayed.steps).enumerate() {
-        let mut expected = expected;
-        let mut actual = got.model;
-        erase_decoration(&mut expected);
-        erase_decoration(&mut actual);
-        if !expected.diff(&actual).is_empty() {
+    for (step, ((command, recorded), got)) in recorded.into_iter().zip(replayed.steps).enumerate() {
+        let (expected, actual) = known::compare(&recorded, &got.model);
+        let signature = Signature::of(&command, &expected, &actual);
+        if !signature.places.is_empty() {
             return Ok(Some(Comparison {
                 step,
                 command,
                 expected,
                 actual,
+                signature,
             }));
         }
     }
@@ -149,7 +153,11 @@ fn compare(sway: &mut Sway, script: &[String]) -> Result<Option<Comparison>, Str
 /// would cost sway runs, and sway runs are the whole budget; this already turns fourteen
 /// commands into three or four, which is the difference between a script someone can read
 /// and one nobody will.
-fn shrink(sway: &mut Sway, script: Vec<String>) -> Result<Vec<String>, String> {
+fn shrink(
+    sway: &mut Sway,
+    script: Vec<String>,
+    signature: &Signature,
+) -> Result<Vec<String>, String> {
     let mut best = script;
     let mut idx = best.len();
     while idx > 0 {
@@ -159,7 +167,11 @@ fn shrink(sway: &mut Sway, script: Vec<String>) -> Result<Vec<String>, String> {
         if candidate.is_empty() {
             continue;
         }
-        if compare(sway, &candidate)?.is_some() {
+        // The same divergence, not merely *a* divergence: without this a script whose
+        // finding is at step twelve can shrink into four commands showing something else
+        // entirely — usually one already in the ledger — and the real finding is lost with
+        // no sign that it ever existed.
+        if compare(sway, &candidate)?.is_some_and(|found| found.signature == *signature) {
             best = candidate;
         }
     }
@@ -183,10 +195,16 @@ fn differential_fuzz_against_sway() {
         .map(Duration::from_secs)
         .unwrap_or(Duration::from_secs(120));
 
+    // Derived from the recordings, so the ledger stays the only place a divergence is
+    // described. Without this the search stops at the first thing it re-finds, and since a
+    // known one is usually reachable in a handful of commands, that is all it ever does.
+    let known = known::signatures();
+
     let mut rng = Rng(seed);
     let mut sway = Sway::start().expect("cannot start sway");
     let started = Instant::now();
     let mut scripts = 0usize;
+    let mut skipped = 0usize;
     let mut found = None;
 
     while started.elapsed() < budget && found.is_none() {
@@ -194,7 +212,8 @@ fn differential_fuzz_against_sway() {
         scripts += 1;
         match compare(&mut sway, &script) {
             Ok(None) => {}
-            Ok(Some(_)) => found = Some(script),
+            Ok(Some(divergence)) if known.contains(&divergence.signature) => skipped += 1,
+            Ok(Some(divergence)) => found = Some((script, divergence.signature)),
             Err(err) => {
                 sway.stop();
                 panic!("the harness broke after {scripts} scripts: {err}");
@@ -202,13 +221,16 @@ fn differential_fuzz_against_sway() {
         }
     }
 
-    let Some(script) = found else {
+    let Some((script, signature)) = found else {
         sway.stop();
-        eprintln!("{scripts} scripts, seed {seed:#x}: no divergence");
+        eprintln!(
+            "{scripts} scripts, seed {seed:#x}: no divergence \
+             ({skipped} were already in the ledger)"
+        );
         return;
     };
 
-    let script = shrink(&mut sway, script).expect("shrinking failed");
+    let script = shrink(&mut sway, script, &signature).expect("shrinking failed");
     let report = compare(&mut sway, &script).expect("the shrunk script stopped running");
     sway.stop();
 
@@ -221,7 +243,8 @@ fn differential_fuzz_against_sway() {
         out
     });
     panic!(
-        "divergence after {scripts} scripts (seed {seed:#x}), shrunk to {} commands:\n\n\
+        "divergence after {scripts} scripts (seed {seed:#x}), {skipped} already known, \
+         shrunk to {} commands:\n\n\
          {listing}\n\
          step {} — after `{}`:\n--- sway ---\n{}--- tiri ---\n{}\n\
          Save that script as tiri-parity/fixtures/<name>.parity and record it.",

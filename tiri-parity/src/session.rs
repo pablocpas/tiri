@@ -231,21 +231,36 @@ impl Sway {
         }
     }
 
+    /// Close what is focused, and wait for *all* of it to go.
+    ///
+    /// `kill` closes the whole focused subtree, so after a `focus parent` it takes several
+    /// windows with it. Returning as soon as the first one vanished would sample a tree
+    /// mid-teardown: a recording that depends on timing, and fuzz divergences that are not
+    /// really there.
     fn close(&mut self) -> Result<(), String> {
         let before = self.leaves()?;
         self.msg(&["kill"])?;
 
         let started = Instant::now();
+        let mut last_change = Instant::now();
+        let mut seen = before.clone();
         loop {
             let now = self.leaves()?;
-            if let Some(&gone) = before.difference(&now).next() {
-                self.order.remove(&gone);
+            if now != seen {
+                seen = now;
+                last_change = Instant::now();
+            }
+            // Settled: something went, and nothing has gone since.
+            if seen.len() < before.len() && last_change.elapsed() > Duration::from_millis(150) {
+                for gone in before.difference(&seen) {
+                    self.order.remove(gone);
+                }
                 return Ok(());
             }
             if started.elapsed() > PATIENCE {
                 return Err("the window never went away".into());
             }
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(Duration::from_millis(20));
         }
     }
 
