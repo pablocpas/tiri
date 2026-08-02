@@ -2057,12 +2057,12 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 .map(|(_, _, count)| count)
                 .unwrap_or(0);
             let root_meaningful = container.tree.root_is_meaningful_parent().unwrap_or(false);
-            let preserve_on_single = container
+            let user_container = container
                 .tree
                 .root_container()
                 .is_some_and(|container| container.is_user_container())
                 && !container.workspace_floated;
-            if !root_meaningful || (root_child_count <= 1 && !preserve_on_single) {
+            if !root_meaningful || (root_child_count <= 1 && !user_container) {
                 container.wrapper_selected = false;
                 container.tree.clear_selection();
                 return false;
@@ -2081,11 +2081,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 // to tiling focus (sway behavior for redundant single-child wrappers).
                 let root_child_count = tree.root_info().map(|(_, _, count)| count).unwrap_or(0);
                 let root_meaningful = tree.root_is_meaningful_parent().unwrap_or(false);
-                let preserve_on_single = tree
+                let user_container = tree
                     .root_container()
                     .is_some_and(|container| container.is_user_container())
                     && !container.workspace_floated;
-                if root_meaningful && (root_child_count > 1 || preserve_on_single) {
+                if root_meaningful && (root_child_count > 1 || user_container) {
                     container.wrapper_selected = true;
                     return false;
                 }
@@ -2103,7 +2103,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 .unwrap_or(0);
             if is_meaningful {
                 let root_selected = Some(key) == tree.root_node_key();
-                let preserve_on_single = if root_selected {
+                let user_container = if root_selected {
                     tree.root_container()
                         .is_some_and(|container| container.is_user_container())
                         && !container.workspace_floated
@@ -2113,7 +2113,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 if root_selected && selected_child_count <= 1 {
                     // Keep explicitly requested single-child root wrappers selectable
                     // (e.g. after split commands), but ignore implicit redundant wrappers.
-                    if !preserve_on_single {
+                    if !user_container {
                         tree.clear_selection();
                         return false;
                     }

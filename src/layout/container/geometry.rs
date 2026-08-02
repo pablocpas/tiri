@@ -109,6 +109,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     fn layout_atomic(&mut self, animate_resize: bool) {
         if self.pending_layouts.is_some() && !self.apply_pending_layouts_if_ready() {
             self.pending_relayout = true;
+            self.readdress_leaf_layouts();
             self.debug_layout_state("layout_atomic_pending");
             return;
         }
@@ -147,7 +148,33 @@ impl<W: LayoutElement> ContainerTree<W> {
         if should_apply_now && self.apply_pending_layouts_if_ready() {
             return;
         }
+        self.readdress_leaf_layouts();
         self.debug_layout_state("layout_atomic_requested");
+    }
+
+    /// Point the cached layout at where its leaves are *now*.
+    ///
+    /// While a resize is in flight the cached geometry is deliberately the old one — it is
+    /// what is still on screen — but the path beside it is an address, not geometry, and an
+    /// address of a tree that has moved on is simply wrong. A structural change during a
+    /// transaction is what pulls the two apart: the leaves are the same, their rectangles
+    /// are the same, and they are somewhere else.
+    pub(in crate::layout) fn readdress_leaf_layouts(&mut self) {
+        let addresses: Vec<Option<Vec<usize>>> = self
+            .leaf_layouts
+            .iter()
+            .map(|info| self.find_node_path(info.key))
+            .collect();
+        let mut addresses = addresses.into_iter();
+        self.leaf_layouts.retain_mut(|info| match addresses.next() {
+            Some(Some(path)) => {
+                info.path = path;
+                true
+            }
+            // The leaf left the tree while the transaction was open; nothing on screen can
+            // belong to it any more.
+            _ => false,
+        });
     }
 
     pub(in crate::layout) fn apply_pending_layouts_if_ready(&mut self) -> bool {

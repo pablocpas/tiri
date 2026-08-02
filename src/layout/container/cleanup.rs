@@ -89,44 +89,33 @@ impl<W: LayoutElement> ContainerTree<W> {
         let container_children = container.children.clone();
         let container_focus_stack = container.focus_stack.clone();
         let container_child_percents = container.child_percents_slice().to_vec();
-        let container_preserve_on_single = container.preserve_on_single();
+        let container_is_user_made = container.is_user_container();
         let child_count = container_children.len();
 
         let parent_layout =
             parent_key.and_then(|key| self.get_container(key).map(|parent| parent.layout()));
 
         let single_child_key = container_children.first().copied();
-        // A lone wrapper is only redundant when it says nothing its parent does not already
-        // say: same orientation, one child. Holding a single window *across* the parent's
-        // orientation is a real arrangement — it is what a `split` builds, and what a move
-        // out of the workspace leaves behind — so that one stays.
-        //
-        // A rootless single-child wrapper only dissolves onto a leaf; a container child
-        // would become the root itself and is handled by collapse_singleton_root_chain.
-        let can_replace_with_child = !container_preserve_on_single
-            && match parent_key {
-                Some(key) => {
-                    parent_layout == Some(container_layout) || self.get_container(key).is_none()
-                }
-                None => single_child_key.is_some_and(|child_key| {
-                    matches!(self.get_node(child_key), Some(NodeData::Leaf(_)))
-                }),
-            };
+        // A container with a parent is never dissolved here, whatever its layout and however
+        // few children it has left. Measured: a `split` builds one holding a single window
+        // and it survives, a `close` that empties one down to a single child leaves it
+        // alone, and so does a move elsewhere in the tree. The only lone wrapper that goes
+        // is a *root* one holding a window, because a workspace whose only child is a window
+        // has no container in sway either.
+        let can_replace_with_child = parent_key.is_none()
+            && single_child_key.is_some_and(|child_key| {
+                matches!(self.get_node(child_key), Some(NodeData::Leaf(_)))
+            });
 
         if child_count == 0 {
-            self.remove_empty_container(
-                container_key,
-                parent_key,
-                container_layout,
-                container_preserve_on_single,
-            );
+            self.remove_empty_container(container_key, parent_key, container_layout);
         } else if child_count == 1 && can_replace_with_child {
             let Some(child_key) = single_child_key else {
                 return;
             };
             self.replace_container_with_child(container_key, parent_key, child_key);
         } else if child_count > 1
-            && !container_preserve_on_single
+            && !container_is_user_made
             && parent_layout
                 .map(|layout| Self::layouts_squashable(layout, container_layout))
                 .unwrap_or(false)
@@ -151,7 +140,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         container_key: NodeKey,
         parent_key: Option<NodeKey>,
         container_layout: Layout,
-        container_preserve_on_single: bool,
     ) {
         if let Some(parent_key) = parent_key {
             let Some(parent_idx) = self.child_index(parent_key, container_key) else {
@@ -164,7 +152,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             self.remove_node_recursive(container_key);
         } else {
             self.pending_layout = Some(container_layout);
-            self.pending_layout_wrap_on_split = container_preserve_on_single;
+            self.pending_layout_wrap_on_split = false;
             self.remove_node_recursive(container_key);
             self.root = None;
         }
@@ -313,7 +301,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             let Some(root) = self.get_container(root_key) else {
                 break;
             };
-            if root.child_count() != 1 || root.preserve_on_single() {
+            if root.child_count() != 1 {
                 break;
             }
 
@@ -344,7 +332,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             self.pending_layout_wrap_on_split = false;
             let mut container = ContainerData::new(layout);
             if explicit_layout {
-                container.mark_preserve_on_single();
+                container.mark_user_created();
             }
             let container_key = self.insert_node(NodeData::Container(container));
             self.set_parent(container_key, None);
@@ -383,7 +371,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             }
 
             let mut container = ContainerData::new(layout);
-            container.mark_preserve_on_single();
+            container.mark_user_created();
             container.add_child(root_key);
             let container_key = self.insert_node(NodeData::Container(container));
             self.set_parent(root_key, Some(container_key));
@@ -406,7 +394,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let child_idx = *path.last().unwrap();
 
         let mut container = ContainerData::new(layout);
-        container.mark_preserve_on_single();
+        container.mark_user_created();
         container.add_child(key);
         let container_key = self.insert_node(NodeData::Container(container));
         self.set_parent(key, Some(container_key));

@@ -40,17 +40,6 @@ transfer matches: which tree the window sits in, what the tiled side does withou
 where it lands on the way back.",
     },
     Divergence {
-        fixture: "wrapper-left-by-a-move.parity",
-        step: 8,
-        reason: "\
-Found by the differential fuzz, and the third time this same question has come back: a \
-single-child container that tiri keeps and sway drops. tiri decides with a \
-`preserve_on_single` flag meaning \"the user asked for this container\", which sway has no \
-equivalent of — it is an approximation, and each divergence in this family has been closed \
-by adjusting when the flag is set rather than by replacing the idea. Left open deliberately: \
-the next fix here should be the concept, not another condition.",
-    },
-    Divergence {
         fixture: "cross-the-workspace-leaving-one-container.parity",
         step: 7,
         reason: "\
@@ -71,6 +60,18 @@ its parent, sway gives the newcomer a share of its own and rescales the rest aro
 (0.214, 0.214, 0.250, 0.322 here), while tiri divides the row evenly (0.250 each). The \
 first six steps of this fixture pin the shape question it was recorded for, and they pass; \
 this is the redistribution rule, which nothing has measured yet.",
+    },
+    Divergence {
+        fixture: "cross-leaving-a-same-orientation-container.parity",
+        step: 5,
+        reason: "\
+Found by the differential fuzz once the splice rule landed, and it refines that rule rather \
+than contradicting it. Crossing the workspace when a single container stays behind splices \
+that container away — measured — but here sway wraps it instead, and the difference is that \
+the leftover repeats the orientation the workspace is leaving (splith inside splith, where \
+the measured splice case had a splitv inside a splith). Which of the two sway does looks \
+like a consequence of its flatten pass rather than a rule of its own, so it is written down \
+rather than guessed at.",
     },
     Divergence {
         fixture: "move-up-then-right.parity",

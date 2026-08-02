@@ -30,7 +30,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                 self.pending_layout_wrap_on_split = false;
 
                 let mut container = ContainerData::new(layout);
-                container.mark_preserve_on_single();
+                container.mark_user_created();
                 container.add_child(tile_key);
 
                 let container_key = self.insert_node(NodeData::Container(container));
@@ -358,7 +358,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         direction: Direction,
     ) -> NodeKey {
         let mut container = ContainerData::new(direction.split_layout());
-        container.mark_preserve_on_single();
+        container.mark_user_created();
         if direction.is_leading() {
             container.add_child(new_key);
             container.add_child(existing);

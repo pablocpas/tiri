@@ -46,7 +46,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Resolve the command target into the node to actually move (escaping single-child
     /// wrapper containers) and whether container selection should be preserved.
     fn resolve_move_source(&mut self, target: TreeCommandTarget) -> Option<(NodeKey, bool)> {
-        let (mut move_key, preserve_selected_container) = match target {
+        let (move_key, preserve_selected_container) = match target {
             TreeCommandTarget::Workspace => return None,
             TreeCommandTarget::Container(key) => {
                 matches!(self.get_node(key), Some(NodeData::Container(_))).then_some((key, true))?
@@ -58,21 +58,9 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         self.sync_container_focus_from_key(move_key);
 
-        // Moving the only child of a non-material wrapper means moving the wrapper itself.
-        // The root is never moved, so stop below it.
-        while let Some(parent_key) = self.parent_of(move_key) {
-            if self.parent_of(parent_key).is_none() {
-                break;
-            }
-            let Some(parent) = self.get_container(parent_key) else {
-                break;
-            };
-            if parent.child_count() == 1 && !parent.preserve_on_single() {
-                move_key = parent_key;
-                continue;
-            }
-            break;
-        }
+        // What moves is what was asked for. Measured: a window that is the only child of a
+        // container comes out of it, and the container it leaves is the cleanup's business
+        // rather than travelling along with it.
 
         // A window that is the whole workspace can still be moved: nothing shifts, but the
         // workspace takes the direction's orientation, which is what sway does. A root
@@ -297,7 +285,11 @@ impl<W: LayoutElement> ContainerTree<W> {
             let Some(node_idx) = self.child_index(grandparent_key, node_key) else {
                 return false;
             };
-            return self.move_root_node_across_workspace(node_key, node_idx, direction);
+            // The escape above already restructured the tree, so this reports a change
+            // whatever the crossing decides — a mutation that reports none skips the
+            // relayout that keeps the cached geometry addressed to the right nodes.
+            self.move_root_node_across_workspace(node_key, node_idx, direction);
+            return true;
         }
         let Some(parent_idx) = self.child_index(grandparent_key, node_parent_key) else {
             return false;
@@ -516,7 +508,23 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         }
 
-        if !self.wrap_workspace_children(previous, direction.split_layout()) {
+        // What stays behind is wrapped in a container keeping the old orientation — unless
+        // it is a single container already, whose children are spliced into the workspace
+        // instead. Measured against sway 1.11 by recording both cases: leaving two nodes
+        // wraps them and the inner container survives holding one child, leaving one
+        // container splices it away. The difference is how much was left behind, not
+        // anything about the container.
+        let lone_container = self.get_container(root_key).and_then(|root| {
+            (root.child_count() == 1)
+                .then(|| root.child_key(0))
+                .flatten()
+                .filter(|key| matches!(self.get_node(*key), Some(NodeData::Container(_))))
+        });
+        let rearranged = match lone_container {
+            Some(child_key) => self.splice_into_root(child_key, direction.split_layout()),
+            None => self.wrap_workspace_children(previous, direction.split_layout()),
+        };
+        if !rearranged {
             // Put it back rather than leave the tree short of a window.
             if let Some(root) = self.get_container_mut(root_key) {
                 root.insert_child(node_idx, node_key);
@@ -524,27 +532,51 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         }
 
-        let idx = usize::from(!direction.is_leading());
+        // Before everything that stayed, or after all of it: a splice turns one child into
+        // several, so the far end is not a fixed index.
         let Some(root) = self.get_container_mut(root_key) else {
             return false;
+        };
+        let idx = if direction.is_leading() {
+            0
+        } else {
+            root.child_count()
         };
         root.insert_child(idx, node_key);
         self.set_parent(node_key, Some(root_key));
         self.sync_container_focus_from_key(node_key);
 
-        // The wrapper may only re-state an orientation already expressed above it, in which
-        // case it goes; cleanup decides, using the same rule it applies everywhere else.
-        let wrapper_key = self
-            .get_container(root_key)
-            .and_then(|root| root.child_key(1 - idx));
-        if let Some(wrapper_key) = wrapper_key {
-            // Not preserved: the user did not ask for this container, so it only lives as
-            // long as it expresses an orientation the workspace does not.
-            if let Some(wrapper) = self.get_container_mut(wrapper_key) {
-                wrapper.clear_preserve_on_single();
-            }
-            self.cleanup_containers(Some(wrapper_key));
+        true
+    }
+
+    /// Replace the workspace's only child with that child's own children.
+    fn splice_into_root(&mut self, child_key: NodeKey, layout: Layout) -> bool {
+        let Some(root_key) = self.root else {
+            return false;
+        };
+        let Some(child) = self.get_container(child_key) else {
+            return false;
+        };
+        let grandchildren = child.children.clone();
+        if grandchildren.is_empty() {
+            return false;
         }
+        let percents = child.child_percents_slice().to_vec();
+        let focus_stack = child.focus_stack.clone();
+
+        let Some(root) = self.get_container_mut(root_key) else {
+            return false;
+        };
+        root.children = grandchildren.clone();
+        root.child_percents = percents;
+        root.focus_stack = focus_stack;
+        root.set_layout(layout);
+        root.ensure_focus_stack();
+        for grandchild in grandchildren {
+            self.set_parent(grandchild, Some(root_key));
+        }
+        self.nodes.remove(child_key);
+        self.parents.remove(child_key);
         true
     }
 }

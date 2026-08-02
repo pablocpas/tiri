@@ -130,7 +130,7 @@ pub struct DetachedContainer<W: LayoutElement> {
     children: Vec<DetachedNode<W>>,
     child_percents: Vec<f64>,
     focus_stack: Vec<usize>,
-    preserve_on_single: bool,
+    user_created: bool,
     prev_split_layout: Option<Layout>,
 }
 
@@ -144,7 +144,7 @@ pub struct ContainerData {
     /// Focus history (most recently used first)
     focus_stack: Vec<NodeKey>,
     /// Preserve container even if it has a single child (explicit split).
-    preserve_on_single: bool,
+    user_created: bool,
     /// Previous split layout for i3-style `layout toggle split`.
     prev_split_layout: Option<Layout>,
     /// Relative sizes of children (sum normalized to 1.0 for split layouts)
@@ -265,7 +265,7 @@ impl ContainerData {
             layout,
             children: Vec::new(),
             focus_stack: Vec::new(),
-            preserve_on_single: false,
+            user_created: false,
             prev_split_layout: None,
             child_percents: Vec::new(),
             geometry: Rectangle::from_size(Size::from((0.0, 0.0))),
@@ -287,35 +287,27 @@ impl ContainerData {
 
     pub(super) fn set_layout_explicit(&mut self, layout: Layout) {
         self.set_layout(layout);
-        self.preserve_on_single = true;
+        self.user_created = true;
     }
 
-    pub(super) fn preserve_on_single(&self) -> bool {
-        self.preserve_on_single
-    }
-
-    /// Whether this container is one a user asked for, rather than scaffolding.
+    /// Whether this container is one the user asked for, rather than scaffolding.
     ///
-    /// The same bit as `preserve_on_single`, read for the other question it has been
-    /// answering all along: `focus parent` stops at a container the user built, a floating
-    /// wrapper is selectable when it is one, and a split is addressable when it is one.
-    /// Splitting the two readings apart is what makes it possible to remove the first —
-    /// see the `preserve_on_single` section of `docs/design/parity.md`.
+    /// `focus parent` stops at one, a floating wrapper is selectable when it is one, and a
+    /// split is addressable when it is one. The bit used to carry a second, unrelated
+    /// meaning — "cleanup must not dissolve me" — which was approximating a rule about what
+    /// a command had just done rather than anything about the container. See the
+    /// `preserve_on_single` section of `docs/design/parity.md`.
     pub(super) fn is_user_container(&self) -> bool {
-        self.preserve_on_single
+        self.user_created
     }
 
     pub(super) fn prev_split_layout(&self) -> Option<Layout> {
         self.prev_split_layout
     }
 
-    pub(super) fn mark_preserve_on_single(&mut self) {
-        self.preserve_on_single = true;
-    }
-
-    /// A wrapper the user did not ask for, and that cleanup may dissolve.
-    pub(super) fn clear_preserve_on_single(&mut self) {
-        self.preserve_on_single = false;
+    /// Mark this container as one the user asked for.
+    pub(super) fn mark_user_created(&mut self) {
+        self.user_created = true;
     }
 
     /// Get children keys
@@ -658,7 +650,7 @@ impl<W: LayoutElement> DetachedNode<W> {
     pub(super) fn collapse_implicit_single_child_split_root(self) -> Self {
         match self {
             DetachedNode::Container(mut container)
-                if !container.preserve_on_single
+                if !container.user_created
                     && container.children.len() == 1
                     && matches!(container.layout, Layout::SplitH | Layout::SplitV) =>
             {
@@ -698,7 +690,7 @@ impl<W: LayoutElement> DetachedContainer<W> {
             children,
             child_percents: Vec::new(),
             focus_stack: Vec::new(),
-            preserve_on_single: false,
+            user_created: false,
             prev_split_layout: None,
         };
         container.ensure_focus_stack();
@@ -711,7 +703,7 @@ impl<W: LayoutElement> DetachedContainer<W> {
         children: Vec<DetachedNode<W>>,
         child_percents: Vec<f64>,
         focus_stack: Vec<usize>,
-        preserve_on_single: bool,
+        user_created: bool,
         prev_split_layout: Option<Layout>,
     ) -> Self {
         let mut container = Self {
@@ -719,7 +711,7 @@ impl<W: LayoutElement> DetachedContainer<W> {
             children,
             child_percents,
             focus_stack,
-            preserve_on_single,
+            user_created,
             prev_split_layout,
         };
         container.normalize_child_percents();

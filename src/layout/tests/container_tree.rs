@@ -399,7 +399,10 @@ fn preserve_explicit_same_layout_container_on_cleanup() {
     );
 }
 #[test]
-fn cleanup_reuses_last_root_layout_after_tree_becomes_empty() {
+fn a_container_leaves_nothing_behind_when_its_last_window_closes() {
+    // Recorded from sway (tiri-parity/fixtures/layout-outlives-the-window.parity): the
+    // tabbed container dies with the window it held, and the workspace is left as it was —
+    // splith, with the next window a plain child of it. The layout is not remembered.
     let layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow {
@@ -413,13 +416,10 @@ fn cleanup_reuses_last_root_layout_after_tree_becomes_empty() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    assert_eq!(workspace.debug_workspace_layout(), ContainerLayout::SplitH);
     assert_snapshot!(
-        tree.as_str(),
-        @"
-    SplitH
-      Window 2 *
-    "
+        workspace.tiling().debug_tree().as_str(),
+        @"Window 2 *"
     );
 }
 #[test]

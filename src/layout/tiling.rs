@@ -419,6 +419,10 @@ impl<W: LayoutElement> TilingSpace<W> {
         if result.changed() {
             self.tree.layout();
         }
+        // Whatever the mutation reported, the addresses beside the cached geometry describe
+        // the tree and the tree may have moved. Keeping a derived field derived is cheaper
+        // than trusting every path through the tree to say so.
+        self.tree.readdress_leaf_layouts();
         result
     }
 

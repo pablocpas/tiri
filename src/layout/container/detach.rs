@@ -135,7 +135,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     children,
                     container.child_percents,
                     focus_stack,
-                    container.preserve_on_single,
+                    container.user_created,
                     container.prev_split_layout,
                 ))
             }
@@ -165,7 +165,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                         .iter()
                         .filter_map(|idx| node.children.get(*idx).copied())
                         .collect();
-                    node.preserve_on_single = container.preserve_on_single;
+                    node.user_created = container.user_created;
                     node.prev_split_layout = container.prev_split_layout;
                     if node.child_percents.len() != node.children.len() {
                         node.recalculate_percentages();

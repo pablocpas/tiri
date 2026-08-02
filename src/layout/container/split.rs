@@ -119,7 +119,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             if matches!(self.get_node(root_key), Some(NodeData::Leaf(_))) {
                 let old_root_key = self.take_root();
                 let mut container = ContainerData::new(layout);
-                container.mark_preserve_on_single();
+                container.mark_user_created();
                 container.add_child(old_root_key);
                 let container_key = self.insert_node(NodeData::Container(container));
                 self.set_parent(old_root_key, Some(container_key));
@@ -232,7 +232,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         // container, and if windows later leave it until one remains, it is as redundant as
         // any other — which is what sway does with it.
         if wrapper.child_count() == 1 {
-            wrapper.mark_preserve_on_single();
+            wrapper.mark_user_created();
         }
         wrapper.ensure_focus_stack();
 
@@ -354,7 +354,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.set_parent(selected_key, None);
 
         let mut wrapper = ContainerData::new(layout);
-        wrapper.mark_preserve_on_single();
+        wrapper.mark_user_created();
         wrapper.add_child(selected_key);
         let wrapper_key = self.insert_node(NodeData::Container(wrapper));
         self.set_parent(selected_key, Some(wrapper_key));
@@ -388,7 +388,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let focus_key = self.focused_key.or_else(|| self.first_leaf_key());
 
         let mut wrapper = ContainerData::new(layout);
-        wrapper.mark_preserve_on_single();
+        wrapper.mark_user_created();
         wrapper.add_child(old_root_key);
 
         let wrapper_key = self.insert_node(NodeData::Container(wrapper));
@@ -533,7 +533,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         };
         if let Some(wrapper) = self.get_container_mut(wrapper_key) {
-            wrapper.mark_preserve_on_single();
+            wrapper.mark_user_created();
         }
 
         self.focus_node_key(focused_key);

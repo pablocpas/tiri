@@ -180,21 +180,18 @@ established the following, and stopped short of landing:
 
 ### Where the replacement stands
 
-The first stage is done and committed: the flag's two questions are separated, and only
-`is_user_container` — "the user asked for this container", which is what `focus parent` stops
-at — has readers outside cleanup and movement. Three sites still read the other meaning.
+Done. `preserve_on_single` no longer exists; what is left is `is_user_container`, answering
+only the question about addressability, and the rule it used to approximate is written where
+it belongs — in the workspace-crossing path, which is where the measurements said the work
+was being done.
 
-Replacing those three was attempted twice and reverted twice. The second attempt was much
-closer: the whole suite stayed green, every fixture passed, and two ledger entries closed on
-their own. It was reverted for a different reason — splicing moves every remaining leaf up a
-level, and the cached leaf geometry is left describing paths that no longer exist, which the
-differential fuzz catches as a broken invariant within seconds. Forcing a relayout inside the
-splice does not fix it, because the cleanup that runs afterwards promotes further and nothing
-relayouts again.
-
-So the next attempt should start from the cache, not from the rule: a structural change that
-reparents leaves has to invalidate what describes them, and today only a completed relayout
-does that. With that in place the rest of the change is already known to work.
+Two attempts were reverted before this one landed. The second failed for a reason worth
+recording, because it was not the rule: splicing moves every remaining leaf up a level, and
+the cached layout keeps a *path* beside each leaf's geometry. A path is an address, not
+geometry, and a mutation that reports no change — of which there turned out to be several —
+skips the relayout that refreshes it. The fix is to stop trusting every path through the
+tree to say what it did: `mutate_tree` now re-derives those addresses whatever the mutation
+claimed, which is cheaper than the alternative and made the invariant hold by construction.
 
 The trap to avoid is visible in the first attempt: two changes that looked like progress
 each broke behaviour that had already been measured, because `wrap_workspace_children` serves
