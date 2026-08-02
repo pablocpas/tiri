@@ -1,0 +1,27 @@
+# recorded from sway version 1.11
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ focus parent
+workspace splith focus=@
+  window 1 0.000,0.000 1.000x1.000
+
+$ layout stacking
+workspace stacked focus=@
+  window 1 0.000,0.037 1.000x0.963
+
+$ open
+workspace stacked focus=2
+  window 1 0.000,0.075 1.000x0.925 hidden
+  window 2 0.000,0.075 1.000x0.925
+
+$ close
+workspace stacked focus=1
+  window 1 0.000,0.037 1.000x0.963
+
+$ open
+workspace stacked focus=3
+  window 1 0.000,0.075 1.000x0.925 hidden
+  window 3 0.000,0.075 1.000x0.925

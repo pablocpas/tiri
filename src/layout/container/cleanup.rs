@@ -345,7 +345,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(super) fn ensure_root_container(&mut self) -> NodeKey {
         if self.root.is_none() {
             let explicit_layout = self.pending_layout.is_some();
-            let layout = self.pending_layout.take().unwrap_or(Layout::SplitH);
+            let layout = self.layout_for_workspace_container();
             self.pending_layout_wrap_on_split = false;
             let mut container = ContainerData::new(layout);
             if explicit_layout {

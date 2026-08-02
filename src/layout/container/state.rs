@@ -155,6 +155,16 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.workspace_layout
     }
 
+    /// The layout a container standing in for the workspace should be built with.
+    ///
+    /// A pending hint if one is waiting — that is a `split` on an empty workspace, which the
+    /// first window materializes — and otherwise the workspace's own orientation. Falling
+    /// back to `SplitH` instead loses a workspace that was made tabbed or stacked the moment
+    /// its last window closes and a new one arrives.
+    pub(in crate::layout) fn layout_for_workspace_container(&mut self) -> Layout {
+        self.pending_layout.take().unwrap_or(self.workspace_layout)
+    }
+
     /// The layout carried by the root container, or the recorded workspace orientation when
     /// there is no root container to carry it.
     pub(in crate::layout) fn root_container_layout(&self) -> Layout {

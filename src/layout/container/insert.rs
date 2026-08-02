@@ -26,7 +26,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             let tile_key = self.insert_node(NodeData::Leaf(tile));
 
             if self.pending_layout_wrap_on_split {
-                let layout = self.pending_layout.take().unwrap_or(Layout::SplitH);
+                let layout = self.layout_for_workspace_container();
                 self.pending_layout_wrap_on_split = false;
 
                 let mut container = ContainerData::new(layout);
@@ -84,7 +84,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         if matches!(self.get_node(root_key), Some(NodeData::Leaf(_))) {
             // Convert the root leaf into a container.
             let old_root_key = self.take_root();
-            let layout = self.pending_layout.take().unwrap_or(Layout::SplitH);
+            let layout = self.layout_for_workspace_container();
             self.pending_layout_wrap_on_split = false;
             let mut container = ContainerData::new(layout);
             container.add_child(old_root_key);
