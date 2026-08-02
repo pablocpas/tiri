@@ -55,14 +55,13 @@ over, wraps instead and passes.",
         fixture: "nested-same-orientation-after-a-move.parity",
         step: 8,
         reason: "\
-Size shares, not tree shape — the tree matches. When a window leaves a container and joins \
-its parent, tiri divides the row evenly and sway does not. Asked directly, sway reports \
-these percents: before, the row is 0.3336, 0.3336, 0.3328 with the inner container holding \
-0.5, 0.5; after, it is 0.2141, 0.2141, 0.2500, 0.3219 — so the newcomer arrives with more \
-than an equal share, the container it left shrinks to exactly a quarter, and the two \
-untouched windows shrink furthest. No arithmetic derived from that single sample reproduces \
-it, i3's `con_fix_percent` included, so closing this wants a short series of recordings \
-varying the counts rather than a guess.",
+Size shares, not tree shape — the tree matches. tiri divides the row evenly when a window \
+leaves a container and joins its parent; sway runs i3's `con_fix_percent`, where the window \
+carries the percent it had inside the container it left, that container's own percent is \
+invalidated, and anything unset takes the average of the rest before normalizing. Measured \
+across three shapes and predicted to the pixel in two of them; the derivation is in \
+docs/design/parity.md. Open because implementing it means changing how tiri assigns shares \
+on insert and removal, not because anything is still unknown.",
     },
     Divergence {
         fixture: "move-into-a-different-layout.parity",

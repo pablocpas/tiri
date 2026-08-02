@@ -199,6 +199,33 @@ both `split` and `layout` and they disagree about the one-child case. Any replac
 be validated against the whole fixture set, not against the divergence in hand — which is
 also why the rule above was worth measuring for its own sake before touching anything.
 
+### How sway redistributes size when a window changes container
+
+Measured by asking sway for its `percent` values directly rather than inferring them from
+rectangles, across three shapes that differ only in how many children the container being
+left keeps. The rule is i3's `con_fix_percent`, with two inputs that are easy to get wrong:
+
+1. the window arriving carries **the percent it had inside the container it left** — not an
+   equal share, and not the share that slot had in the destination;
+2. the container it left has its own percent **invalidated**, so it is treated as unset;
+3. `con_fix_percent` then gives every unset child the *average* of the children that do have
+   a percent, and normalizes the lot to 1.
+
+Step 3 is why the depleted container lands on exactly `1/n` every time — the average of the
+others, divided by a total that now includes it, is precisely that. It looked like a special
+case until the arithmetic came out.
+
+Predicted against measured, on a 1280px workspace of `[w1, w2, splith[…]]` with one window
+moving out to the right:
+
+| container keeps | predicted px | measured px |
+|---|---|---|
+| 1 child | 274, 274, 320, 411 | 274, 274, 320, 412 |
+| 2 children | 320, 320, 320, 320 | 320, 320, 320, 320 |
+| 3 children | 351, 351, 320, 259 | 349, 349, 320, 262 |
+
+tiri divides the row evenly instead, which is why every one of these disagrees.
+
 ## Known divergences
 
 Differences that are real, understood, and not yet fixed. These live in code, as the `KNOWN`
