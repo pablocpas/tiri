@@ -508,23 +508,12 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         }
 
-        // What stays behind is wrapped in a container keeping the old orientation — unless
-        // it is a single container already, whose children are spliced into the workspace
-        // instead. Measured against sway 1.11 by recording both cases: leaving two nodes
-        // wraps them and the inner container survives holding one child, leaving one
-        // container splices it away. The difference is how much was left behind, not
-        // anything about the container.
-        let lone_container = self.get_container(root_key).and_then(|root| {
-            (root.child_count() == 1)
-                .then(|| root.child_key(0))
-                .flatten()
-                .filter(|key| matches!(self.get_node(*key), Some(NodeData::Container(_))))
-        });
-        let rearranged = match lone_container {
-            Some(child_key) => self.splice_into_root(child_key, direction.split_layout()),
-            None => self.wrap_workspace_children(previous, direction.split_layout()),
-        };
-        if !rearranged {
+        // What stays behind is always wrapped in a container keeping the old orientation.
+        // Whether that wrapper survives is not decided here: a wrapper holding one split
+        // that says what the workspace now says is redundant, and the cleanup below removes
+        // it by splicing — which is how the same rule produces a doubled container in one
+        // measured case and a flat workspace in another.
+        if !self.wrap_workspace_children(previous, direction.split_layout()) {
             // Put it back rather than leave the tree short of a window.
             if let Some(root) = self.get_container_mut(root_key) {
                 root.insert_child(node_idx, node_key);
@@ -546,37 +535,15 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.set_parent(node_key, Some(root_key));
         self.sync_container_focus_from_key(node_key);
 
-        true
-    }
-
-    /// Replace the workspace's only child with that child's own children.
-    fn splice_into_root(&mut self, child_key: NodeKey, layout: Layout) -> bool {
-        let Some(root_key) = self.root else {
-            return false;
-        };
-        let Some(child) = self.get_container(child_key) else {
-            return false;
-        };
-        let grandchildren = child.children.clone();
-        if grandchildren.is_empty() {
-            return false;
+        // The wrapper may only be repeating what the workspace now says, in which case the
+        // normalization removes it — the same pass, and the same rule, that runs after every
+        // other move.
+        let wrapper_key = self
+            .get_container(root_key)
+            .and_then(|root| root.child_key(if direction.is_leading() { 1 } else { 0 }));
+        if let Some(wrapper_key) = wrapper_key {
+            self.cleanup_containers(Some(wrapper_key));
         }
-        let percents = child.child_percents_slice().to_vec();
-        let focus_stack = child.focus_stack.clone();
-
-        let Some(root) = self.get_container_mut(root_key) else {
-            return false;
-        };
-        root.children = grandchildren.clone();
-        root.child_percents = percents;
-        root.focus_stack = focus_stack;
-        root.set_layout(layout);
-        root.ensure_focus_stack();
-        for grandchild in grandchildren {
-            self.set_parent(grandchild, Some(root_key));
-        }
-        self.nodes.remove(child_key);
-        self.parents.remove(child_key);
         true
     }
 }

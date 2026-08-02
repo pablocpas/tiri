@@ -610,10 +610,9 @@ fn move_down_enters_container_with_different_layout() {
         tree.as_str(),
         @"
     SplitH
-      SplitH
-        Window 2
-        Window 1 *
-        Window 3
+      Window 2
+      Window 1 *
+      Window 3
     "
     );
 }
@@ -675,10 +674,9 @@ fn move_up_enters_container_with_different_layout() {
         tree.as_str(),
         @"
     SplitH
-      SplitH
-        Window 1
-        Window 3
-        Window 2 *
+      Window 1
+      Window 3
+      Window 2 *
     "
     );
 }

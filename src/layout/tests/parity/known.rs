@@ -62,16 +62,13 @@ first six steps of this fixture pin the shape question it was recorded for, and 
 this is the redistribution rule, which nothing has measured yet.",
     },
     Divergence {
-        fixture: "cross-leaving-a-same-orientation-container.parity",
-        step: 5,
+        fixture: "move-into-a-different-layout.parity",
+        step: 7,
         reason: "\
-Found by the differential fuzz once the splice rule landed, and it refines that rule rather \
-than contradicting it. Crossing the workspace when a single container stays behind splices \
-that container away — measured — but here sway wraps it instead, and the difference is that \
-the leftover repeats the orientation the workspace is leaving (splith inside splith, where \
-the measured splice case had a splitv inside a splith). Which of the two sway does looks \
-like a consequence of its flatten pass rather than a rule of its own, so it is written down \
-rather than guessed at.",
+The reversing splice again, and nothing else: both flatten the nesting completely and put \
+the same three windows in a row, sway as w3, w1, w2 and tiri as w2, w1, w3. Recorded while \
+closing the wrap-versus-splice question, and it is the case that showed the two agree on \
+the shape once the flatten splices rather than promotes.",
     },
     Divergence {
         fixture: "move-up-then-right.parity",

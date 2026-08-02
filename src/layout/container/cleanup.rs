@@ -76,7 +76,24 @@ impl<W: LayoutElement> ContainerTree<W> {
         if self.focused_key == Some(container_key) {
             self.focused_key = Some(child_key);
         }
-        Some(child_key)
+
+        // The child now sits where the wrapper did, saying what its parent already says, so
+        // it goes too and its children take the slot. i3 splices rather than promotes here,
+        // and the difference is visible: promoting would leave one more level than sway has.
+        let Some(child) = self.get_container(child_key) else {
+            return Some(child_key);
+        };
+        let grandchildren = child.children.clone();
+        let focus_stack = child.focus_stack.clone();
+        let percents = child.child_percents_slice().to_vec();
+        self.squash_container_into_parent(
+            child_key,
+            parent_key,
+            &grandchildren,
+            &focus_stack,
+            &percents,
+        );
+        Some(parent_key)
     }
 
     /// Apply at most one normalization step to `container_key`.
