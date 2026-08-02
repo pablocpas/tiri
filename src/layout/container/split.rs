@@ -511,16 +511,14 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         let parent_layout = parent.layout();
         let is_lone_child = parent.child_count() == 1;
-        let restates_explicit_split =
-            parent_layout == layout && parent.preserve_on_single() && Some(parent_key) != self.root;
 
-        // The leaf either already sits alone in a split, or its container came from an
-        // explicit split of this same orientation. Either way the command only (re)states
-        // that container's orientation; wrapping again would add a redundant one-child
-        // level around the leaf.
-        if matches!(parent_layout, Layout::SplitH | Layout::SplitV)
-            && (is_lone_child || restates_explicit_split)
-        {
+        // A window alone in a split has nothing to be separated from, so the command only
+        // (re)states that container's orientation. With siblings present it always builds a
+        // container — measured, including when the parent already has the requested
+        // orientation, and regardless of how the parent got it. tiri used to treat a parent
+        // whose layout had been set explicitly as already-split and do nothing, which the
+        // differential fuzz caught on its first script.
+        if matches!(parent_layout, Layout::SplitH | Layout::SplitV) && is_lone_child {
             if let Some(container) = self.get_container_mut(parent_key) {
                 container.set_layout_explicit(layout);
             }

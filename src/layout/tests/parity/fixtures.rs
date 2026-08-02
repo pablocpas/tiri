@@ -38,6 +38,16 @@ transfer matches: which tree the window sits in, what the tiled side does withou
 where it lands on the way back.",
     },
     Divergence {
+        fixture: "move-out-past-several-levels.parity",
+        step: 5,
+        reason: "\
+Found by the differential fuzz. Moving out of a container when *no* ancestor offers a \
+sibling that way: sway keeps climbing until the move can happen, ending at the workspace, \
+while tiri escapes one level and stops. A real difference in tiri, and the next one to \
+close — it needs the escape to bubble rather than give up at the first parallel ancestor \
+that has no room.",
+    },
+    Divergence {
         fixture: "move-into-a-nested-container.parity",
         step: 7,
         reason: "\

@@ -240,11 +240,19 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         };
 
-        // An only child leaves its parent empty, so the parent is about to be collapsed and
-        // the insertion index shifts accordingly.
-        let parent_will_be_removed = self
+        // Nothing to move past: the node is all its parent holds and the parent is all the
+        // grandparent holds, so leaving would put it exactly where it already is. sway does
+        // nothing here, and so must this — a move that rearranges nothing must not dissolve
+        // a container on its way out either.
+        let alone_all_the_way_up = self
             .get_container(node_parent_key)
-            .is_some_and(|container| container.child_count() == 1);
+            .is_some_and(|parent| parent.child_count() == 1)
+            && self
+                .get_container(grandparent_key)
+                .is_some_and(|grandparent| grandparent.child_count() == 1);
+        if alone_all_the_way_up {
+            return false;
+        }
 
         if let Some(container) = self.get_container_mut(node_parent_key) {
             let _ = container.remove_child(node_idx);
@@ -253,14 +261,12 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
         self.set_parent(node_key, None);
 
+        // Beside the container it came out of, on the side the move points to. Whether that
+        // container survives is cleanup's business: removing it later does not move what was
+        // placed relative to it, and anticipating the removal here is what used to carry a
+        // window one position too far.
         let insert_at = if direction.is_leading() {
-            if parent_will_be_removed {
-                parent_idx.saturating_sub(1)
-            } else {
-                parent_idx
-            }
-        } else if parent_will_be_removed {
-            parent_idx + 2
+            parent_idx
         } else {
             parent_idx + 1
         };

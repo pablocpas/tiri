@@ -289,9 +289,33 @@ whole suite — the other half of the whack-a-mole.
    Recordings are stored before decoration is erased, on purpose: what counts as decoration
    is a rule in `tiri-parity`, and baking it into the files would mean every improvement to
    that rule needs a machine with sway to regenerate them.
-4. **Ledger** *(done, see above)*, and a **minimizer**: on a divergence, drop commands from
-   the script while it survives, so what lands in the table is the shortest script that
-   still shows it.
+4. **Ledger** *(done, see above)*, and a **minimizer** *(done)*: on a divergence, drop
+   commands from the script while it survives, so what lands in the table is the shortest
+   script that still shows it.
+
+   Both feed the **differential fuzz** in `src/layout/tests/parity/fuzz.rs`:
+
+   ```text
+   RUN_PARITY_FUZZ=1 cargo test --lib parity::fuzz -- --nocapture
+   ```
+
+   It generates scripts, runs each on a live sway and on tiri, compares after every command,
+   and shrinks whatever diverges before reporting it. Checked-in fixtures are cases someone
+   thought to write down; this searches instead, which matters because the space is (shape of
+   the tree) × (what is selected) × (command) and every finding so far came out of a
+   combination someone happened to try.
+
+   One sway session serves every script — starting sway is the slow part, so scripts reset
+   by moving to a fresh workspace. The generator is weighted rather than uniform, biased
+   towards `open` (nothing else has anything to work on without it) and `focus parent` (the
+   only way to reach a state where commands are aimed at a container). Shrinking is one
+   naive pass, dropping one command at a time: sway runs are the whole budget, and it
+   already turns fourteen commands into four or five.
+
+   What it found in its first minutes is in the git history: a split that did nothing when
+   the parent's layout had been set explicitly, a window escaping a container landing one
+   position too far, a no-op move that dissolved a container anyway, and an escape that gives
+   up at the first ancestor without room.
 5. **Widen the scripts** to the areas still only covered by hand-written expectations:
    floating transport, scratchpad, marks, fullscreen.
 

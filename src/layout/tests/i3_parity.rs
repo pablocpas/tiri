@@ -574,7 +574,11 @@ fn i3_122_split_workspace_with_multiple_children_wraps_focused_branch() {
     );
 }
 #[test]
-fn i3_122_repeated_split_without_new_window_keeps_tree_shape() {
+fn i3_122_repeated_split_stops_once_the_window_is_alone() {
+    // Recorded from sway (tiri-parity/fixtures/split-repeated-without-a-new-window.parity):
+    // a split with siblings present always builds a container, even in the orientation the
+    // parent already has. Repeating it is what does nothing, because by then the window is
+    // alone in its own split and there is nothing left to separate it from.
     let mut layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow {
@@ -589,14 +593,22 @@ fn i3_122_repeated_split_without_new_window_keeps_tree_shape() {
             params: TestWindowParams::new(3),
         },
     ]);
-    let workspace = layout.active_workspace().expect("active workspace");
-    let before = workspace.tiling().debug_tree().replace(" *", "");
+
     check_ops_on_layout(&mut layout, [Op::SplitVertical]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let after = workspace.tiling().debug_tree().replace(" *", "");
+    let wrapped = workspace.tiling().debug_tree().replace(" *", "");
     assert_eq!(
-        after, before,
-        "repeating split without opening a new window should not create extra container structure",
+        wrapped.trim_end(),
+        "SplitH\n  SplitV\n    Window 1\n    SplitV\n      Window 3\n  Window 2",
+        "a split with a sibling present builds a container",
+    );
+
+    check_ops_on_layout(&mut layout, [Op::SplitVertical]);
+    let workspace = layout.active_workspace().expect("active workspace");
+    assert_eq!(
+        workspace.tiling().debug_tree().replace(" *", "").trim_end(),
+        wrapped.trim_end(),
+        "repeating it once the window is alone in its split does nothing",
     );
 }
 #[test]

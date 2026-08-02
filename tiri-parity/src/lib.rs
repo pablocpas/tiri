@@ -10,6 +10,7 @@
 
 pub mod fixture;
 pub mod model;
+pub mod session;
 pub mod sway;
 pub mod tiri;
 

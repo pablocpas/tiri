@@ -1370,7 +1370,8 @@ fn wrap_root_for_sibling_insert_uses_pending_layout_hint() {
     );
 }
 #[test]
-fn move_right_from_single_child_container_is_atomic() {
+fn move_right_out_of_a_single_child_container_lands_where_it_was() {
+    // Same rule as the leftward case above, recorded in the same fixture.
     let layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow {
@@ -1397,14 +1398,17 @@ fn move_right_from_single_child_container_is_atomic() {
         tree.as_str(),
         @"
     SplitH
-      Window 2
       Window 1 *
+      Window 2
       Window 3
     "
     );
 }
 #[test]
-fn move_left_swaps_single_child_container_immediately() {
+fn move_left_out_of_a_single_child_container_lands_where_it_was() {
+    // Recorded from sway (tiri-parity/fixtures/move-out-of-a-single-child-container.parity):
+    // leaving a container puts the window beside where that container was, not one step
+    // further. The container's own removal afterwards does not shift it.
     let layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow {
@@ -1431,8 +1435,8 @@ fn move_left_swaps_single_child_container_immediately() {
         tree.as_str(),
         @"
     SplitH
-      Window 2 *
       Window 1
+      Window 2 *
       Window 3
     "
     );
