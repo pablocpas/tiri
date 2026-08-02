@@ -123,9 +123,16 @@ impl<W: LayoutElement> ContainerTree<W> {
         };
 
         let Some(target_idx) = direction.sibling_index(node_idx, child_count) else {
-            // At edge: escape to the grandparent, unless this parent is the root.
+            // At the edge, so the move leaves this container. Where it lands is the same
+            // question the perpendicular case asks: climb until something faces the right
+            // way and has room, rather than stopping at the first container up. Dropping
+            // into a grandparent laid out across the direction places the window sideways,
+            // which is not the move that was asked for.
             if self.parent_of(parent_key).is_none() {
                 return false;
+            }
+            if let Some(moved) = self.try_move_via_parallel_ancestor(node_key, direction) {
+                return moved;
             }
             return self.move_node_to_grandparent(node_key, direction);
         };
@@ -203,6 +210,30 @@ impl<W: LayoutElement> ContainerTree<W> {
         // right way — measured against sway 1.11, where a move keeps climbing until it can
         // happen rather than stopping at the first ancestor that cannot take it.
         let (container_key, through_key) = outermost_parallel?;
+
+        // Nothing to leave behind: if the node is the only thing on the way up to where it
+        // would land, it is already there and the move rearranges nothing. sway does nothing
+        // in that case, and a move that changes no arrangement must not dissolve the
+        // containers it passes through either.
+        let mut key = node_key;
+        let mut alone = true;
+        while key != through_key {
+            let Some(parent_key) = self.parent_of(key) else {
+                break;
+            };
+            if self
+                .get_container(parent_key)
+                .is_some_and(|p| p.child_count() > 1)
+            {
+                alone = false;
+                break;
+            }
+            key = parent_key;
+        }
+        if alone {
+            return None;
+        }
+
         let through_idx = self.child_index(container_key, through_key)?;
         let insert_at = if direction.is_leading() {
             through_idx
