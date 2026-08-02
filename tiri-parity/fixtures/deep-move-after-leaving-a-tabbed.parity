@@ -1,0 +1,63 @@
+# recorded from sway version 1.11
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ layout tabbed
+workspace splith focus=1
+  tabbed 0.000,0.000 1.000x1.000
+    window 1 0.000,0.037 1.000x0.963
+
+$ open
+workspace splith focus=2
+  tabbed 0.000,0.000 1.000x1.000
+    window 1 0.000,0.037 1.000x0.963 hidden
+    window 2 0.000,0.037 1.000x0.963
+
+$ move up
+workspace splitv focus=2
+  window 2 0.000,0.000 1.000x0.500
+  splith 0.000,0.500 1.000x0.500
+    tabbed 0.000,0.500 1.000x0.500
+      window 1 0.000,0.537 1.000x0.463
+
+$ move down
+workspace splitv focus=2
+  splith 0.000,0.000 1.000x1.000
+    tabbed 0.000,0.000 1.000x1.000
+      window 2 0.000,0.037 1.000x0.963
+      window 1 0.000,0.037 1.000x0.963 hidden
+
+$ move left
+workspace splitv focus=2
+  splith 0.000,0.000 1.000x1.000
+    window 2 0.000,0.000 0.500x1.000
+    tabbed 0.500,0.000 0.500x1.000
+      window 1 0.500,0.037 0.500x0.963
+
+$ split v
+workspace splitv focus=2
+  splith 0.000,0.000 1.000x1.000
+    splitv 0.000,0.000 0.500x1.000
+      window 2 0.000,0.000 0.500x1.000
+    tabbed 0.500,0.000 0.500x1.000
+      window 1 0.500,0.037 0.500x0.963
+
+$ open
+workspace splitv focus=3
+  splith 0.000,0.000 1.000x1.000
+    splitv 0.000,0.000 0.500x1.000
+      window 2 0.000,0.000 0.500x0.500
+      window 3 0.000,0.500 0.500x0.500
+    tabbed 0.500,0.000 0.500x1.000
+      window 1 0.500,0.037 0.500x0.963
+
+$ move down
+workspace splitv focus=3
+  splith 0.000,0.000 1.000x0.500
+    splitv 0.000,0.000 0.500x0.500
+      window 2 0.000,0.000 0.500x0.500
+    tabbed 0.500,0.000 0.500x0.500
+      window 1 0.500,0.037 0.500x0.463
+  window 3 0.000,0.500 1.000x0.500

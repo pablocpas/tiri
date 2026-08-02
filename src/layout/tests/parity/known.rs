@@ -62,6 +62,16 @@ first six steps of this fixture pin the shape question it was recorded for, and 
 this is the redistribution rule, which nothing has measured yet.",
     },
     Divergence {
+        fixture: "deep-move-after-leaving-a-tabbed.parity",
+        step: 9,
+        reason: "\
+Found by the differential fuzz nine commands deep, which is itself the finding: the shallow \
+disagreements are gone. `move down` from inside a nested split escapes to the workspace in \
+sway, which turns vertical and wraps what was there, while tiri stops one level short and \
+becomes a sibling inside the splith. The same shape of question as the escapes already \
+closed, one level further in, and not yet measured on its own.",
+    },
+    Divergence {
         fixture: "move-into-a-different-layout.parity",
         step: 7,
         reason: "\
