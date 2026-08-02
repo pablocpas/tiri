@@ -40,18 +40,6 @@ transfer matches: which tree the window sits in, what the tiled side does withou
 where it lands on the way back.",
     },
     Divergence {
-        fixture: "cross-the-workspace-leaving-one-container.parity",
-        step: 7,
-        reason: "\
-Two differences already listed below, meeting in one step. The *shape* matches: crossing the \
-workspace when the only thing left behind is a single container splices that container's \
-children into the workspace rather than wrapping them, and tiri does that. What differs is \
-the order sway leaves them in (w1, w3, w2 — its reversing splice, which tiri deliberately \
-does not copy) and the size shares (1/3 each against tiri's 0.5, 0.25, 0.25). Kept as a \
-recording because it is what pinned the wrapping rule down: the sibling case, one fixture \
-over, wraps instead and passes.",
-    },
-    Divergence {
         fixture: "nested-same-orientation-after-a-move.parity",
         step: 8,
         reason: "\
@@ -61,123 +49,42 @@ it left has its own percent invalidated though it never moved. Building sway wit
 swapped round produces tiri's 0.25/0.25/0.25/0.25 here and moves nothing in the other 27 \
 fixtures. Listed, not fixed: the recording is of released sway.",
     },
+    // The four below are one decision, not four bugs. sway's `container_squash` splices a
+    // redundant pair away by taking the child's children off the front one at a time and
+    // putting each at the same index, which reverses them and flattens their size shares to
+    // even. tiri splices in place and keeps the shares. Reordering windows and resizing them
+    // is not what a `move` was asked to do, and reproducing it would mean copying the loop
+    // for the sake of the loop, so these stay recorded rather than matched. Everything else
+    // in each of them agrees: which containers survive, and where the moved window lands.
+    Divergence {
+        fixture: "cross-the-workspace-leaving-one-container.parity",
+        step: 7,
+        reason: "\
+Order and shares: sway w1, w3, w2 at a third each, tiri w1, w2, w3 at 0.5, 0.25, 0.25. Kept \
+because it is what pinned the wrapping rule down — the sibling case, one fixture over, wraps \
+instead of splicing and passes.",
+    },
     Divergence {
         fixture: "move-into-a-different-layout.parity",
         step: 7,
         reason: "\
-The reversing splice again, and nothing else: both flatten the nesting completely and put \
-the same three windows in a row, sway as w3, w1, w2 and tiri as w2, w1, w3. Recorded while \
-closing the wrap-versus-splice question, and it is the case that showed the two agree on \
-the shape once the flatten splices rather than promotes.",
+Order only, shares agree: sway w3, w1, w2 against tiri w2, w1, w3. The case that showed the \
+two agree on the shape once the flatten splices rather than promotes.",
     },
     Divergence {
         fixture: "move-up-then-right.parity",
         step: 5,
         reason: "\
-i3 #145, and two known differences meeting again: the order sway leaves the spliced children \
-in (w2, w1 against tiri's w1, w2), which is its reversing loop and deliberately not copied, \
-and the size shares. Recorded while measuring what `preserve_on_single` was approximating, \
-and kept because it is the shortest script that reaches the splice at all.",
-    },
-    // `layout toggle split` and the memory it reads.
-    Divergence {
-        fixture: "toggle-split-returns-to-the-previous-split.parity",
-        step: 7,
-        reason: "\
-`layout toggle split` on a container that was made tabbed. sway returns it to the splith it \
-had; tiri returns it to splitv. The container's own `prev_split_layout` is unset, and the \
-fallback reaches for the *workspace's* — another node's memory of another command.",
-    },
-    Divergence {
-        fixture: "move-dissolves-containers-around-a-lone-window.parity",
-        step: 5,
-        reason: "\
-A `move` by a window that is the only thing inside every container above it. sway dissolves \
-them all and leaves the window alone on the workspace; tiri keeps tabbed holding splitv \
-holding the window. tiri has the rule — `alone_all_the_way_up` — but reads it as \"do \
-nothing\" where sway reads it as \"there is nothing left for these containers to hold\".",
-    },
-    Divergence {
-        fixture: "move-dissolves-containers-and-turns-the-workspace.parity",
-        step: 6,
-        reason: "\
-The same as above, reached through a `close`, and it also turns the workspace: sway ends \
-splitv, tiri splith. Recorded separately because it pins both halves — the containers going \
-and the workspace facing the move — where the other fixture only shows the first.",
-    },
-    // The two below are the same question answered in both directions, which is why neither
-    // is a rule about dissolving containers: sway drops the split in one and keeps a whole
-    // nesting in the other, and tiri gets each one backwards.
-    Divergence {
-        fixture: "move-by-a-window-alone-in-a-stacked.parity",
-        step: 4,
-        reason: "\
-`move up` by a window alone inside the splitv it was just given, inside a stacked container. \
-sway drops the splitv; tiri keeps it.",
-    },
-    Divergence {
-        fixture: "move-that-keeps-the-containers.parity",
-        step: 6,
-        reason: "\
-`move down` out of a stacked container. sway keeps the nesting the window came from — \
-splith holding stacked holding splith holding the window — and tiri flattens it to a splith \
-holding the window. The mirror of the entry above.",
-    },
-    // Where a new window lands.
-    Divergence {
-        fixture: "open-with-a-container-selected.parity",
-        step: 7,
-        reason: "\
-Opening a window while a container is selected. Both put it on the workspace and both agree \
-on the sizes; they disagree on the slot — sway w2, w3, w1 against tiri w2, w1, w3. What is \
-being asked is where `focus parent` leaves the insertion point, which nothing has measured \
-yet.",
-    },
-    // Movement inside tabbed and stacked containers, where a direction says nothing about
-    // where a window should land.
-    Divergence {
-        fixture: "move-a-tab-back-and-forth.parity",
-        step: 6,
-        reason: "\
-Moving a tab out of a tabbed container and back leaves sway's tabs in their original order \
-and tiri's reversed. Direction is meaningless inside a tabbed container, so where a \
-returning tab lands is its own question.",
-    },
-    Divergence {
-        fixture: "move-a-tab-up.parity",
-        step: 7,
-        reason: "\
-`move up` by the focused tab. sway leaves the tab order alone; tiri swaps the moved tab with \
-the one before it. The vertical case of the same question, and the pair says a move inside \
-tabs does not reorder them on either axis.",
-    },
-    Divergence {
-        fixture: "move-a-tab-sideways-when-nested.parity",
-        step: 10,
-        reason: "\
-`move left` then `move right` by a tab in a tabbed container nested in a splitv. sway ends \
-with the tab first, tiri second — the pair of moves is not the identity in either, and they \
-disagree about where it lands.",
-    },
-    Divergence {
-        fixture: "move-inside-nested-tabbed-and-stacked.parity",
-        step: 8,
-        reason: "\
-`move right` by a tab inside a tabbed container that is itself inside a stacked one. sway \
-keeps the window where it is; tiri promotes it out to the workspace. The same question as \
-the entry above, asked while nested: a horizontal move has no meaning inside tabs, and tiri \
-answers it by climbing until it finds an axis that does.",
+i3 #145. Order and shares: sway w2, w1, w3 at a third each, tiri w1, w2, w3 at 0.25, 0.25, \
+0.5. The shortest script that reaches the splice at all.",
     },
     Divergence {
         fixture: "move-into-a-nested-container.parity",
         step: 7,
         reason: "\
-Deliberate. Moving a window into its sibling container leaves that container as the only \
-child of a split, and sway then splices it into the workspace — reversing the order of the \
-windows inside it as it goes (w2, w3 come back as w3, w2, and stay that way). Reordering \
-windows is not something a user asked for, and reproducing it would mean copying the loop \
-that does it. tiri keeps the container and leaves the order alone. The single-child case, \
-where there is no order to scramble, does match: see move-across-the-workspace.parity.",
+Order only, shares agree: sway w3, w1, w2 against tiri w2, w1, w3. Reached by moving a window \
+into its sibling container, which leaves that container alone under a split and squashes both \
+away — the same splice as the others, from the other side.",
     },
 ];
 

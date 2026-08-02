@@ -1436,66 +1436,18 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     fn set_layout_for_active_selection(&mut self, layout: Layout) -> bool {
-        if self.workspace_is_selected() {
-            return self.set_workspace_layout_mode(layout);
-        }
-
         let target = self.tree.command_target(RootPolicy::ImplicitWorkspace);
         self.tree
             .set_layout_for_target(layout, target, RootPolicy::ImplicitWorkspace)
     }
 
-    /// If a container is selected (focus-parent semantics), set its layout to
-    /// `next(current)` and report the result; None when no container is selected.
-    fn set_selected_container_layout(
-        &mut self,
-        next: impl FnOnce(Layout) -> Layout,
-    ) -> Option<bool> {
-        if !self.tree.selected_is_container() {
-            return None;
-        }
-        let key = self.tree.selected_node_key()?;
-        let (current, _, _) = self.tree.container_info(key)?;
-        let target = self.tree.command_target(RootPolicy::ImplicitWorkspace);
-        Some(
-            self.tree
-                .set_layout_for_target(next(current), target, RootPolicy::ImplicitWorkspace),
-        )
-    }
-
     fn toggle_split_for_active_selection(&mut self) -> bool {
-        if self.workspace_is_selected() {
-            let next = match self.tree.workspace_layout() {
-                Layout::SplitH => Layout::SplitV,
-                Layout::SplitV => Layout::SplitH,
-                Layout::Tabbed | Layout::Stacked => self.tree.workspace_prev_split_layout(),
-            };
-            return self.set_workspace_layout_mode(next);
-        }
-
-        if let Some(result) = self.set_selected_container_layout(|current| match current {
-            Layout::SplitH => Layout::SplitV,
-            Layout::SplitV => Layout::SplitH,
-            Layout::Tabbed | Layout::Stacked => Layout::SplitH,
-        }) {
-            return result;
-        }
-
         let target = self.tree.command_target(RootPolicy::ImplicitWorkspace);
         self.tree
             .toggle_split_for_target(target, RootPolicy::ImplicitWorkspace)
     }
 
     fn toggle_layout_all_for_active_selection(&mut self) -> bool {
-        if self.workspace_is_selected() {
-            let next = self.tree.workspace_layout().next_in_cycle();
-            return self.set_workspace_layout_mode(next);
-        }
-
-        if let Some(result) = self.set_selected_container_layout(Layout::next_in_cycle) {
-            return result;
-        }
-
         let target = self.tree.command_target(RootPolicy::ImplicitWorkspace);
         self.tree
             .toggle_layout_all_for_target(target, RootPolicy::ImplicitWorkspace)
@@ -1593,11 +1545,9 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn toggle_workspace_split_layout(&mut self) {
-        let next = match self.tree.workspace_layout() {
-            Layout::SplitH => Layout::SplitV,
-            Layout::SplitV => Layout::SplitH,
-            Layout::Tabbed | Layout::Stacked => self.tree.workspace_prev_split_layout(),
-        };
+        let next = self
+            .tree
+            .toggled_split_layout(self.tree.workspace_layout(), self.tree.root_node_key());
         self.set_workspace_layout_mode(next);
     }
 

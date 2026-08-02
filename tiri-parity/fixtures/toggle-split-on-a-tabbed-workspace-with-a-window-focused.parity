@@ -1,0 +1,36 @@
+# recorded from sway version 1.11
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splith focus=2
+  window 1 0.000,0.000 0.500x1.000
+  window 2 0.500,0.000 0.500x1.000
+
+$ focus parent
+workspace splith focus=@
+  window 1 0.000,0.000 0.500x1.000
+  window 2 0.500,0.000 0.500x1.000
+
+$ layout splitv
+workspace splitv focus=@
+  window 1 0.000,0.000 1.000x0.500
+  window 2 0.000,0.500 1.000x0.500
+
+$ layout tabbed
+workspace tabbed focus=@
+  window 1 0.000,0.037 1.000x0.963 hidden
+  window 2 0.000,0.037 1.000x0.963
+
+$ focus child
+workspace tabbed focus=2
+  window 1 0.000,0.037 1.000x0.963 hidden
+  window 2 0.000,0.037 1.000x0.963
+
+$ layout toggle split
+workspace tabbed focus=2
+  splitv 0.000,0.075 1.000x0.925
+    window 1 0.000,0.037 1.000x0.482
+    window 2 0.000,0.519 1.000x0.481

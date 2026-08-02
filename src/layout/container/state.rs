@@ -157,15 +157,6 @@ impl<W: LayoutElement> ContainerTree<W> {
             .layout()
     }
 
-    /// The split layout to fall back to when toggling out of tabbed/stacked, mirroring
-    /// i3's `layout toggle split` on the workspace.
-    pub(in crate::layout) fn workspace_prev_split_layout(&self) -> Layout {
-        self.get_container(self.root)
-            .expect("workspace root must be a container")
-            .prev_split_layout()
-            .unwrap_or(Layout::SplitH)
-    }
-
     pub(in crate::layout) fn take_pending_relayout(&mut self) -> bool {
         std::mem::take(&mut self.pending_relayout)
     }

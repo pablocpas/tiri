@@ -70,55 +70,40 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.insert_key_as_focus_sibling(node_key, focus);
     }
 
-    /// Insert an already-materialized node as a sibling of the selected/focused node,
-    /// following i3's focus-parent semantics.
+    /// Put a new node where sway puts a new window: next to whatever was most recently
+    /// focused under the workspace, which is `seat_get_focus_inactive` there.
+    ///
+    /// `focus parent` puts a container at the head of that history, so selecting one moves
+    /// where a window lands — it joins the container's *siblings* rather than going inside.
+    /// The workspace is the one node that is never its own answer, because it is not under
+    /// itself: selecting it hands the question down to its focused child, and a window
+    /// opened there lands beside that child rather than at the end of the row.
     pub(super) fn insert_key_as_focus_sibling(&mut self, node_key: NodeKey, focus: bool) {
-        // Prefer the selected container/leaf target (focus-parent semantics): i3/sway insert
-        // new windows as siblings of the selected node. Fall back to the focused leaf.
-        let selected_target = self.selected_key.and_then(|selected_key| {
-            self.get_node(selected_key)?;
-            // The workspace has no parent to be a sibling of, so a window opened with it
-            // selected becomes its child — measured against sway 1.11.
-            let Some(parent_key) = self.parent_of(selected_key) else {
-                return Some((
-                    selected_key,
-                    self.get_container(selected_key)?.child_count(),
-                ));
-            };
-            let selected_idx = self.child_index(parent_key, selected_key)?;
-            Some((parent_key, selected_idx + 1))
-        });
+        let sibling_key = match self
+            .selected_key
+            .filter(|key| self.get_node(*key).is_some())
+        {
+            Some(key) if key != self.root => Some(key),
+            Some(_) => self
+                .get_container(self.root)
+                .and_then(ContainerData::focused_child_key),
+            None => self.effective_focused_key(),
+        };
 
-        let focus_target =
-            self.focused_key
-                .or_else(|| self.first_leaf_key())
-                .and_then(|focused_key| {
-                    let parent_key = self.parent_of(focused_key)?;
-                    let focused_idx = self.child_index(parent_key, focused_key)?;
-                    Some((parent_key, focused_idx + 1))
-                });
+        let insert_target = sibling_key
+            .and_then(|key| {
+                let parent_key = self.parent_of(key)?;
+                Some((parent_key, self.child_index(parent_key, key)? + 1))
+            })
+            // An empty workspace has nothing to sit beside.
+            .or_else(|| Some((self.root, self.get_container(self.root)?.child_count())));
 
-        let insert_target = selected_target.or(focus_target).or_else(|| {
-            let root_key = self.root;
-            let root = self.get_container(root_key)?;
-            Some((root_key, root.child_count()))
-        });
-
-        if let Some((parent_key, insert_idx)) = insert_target {
-            if let Some(NodeData::Container(parent_container)) = self.get_node_mut(parent_key) {
-                parent_container.insert_child(insert_idx, node_key);
-                self.set_parent(node_key, Some(parent_key));
-                self.settle_focus_after_insert(node_key, focus);
-                return;
-            }
-        }
-
-        // Fallback: append to the workspace.
-        let root_key = self.root;
-        if let Some(NodeData::Container(container)) = self.get_node_mut(root_key) {
-            let insert_idx = container.children.len();
-            container.insert_child(insert_idx, node_key);
-            self.set_parent(node_key, Some(root_key));
+        let Some((parent_key, insert_idx)) = insert_target else {
+            return;
+        };
+        if let Some(NodeData::Container(parent_container)) = self.get_node_mut(parent_key) {
+            parent_container.insert_child(insert_idx, node_key);
+            self.set_parent(node_key, Some(parent_key));
             self.settle_focus_after_insert(node_key, focus);
         }
     }

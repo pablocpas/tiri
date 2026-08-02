@@ -779,10 +779,9 @@ fn replace_single_child_container_with_same_layout() {
 }
 #[test]
 fn move_right_enters_tabbed_container() {
-    // Recorded from sway (tiri-parity/fixtures/move-sideways-into-a-tabbed.parity): a window
-    // entering a tabbed container takes the focused tab's place rather than joining at the
-    // end. Tabs have no axis to arrive along, so the direction says nothing about where in
-    // the stack the newcomer belongs.
+    // Recorded from sway (tiri-parity/fixtures/move-sideways-into-a-tabbed.parity): tabs run
+    // left to right like any other horizontal container, so a window moving right into one
+    // arrives at its left edge — first in the tab order, whichever tab was on top.
     let mut harness = TreeHarness::new();
     harness.add_window(1);
     harness.add_window(2);
@@ -797,8 +796,8 @@ fn move_right_enters_tabbed_container() {
         @"
     SplitH
       Tabbed
-        Window 2
         Window 1 *
+        Window 2
         Window 3
     "
     );
@@ -993,6 +992,12 @@ fn toggle_split_layout_switches_orientation() {
 }
 #[test]
 fn toggle_layout_all_cycles_through_all_layouts() {
+    // Recorded from sway
+    // (tiri-parity/fixtures/layout-toggle-all-on-a-workspace-of-windows.parity): the first
+    // toggle builds the container, because a window on the workspace has no container to
+    // retype and sway will not hand the workspace a layout a window asked for. The cycle
+    // then runs inside that container, so four toggles come back to splith one level down
+    // rather than to the flat workspace it started from.
     let layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow {
@@ -1013,8 +1018,9 @@ fn toggle_layout_all_cycles_through_all_layouts() {
         tree.as_str(),
         @"
     SplitH
-      Window 1
-      Window 2 *
+      SplitH
+        Window 1
+        Window 2 *
     "
     );
 }

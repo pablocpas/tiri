@@ -1,0 +1,48 @@
+# layout on a container that is alone inside a container that is alone
+#
+# sway 1.12-dev flattens one level here ("flatten once, like i3", cmd_layout); 1.11, which
+# every recording is of, does not — it retypes the inner container and leaves both levels.
+# Recorded because the two answers are one level apart and the source alone does not say
+# which one the fixtures are describing.
+# recorded from sway version 1.11
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ focus parent
+workspace splith focus=@
+  window 1 0.000,0.000 1.000x1.000
+
+$ split h
+workspace splith focus=@0
+  splith 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+
+$ focus parent
+workspace splith focus=@
+  splith 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+
+$ focus child
+workspace splith focus=@0
+  splith 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+
+$ layout tabbed
+workspace splith focus=@0/0
+  tabbed 0.000,0.000 1.000x1.000
+    splith 0.000,0.075 1.000x0.925
+      window 1 0.000,0.037 1.000x0.963
+
+$ focus child
+workspace splith focus=1
+  tabbed 0.000,0.000 1.000x1.000
+    splith 0.000,0.075 1.000x0.925
+      window 1 0.000,0.037 1.000x0.963
+
+$ layout splitv
+workspace splith focus=1
+  tabbed 0.000,0.000 1.000x1.000
+    splitv 0.000,0.075 1.000x0.925
+      window 1 0.000,0.037 1.000x0.963

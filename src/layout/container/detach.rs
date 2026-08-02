@@ -37,7 +37,9 @@ impl<W: LayoutElement> ContainerTree<W> {
             NodeData::Container(_) => return None, // Should never happen
         };
 
-        self.cleanup_containers(cleanup_key);
+        if let Some(cleanup_key) = cleanup_key {
+            self.reap_empty(cleanup_key);
+        }
         self.prune_leaf_layouts();
 
         self.prune_selected_key();
@@ -85,7 +87,9 @@ impl<W: LayoutElement> ContainerTree<W> {
         };
 
         let subtree = self.extract_subtree(node_key);
-        self.cleanup_containers(cleanup_key);
+        if let Some(cleanup_key) = cleanup_key {
+            self.reap_empty(cleanup_key);
+        }
         self.prune_leaf_layouts();
 
         self.prune_selected_key();
@@ -255,7 +259,6 @@ impl<W: LayoutElement> ContainerTree<W> {
 
                 let remaining = self.get_container(root_key)?.children.len();
 
-                self.cleanup_containers(Some(root_key));
                 self.prune_leaf_layouts();
 
                 match self.get_node(root_key) {

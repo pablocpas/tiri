@@ -50,7 +50,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         root_policy: RootPolicy,
     ) -> bool {
         match target {
-            TreeCommandTarget::Workspace => false,
+            // The workspace itself is selected, so it takes the layout. No container is
+            // built: the workspace is the container, and it remembers the split it was on
+            // the way out like any other.
+            TreeCommandTarget::Workspace => self.set_root_container_layout(layout),
             TreeCommandTarget::Container(key) => {
                 self.set_layout_for_container_target(key, layout, root_policy)
             }
@@ -156,13 +159,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         wrapper.focus_stack = old_focus_stack;
         wrapper.child_percents = old_child_percents;
         wrapper.geometry = root_geometry;
-        // Only a wrapper that holds a single node is worth protecting from cleanup: it is
-        // saying something the workspace does not. One holding several is an ordinary
-        // container, and if windows later leave it until one remains, it is as redundant as
-        // any other — which is what sway does with it.
-        if wrapper.child_count() == 1 {
-            wrapper.mark_user_created();
-        }
         wrapper.ensure_focus_stack();
 
         let wrapper_children = wrapper.children.clone();
@@ -184,74 +180,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         Some(wrapper_key)
-    }
-
-    /// i3's `tree_flatten`, at the workspace.
-    ///
-    /// A workspace whose only child is a split saying what the workspace already says has a
-    /// level that means nothing, so that child's children move up into its place. It splices
-    /// rather than promotes — promoting would hand the workspace's identity to a container
-    /// that is not it.
-    pub(in crate::layout) fn collapse_redundant_root_single_child_split(&mut self) -> bool {
-        let mut changed = false;
-
-        loop {
-            let root_key = self.root;
-            let Some(root_container) = self.get_container(root_key) else {
-                break;
-            };
-            if root_container.child_count() != 1 {
-                break;
-            }
-
-            let root_layout = root_container.layout();
-            if !matches!(root_layout, Layout::SplitH | Layout::SplitV) {
-                break;
-            }
-
-            let Some(child_key) = root_container.child_key(0) else {
-                break;
-            };
-            let Some(child_container) = self.get_container(child_key) else {
-                break;
-            };
-            if child_container.layout() != root_layout {
-                break;
-            }
-
-            let grandchildren = child_container.children.clone();
-            let focus_stack = child_container.focus_stack.clone();
-            let percents = child_container.child_percents_slice().to_vec();
-
-            let Some(root) = self.get_container_mut(root_key) else {
-                break;
-            };
-            root.children = grandchildren.clone();
-            root.focus_stack = focus_stack;
-            root.child_percents = percents;
-            root.ensure_focus_stack();
-            for grandchild in grandchildren {
-                self.set_parent(grandchild, Some(root_key));
-            }
-
-            if self.selected_key == Some(child_key) {
-                self.selected_key = Some(root_key);
-            }
-            self.nodes.remove(child_key);
-            self.parents.remove(child_key);
-            changed = true;
-        }
-
-        changed
-    }
-
-    pub(super) fn layouts_squashable(parent: Layout, child: Layout) -> bool {
-        // Only collapse truly redundant split levels. Tabbed/stacked containers
-        // must keep their own node to preserve semantics.
-        matches!(
-            (parent, child),
-            (Layout::SplitH, Layout::SplitH) | (Layout::SplitV, Layout::SplitV)
-        )
     }
 
     pub(super) fn split_selected_container(
@@ -528,30 +456,12 @@ impl<W: LayoutElement> ContainerTree<W> {
         target: TreeCommandTarget,
         root_policy: RootPolicy,
     ) -> bool {
-        let Some((target_key, current)) = self.toggle_source(target, root_policy) else {
+        let Some((source_key, current)) = self.toggle_source(target, root_policy) else {
             return false;
         };
 
-        let next = match current {
-            Layout::SplitH => Layout::SplitV,
-            Layout::SplitV => Layout::SplitH,
-            // Each container remembers the split it had. Reaching for the workspace's memory
-            // when a container has none was reading another node's answer to another command.
-            Layout::Tabbed | Layout::Stacked => target_key
-                .and_then(|key| self.get_container(key))
-                .and_then(|container| container.prev_split_layout())
-                .unwrap_or(Layout::SplitH),
-        };
-
-        if matches!(current, Layout::Tabbed | Layout::Stacked) {
-            if let Some(container) = target_key.and_then(|key| self.get_container_mut(key)) {
-                container.set_layout_explicit(next);
-                return true;
-            }
-            return false;
-        }
-
-        self.set_layout_for_target(next, target, root_policy)
+        let next = self.toggled_split_layout(current, source_key);
+        self.apply_toggled_layout(next, source_key, target, root_policy)
     }
 
     pub(in crate::layout) fn toggle_layout_all_for_target(
@@ -559,24 +469,69 @@ impl<W: LayoutElement> ContainerTree<W> {
         target: TreeCommandTarget,
         root_policy: RootPolicy,
     ) -> bool {
-        let Some((target_key, current)) = self.toggle_source(target, root_policy) else {
+        let Some((source_key, current)) = self.toggle_source(target, root_policy) else {
             return false;
         };
 
-        let next = current.next_in_cycle();
-        if let Some(container) = target_key.and_then(|key| self.get_container_mut(key)) {
-            container.set_layout_explicit(next);
-            return true;
-        }
+        self.apply_toggled_layout(current.next_in_cycle(), source_key, target, root_policy)
+    }
 
-        self.set_layout_for_target(next, target, root_policy)
+    /// Write back the layout a toggle arrived at.
+    ///
+    /// The container it read from is the container the command is about, so an ordinary one
+    /// just changes type. The workspace is the exception, and not because it is special: a
+    /// toggle that reads from it has either the workspace itself selected, which changes its
+    /// orientation, or a window sitting on it, which gets the container sway builds instead.
+    /// Telling those two apart is `set_layout_for_target`'s job, so they go there.
+    fn apply_toggled_layout(
+        &mut self,
+        layout: Layout,
+        source_key: Option<NodeKey>,
+        target: TreeCommandTarget,
+        root_policy: RootPolicy,
+    ) -> bool {
+        match source_key {
+            Some(key) if key != self.root => self
+                .get_container_mut(key)
+                .map(|container| container.set_layout_explicit(layout))
+                .is_some(),
+            _ => self.set_layout_for_target(layout, target, root_policy),
+        }
+    }
+
+    /// sway's `toggle_split_layout`, the rule behind `layout toggle split`.
+    ///
+    /// A split becomes the other split. Tabs and stacks go back to the split the container
+    /// had before — every container remembers its own, set whenever it stops being a split —
+    /// and a container that has never been one asks the screen, which is sway's last resort
+    /// once the configured default orientation is out of the picture.
+    pub(in crate::layout) fn toggled_split_layout(
+        &self,
+        current: Layout,
+        container_key: Option<NodeKey>,
+    ) -> Layout {
+        match current {
+            Layout::SplitH => Layout::SplitV,
+            Layout::SplitV => Layout::SplitH,
+            Layout::Tabbed | Layout::Stacked => {
+                let along_the_screen = if self.view_size.h > self.view_size.w {
+                    Layout::SplitV
+                } else {
+                    Layout::SplitH
+                };
+                container_key
+                    .and_then(|key| self.get_container(key))
+                    .and_then(ContainerData::prev_split_layout)
+                    .unwrap_or(along_the_screen)
+            }
+        }
     }
 
     /// The container a layout toggle reads its current layout from, and that layout.
     ///
     /// A leaf sitting directly on the workspace has no container between it and the
-    /// workspace, so the toggle starts from the workspace's own orientation — and lands
-    /// through `set_layout_for_target`, which knows to build the container sway builds.
+    /// workspace, so the toggle reads the workspace's own orientation — and its memory of
+    /// the split it used to be, which is the same field on the same node as anywhere else.
     fn toggle_source(
         &self,
         target: TreeCommandTarget,
@@ -586,7 +541,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         match key.and_then(|key| self.get_container(key)) {
             Some(container) => Some((key, container.layout())),
             None if root_policy == RootPolicy::ImplicitWorkspace => {
-                Some((None, self.root_container_layout()))
+                Some((Some(self.root), self.root_container_layout()))
             }
             None => None,
         }

@@ -615,10 +615,15 @@ fn floating_workspace_roundtrip_preserves_previous_split_layout() {
         ],
     );
 
+    // The workspace comes back tabbed and still remembering it was a splitv, so the toggle
+    // answers splitv. Where that answer lands is not this test's question: a window is
+    // focused, and sway puts a layout a window asked for in a container rather than on the
+    // workspace — measured in
+    // tiri-parity/fixtures/toggle-split-on-a-tabbed-workspace-with-a-window-focused.parity.
     let workspace = layout.active_workspace().expect("active workspace");
     let tree = workspace.tiling().debug_tree().replace(" *", "");
     assert!(
-        tree.starts_with("SplitV\n"),
+        tree.starts_with("Tabbed\n  SplitV\n"),
         "floating the whole workspace and restoring it must preserve the split remembered by layout toggle split:\n{tree}",
     );
 }

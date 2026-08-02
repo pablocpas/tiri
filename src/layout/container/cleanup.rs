@@ -1,4 +1,10 @@
-//! Tree normalization: collapsing redundant containers after mutations.
+//! Tree normalization.
+//!
+//! sway has no general tidy-up pass. It has two named operations, run by the commands that
+//! need them and by no others, and which of them runs where is behaviour rather than
+//! housekeeping: `container_reap_empty` after anything that takes a node out of the tree,
+//! `workspace_squash` only after a directional move. A container left holding one child by
+//! a `close` therefore stays, and the identical shape reached by a `move` does not.
 
 use super::ContainerData;
 use super::ContainerTree;
@@ -8,143 +14,127 @@ use super::NodeData;
 use super::NodeKey;
 
 impl<W: LayoutElement> ContainerTree<W> {
-    /// Normalize the tree after a mutation, walking from `key` towards the root: drop empty
-    /// containers, dissolve single-child wrappers and squash redundant nested splits.
-    pub(super) fn cleanup_containers(&mut self, mut key: Option<NodeKey>) {
-        while let Some(container_key) = key {
-            let parent_key = self.parent_of(container_key);
-            // Flattening lifts a subtree a level, so carry on from what was promoted: it
-            // may itself be redundant now that it sits somewhere else.
-            if let Some(promoted) = self.flatten_redundant_split(container_key, parent_key) {
-                key = Some(promoted);
-                continue;
+    /// sway's `container_reap_empty`: destroy a container the command has emptied, and any
+    /// ancestor it empties in turn.
+    ///
+    /// Only emptiness — this is not the place where redundant nesting goes, which is why a
+    /// `close` leaves the container it emptied down to one child standing.
+    ///
+    /// The workspace is where the walk stops. It has no parent to be detached from, and an
+    /// empty one is an empty workspace rather than a container to be got rid of.
+    pub(super) fn reap_empty(&mut self, key: NodeKey) {
+        let mut current = Some(key);
+        while let Some(container_key) = current {
+            if container_key == self.root {
+                return;
             }
-            self.cleanup_one_container(container_key, parent_key);
-            key = parent_key;
+            let Some(container) = self.get_container(container_key) else {
+                return;
+            };
+            if container.child_count() > 0 {
+                return;
+            }
+
+            let parent_key = self.parent_of(container_key);
+            self.detach_child(container_key);
+            self.nodes.remove(container_key);
+            self.parents.remove(container_key);
+            if self.selected_key == Some(container_key) {
+                self.selected_key = parent_key;
+            }
+            current = parent_key;
         }
     }
 
-    /// Dissolve a lone wrapper that only re-states the orientation its grandparent already
-    /// has, lifting its grandchildren into its place.
+    /// sway's `workspace_squash`: drop nesting that says the same thing twice, everywhere in
+    /// the workspace.
     ///
-    /// This is i3's `tree_flatten`, and the shape it targets is narrow on purpose: a
-    /// container holding exactly one child, that child a *split* whose layout matches the
-    /// grandparent's. `splith > [ splitv > [ splith > w ], … ]` is three ways of saying the
-    /// same arrangement, so sway keeps only the outer one.
-    ///
-    /// Everything just outside that shape is a state sway does keep, and each was measured:
-    /// a single-child split holding a window (`split` builds one and it survives), a tabbed
-    /// or stacked child (nesting two tab bars is meaningful), and a child whose orientation
-    /// differs from the grandparent's (it is what makes the layout two-dimensional).
-    fn flatten_redundant_split(
-        &mut self,
-        container_key: NodeKey,
-        parent_key: Option<NodeKey>,
-    ) -> Option<NodeKey> {
-        let parent_key = parent_key?;
-        let container = self.get_container(container_key)?;
-        if container.child_count() != 1 {
-            return None;
-        }
-        let container_layout = container.layout();
-        let child_key = container.child_key(0)?;
-        let child_layout = self.get_container(child_key)?.layout();
-        if !matches!(child_layout, Layout::SplitH | Layout::SplitV)
-            || child_layout == container_layout
-        {
-            return None;
-        }
-        if self.get_container(parent_key).map(|parent| parent.layout()) != Some(child_layout) {
-            return None;
-        }
+    /// Only a directional move runs this. Other commands leave the nesting they produce
+    /// alone, and the difference is measurable: a `split` builds a container holding one
+    /// window and it stays, a `close` down to one child keeps both levels, and the same
+    /// shape reached by a `move` collapses.
+    pub(super) fn squash_workspace(&mut self) {
+        self.squash_children(self.root);
+    }
 
-        let replaced = self
-            .get_container_mut(parent_key)
-            .is_some_and(|parent| parent.replace_child_preserving_focus(container_key, child_key));
-        if !replaced {
-            return None;
+    /// Squash every child of `key`, walking the list as it changes underneath: a squashed
+    /// child is replaced by however many grandchildren it had.
+    fn squash_children(&mut self, key: NodeKey) {
+        let mut idx = 0;
+        while let Some(child_key) = self.get_container(key).and_then(|c| c.child_key(idx)) {
+            idx += self.squash_container(child_key) + 1;
         }
-        self.set_parent(child_key, Some(parent_key));
-        self.nodes.remove(container_key);
-        self.parents.remove(container_key);
-        if self.selected_key == Some(container_key) {
-            self.selected_key = Some(child_key);
-        }
-        if self.focused_key == Some(container_key) {
-            self.focused_key = Some(child_key);
-        }
+    }
 
-        // The child now sits where the wrapper did, saying what its parent already says, so
-        // it goes too and its children take the slot. i3 splices rather than promotes here,
-        // and the difference is visible: promoting would leave one more level than sway has.
-        let Some(child) = self.get_container(child_key) else {
-            return Some(child_key);
+    /// sway's `container_squash`. Returns how many extra slots the container now occupies in
+    /// its parent's child list — zero unless it was spliced away.
+    fn squash_container(&mut self, key: NodeKey) -> usize {
+        let child_key = match self.get_container(key) {
+            Some(container) if container.child_count() == 1 => container.child_key(0),
+            // A leaf, or a container with a real arrangement of its own to look inside.
+            _ => None,
         };
-        let grandchildren = child.children.clone();
-        let focus_stack = child.focus_stack.clone();
-        let percents = child.child_percents_slice().to_vec();
-        self.squash_container_into_parent(
-            child_key,
-            parent_key,
-            &grandchildren,
-            &focus_stack,
-            &percents,
-        );
-        Some(parent_key)
+        let Some(child_key) = child_key.filter(|child| self.is_squashable(key, *child)) else {
+            if matches!(self.get_node(key), Some(NodeData::Container(_))) {
+                self.squash_children(key);
+            }
+            return 0;
+        };
+
+        // The grandchildren take the slot both levels were holding. Done as two splices so
+        // the size shares are redistributed by the same arithmetic as everywhere else: the
+        // grandchildren fill the child, then the child's contents fill the container's slot.
+        let extra = self
+            .get_container(child_key)
+            .map_or(0, |child| child.child_count())
+            .saturating_sub(1);
+        self.splice_container_into_parent(child_key);
+        self.splice_container_into_parent(key);
+        extra
     }
 
-    /// Apply at most one normalization step to `container_key`.
-    fn cleanup_one_container(&mut self, container_key: NodeKey, parent_key: Option<NodeKey>) {
+    /// Whether `con` and its only `child` are a redundant pair: two splits crossing each
+    /// other where the grandparent already lays its children out the child's way, so the
+    /// container in the middle adds an orientation nothing reads.
+    fn is_squashable(&self, con_key: NodeKey, child_key: NodeKey) -> bool {
+        let Some(con_layout) = self.get_container(con_key).map(ContainerData::layout) else {
+            return false;
+        };
+        let Some(child_layout) = self.get_container(child_key).map(ContainerData::layout) else {
+            return false;
+        };
+        let Some(grandparent_layout) = self
+            .parent_of(con_key)
+            .and_then(|key| self.get_container(key))
+            .map(ContainerData::layout)
+        else {
+            return false;
+        };
+
+        matches!(con_layout, Layout::SplitH | Layout::SplitV)
+            && matches!(child_layout, Layout::SplitH | Layout::SplitV)
+            && !con_layout.is_parallel_to_layout(child_layout)
+            && grandparent_layout.is_parallel_to_layout(child_layout)
+    }
+
+    /// Replace a container by its children in its parent's child list.
+    fn splice_container_into_parent(&mut self, container_key: NodeKey) {
+        let Some(parent_key) = self.parent_of(container_key) else {
+            return;
+        };
         let Some(container) = self.get_container(container_key) else {
             return;
         };
-
-        let container_layout = container.layout();
-        let container_children = container.children.clone();
-        let container_focus_stack = container.focus_stack.clone();
-        let container_child_percents = container.child_percents_slice().to_vec();
-        let container_is_user_made = container.is_user_container();
-        let child_count = container_children.len();
-
-        // A container is never dissolved here, whatever its layout and however few children
-        // it has left. Measured: a `split` builds one holding a single window and it
-        // survives, a `close` that empties one down to a single child leaves it alone, and so
-        // does a move elsewhere in the tree. The workspace is no exception — it is a
-        // container that happens to have no parent, and an empty one is an empty workspace.
-        let Some(parent_key) = parent_key else {
-            return;
-        };
-        let Some(parent_layout) = self.get_container(parent_key).map(|parent| parent.layout())
-        else {
-            return;
-        };
-
-        if child_count == 0 {
-            self.remove_empty_container(container_key, parent_key);
-        } else if child_count > 1
-            && !container_is_user_made
-            && Self::layouts_squashable(parent_layout, container_layout)
-        {
-            self.squash_container_into_parent(
-                container_key,
-                parent_key,
-                &container_children,
-                &container_focus_stack,
-                &container_child_percents,
-            );
-        }
-    }
-
-    /// Remove a non-root container with no children.
-    fn remove_empty_container(&mut self, container_key: NodeKey, parent_key: NodeKey) {
-        let Some(parent_idx) = self.child_index(parent_key, container_key) else {
-            return;
-        };
-        if let Some(parent) = self.get_container_mut(parent_key) {
-            parent.remove_child(parent_idx);
-        }
-        self.set_parent(container_key, None);
-        self.remove_node_recursive(container_key);
+        let children = container.children.clone();
+        let focus_stack = container.focus_stack.clone();
+        let percents = container.child_percents_slice().to_vec();
+        self.squash_container_into_parent(
+            container_key,
+            parent_key,
+            &children,
+            &focus_stack,
+            &percents,
+        );
     }
 
     /// Splice a container's children into its parent in place of the container itself,

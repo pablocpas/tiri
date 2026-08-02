@@ -860,13 +860,22 @@ fn reconcile_leaf_layouts(
 // ============================================================================
 
 impl Layout {
+    /// Whether children of a container with this layout are arranged left to right. Tabs
+    /// count as horizontal and stacks as vertical: their titles run that way, and so does
+    /// every question about them that has an axis in it.
+    pub fn is_horizontal(self) -> bool {
+        matches!(self, Layout::SplitH | Layout::Tabbed)
+    }
+
     /// Whether children of a container with this layout are arranged along `direction`'s axis,
     /// so that moving or focusing in that direction steps between siblings.
     pub fn is_parallel_to(self, direction: Direction) -> bool {
-        match self {
-            Layout::SplitH | Layout::Tabbed => direction.is_horizontal(),
-            Layout::SplitV | Layout::Stacked => direction.is_vertical(),
-        }
+        self.is_horizontal() == direction.is_horizontal()
+    }
+
+    /// Whether two layouts arrange their children along the same axis.
+    pub fn is_parallel_to_layout(self, other: Layout) -> bool {
+        self.is_horizontal() == other.is_horizontal()
     }
 
     /// Next layout in sway's `layout toggle all` cycle:

@@ -164,26 +164,34 @@ established the following, and stopped short of landing:
   container down to one child leaves it alone; a move elsewhere in the tree leaves it alone;
   and a container with the same orientation as its parent survives both a `split` and a move
   that reorders inside it.
-- The rule is keyed on *what just happened*, not on a flag, and three recordings pinned it
-  down. What looked like "sometimes a lone container survives a move and sometimes it does
-  not" is entirely the workspace-crossing path:
-
-  > Crossing the workspace wraps what stays behind in a container keeping the old
-  > orientation — **unless what stays behind is a single container**, whose children are
-  > spliced into the workspace instead.
-
-  `splith > [splitv[w1,w2], w3]`, moving w1 up, leaves two nodes, so they are wrapped and
-  the splitv survives holding one child. `splith > splitv[w1,w2,w3]`, moving w1 up, leaves
-  one container, so its children are spliced and it is gone. Nothing about it is a property
-  of the container, and no flag is needed to express it. tiri already does the structural
-  part of both.
+- The rule is keyed on *what just happened*, not on a flag. Whether a lone container
+  survives depends on the command, not on the container, and the answer is that **only a
+  directional move normalizes nesting**. Every other command leaves what it built standing.
 
 ### Where the replacement stands
 
 Done. `preserve_on_single` no longer exists; what is left is `is_user_container`, answering
-only the question about addressability, and the rule it used to approximate is written where
-it belongs — in the workspace-crossing path, which is where the measurements said the work
-was being done.
+only the question about addressability.
+
+The rule itself is now sway's, ported rather than approximated. `layout X` and `move` are
+the two commands that restructure, and both are transcriptions of the sway function that
+does it:
+
+- `move` is `container_move_in_direction`, with the two normalizations `cmd_move` runs
+  around it — `container_reap_empty` on the parent the node left, and `workspace_squash`
+  over the whole workspace. `workspace_squash` is where a redundant pair of crossing splits
+  disappears, and it runs *only* here, which is the whole of "sometimes a lone container
+  survives a move and sometimes it does not".
+- `layout X` is `cmd_layout`: it operates on the focused node's **parent**, and when that
+  parent is the workspace it does not hand the workspace a layout — it wraps the
+  workspace's children in a new container instead, unless the workspace itself is what was
+  selected.
+
+Eight recorded divergences closed at once when those replaced the approximations, and they
+had looked like eight unrelated bugs precisely because each hand-written rule was a partial
+transcription of a different part of the same two functions. The lesson is worth keeping:
+when several divergences in one command family resist individually, the cause is usually
+that the family is not being implemented, only imitated.
 
 Two attempts were reverted before this one landed. The second failed for a reason worth
 recording, because it was not the rule: splicing moves every remaining leaf up a level, and
@@ -417,5 +425,12 @@ those belong to the recorder in step 3, where sway answers instead of a snapshot
   compared relatively. Getting this wrong produces noise that looks like divergence.
 - **Recording is a manual gate.** A fixture is only as good as the sway version it came
   from, so the version belongs in the fixture.
+- **The source read and the sway recorded are not the same sway.** Porting a function means
+  reading sway's tree, and the tree to hand is master while every recording here is of 1.11.
+  `cmd_layout` in master flattens a doubly-nested lone container before acting and 1.11 does
+  not, which is one level of difference produced by trusting the source over the fixture.
+  The rule that follows: a port is a hypothesis until a recording agrees with it, and where
+  the two disagree the recording wins — see
+  `layout-on-a-doubly-nested-lone-container.parity`, which exists only to pin this down.
 - **Client startup is timing-dependent.** The probes needed a sleep after `exec foot`. The
   recorder must wait on the window actually appearing in `get_tree`, not on a timer.
