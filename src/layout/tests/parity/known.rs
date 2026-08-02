@@ -56,10 +56,13 @@ over, wraps instead and passes.",
         step: 8,
         reason: "\
 Size shares, not tree shape — the tree matches. When a window leaves a container and joins \
-its parent, sway gives the newcomer a share of its own and rescales the rest around it \
-(0.214, 0.214, 0.250, 0.322 here), while tiri divides the row evenly (0.250 each). The \
-first six steps of this fixture pin the shape question it was recorded for, and they pass; \
-this is the redistribution rule, which nothing has measured yet.",
+its parent, tiri divides the row evenly and sway does not. Asked directly, sway reports \
+these percents: before, the row is 0.3336, 0.3336, 0.3328 with the inner container holding \
+0.5, 0.5; after, it is 0.2141, 0.2141, 0.2500, 0.3219 — so the newcomer arrives with more \
+than an equal share, the container it left shrinks to exactly a quarter, and the two \
+untouched windows shrink furthest. No arithmetic derived from that single sample reproduces \
+it, i3's `con_fix_percent` included, so closing this wants a short series of recordings \
+varying the counts rather than a guess.",
     },
     Divergence {
         fixture: "move-into-a-different-layout.parity",
