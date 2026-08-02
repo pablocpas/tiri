@@ -51,6 +51,16 @@ by adjusting when the flag is set rather than by replacing the idea. Left open d
 the next fix here should be the concept, not another condition.",
     },
     Divergence {
+        fixture: "nested-same-orientation-after-a-move.parity",
+        step: 8,
+        reason: "\
+Size shares, not tree shape — the tree matches. When a window leaves a container and joins \
+its parent, sway gives the newcomer a share of its own and rescales the rest around it \
+(0.214, 0.214, 0.250, 0.322 here), while tiri divides the row evenly (0.250 each). The \
+first six steps of this fixture pin the shape question it was recorded for, and they pass; \
+this is the redistribution rule, which nothing has measured yet.",
+    },
+    Divergence {
         fixture: "move-into-a-nested-container.parity",
         step: 7,
         reason: "\

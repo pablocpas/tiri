@@ -149,6 +149,33 @@ Still outside what it compares, each for a stated reason:
 - the size share of each child as a number, rather than as the rectangles it produces;
 - anything a single workspace on a single output cannot reach.
 
+### What `preserve_on_single` is, and why it is wrong
+
+tiri marks some containers "do not dissolve me even with one child". sway has no such flag,
+and the family of divergences around single-child containers has been closed three times by
+adjusting *when* the flag is set rather than by replacing it. An attempt to remove it
+established the following, and stopped short of landing:
+
+- The flag carries **two unrelated meanings**: "cleanup must not dissolve me", and "I am a
+  container a user can address" (`focus parent` stops here, floating wrappers select here).
+  Only the first is the problem; the second is closer to simply *true* for every container.
+- Whether a lone container is redundant is **not a property of the container**. Measured:
+  `split h` builds one holding a single window and it survives; a `close` that empties a
+  container down to one child leaves it alone; a move elsewhere in the tree leaves it alone;
+  and a container with the same orientation as its parent survives both a `split` and a move
+  that reorders inside it.
+- So the replacement is a rule keyed on *what just happened*, not on a flag — but the
+  measurements do not yet pin it down. `splith > [w1, w2, splith[w3]]` keeps its wrapper
+  when a move takes the last sibling out of it, while `splith > splitv[w1, w2]` loses the
+  splitv when a move crosses the workspace. Those are structurally the same situation with
+  different answers, so something in the workspace-crossing path is doing the work, and that
+  is what needs measuring next.
+
+The trap to avoid is visible in the attempt itself: two changes that looked like progress
+each broke behaviour that had already been measured, because `wrap_workspace_children` serves
+both `split` and `layout` and they disagree about the one-child case. Any replacement has to
+be validated against the whole fixture set, not against the divergence in hand.
+
 ## Known divergences
 
 Differences that are real, understood, and not yet fixed. These live in code, as the `KNOWN`
