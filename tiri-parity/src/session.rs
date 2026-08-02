@@ -19,8 +19,21 @@ pub const OUTPUT: (u32, u32) = (1280, 720);
 /// How long to wait for sway, or for a window to appear or vanish.
 const PATIENCE: Duration = Duration::from_secs(10);
 
+/// Which sway to drive.
+///
+/// Overridable because a question about sway's behaviour is sometimes a question about a
+/// *particular* sway: a patched build, or one from before a fix. `swaymsg` follows the same
+/// rule, since a build being tested may speak a newer IPC than the installed client.
+fn sway_binary() -> String {
+    std::env::var("TIRI_PARITY_SWAY").unwrap_or_else(|_| "sway".to_owned())
+}
+
+fn swaymsg_binary() -> String {
+    std::env::var("TIRI_PARITY_SWAYMSG").unwrap_or_else(|_| "swaymsg".to_owned())
+}
+
 pub fn version() -> Result<String, String> {
-    let out = Command::new("sway")
+    let out = Command::new(sway_binary())
         .arg("--version")
         .output()
         .map_err(|err| format!("cannot run sway: {err}"))?;
@@ -81,7 +94,7 @@ impl Sway {
         .map_err(|err| format!("cannot write the sway config: {err}"))?;
 
         let socket = dir.0.join("sway.sock");
-        let process = Command::new("sway")
+        let process = Command::new(sway_binary())
             .arg("-c")
             .arg(&config)
             .env("WLR_BACKENDS", "headless")
@@ -151,7 +164,7 @@ impl Sway {
     }
 
     fn msg(&self, args: &[&str]) -> Result<String, String> {
-        let out = Command::new("swaymsg")
+        let out = Command::new(swaymsg_binary())
             .env("SWAYSOCK", &self.socket)
             .args(args)
             .output()

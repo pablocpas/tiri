@@ -1,0 +1,25 @@
+# a move that dissolves the containers a lone window sits in
+# recorded from sway version 1.11
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ move down
+workspace splitv focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ layout tabbed
+workspace splitv focus=1
+  tabbed 0.000,0.000 1.000x1.000
+    window 1 0.000,0.037 1.000x0.963
+
+$ split v
+workspace splitv focus=1
+  tabbed 0.000,0.000 1.000x1.000
+    splitv 0.000,0.075 1.000x0.925
+      window 1 0.000,0.037 1.000x0.963
+
+$ move down
+workspace splitv focus=1
+  window 1 0.000,0.000 1.000x1.000

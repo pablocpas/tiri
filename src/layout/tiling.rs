@@ -381,12 +381,8 @@ impl<W: LayoutElement> TilingSpace<W> {
                 1 => self.tree.take_root_child_subtree(0)?,
                 _ => {
                     let wrapper_layout = self.tree.root_container_layout();
-                    if !self
-                        .tree
-                        .wrap_workspace_children(wrapper_layout, self.tree.workspace_layout())
-                    {
-                        return None;
-                    }
+                    self.tree
+                        .wrap_workspace_children(wrapper_layout, self.tree.workspace_layout())?;
                     self.tree.take_root_child_subtree(0)?
                 }
             }
@@ -1609,10 +1605,17 @@ impl<W: LayoutElement> TilingSpace<W> {
     ///
     /// It is the counterpart of [`Self::set_workspace_layout_mode`], which never wraps; the
     /// difference between `split v` and `layout splitv` on a workspace is exactly this.
+    /// The wrapper is left selected, so a `layout` or a second `split` straight after lands
+    /// on it rather than on the window inside — measured, and what `focus parent` would have
+    /// had to be repeated for otherwise.
     fn split_workspace(&mut self, layout: Layout) {
         self.mutate_tree(|tree| {
             let previous = tree.root_container_layout();
-            tree.wrap_workspace_children(previous, layout)
+            let Some(wrapper_key) = tree.wrap_workspace_children(previous, layout) else {
+                return false;
+            };
+            tree.select_node_key(wrapper_key);
+            true
         });
         self.set_workspace_layout_hint(layout);
     }

@@ -1,0 +1,19 @@
+# escaping a container across the workspace: the workspace turns to face the move
+# recorded from sway version 1.11
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ move up
+workspace splitv focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ layout splith
+workspace splitv focus=1
+  splith 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+
+$ move right
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000

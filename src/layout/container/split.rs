@@ -186,32 +186,29 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// - `layout X` puts X on the wrapper and leaves the workspace as it was.
     ///
     /// It is also how a subtree is grouped before being floated as a whole.
+    ///
+    /// Returns the wrapper it built, for the callers that need to say something about it —
+    /// `split` leaves it selected, the others only care that it worked.
     pub(in crate::layout) fn wrap_workspace_children(
         &mut self,
         wrapper_layout: Layout,
         root_layout: Layout,
-    ) -> bool {
-        let Some(root_key) = self.root else {
-            return false;
-        };
+    ) -> Option<NodeKey> {
+        let root_key = self.root?;
 
         // A lone window is the workspace's only child, so give it a container root first
         // and the wrap below has something to move.
         if matches!(self.get_node(root_key), Some(NodeData::Leaf(_)))
             && !self.ensure_root_container_with_layout(self.workspace_layout())
         {
-            return false;
+            return None;
         }
-        let Some(root_key) = self.root else {
-            return false;
-        };
+        let root_key = self.root?;
 
         let (old_children, old_focus_stack, old_child_percents, root_geometry) = {
-            let Some(root) = self.get_container_mut(root_key) else {
-                return false;
-            };
+            let root = self.get_container_mut(root_key)?;
             if root.children.is_empty() {
-                return false;
+                return None;
             }
 
             (
@@ -242,9 +239,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             self.set_parent(child, Some(wrapper_key));
         }
 
-        let Some(root) = self.get_container_mut(root_key) else {
-            return false;
-        };
+        let root = self.get_container_mut(root_key)?;
         root.layout = root_layout;
         root.children.push(wrapper_key);
         root.focus_stack.push(wrapper_key);
@@ -256,7 +251,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             self.sync_container_focus_from_key(focused_key);
         }
 
-        true
+        Some(wrapper_key)
     }
 
     pub(in crate::layout) fn collapse_redundant_root_single_child_split(&mut self) -> bool {
@@ -584,7 +579,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             if root_layout == layout {
                 return false;
             }
-            return self.wrap_workspace_children(layout, root_layout);
+            return self.wrap_workspace_children(layout, root_layout).is_some();
         }
 
         // The root is a leaf under a policy that wants a material container: wrap it so

@@ -1,0 +1,33 @@
+# moving a tab back and forth leaves the tabs in their original order
+# recorded from sway version 1.11
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ move up
+workspace splitv focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splitv focus=2
+  window 1 0.000,0.000 1.000x0.500
+  window 2 0.000,0.500 1.000x0.500
+
+$ layout tabbed
+workspace splitv focus=2
+  tabbed 0.000,0.000 1.000x1.000
+    window 1 0.000,0.037 1.000x0.963 hidden
+    window 2 0.000,0.037 1.000x0.963
+
+$ move down
+workspace splitv focus=2
+  tabbed 0.000,0.000 1.000x0.500
+    window 1 0.000,0.037 1.000x0.463
+  window 2 0.000,0.500 1.000x0.500
+
+$ move up
+workspace splitv focus=2
+  tabbed 0.000,0.000 1.000x1.000
+    window 1 0.000,0.037 1.000x0.963 hidden
+    window 2 0.000,0.037 1.000x0.963

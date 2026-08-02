@@ -321,58 +321,10 @@ workspace splith focus=1
     );
 }
 
-/// Measured: `split X` with the workspace selected always builds a container holding its
-/// children, keeping the old orientation, while the workspace takes the new one. Existing
-/// windows do not reflow — that is the observable difference from `layout X`.
-///
-/// `focus parent` reports `focus=@`: the workspace itself, which is what sway's tree shows
-/// too. The model addresses a focused container by position, so `@0/1` is the second child
-/// of the first — two states that differ only in which container is selected do not look
-/// alike, and that is what makes a `focus parent` too many findable at all.
-#[test]
-fn split_on_the_workspace_wraps_its_children() {
-    assert_replay(
-        "\
-split v
-open
-open
-focus parent
-split h
-open
-",
-        "\
-$ split v
-workspace splitv focus=@
-
-$ open
-workspace splitv focus=1
-  window 1 0.000,0.000 1.000x1.000
-
-$ open
-workspace splitv focus=2
-  window 1 0.000,0.000 1.000x0.500
-  window 2 0.000,0.500 1.000x0.500
-
-$ focus parent
-workspace splitv focus=@
-  window 1 0.000,0.000 1.000x0.500
-  window 2 0.000,0.500 1.000x0.500
-
-$ split h
-workspace splith focus=@
-  splitv 0.000,0.000 1.000x1.000
-    window 1 0.000,0.000 1.000x0.500
-    window 2 0.000,0.500 1.000x0.500
-
-$ open
-workspace splith focus=3
-  splitv 0.000,0.000 0.500x1.000
-    window 1 0.000,0.000 0.500x0.500
-    window 2 0.000,0.500 0.500x0.500
-  window 3 0.500,0.000 0.500x1.000
-",
-    );
-}
+// `split X` with the workspace selected is recorded, not written out here: this test used to
+// hold the same script with a hand-written expectation, and the hand-written part was wrong
+// about which node stays selected. See fixtures/split-on-the-workspace-with-two-windows.parity
+// and fixtures/split-with-the-workspace-selected.parity.
 
 #[test]
 fn an_unknown_command_fails_the_script_instead_of_being_skipped() {

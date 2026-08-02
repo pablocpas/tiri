@@ -55,13 +55,11 @@ over, wraps instead and passes.",
         fixture: "nested-same-orientation-after-a-move.parity",
         step: 8,
         reason: "\
-Size shares, not tree shape — the tree matches. tiri divides the row evenly when a window \
-leaves a container and joins its parent; sway runs i3's `con_fix_percent`, where the window \
-carries the percent it had inside the container it left, that container's own percent is \
-invalidated, and anything unset takes the average of the rest before normalizing. Measured \
-across three shapes and predicted to the pixel in two of them; the derivation is in \
-docs/design/parity.md. Open because implementing it means changing how tiri assigns shares \
-on insert and removal, not because anything is still unknown.",
+A sway bug, not a tiri one — i3 gets this right. Size shares only; the tree matches. A window \
+promoted out of a container keeps the percent it had inside that container, and the container \
+it left has its own percent invalidated though it never moved. Building sway with those two \
+swapped round produces tiri's 0.25/0.25/0.25/0.25 here and moves nothing in the other 27 \
+fixtures. Listed, not fixed: the recording is of released sway.",
     },
     Divergence {
         fixture: "move-into-a-different-layout.parity",
@@ -80,6 +78,125 @@ i3 #145, and two known differences meeting again: the order sway leaves the spli
 in (w2, w1 against tiri's w1, w2), which is its reversing loop and deliberately not copied, \
 and the size shares. Recorded while measuring what `preserve_on_single` was approximating, \
 and kept because it is the shortest script that reaches the splice at all.",
+    },
+    // The three below are open findings from the differential fuzz, recorded but not yet
+    // fixed. The first two are one cause: the workspace's layout lives outside the tree, in
+    // `workspace_layout` / `pending_layout` / `workspace_prev_split_layout`, so every rule
+    // phrased as "the parent is the workspace" has to re-derive it and they disagree. Fixing
+    // them one at a time is what the collecting is meant to avoid.
+    Divergence {
+        fixture: "split-inside-a-tabbed-workspace.parity",
+        step: 5,
+        reason: "\
+`split v` on the only window of a tabbed workspace. sway builds a splitv container inside the \
+workspace and leaves the workspace tabbed; tiri overwrites the workspace's layout with splitv \
+and builds nothing. With one window tiri's root is the leaf itself and `tabbed` is held \
+outside the tree, so `split_focused` sees a window with no parent and takes the \
+empty-workspace route.",
+    },
+    Divergence {
+        fixture: "toggle-split-returns-to-the-previous-split.parity",
+        step: 7,
+        reason: "\
+`layout toggle split` on a container that was made tabbed. sway returns it to the splith it \
+had; tiri returns it to splitv. The container's own `prev_split_layout` is unset, and the \
+fallback reaches for the *workspace's* — another node's memory of another command.",
+    },
+    Divergence {
+        fixture: "toggle-split-on-a-workspace-of-windows.parity",
+        step: 4,
+        reason: "\
+`layout toggle split` with the workspace selected and two windows in it. sway turns splith \
+into splitv; tiri leaves it splith. The same memory as the entry above, read for the \
+workspace itself rather than for a container.",
+    },
+    Divergence {
+        fixture: "move-dissolves-containers-around-a-lone-window.parity",
+        step: 5,
+        reason: "\
+A `move` by a window that is the only thing inside every container above it. sway dissolves \
+them all and leaves the window alone on the workspace; tiri keeps tabbed holding splitv \
+holding the window. tiri has the rule — `alone_all_the_way_up` — but reads it as \"do \
+nothing\" where sway reads it as \"there is nothing left for these containers to hold\".",
+    },
+    Divergence {
+        fixture: "move-dissolves-containers-and-turns-the-workspace.parity",
+        step: 6,
+        reason: "\
+The same as above, reached through a `close`, and it also turns the workspace: sway ends \
+splitv, tiri splith. Recorded separately because it pins both halves — the containers going \
+and the workspace facing the move — where the other fixture only shows the first.",
+    },
+    Divergence {
+        fixture: "toggle-split-on-a-mixed-workspace.parity",
+        step: 5,
+        reason: "\
+`layout toggle split` on a workspace holding a container and a window. sway goes to splith, \
+tiri to splitv. Third shape of the same memory, kept because it is the one where the \
+workspace has children of both kinds.",
+    },
+    // The two below are the same question answered in both directions, which is why neither
+    // is a rule about dissolving containers: sway drops the split in one and keeps a whole
+    // nesting in the other, and tiri gets each one backwards.
+    Divergence {
+        fixture: "move-by-a-window-alone-in-a-stacked.parity",
+        step: 4,
+        reason: "\
+`move up` by a window alone inside the splitv it was just given, inside a stacked container. \
+sway drops the splitv; tiri keeps it.",
+    },
+    Divergence {
+        fixture: "move-that-keeps-the-containers.parity",
+        step: 6,
+        reason: "\
+`move down` out of a stacked container. sway keeps the nesting the window came from — \
+splith holding stacked holding splith holding the window — and tiri flattens it to a splith \
+holding the window. The mirror of the entry above.",
+    },
+    // Where a new window lands.
+    Divergence {
+        fixture: "open-with-a-container-selected.parity",
+        step: 7,
+        reason: "\
+Opening a window while a container is selected. Both put it on the workspace and both agree \
+on the sizes; they disagree on the slot — sway w2, w3, w1 against tiri w2, w1, w3. What is \
+being asked is where `focus parent` leaves the insertion point, which nothing has measured \
+yet.",
+    },
+    // Movement inside tabbed and stacked containers, where a direction says nothing about
+    // where a window should land.
+    Divergence {
+        fixture: "move-a-tab-back-and-forth.parity",
+        step: 6,
+        reason: "\
+Moving a tab out of a tabbed container and back leaves sway's tabs in their original order \
+and tiri's reversed. Direction is meaningless inside a tabbed container, so where a \
+returning tab lands is its own question.",
+    },
+    Divergence {
+        fixture: "move-a-tab-up.parity",
+        step: 7,
+        reason: "\
+`move up` by the focused tab. sway leaves the tab order alone; tiri swaps the moved tab with \
+the one before it. The vertical case of the same question, and the pair says a move inside \
+tabs does not reorder them on either axis.",
+    },
+    Divergence {
+        fixture: "move-a-tab-sideways-when-nested.parity",
+        step: 10,
+        reason: "\
+`move left` then `move right` by a tab in a tabbed container nested in a splitv. sway ends \
+with the tab first, tiri second — the pair of moves is not the identity in either, and they \
+disagree about where it lands.",
+    },
+    Divergence {
+        fixture: "move-inside-nested-tabbed-and-stacked.parity",
+        step: 8,
+        reason: "\
+`move right` by a tab inside a tabbed container that is itself inside a stacked one. sway \
+keeps the window where it is; tiri promotes it out to the workspace. The same question as \
+the entry above, asked while nested: a horizontal move has no meaning inside tabs, and tiri \
+answers it by climbing until it finds an axis that does.",
     },
     Divergence {
         fixture: "move-into-a-nested-container.parity",

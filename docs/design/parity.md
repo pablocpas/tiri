@@ -199,7 +199,8 @@ both `split` and `layout` and they disagree about the one-child case. Any replac
 be validated against the whole fixture set, not against the divergence in hand — which is
 also why the rule above was worth measuring for its own sake before touching anything.
 
-### How sway redistributes size when a window changes container
+### How sway redistributes size when a window changes container — a sway bug
+
 
 Measured by asking sway for its `percent` values directly rather than inferring them from
 rectangles, across three shapes that differ only in how many children the container being
@@ -224,7 +225,12 @@ moving out to the right:
 | 2 children | 320, 320, 320, 320 | 320, 320, 320, 320 |
 | 3 children | 351, 351, 320, 259 | 349, 349, 320, 262 |
 
-tiri divides the row evenly instead, which is why every one of these disagrees.
+This is a sway bug — i3 gets it right. `container_move_in_direction` keeps the moved
+container's fractions, which were relative to its old parent, and clears the ancestor's, which
+never moved; the two are the wrong way round. Patching sway to swap them makes all these
+shapes come out evenly, which is what tiri already does, and moves exactly one step in the
+whole corpus. Nothing to fix here: the fixture stays recorded from released sway, and the
+divergence is ignored. `TIRI_PARITY_SWAY` points the tooling at a particular sway build.
 
 ## Known divergences
 

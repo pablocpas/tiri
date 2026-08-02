@@ -313,9 +313,14 @@ impl<W: LayoutElement> ContainerTree<W> {
             }
             self.set_parent(node_key, Some(grandparent_key));
             self.cleanup_containers(Some(node_parent_key));
-            let Some(node_idx) = self.child_index(grandparent_key, node_key) else {
-                return false;
-            };
+            // Re-read where the node ended up rather than trusting `grandparent_key`: the
+            // cleanup can dissolve the container it left *and* collapse the root onto the
+            // node itself, and asking the old root for an index then answers nothing — which
+            // used to skip the crossing below and leave the workspace facing the way it was.
+            let node_idx = self
+                .root
+                .and_then(|root_key| self.child_index(root_key, node_key))
+                .unwrap_or(0);
             // The escape above already restructured the tree, so this reports a change
             // whatever the crossing decides — a mutation that reports none skips the
             // relayout that keeps the cached geometry addressed to the right nodes.
@@ -541,7 +546,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         // that says what the workspace now says is redundant, and the cleanup below removes
         // it by splicing — which is how the same rule produces a doubled container in one
         // measured case and a flat workspace in another.
-        if !self.wrap_workspace_children(previous, direction.split_layout()) {
+        if self
+            .wrap_workspace_children(previous, direction.split_layout())
+            .is_none()
+        {
             // Put it back rather than leave the tree short of a window.
             if let Some(root) = self.get_container_mut(root_key) {
                 root.insert_child(node_idx, node_key);
