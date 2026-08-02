@@ -51,6 +51,18 @@ by adjusting when the flag is set rather than by replacing the idea. Left open d
 the next fix here should be the concept, not another condition.",
     },
     Divergence {
+        fixture: "cross-the-workspace-leaving-one-container.parity",
+        step: 7,
+        reason: "\
+Two differences already listed below, meeting in one step. The *shape* matches: crossing the \
+workspace when the only thing left behind is a single container splices that container's \
+children into the workspace rather than wrapping them, and tiri does that. What differs is \
+the order sway leaves them in (w1, w3, w2 — its reversing splice, which tiri deliberately \
+does not copy) and the size shares (1/3 each against tiri's 0.5, 0.25, 0.25). Kept as a \
+recording because it is what pinned the wrapping rule down: the sibling case, one fixture \
+over, wraps instead and passes.",
+    },
+    Divergence {
         fixture: "nested-same-orientation-after-a-move.parity",
         step: 8,
         reason: "\

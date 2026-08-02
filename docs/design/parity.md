@@ -164,17 +164,25 @@ established the following, and stopped short of landing:
   container down to one child leaves it alone; a move elsewhere in the tree leaves it alone;
   and a container with the same orientation as its parent survives both a `split` and a move
   that reorders inside it.
-- So the replacement is a rule keyed on *what just happened*, not on a flag — but the
-  measurements do not yet pin it down. `splith > [w1, w2, splith[w3]]` keeps its wrapper
-  when a move takes the last sibling out of it, while `splith > splitv[w1, w2]` loses the
-  splitv when a move crosses the workspace. Those are structurally the same situation with
-  different answers, so something in the workspace-crossing path is doing the work, and that
-  is what needs measuring next.
+- The rule is keyed on *what just happened*, not on a flag, and three recordings pinned it
+  down. What looked like "sometimes a lone container survives a move and sometimes it does
+  not" is entirely the workspace-crossing path:
+
+  > Crossing the workspace wraps what stays behind in a container keeping the old
+  > orientation — **unless what stays behind is a single container**, whose children are
+  > spliced into the workspace instead.
+
+  `splith > [splitv[w1,w2], w3]`, moving w1 up, leaves two nodes, so they are wrapped and
+  the splitv survives holding one child. `splith > splitv[w1,w2,w3]`, moving w1 up, leaves
+  one container, so its children are spliced and it is gone. Nothing about it is a property
+  of the container, and no flag is needed to express it. tiri already does the structural
+  part of both.
 
 The trap to avoid is visible in the attempt itself: two changes that looked like progress
 each broke behaviour that had already been measured, because `wrap_workspace_children` serves
 both `split` and `layout` and they disagree about the one-child case. Any replacement has to
-be validated against the whole fixture set, not against the divergence in hand.
+be validated against the whole fixture set, not against the divergence in hand — which is
+also why the rule above was worth measuring for its own sake before touching anything.
 
 ## Known divergences
 
