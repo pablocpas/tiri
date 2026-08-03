@@ -18,7 +18,7 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
 use tiri_config::utils::MergeWith as _;
 use tiri_config::{Border, HideEdgeBorders, PresetSize, TabBar};
-use tiri_ipc::{ColumnDisplay, LayoutTreeNode, SizeChange};
+use tiri_ipc::{ColumnDisplay, LayoutTreeNode, LayoutTreeRect, SizeChange};
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::container::{
@@ -3107,20 +3107,21 @@ impl<W: LayoutElement> TilingSpace<W> {
 
 impl<W: LayoutElement> TilingSpace<W> {
     pub(crate) fn layout_tree(&self) -> Option<LayoutTreeNode> {
-        self.hide_behind_fullscreen(self.tree.layout_tree()?)
+        self.apply_fullscreen(self.tree.layout_tree()?)
     }
 
     pub(crate) fn layout_tree_unfocused(&self) -> Option<LayoutTreeNode> {
-        self.hide_behind_fullscreen(self.tree.layout_tree_unfocused()?)
+        self.apply_fullscreen(self.tree.layout_tree_unfocused()?)
     }
 
-    /// The last clause of sway's `view_is_visible`: a view hidden by another fullscreen view
-    /// is not visible, whatever the tabs above it say.
+    /// What a fullscreen window does to the tree everyone else reads.
     ///
-    /// It lives here rather than in the projection because the fullscreen window is the
-    /// tiling space's state, and it comes last for the same reason it does in sway — a
-    /// fullscreen view on an inactive tab is still on an inactive tab.
-    fn hide_behind_fullscreen(&self, mut root: LayoutTreeNode) -> Option<LayoutTreeNode> {
+    /// Two things sway's own tree says and the tiling tree does not, because both are the
+    /// space's state rather than the tree's: the fullscreen window covers the output, so its
+    /// rectangle is the output's and not the slot it came from; and it hides everything else
+    /// — the last clause of `view_is_visible`, which runs after the tab check for the reason
+    /// it should, since a fullscreen view on an inactive tab is still on an inactive tab.
+    fn apply_fullscreen(&self, mut root: LayoutTreeNode) -> Option<LayoutTreeNode> {
         let Some(fullscreen) = self
             .pending_fullscreen_window()
             .and_then(|id| self.tree.window_key(id))
@@ -3129,19 +3130,29 @@ impl<W: LayoutElement> TilingSpace<W> {
         else {
             return Some(root);
         };
+        let view = LayoutTreeRect {
+            x: 0.0,
+            y: 0.0,
+            width: self.view_size.w,
+            height: self.view_size.h,
+        };
 
-        fn hide_all_but(node: &mut LayoutTreeNode, fullscreen: u64) {
+        fn walk(node: &mut LayoutTreeNode, fullscreen: u64, view: LayoutTreeRect) {
             if let Some(window) = node.window_id {
-                node.visible &= window == fullscreen;
+                if window == fullscreen {
+                    node.rect = Some(view);
+                } else {
+                    node.visible = false;
+                }
                 return;
             }
             for child in &mut node.children {
-                hide_all_but(child, fullscreen);
+                walk(child, fullscreen, view);
             }
             node.visible = node.children.iter().any(|child| child.visible);
         }
 
-        hide_all_but(&mut root, fullscreen);
+        walk(&mut root, fullscreen, view);
         Some(root)
     }
 }

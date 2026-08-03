@@ -337,3 +337,4 @@ fn an_unknown_command_fails_the_script_instead_of_being_skipped() {
         "a command the table does not know must name itself: {err}"
     );
 }
+
