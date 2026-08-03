@@ -45,7 +45,10 @@ use crate::utils::{
 use crate::window::ResolvedWindowRules;
 
 /// By how many logical pixels the directional move commands move floating windows.
-pub const DIRECTIONAL_MOVE_PX: f64 = 50.;
+///
+/// sway's `cmd_move_in_direction`: `move_amt` starts at 10 and a script overrides it by
+/// naming a distance. Ten is the default a `move left` with no argument gets.
+pub const DIRECTIONAL_MOVE_PX: f64 = 10.;
 
 /// Space for floating windows.
 #[derive(Debug)]
