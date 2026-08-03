@@ -39,52 +39,59 @@ is written down with the measurement for someone to decide. Everything else abou
 transfer matches: which tree the window sits in, what the tiled side does without it, and \
 where it lands on the way back.",
     },
+    // The four below are one mechanism, not four bugs, and the tree agrees in all of them:
+    // only the size shares differ. sway invalidates a fraction whenever `move` disturbs it —
+    // the container it moved, the ancestor it emptied — and `arrange` later fills an invalid
+    // one with the average of the siblings that still have one, then normalizes. Three of the
+    // four therefore come out even in sway and lopsided in tiri, which keeps the share the
+    // disturbed slot was holding and divides it. The fourth comes out the other way round,
+    // and is where the rule is a sway bug rather than a rule: i3 invalidates the container
+    // that moved, sway invalidates the one that stayed.
+    //
+    // Modelling it means a fraction that can be unset, which tiri has no notion of. Until it
+    // does, all four stay recorded: patching the arithmetic at each of these sites is exactly
+    // the whack-a-mole this suite exists to stop.
     Divergence {
         fixture: "nested-same-orientation-after-a-move.parity",
         step: 8,
         reason: "\
-A sway bug, not a tiri one — i3 gets this right. Size shares only; the tree matches. A window \
-promoted out of a container keeps the percent it had inside that container, and the container \
-it left has its own percent invalidated though it never moved. Building sway with those two \
-swapped round produces tiri's 0.25/0.25/0.25/0.25 here and moves nothing in the other 27 \
-fixtures. Listed, not fixed: the recording is of released sway.",
+The sway bug, and the one of the four where tiri's answer is i3's. A window promoted out of a \
+container keeps the percent it had inside that container, and the container it left has its \
+own percent invalidated though it never moved. sway 0.214/0.214/0.25/0.322, tiri even. \
+Building sway with those two swapped round produces tiri's answer and moves nothing in the \
+other fixtures.",
     },
-    // The four below are one decision, not four bugs. sway's `container_squash` splices a
-    // redundant pair away by taking the child's children off the front one at a time and
-    // putting each at the same index, which reverses them and flattens their size shares to
-    // even. tiri splices in place and keeps the shares. Reordering windows and resizing them
-    // is not what a `move` was asked to do, and reproducing it would mean copying the loop
-    // for the sake of the loop, so these stay recorded rather than matched. Everything else
-    // in each of them agrees: which containers survive, and where the moved window lands.
     Divergence {
         fixture: "cross-the-workspace-leaving-one-container.parity",
         step: 7,
         reason: "\
-Order and shares: sway w1, w3, w2 at a third each, tiri w1, w2, w3 at 0.5, 0.25, 0.25. Kept \
-because it is what pinned the wrapping rule down — the sibling case, one fixture over, wraps \
-instead of splicing and passes.",
-    },
-    Divergence {
-        fixture: "move-into-a-different-layout.parity",
-        step: 7,
-        reason: "\
-Order only, shares agree: sway w3, w1, w2 against tiri w2, w1, w3. The case that showed the \
-two agree on the shape once the flatten splices rather than promotes.",
+sway a third each, tiri 0.5/0.25/0.25. Kept because it is what pinned the wrapping rule down \
+— the sibling case, one fixture over, wraps instead of splicing and passes.",
     },
     Divergence {
         fixture: "move-up-then-right.parity",
         step: 5,
         reason: "\
-i3 #145. Order and shares: sway w2, w1, w3 at a third each, tiri w1, w2, w3 at 0.25, 0.25, \
-0.5. The shortest script that reaches the splice at all.",
+i3 #145. sway a third each, tiri 0.25/0.25/0.5. The shortest script that reaches the splice \
+at all.",
     },
     Divergence {
-        fixture: "move-into-a-nested-container.parity",
-        step: 7,
+        fixture: "move-up-after-focus-child.parity",
+        step: 8,
         reason: "\
-Order only, shares agree: sway w3, w1, w2 against tiri w2, w1, w3. Reached by moving a window \
-into its sibling container, which leaves that container alone under a split and squashes both \
-away — the same splice as the others, from the other side.",
+sway a quarter each, tiri 0.5/0.167/0.167/0.167. Found by the fuzz; the deepest of the four, \
+and the one that shows the share the squashed pair was holding surviving into a workspace \
+that sway has levelled.",
+    },
+    Divergence {
+        fixture: "move-into-a-stacked-inside-a-tabbed.parity",
+        step: 9,
+        reason: "\
+Which tab the outer container shows. A window moved into a stacked container nested in a \
+tabbed one is focused in both, but sway leaves the tabbed showing the sibling it was showing \
+before and tiri raises the branch the window went into. Found by the fuzz, not yet understood \
+— sway reports a focused window that its own tab bar is not showing, which needs measuring \
+before it is copied.",
     },
 ];
 

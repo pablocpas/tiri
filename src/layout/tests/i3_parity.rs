@@ -836,8 +836,8 @@ fn i3_145_move_up_then_right_flattens_back_to_root_siblings() {
         tree.as_str(),
         @"
     SplitH
-      Window 1
       Window 2
+      Window 1
       Window 3 *
     "
     );

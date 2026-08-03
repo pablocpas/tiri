@@ -240,10 +240,20 @@ shapes come out evenly, which is what tiri already does, and moves exactly one s
 whole corpus. Nothing to fix here: the fixture stays recorded from released sway, and the
 divergence is ignored. `TIRI_PARITY_SWAY` points the tooling at a particular sway build.
 
+That last sentence was written when this looked like one fixture. It is the same mechanism
+behind every size-share divergence left in the corpus, and three of the four come out the
+other way round — even in sway, lopsided in tiri. The invalidation is one half of a rule
+whose other half is `arrange` filling an invalid fraction with the average of the siblings
+that still have one. tiri has no way to say a fraction is unset, so it resolves every share
+at the moment of the mutation instead, and lands somewhere else whenever sway would have
+deferred. Reproducing the invalidation without the fill, or the fill without a fraction that
+can be unset, imports the bug and none of its compensation, which is why the four are
+recorded together rather than patched apart.
+
 ## Known divergences
 
 Differences that are real, understood, and not yet fixed. These live in code, as the `KNOWN`
-table in `src/layout/tests/parity/fixtures.rs`, so an entry has to name the fixture and step
+table in `src/layout/tests/parity/known.rs`, so an entry has to name the fixture and step
 it silences and say why — and the suite fails if an entry stops diverging, which is what
 stops the list from rotting.
 
