@@ -1,0 +1,39 @@
+# resize where the axis is not the parent's: it has to find the ancestor that is
+# recorded from sway version 1.11
+# client 400x285
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splith focus=2
+  window 1 0.000,0.000 0.500x1.000
+  window 2 0.500,0.000 0.500x1.000
+
+$ split v
+workspace splith focus=2
+  window 1 0.000,0.000 0.500x1.000
+  splitv 0.500,0.000 0.500x1.000
+    window 2 0.500,0.000 0.500x1.000
+
+$ open
+workspace splith focus=3
+  window 1 0.000,0.000 0.500x1.000
+  splitv 0.500,0.000 0.500x1.000
+    window 2 0.500,0.000 0.500x0.500
+    window 3 0.500,0.500 0.500x0.500
+
+$ resize grow height 100 px
+workspace splith focus=3
+  window 1 0.000,0.000 0.500x1.000
+  splitv 0.500,0.000 0.500x1.000
+    window 2 0.500,0.000 0.500x0.361
+    window 3 0.500,0.361 0.500x0.639
+
+$ resize grow width 100 px
+workspace splith focus=3
+  window 1 0.000,0.000 0.422x1.000
+  splitv 0.422,0.000 0.578x1.000
+    window 2 0.422,0.000 0.578x0.361
+    window 3 0.422,0.361 0.578x0.639

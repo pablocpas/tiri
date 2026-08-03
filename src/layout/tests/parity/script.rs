@@ -9,6 +9,8 @@
 
 use std::fmt;
 
+use tiri_ipc::SizeChange;
+
 use crate::layout::tests::{Op, TestWindowParams};
 
 /// One line of a script: the text as written, and what tiri does with it.
@@ -95,6 +97,28 @@ fn op_for(command: &str, next_id: &mut usize, client: (i32, i32)) -> Result<Op, 
             }
         }
         ["close"] => Op::CloseFocused,
+
+        // sway's `resize grow|shrink <axis> <amount> px`, which is `resize_tiled`: it finds
+        // the nearest ancestor laid out along the axis and moves the focused node's share
+        // inside it, taking the difference from the siblings. `set_window_width/height` is
+        // that same sentence, which is why they are claimed equal here.
+        //
+        // Only `px`. sway's `ppt` is a percentage of the *parent's* extent and tiri's
+        // `AdjustProportion` is a fraction of the working area, so claiming those equal would
+        // be claiming something untrue about every nested container.
+        ["resize", grow_or_shrink @ ("grow" | "shrink"), axis @ ("width" | "height"), amount, "px"] =>
+        {
+            let amount: i32 = amount.parse().map_err(|_| Reason::BadArgument)?;
+            let change = SizeChange::AdjustFixed(if *grow_or_shrink == "shrink" {
+                -amount
+            } else {
+                amount
+            });
+            match *axis {
+                "width" => Op::SetWindowWidth { id: None, change },
+                _ => Op::SetWindowHeight { id: None, change },
+            }
+        }
 
         ["split", arg] => match *arg {
             "h" | "horizontal" => Op::SplitHorizontal,
