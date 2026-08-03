@@ -564,9 +564,14 @@ impl<W: LayoutElement> Workspace<W> {
             return None;
         }
 
-        // Floating default: 50% width x 75% height of the working area.
+        // sway's `floating_natural_resize`: the window gets the size it asked for when it
+        // mapped, not a fraction of anything. `container_floating_resize_and_center` then
+        // centres it, which is what the caller already does. The working area is only the
+        // ceiling — sway's `floating_maximum_size` defaults to the workspace.
         let working_size = self.floating.working_area().size;
-        let mut size = Size::from((working_size.w * 0.5, working_size.h * 0.75)).to_i32_floor();
+        let mut size = tile.window().natural_size();
+        size.w = size.w.clamp(1, working_size.w.floor() as i32);
+        size.h = size.h.clamp(1, working_size.h.floor() as i32);
 
         // Respect min/max size constraints from the window.
         let min_size = tile.window().min_size();

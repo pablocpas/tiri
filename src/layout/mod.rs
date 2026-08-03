@@ -204,6 +204,14 @@ pub trait LayoutElement {
     /// Corresponds to the Wayland window geometry size.
     fn size(&self) -> Size<i32, Logical>;
 
+    /// The size the element asked for when it mapped, before any layout stretched it.
+    ///
+    /// sway's `view->natural_width/height`, set once from the toplevel's geometry and never
+    /// updated. It is what a window gets when it starts floating, so it has to survive the
+    /// window having been tiled at some other size in between — which is exactly what
+    /// [`Self::size`] cannot tell you.
+    fn natural_size(&self) -> Size<i32, Logical>;
+
     /// Returns the location of the element's buffer relative to the element's visual geometry.
     ///
     /// I.e. if the element has CSD shadows, its buffer location will have negative coordinates.

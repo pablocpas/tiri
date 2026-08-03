@@ -199,6 +199,9 @@ pub struct Mapped {
 
     /// Most recent monotonic time when the window had the focus.
     focus_timestamp: Option<Duration>,
+
+    /// The geometry the window mapped with, kept for the size it gets when it starts floating.
+    natural_size: Size<i32, Logical>,
 }
 
 niri_render_elements! {
@@ -321,7 +324,13 @@ impl Mapped {
             is_pending_maximized: pending_maximized,
             uncommitted_maximized: Vec::new(),
             focus_timestamp: None,
+            natural_size: Size::from((0, 0)),
         };
+
+        // Read once, here: sway takes it from the toplevel geometry as the view maps and
+        // never looks again, so a window that spends its life tiled still remembers the size
+        // it wanted if it is ever floated.
+        rv.natural_size = rv.window.geometry().size;
 
         rv.is_maximized = rv.sizing_mode().is_maximized();
         rv.is_pending_maximized = rv.pending_sizing_mode().is_maximized();
@@ -661,6 +670,10 @@ impl LayoutElement for Mapped {
 
     fn size(&self) -> Size<i32, Logical> {
         self.window.geometry().size
+    }
+
+    fn natural_size(&self) -> Size<i32, Logical> {
+        self.natural_size
     }
 
     fn buf_loc(&self) -> Point<i32, Logical> {

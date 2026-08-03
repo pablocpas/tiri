@@ -28,16 +28,18 @@ pub(super) struct Divergence {
 /// nobody recording anything.
 pub(super) const KNOWN: &[Divergence] = &[
     Divergence {
-        fixture: "floating.parity",
-        step: 3,
+        fixture: "move-into-a-stacked-inside-a-tabbed.parity",
+        step: 9,
         reason: "\
-The size a window gets when it starts floating. Measured with a client asking for 400x300: \
-sway gives it 396x288 — its own size, centred. tiri gives every floating window 50% by 75% \
-of the working area, whatever it asked for. That default is inherited from niri rather than \
-broken here, and changing it is a visible product decision rather than a parity fix, so it \
-is written down with the measurement for someone to decide. Everything else about the \
-transfer matches: which tree the window sits in, what the tiled side does without it, and \
-where it lands on the way back.",
+Which tab the outer container shows. A window moved into a stacked container nested in a \
+tabbed one is focused in both, but sway leaves the tabbed showing the sibling it was showing \
+before, so the window it says is focused is one the user cannot see. Measured rather than \
+guessed at: the state is still there two seconds later, and the first `focus` command of any \
+kind heals it. `cmd_move`'s directional branch is the whole reason — it moves the node and \
+never touches the seat, so the destination goes on showing whatever it was showing. \
+Implementing that means implementing a compositor that hides the window it just focused, \
+which is not a rule to port but a consequence of one not being applied. tiri raises the tab \
+the window landed in and the divergence lasts exactly one command.",
     },
     // The four below are one mechanism, not four bugs, and the tree agrees in all of them:
     // only the size shares differ. sway invalidates a fraction whenever `move` disturbs it —
@@ -82,16 +84,6 @@ at all.",
 sway a quarter each, tiri 0.5/0.167/0.167/0.167. Found by the fuzz; the deepest of the four, \
 and the one that shows the share the squashed pair was holding surviving into a workspace \
 that sway has levelled.",
-    },
-    Divergence {
-        fixture: "move-into-a-stacked-inside-a-tabbed.parity",
-        step: 9,
-        reason: "\
-Which tab the outer container shows. A window moved into a stacked container nested in a \
-tabbed one is focused in both, but sway leaves the tabbed showing the sibling it was showing \
-before and tiri raises the branch the window went into. Found by the fuzz, not yet understood \
-— sway reports a focused window that its own tab bar is not showing, which needs measuring \
-before it is copied.",
     },
 ];
 

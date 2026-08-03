@@ -207,6 +207,25 @@ both `split` and `layout` and they disagree about the one-child case. Any replac
 be validated against the whole fixture set, not against the divergence in hand — which is
 also why the rule above was worth measuring for its own sake before touching anything.
 
+### The size a window gets when it starts floating, measured
+
+sway's `floating_natural_resize`: the window gets `view->natural_width/height`, which
+`handle_map` reads once from the toplevel's geometry and never updates, clamped to the
+floating min/max, and `container_floating_resize_and_center` centres it. No fraction of the
+working area is involved anywhere. Measured with a client asking for 400x300 on a 1280x720
+output: 396x288 at 442,216 — the client's own size, centred.
+
+tiri gave every floating window 50% by 75% of the working area, inherited from niri. That is
+now the sway rule, which needed a `natural_size` on `LayoutElement`: `size()` is whatever the
+tiling last stretched the window to, and the whole point of the rule is that it survives the
+window having been tiled at some other size in between.
+
+It also pinned down a piece of harness skew the corpus had never exercised. A window's own
+size is invisible while it is tiled, so the replayer's 100x200 test window and the recorder's
+`foot` had disagreed harmlessly all along; the moment floating size became behaviour, the
+difference started reading as a divergence. `session::CLIENT` is the one place that size is
+now stated, and the replayer takes its windows from it.
+
 ### How sway redistributes size when a window changes container — a sway bug
 
 

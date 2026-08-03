@@ -53,6 +53,13 @@ use super::replay;
 /// Weighted rather than uniform: `open` builds the tree everything else needs, and
 /// `focus parent` is the only way to reach a state where a container is what commands are
 /// aimed at — which is where most of the differences found so far have lived.
+///
+/// Everything `script.rs` can parse belongs here. `floating toggle` and `fullscreen toggle`
+/// were parseable and unlisted, which meant the search had never once interleaved them with
+/// the tiling commands — the region a hand-written fixture is least likely to reach, since
+/// nobody writes down a script whose point is that two unrelated commands happened in one
+/// order rather than the other. They are drawn rarely: both take a window out of the tiling
+/// for a while, and a script spent outside the tree is a script comparing very little.
 const VOCABULARY: &[(&str, u32)] = &[
     ("open", 10),
     ("close", 2),
@@ -63,6 +70,10 @@ const VOCABULARY: &[(&str, u32)] = &[
     ("layout tabbed", 3),
     ("layout stacking", 3),
     ("layout toggle split", 2),
+    ("layout toggle all", 2),
+    ("split toggle", 2),
+    ("floating toggle", 2),
+    ("fullscreen toggle", 2),
     ("focus left", 3),
     ("focus right", 3),
     ("focus up", 3),

@@ -16,6 +16,15 @@ use crate::sway;
 /// differences would only be reporting a difference in configuration.
 pub const OUTPUT: (u32, u32) = (1280, 720);
 
+/// The size the recorder's client actually ends up at, which the replayer has to give its
+/// own windows.
+///
+/// It matters because sway floats a window at the size it mapped with, so a client size that
+/// differs between the two sides would show up as a layout difference. The recorder asks
+/// `foot` for 400x300 and foot rounds down to whole character cells; this is the result, and
+/// if a re-record moves it, this moves with it.
+pub const CLIENT: (i32, i32) = (396, 288);
+
 /// How long to wait for sway, or for a window to appear or vanish.
 const PATIENCE: Duration = Duration::from_secs(10);
 

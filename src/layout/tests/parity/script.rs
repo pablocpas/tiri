@@ -91,7 +91,7 @@ fn op_for(command: &str, next_id: &mut usize) -> Result<Op, Reason> {
             let id = *next_id;
             *next_id += 1;
             Op::AddWindow {
-                params: TestWindowParams::new(id),
+                params: TestWindowParams::mapped_at(id, tiri_parity::session::CLIENT),
             }
         }
         ["close"] => Op::CloseFocused,

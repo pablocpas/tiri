@@ -115,6 +115,18 @@ impl TestWindowParams {
             rules: None,
         }
     }
+
+    /// The same window, mapped at a given size.
+    ///
+    /// For the parity replay, which has to give its windows the size the recorder's client
+    /// has: a window floats at the size it mapped with, so a difference there would read as
+    /// a difference in behaviour.
+    pub fn mapped_at(id: usize, size: (i32, i32)) -> Self {
+        Self {
+            bbox: Rectangle::from_size(Size::from(size)),
+            ..Self::new(id)
+        }
+    }
 }
 
 impl TestWindow {
@@ -214,6 +226,10 @@ impl LayoutElement for TestWindow {
 
     fn size(&self) -> Size<i32, Logical> {
         self.0.bbox.get().size
+    }
+
+    fn natural_size(&self) -> Size<i32, Logical> {
+        self.0.initial_bbox.size
     }
 
     fn buf_loc(&self) -> Point<i32, Logical> {

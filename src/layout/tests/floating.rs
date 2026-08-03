@@ -323,8 +323,8 @@ fn floating_initial_size_is_stable_across_focus_changes_and_width_resize() {
     let initial_size = requested_size(&layout, 1);
     assert_eq!(
         initial_size,
-        Size::from((640, 540)),
-        "first floating request should use the deterministic 50% x 75% preset"
+        Size::from((100, 200)),
+        "first floating request should use the size the window mapped with, as sway does"
     );
 
     check_ops_on_layout(&mut layout, [Op::FocusOutput(2), Op::FocusOutput(1)]);

@@ -245,7 +245,7 @@ workspace splith focus=2
 $ floating toggle
 workspace splith focus=2
   window 1 0.000,0.000 1.000x1.000
-  window 2 0.250,0.125 0.500x0.750 floating
+  window 2 0.345,0.300 0.309x0.400 floating
 ",
     );
 }
