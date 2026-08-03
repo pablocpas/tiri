@@ -2,7 +2,6 @@
 
 use super::ContainerTree;
 use super::Direction;
-use super::Layout;
 use super::LayoutElement;
 use super::NodeData;
 use super::NodeKey;
@@ -202,13 +201,11 @@ impl<W: LayoutElement> ContainerTree<W> {
             };
 
             // Remember a wrap candidate at the first matching container, but only use it
-            // if no direct movement was possible at this or any ancestor.
+            // if no direct movement was possible at this or any ancestor. Every container
+            // laid out along the direction is a candidate — a tabbed one wraps between its
+            // tabs exactly as a split one wraps between its children.
             let child_count = container.child_count();
-            if allow_wrap
-                && wrap_candidate.is_none()
-                && child_count > 1
-                && matches!(container.layout, Layout::SplitH | Layout::SplitV)
-            {
+            if allow_wrap && wrap_candidate.is_none() && child_count > 1 {
                 let wrap_idx = if direction.is_leading() {
                     child_count - 1
                 } else {
