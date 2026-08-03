@@ -2237,6 +2237,19 @@ impl<W: LayoutElement> Workspace<W> {
         );
     }
 
+    /// sway's `resize grow|shrink <edge>`: the same resize, taking from one side only.
+    ///
+    /// Floating windows have no neighbour to take from, so the edge form is tiling's alone —
+    /// which is why this is the one resize that does not go through `dispatch_for_window`.
+    pub fn resize_window_edge(
+        &mut self,
+        window: Option<&W::Id>,
+        change: SizeChange,
+        direction: Direction,
+    ) {
+        self.tiling.resize_window_edge(window, change, direction);
+    }
+
     pub fn reset_window_height(&mut self, window: Option<&W::Id>) {
         self.dispatch_for_window(window, |_| {}, |t| t.reset_window_height(window));
     }

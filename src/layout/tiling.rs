@@ -23,7 +23,8 @@ use tiri_ipc::{ColumnDisplay, LayoutTreeNode, LayoutTreeRect, SizeChange};
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::container::{
     ContainerMetrics, ContainerTree, DetachedContainer, DetachedNode, Direction, InsertParentInfo,
-    Layout, LeafLayoutInfo, NodeKey, ResizeTarget, RootPolicy, TakenSubtree, TreeCommandTarget,
+    Layout, LeafLayoutInfo, NodeKey, ResizeReach, ResizeSpace, ResizeTarget, RootPolicy,
+    TakenSubtree, TreeCommandTarget,
 };
 use super::focus_ring::{
     render_container_selection, ContainerSelectionStyle, FocusRingEdges, FocusRingIndicatorEdge,
@@ -55,6 +56,11 @@ use crate::utils::transaction::Transaction;
 use crate::utils::ResizeEdge;
 use crate::window::ResolvedWindowRules;
 use log::warn;
+
+// sway 1.12's MIN_SANE_W and MIN_SANE_H. Tiled resize refuses the entire operation when
+// any participating sibling would cross the relevant pixel floor.
+const SWAY_MIN_TILED_WIDTH: f64 = 100.0;
+const SWAY_MIN_TILED_HEIGHT: f64 = 60.0;
 
 // ============================================================================
 // MAIN STRUCTURES - i3-style container tree implementation
@@ -284,6 +290,25 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     fn window_container_metrics(&self, key: NodeKey, layout: Layout) -> Option<ContainerMetrics> {
         let (parent_key, child_idx) = self.tree.find_parent_with_layout(key, layout)?;
+        self.container_metrics(parent_key, child_idx, layout)
+    }
+
+    fn resize_container_metrics(
+        &self,
+        key: NodeKey,
+        layout: Layout,
+        reach: ResizeReach,
+    ) -> Option<ContainerMetrics> {
+        let (parent_key, child_idx) = self.tree.find_resize_parent(key, layout, reach)?;
+        self.container_metrics(parent_key, child_idx, layout)
+    }
+
+    fn container_metrics(
+        &self,
+        parent_key: NodeKey,
+        child_idx: usize,
+        layout: Layout,
+    ) -> Option<ContainerMetrics> {
         let (container_layout, rect, child_count) = self.tree.container_info(parent_key)?;
         if container_layout != layout || child_count == 0 {
             return None;
@@ -2797,12 +2822,43 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     /// Resize a window's share within its nearest ancestor split along `layout`'s axis.
+    ///
+    /// sway's `resize`, in two halves: the size asked for becomes an amount of the parent's
+    /// extent, and the amount is taken from the siblings. Both halves are somewhere else —
+    /// `percent_from_size_change` reads the request, `resize_child` moves the space — so this
+    /// is only the sentence that joins them.
     fn set_window_dimension(&mut self, window: Option<&W::Id>, change: SizeChange, layout: Layout) {
+        self.resize_window(window, change, layout, ResizeReach::Siblings);
+    }
+
+    /// The same resize, taking the space from one side only: sway's `resize grow left|right`
+    /// and `up|down`, where the edge names which neighbour pays.
+    pub fn resize_window_edge(
+        &mut self,
+        window: Option<&W::Id>,
+        change: SizeChange,
+        direction: Direction,
+    ) {
+        let reach = if direction.is_leading() {
+            ResizeReach::Before
+        } else {
+            ResizeReach::After
+        };
+        self.resize_window(window, change, direction.split_layout(), reach);
+    }
+
+    fn resize_window(
+        &mut self,
+        window: Option<&W::Id>,
+        change: SizeChange,
+        layout: Layout,
+        reach: ResizeReach,
+    ) {
         let Some(key) = self.window_target(window) else {
             return;
         };
         let Some((parent_path, child_idx, available, _, _)) =
-            self.window_container_metrics(key, layout)
+            self.resize_container_metrics(key, layout, reach)
         else {
             return;
         };
@@ -2811,11 +2867,23 @@ impl<W: LayoutElement> TilingSpace<W> {
             .tree
             .child_percent(parent_path, child_idx)
             .unwrap_or(1.0);
+        // A share to reach, turned into the amount that reaches it: sway's `resize` moves an
+        // amount, and `resize set` is the same move with the amount worked out first.
         let percent = Self::percent_from_size_change(current_percent, available, change);
+        let amount = percent - current_percent;
 
+        let min_size = match layout {
+            Layout::SplitH => SWAY_MIN_TILED_WIDTH,
+            Layout::SplitV => SWAY_MIN_TILED_HEIGHT,
+            Layout::Tabbed | Layout::Stacked => return,
+        };
+        let space = ResizeSpace {
+            available,
+            min_size,
+        };
         if self
             .tree
-            .set_child_percent(parent_path, child_idx, layout, percent)
+            .resize_child(parent_path, child_idx, layout, reach, amount, space)
         {
             self.tree.layout();
         }

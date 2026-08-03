@@ -12,6 +12,7 @@ use std::fmt;
 use tiri_ipc::SizeChange;
 
 use crate::layout::tests::{Op, TestWindowParams};
+use crate::layout::Direction;
 
 /// One line of a script: the text as written, and what tiri does with it.
 pub(crate) struct Step {
@@ -106,6 +107,17 @@ fn op_for(command: &str, next_id: &mut usize, client: (i32, i32)) -> Result<Op, 
         // Only `px`. sway's `ppt` is a percentage of the *parent's* extent and tiri's
         // `AdjustProportion` is a fraction of the working area, so claiming those equal would
         // be claiming something untrue about every nested container.
+        // sway's `resize set`, which works out the delta and hands it to the same
+        // `container_resize_tiled` the adjust forms use.
+        ["resize", "set", axis @ ("width" | "height"), amount, "px"] => {
+            let amount: i32 = amount.parse().map_err(|_| Reason::BadArgument)?;
+            let change = SizeChange::SetFixed(amount);
+            match *axis {
+                "width" => Op::SetWindowWidth { id: None, change },
+                _ => Op::SetWindowHeight { id: None, change },
+            }
+        }
+
         ["resize", grow_or_shrink @ ("grow" | "shrink"), axis @ ("width" | "height"), amount, "px"] =>
         {
             let amount: i32 = amount.parse().map_err(|_| Reason::BadArgument)?;
@@ -117,6 +129,29 @@ fn op_for(command: &str, next_id: &mut usize, client: (i32, i32)) -> Result<Op, 
             match *axis {
                 "width" => Op::SetWindowWidth { id: None, change },
                 _ => Op::SetWindowHeight { id: None, change },
+            }
+        }
+
+        // The edge forms: same resize, one payer. sway's `resize grow left` takes from the
+        // sibling on the left; the direction names the payer and nothing else.
+        ["resize", grow_or_shrink @ ("grow" | "shrink"), edge @ ("left" | "right" | "up" | "down"), amount, "px"] =>
+        {
+            let amount: i32 = amount.parse().map_err(|_| Reason::BadArgument)?;
+            let change = SizeChange::AdjustFixed(if *grow_or_shrink == "shrink" {
+                -amount
+            } else {
+                amount
+            });
+            let direction = match *edge {
+                "left" => Direction::Left,
+                "right" => Direction::Right,
+                "up" => Direction::Up,
+                _ => Direction::Down,
+            };
+            Op::ResizeWindowEdge {
+                id: None,
+                change,
+                direction,
             }
         }
 

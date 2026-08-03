@@ -4395,6 +4395,30 @@ impl<W: LayoutElement> Layout<W> {
         workspace.set_window_height(window, change);
     }
 
+    pub fn resize_window_edge(
+        &mut self,
+        window: Option<&W::Id>,
+        change: SizeChange,
+        direction: Direction,
+    ) {
+        if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
+            if window.is_none() || window == Some(move_.tile.window().id()) {
+                return;
+            }
+        }
+
+        let workspace = if let Some(window) = window {
+            self.workspaces_mut().find(|ws| ws.has_window(window))
+        } else {
+            self.active_workspace_mut()
+        };
+
+        let Some(workspace) = workspace else {
+            return;
+        };
+        workspace.resize_window_edge(window, change, direction);
+    }
+
     pub fn reset_window_height(&mut self, window: Option<&W::Id>) {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if window.is_none() || window == Some(move_.tile.window().id()) {

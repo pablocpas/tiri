@@ -11,6 +11,7 @@ use super::Layout;
 use super::LayoutElement;
 use super::NodeData;
 use super::NodeKey;
+use super::ResizeReach;
 use crate::layout::tile::Tile;
 
 impl<W: LayoutElement> ContainerTree<W> {
@@ -246,6 +247,39 @@ impl<W: LayoutElement> ContainerTree<W> {
                 if container.layout() == layout {
                     let child_idx = self.child_index(parent_key, current)?;
                     return Some((parent_key, child_idx));
+                }
+            }
+            current = parent_key;
+        }
+
+        None
+    }
+
+    /// Nearest ancestor split that can actually pay for a resize with `reach`.
+    ///
+    /// sway keeps climbing past same-axis containers with one child, and past an edge where
+    /// the selected branch is already first or last. Stopping at either would turn a resize
+    /// that belongs to an outer split into a no-op.
+    pub(in crate::layout) fn find_resize_parent(
+        &self,
+        key: NodeKey,
+        layout: Layout,
+        reach: ResizeReach,
+    ) -> Option<(NodeKey, usize)> {
+        let mut current = key;
+        while let Some(parent_key) = self.parent_of(current) {
+            if let Some(container) = self.get_container(parent_key) {
+                if container.layout() == layout {
+                    let child_idx = self.child_index(parent_key, current)?;
+                    let child_count = container.child_count();
+                    let has_payer = match reach {
+                        ResizeReach::Siblings => child_count > 1,
+                        ResizeReach::Before => child_idx > 0,
+                        ResizeReach::After => child_idx + 1 < child_count,
+                    };
+                    if has_payer {
+                        return Some((parent_key, child_idx));
+                    }
                 }
             }
             current = parent_key;

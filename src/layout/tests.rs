@@ -368,6 +368,15 @@ fn arbitrary_bbox() -> impl Strategy<Value = Rectangle<i32, Logical>> {
     })
 }
 
+fn arbitrary_direction() -> impl Strategy<Value = Direction> {
+    prop_oneof![
+        Just(Direction::Left),
+        Just(Direction::Right),
+        Just(Direction::Up),
+        Just(Direction::Down),
+    ]
+}
+
 fn arbitrary_size_change() -> impl Strategy<Value = SizeChange> {
     prop_oneof![
         (0..).prop_map(SizeChange::SetFixed),
@@ -687,6 +696,15 @@ enum Op {
         id: Option<usize>,
         #[proptest(strategy = "arbitrary_size_change()")]
         change: SizeChange,
+    },
+    /// sway's `resize grow|shrink <edge>`: the resize that takes from one side only.
+    ResizeWindowEdge {
+        #[proptest(strategy = "proptest::option::of(1..=5usize)")]
+        id: Option<usize>,
+        #[proptest(strategy = "arbitrary_size_change()")]
+        change: SizeChange,
+        #[proptest(strategy = "arbitrary_direction()")]
+        direction: Direction,
     },
     ResetWindowHeight {
         #[proptest(strategy = "proptest::option::of(1..=5usize)")]
@@ -1455,6 +1473,14 @@ impl Op {
             Op::SetWindowHeight { id, change } => {
                 let id = id.filter(|id| layout.has_window(id));
                 layout.set_window_height(id.as_ref(), change);
+            }
+            Op::ResizeWindowEdge {
+                id,
+                change,
+                direction,
+            } => {
+                let id = id.filter(|id| layout.has_window(id));
+                layout.resize_window_edge(id.as_ref(), change, direction);
             }
             Op::ResetWindowHeight { id } => {
                 let id = id.filter(|id| layout.has_window(id));

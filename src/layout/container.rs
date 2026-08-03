@@ -73,6 +73,28 @@ pub enum Layout {
     Stacked,
 }
 
+/// Which siblings a resize takes the space from.
+///
+/// sway 1.12's axis form reaches every sibling, while an edge form reaches only the sibling
+/// on that edge. The split between the payers, the floor, and the ancestor the resize climbs
+/// to are otherwise the same.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResizeReach {
+    /// `resize grow width|height`: every sibling except the resized child.
+    Siblings,
+    /// `resize grow left|up`: the one before.
+    Before,
+    /// `resize grow right|down`: the one after.
+    After,
+}
+
+/// Pixel geometry needed to reproduce sway's tiled-resize preflight.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::layout) struct ResizeSpace {
+    pub available: f64,
+    pub min_size: f64,
+}
+
 /// Direction for navigation and movement
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -574,6 +596,71 @@ impl ContainerData {
         self.normalize_child_percents();
     }
 
+    /// sway's `container_resize_tiled`: move `amount` of this container's extent into the
+    /// child at `idx`, taken in equal parts from the siblings selected by `reach`.
+    ///
+    /// Which children pay is the only thing that differs between the forms of `resize`: an
+    /// sway 1.12 changed the axis form to reach every sibling; an edge still reaches one.
+    /// Everything after that is the same — the equal split, and the floor that abandons the
+    /// whole change rather than part of it — which is why the reach is a parameter and there
+    /// is one function instead of four.
+    ///
+    /// Equal parts, not proportional ones: a sibling twice the size of another still pays the
+    /// same. `available` and `min_size` keep sway's floor in pixels: its preflight check
+    /// rounds each payer's cost up to a whole pixel even though the applied fraction keeps
+    /// the exact equal split.
+    pub(super) fn resize_child(
+        &mut self,
+        idx: usize,
+        reach: ResizeReach,
+        amount: f64,
+        space: ResizeSpace,
+    ) -> bool {
+        if self.child_percents.len() != self.children.len() {
+            self.recalculate_percentages();
+        }
+
+        let len = self.child_percents.len();
+        if idx >= len {
+            return false;
+        }
+
+        let mut payers = Vec::with_capacity(len.saturating_sub(1));
+        match reach {
+            ResizeReach::Siblings => payers.extend((0..len).filter(|candidate| *candidate != idx)),
+            ResizeReach::Before if idx > 0 => payers.push(idx - 1),
+            ResizeReach::After if idx + 1 < len => payers.push(idx + 1),
+            ResizeReach::Before | ResizeReach::After => {}
+        }
+        let Some(each) = (!payers.is_empty()).then(|| amount / payers.len() as f64) else {
+            return false;
+        };
+
+        if space.available <= 0.0 {
+            return false;
+        }
+        let amount_size = amount * space.available;
+        let payer_check_size = (amount_size / payers.len() as f64).ceil();
+
+        // Nothing at all rather than something lopsided: sway checks every share first and
+        // abandons the resize if any of them would not fit, which is why dragging a window
+        // into a wall stops instead of squashing the neighbour past it.
+        if self.child_percents[idx] * space.available + amount_size < space.min_size {
+            return false;
+        }
+        if payers.iter().any(|payer| {
+            self.child_percents[*payer] * space.available - payer_check_size < space.min_size
+        }) {
+            return false;
+        }
+
+        self.child_percents[idx] += amount;
+        for payer in payers {
+            self.child_percents[payer] -= each;
+        }
+        true
+    }
+
     pub(super) fn set_child_percent_pair(
         &mut self,
         idx: usize,
@@ -842,6 +929,26 @@ impl<W: LayoutElement> ContainerTree<W> {
             return None;
         }
         Some(container.child_percent(child_idx))
+    }
+
+    /// Move `amount` of `container_key`'s extent into its `child_idx`-th child, provided the
+    /// container still splits along `layout`'s axis.
+    pub(in crate::layout) fn resize_child(
+        &mut self,
+        container_key: NodeKey,
+        child_idx: usize,
+        layout: Layout,
+        reach: ResizeReach,
+        amount: f64,
+        space: ResizeSpace,
+    ) -> bool {
+        let Some(container) = self.get_container_mut(container_key) else {
+            return false;
+        };
+        if container.layout() != layout || child_idx >= container.child_count() {
+            return false;
+        }
+        container.resize_child(child_idx, reach, amount, space)
     }
 
     /// Give the `child_idx`-th child of `container_key` a `percent` share, provided the
