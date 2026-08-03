@@ -13,4 +13,4 @@ post-map configures:
 
 
 unfullscreen configure:
-size: 960 × 810, bounds: 1900 × 1060, states: []
+size: 75 × 50, bounds: 1900 × 1060, states: []

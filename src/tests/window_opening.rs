@@ -612,6 +612,11 @@ window-rule {{
     let post_map = window.format_recent_configures();
 
     // If the window ended up fullscreen, unfullscreen it and output the configure.
+    //
+    // A window leaving fullscreen into floating gets the size it mapped with, clamped to
+    // sway's floating minimum of 75x50. These clients commit a 1x1 buffer whatever they were
+    // configured at, so 75x50 is the floor doing its job on a window that really did map
+    // that small — not a size anyone computed. A real client commits the size it was told.
     let mut post_unfullscreen = String::new();
     if is_fullscreen {
         f.niri().layout.set_fullscreen(&win, false);
