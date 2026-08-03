@@ -1,0 +1,27 @@
+# recorded from sway version 1.11
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ split h
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ move down
+workspace splitv focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ fullscreen toggle
+workspace splitv focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ layout splith
+workspace splitv focus=1
+  splith 0.000,0.000 0.000x0.000
+    window 1 0.000,0.000 1.000x1.000
+
+$ fullscreen toggle
+workspace splitv focus=1
+  splith 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000

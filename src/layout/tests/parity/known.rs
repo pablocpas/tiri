@@ -28,6 +28,21 @@ pub(super) struct Divergence {
 /// nobody recording anything.
 pub(super) const KNOWN: &[Divergence] = &[
     Divergence {
+        fixture: "a-container-around-a-fullscreen-window.parity",
+        step: 5,
+        reason: "\
+A container built around a window that is already fullscreen has no box at all in sway: \
+0x0, while the window inside it covers the output. It lasts exactly as long as the \
+fullscreen does — the step after, leaving fullscreen gives the container the workspace and \
+both agree again. sway arranges a workspace with a fullscreen container by arranging the \
+fullscreen node against the output and never descending the tiled tree underneath, so a \
+container created while that is true is simply never given a box. Nothing reads it while it \
+is 0x0, which is why it survives in sway. tiri lays the container out whatever is fullscreen \
+above it and reports the workspace, which is where the container will be the moment it \
+matters. Recorded so the search moves past it; copying it would mean publishing a rectangle \
+that describes nothing.",
+    },
+    Divergence {
         fixture: "floating-the-workspace.parity",
         step: 3,
         reason: "\
