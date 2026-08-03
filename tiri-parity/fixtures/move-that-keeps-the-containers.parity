@@ -1,5 +1,6 @@
 # the opposite: a move that keeps the containers rather than dissolving them
 # recorded from sway version 1.11
+# client 400x285
 
 $ open
 workspace splith focus=1

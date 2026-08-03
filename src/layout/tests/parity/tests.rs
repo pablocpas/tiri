@@ -11,7 +11,7 @@ use super::replay;
 
 #[track_caller]
 fn assert_replay(script: &str, expected: &str) {
-    let actual = replay(script).render();
+    let actual = replay(script, tiri_parity::session::CLIENT).render();
     assert_eq!(
         actual.trim_end(),
         expected.trim_end(),
@@ -245,7 +245,7 @@ workspace splith focus=2
 $ floating toggle
 workspace splith focus=2
   window 1 0.000,0.000 1.000x1.000
-  window 2 0.345,0.292 0.309x0.417 floating
+  window 2 0.344,0.302 0.312x0.396 floating
 ",
     );
 }
@@ -278,8 +278,12 @@ workspace splith focus=1
 /// first one built, which already has that layout.
 #[test]
 fn repeating_a_layout_command_changes_nothing() {
-    let once = replay("open\nlayout tabbed\n").render();
-    let thrice = replay("open\nlayout tabbed\nlayout tabbed\nlayout tabbed\n").render();
+    let once = replay("open\nlayout tabbed\n", tiri_parity::session::CLIENT).render();
+    let thrice = replay(
+        "open\nlayout tabbed\nlayout tabbed\nlayout tabbed\n",
+        tiri_parity::session::CLIENT,
+    )
+    .render();
 
     let last = |text: &str| text.trim_end().rsplit("$ ").next().unwrap().to_owned();
     assert_eq!(last(&once), last(&thrice));
@@ -329,7 +333,10 @@ workspace splith focus=1
 #[test]
 fn an_unknown_command_fails_the_script_instead_of_being_skipped() {
     let err = std::panic::catch_unwind(|| {
-        replay("open\nresize grow width 10 px\n");
+        replay(
+            "open\nresize grow width 10 px\n",
+            tiri_parity::session::CLIENT,
+        );
     });
     let err = *err.unwrap_err().downcast::<String>().unwrap();
     assert!(
@@ -337,4 +344,3 @@ fn an_unknown_command_fails_the_script_instead_of_being_skipped() {
         "a command the table does not know must name itself: {err}"
     );
 }
-

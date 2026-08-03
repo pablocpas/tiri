@@ -1,5 +1,6 @@
 # escaping a container across the workspace: the workspace turns to face the move
 # recorded from sway version 1.11
+# client 400x285
 
 $ open
 workspace splith focus=1

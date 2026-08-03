@@ -359,8 +359,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             return;
         }
 
-        let percents =
-            self.get_normalized_child_percents(node_key, child_count);
+        let percents = self.get_normalized_child_percents(node_key, child_count);
         let (child_rects, _) = self.child_rects_for_layout(layout, rect, child_count, &percents);
 
         match layout {

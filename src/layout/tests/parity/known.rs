@@ -43,6 +43,19 @@ matters. Recorded so the search moves past it; copying it would mean publishing 
 that describes nothing.",
     },
     Divergence {
+        fixture: "split-around-a-fullscreen-window.parity",
+        step: 4,
+        reason: "\
+The other half of the entry above, and the same cause read from the other side. sway never \
+descends the tiled tree while a fullscreen is up, so a container created there keeps whatever \
+box it happened to inherit — nothing in the first case, the whole output in this one, because \
+`split` hands the new container the box of the child it wrapped and that child was covering \
+the screen. Neither number is a layout: they are two different accidents of not being \
+arranged. tiri reports the slot the container will occupy the moment the fullscreen ends, \
+which is the same answer in both. Found by the fuzz in twenty-two scripts, the first thing it \
+found after the recorder was unblocked.",
+    },
+    Divergence {
         fixture: "floating-the-workspace.parity",
         step: 3,
         reason: "\
@@ -147,7 +160,7 @@ pub(super) fn signatures() -> Vec<Signature> {
     let mut out = Vec::new();
     for entry in KNOWN {
         let fixture = read(&fixtures_dir().join(entry.fixture));
-        let replayed = replay(&fixture.script());
+        let replayed = replay(&fixture.script(), fixture.client);
         let Some(recorded_step) = fixture.steps.get(entry.step - 1) else {
             panic!(
                 "{} has no step {}: the entry names a command that is not there",

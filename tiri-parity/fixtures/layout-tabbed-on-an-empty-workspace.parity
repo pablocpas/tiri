@@ -1,5 +1,6 @@
 # layout tabbed on an empty workspace: the workspace becomes tabbed, no container is built
 # recorded from sway version 1.11
+# client 400x285
 
 $ layout tabbed
 workspace tabbed focus=@

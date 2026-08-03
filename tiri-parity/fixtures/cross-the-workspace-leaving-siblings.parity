@@ -1,5 +1,6 @@
 # crossing the workspace when other top-level nodes remain: the rest is wrapped
 # recorded from sway version 1.11
+# client 400x285
 
 $ open
 workspace splith focus=1

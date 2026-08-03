@@ -16,14 +16,26 @@ use crate::sway;
 /// differences would only be reporting a difference in configuration.
 pub const OUTPUT: (u32, u32) = (1280, 720);
 
-/// The size the recorder's client actually ends up at, which the replayer has to give its
-/// own windows.
+/// The size the recorder's client ends up at, and what a fixture without a `# client` stamp
+/// is replayed with.
 ///
 /// It matters because sway floats a window at the size it mapped with, so a client size that
 /// differs between the two sides would show up as a layout difference. The recorder asks
-/// `foot` for 400x300 and foot rounds down to whole character cells; this is the result, and
-/// if a re-record moves it, this moves with it.
-pub const CLIENT: (i32, i32) = (396, 300);
+/// `foot` for 400x300 and foot rounds down to whole character cells, which is why this is not
+/// 400x300 — and why [`CLIENT_COMMAND`] pins the font: the cell size is configuration exactly
+/// as gaps and borders are, and it was the one piece left to the machine. Unpinned, this
+/// moved between one recording session and the next.
+///
+/// The authority for an individual recording is the stamp in the file, not this.
+pub const CLIENT: (i32, i32) = (400, 285);
+
+/// The client the recorder opens windows with.
+///
+/// Pinned down to the font, for the same reason the sway config is pinned bare: anything left
+/// to the machine shows up later as a difference that says nothing about behaviour.
+const CLIENT_COMMAND: &str = "foot --config=/dev/null --font=monospace:size=10 \
+                              --override=dpi-aware=no --window-size-pixels=400x300 \
+                              sh -c 'while :; do sleep 1; done'";
 
 /// How long to wait for sway, or for a window to appear or vanish.
 const PATIENCE: Duration = Duration::from_secs(10);
@@ -79,6 +91,8 @@ pub struct Sway {
     opened: u32,
     /// Bumped by `reset`, so each script gets a workspace nothing has touched.
     workspace: u32,
+    /// The size the clients of this session map at, as observed rather than assumed.
+    client: Option<(i32, i32)>,
 }
 
 impl Sway {
@@ -129,6 +143,7 @@ impl Sway {
             order: sway::OpenOrder::new(),
             opened: 0,
             workspace: 0,
+            client: None,
         };
         // The socket exists before the output does; wait for a tree we can read.
         let started = Instant::now();
@@ -233,9 +248,8 @@ impl Sway {
         // Fixed size on purpose: sway gives a window floated out of tiling the size its
         // client asked for, so a client whose size depends on fonts or terminal defaults
         // would make the recording depend on the machine it was made on.
-        let client = std::env::var("TIRI_PARITY_CLIENT").unwrap_or_else(|_| {
-            "foot --window-size-pixels=400x300 sh -c 'while :; do sleep 1; done'".to_owned()
-        });
+        let client =
+            std::env::var("TIRI_PARITY_CLIENT").unwrap_or_else(|_| CLIENT_COMMAND.to_owned());
         self.msg(&["exec", &client])?;
 
         let started = Instant::now();
@@ -244,7 +258,7 @@ impl Sway {
             if let Some(&new) = now.difference(&before).next() {
                 self.opened += 1;
                 self.order.insert(new, self.opened);
-                self.check_client_size(new)?;
+                self.observe_client_size(new)?;
                 return Ok(());
             }
             if started.elapsed() > PATIENCE {
@@ -254,28 +268,38 @@ impl Sway {
         }
     }
 
-    /// Fail loudly when the client is not the size the replayer thinks it is.
+    /// Note the size this window mapped at, for the recording to stamp.
     ///
     /// sway reports a view's natural size as its `geometry`, and that is what a window gets
-    /// when it starts floating, so a client that mapped at some other size makes every
-    /// floating comparison meaningless in a way nothing else would report. It is a property
-    /// of the machine — a font, a terminal default — so it belongs in a message that names
-    /// the constant to change, not in a divergence.
-    fn check_client_size(&self, node: i64) -> Result<(), String> {
+    /// when it starts floating, so a recording is only replayable against a client of the
+    /// same size. That is a fact about the recording, so it goes in the file rather than
+    /// being asserted against a constant — a machine that produces a different size records
+    /// a fixture that says so, instead of being unable to record at all.
+    ///
+    /// Two windows of *different* sizes inside one recording is the thing that cannot be
+    /// stamped, and that is skew rather than a property, so it fails here.
+    fn observe_client_size(&mut self, node: i64) -> Result<(), String> {
         let tree = self.tree()?;
         let value: serde_json::Value =
             serde_json::from_str(&tree).map_err(|err| format!("unreadable tree: {err}"))?;
         let Some(geometry) = find_geometry(&value, node) else {
             return Ok(());
         };
-        if geometry != CLIENT {
-            return Err(format!(
-                "the client mapped at {}x{} but session::CLIENT says {}x{}: \
-                 re-record the fixtures and move the constant with them",
-                geometry.0, geometry.1, CLIENT.0, CLIENT.1
-            ));
+        match self.client {
+            Some(seen) if seen != geometry => Err(format!(
+                "one client mapped at {}x{} and another at {}x{} in the same recording",
+                seen.0, seen.1, geometry.0, geometry.1
+            )),
+            _ => {
+                self.client = Some(geometry);
+                Ok(())
+            }
         }
-        Ok(())
+    }
+
+    /// The size the clients of this session mapped at, once one has.
+    pub fn client_size(&self) -> (i32, i32) {
+        self.client.unwrap_or(CLIENT)
     }
 
     /// Close what is focused, and wait for *all* of it to go.

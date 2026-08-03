@@ -69,6 +69,10 @@ fn record(sway: &mut Sway, source: &str, path: &Path) -> Result<(), String> {
 
     let fixture = Fixture {
         source: source.to_owned(),
+        // From the file rather than from the parse: a fixture written by hand is a bare
+        // script that does not parse, and its notes have been typed exactly once.
+        notes: tiri_parity::fixture::notes_in(&text),
+        client: sway.client_size(),
         steps,
     };
     std::fs::write(path, fixture.render()).map_err(|err| format!("cannot write: {err}"))

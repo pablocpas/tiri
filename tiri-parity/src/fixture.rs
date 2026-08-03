@@ -17,6 +17,18 @@ use crate::model::{self, Workspace};
 pub struct Fixture {
     /// The compositor and version the recording came from, e.g. `sway 1.11`.
     pub source: String,
+    /// What this recording is for, in the words of whoever wrote the script.
+    ///
+    /// Kept because re-recording rewrites the file, and a recorder that only knows how to
+    /// write what it measured deletes the one part of a fixture that says why it exists.
+    pub notes: Vec<String>,
+    /// The size the client mapped at while this was recorded.
+    ///
+    /// A property of the recording, like the sway version beside it. sway floats a window at
+    /// the size it mapped with, so a replayer whose windows are a different size would report
+    /// that as a layout difference — and a corpus recorded across two machines would have no
+    /// way to say so. Stamped here, each file replays against the client it was made with.
+    pub client: (i32, i32),
     pub steps: Vec<Step>,
 }
 
@@ -51,7 +63,12 @@ impl Fixture {
     }
 
     pub fn render(&self) -> String {
-        let mut out = format!("# recorded from {}\n", self.source);
+        let mut out = String::new();
+        for note in &self.notes {
+            let _ = writeln!(out, "# {note}");
+        }
+        let _ = writeln!(out, "# recorded from {}", self.source);
+        let _ = writeln!(out, "# client {}x{}", self.client.0, self.client.1);
         for step in &self.steps {
             let _ = write!(out, "\n$ {}\n{}", step.command, step.model.render());
         }
@@ -60,6 +77,12 @@ impl Fixture {
 
     pub fn parse(text: &str) -> Result<Self, ParseError> {
         let mut source = String::new();
+        // A fixture written before the stamp existed, or one written by hand as a bare
+        // script. Only a recording in which a window floats can observe the client's size at
+        // all, and those are re-recorded with the stamp; for the rest the default is the
+        // same answer by another route.
+        let mut client = crate::session::CLIENT;
+        let mut notes: Vec<String> = Vec::new();
         let mut steps: Vec<Step> = Vec::new();
         let mut pending: Option<(String, usize, String)> = None;
 
@@ -69,7 +92,15 @@ impl Fixture {
                 source = rest.trim().to_owned();
                 continue;
             }
-            if line.starts_with('#') {
+            if let Some(rest) = line.strip_prefix("# client ") {
+                client = parse_client(rest).ok_or_else(|| ParseError {
+                    line: no,
+                    reason: format!("cannot read a client size from {:?}", rest.trim()),
+                })?;
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix('#') {
+                notes.push(rest.strip_prefix(' ').unwrap_or(rest).to_owned());
                 continue;
             }
             if let Some(command) = line.strip_prefix("$ ") {
@@ -103,8 +134,45 @@ impl Fixture {
                 reason: "missing the `# recorded from ...` header".into(),
             });
         }
-        Ok(Fixture { source, steps })
+        // A trailing blank comment line is separator rather than prose.
+        while notes.last().is_some_and(|note| note.trim().is_empty()) {
+            notes.pop();
+        }
+
+        Ok(Fixture {
+            source,
+            notes,
+            client,
+            steps,
+        })
     }
+}
+
+/// The prose comments in a fixture, without the stamps the recorder writes itself.
+///
+/// Separate from [`Fixture::parse`] because a fixture being written for the first time holds
+/// commands and nothing else, so it does not parse — and that is exactly when its notes have
+/// only ever been typed once and are easiest to lose.
+pub fn notes_in(text: &str) -> Vec<String> {
+    let mut notes: Vec<String> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix('#'))
+        .filter(|note| {
+            let note = note.trim_start();
+            !note.starts_with("recorded from ") && !note.starts_with("client ")
+        })
+        .map(|note| note.strip_prefix(' ').unwrap_or(note).to_owned())
+        .collect();
+    while notes.last().is_some_and(|note| note.trim().is_empty()) {
+        notes.pop();
+    }
+    notes
+}
+
+/// `396x288`, the way the stamp writes it.
+fn parse_client(text: &str) -> Option<(i32, i32)> {
+    let (width, height) = text.trim().split_once('x')?;
+    Some((width.trim().parse().ok()?, height.trim().parse().ok()?))
 }
 
 fn finish((command, at, body): (String, usize, String)) -> Result<Step, ParseError> {

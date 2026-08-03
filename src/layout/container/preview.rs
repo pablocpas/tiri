@@ -77,8 +77,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             let container = self.get_container(node_key)?;
             let child_key = container.child_key(idx)?;
             let child_is_leaf = matches!(self.get_node(child_key), Some(NodeData::Leaf(_)));
-            let percents =
-                self.get_normalized_child_percents(node_key, container.child_count());
+            let percents = self.get_normalized_child_percents(node_key, container.child_count());
             let (child_rect, _) = self.preview_child_rect(
                 container.layout(),
                 rect,

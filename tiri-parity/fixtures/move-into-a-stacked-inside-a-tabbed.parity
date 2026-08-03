@@ -1,4 +1,5 @@
 # recorded from sway version 1.11
+# client 400x285
 
 $ open
 workspace splith focus=1
@@ -23,39 +24,39 @@ workspace splith focus=3
 $ layout stacking
 workspace splith focus=3
   stacked 0.000,0.000 1.000x1.000
-    window 1 0.000,0.104 1.000x0.896 hidden
-    window 2 0.000,0.104 1.000x0.896 hidden
-    window 3 0.000,0.104 1.000x0.896
+    window 1 0.000,0.113 1.000x0.887 hidden
+    window 2 0.000,0.113 1.000x0.887 hidden
+    window 3 0.000,0.113 1.000x0.887
 
 $ move left
 workspace splith focus=3
   window 3 0.000,0.000 0.500x1.000
   stacked 0.500,0.000 0.500x1.000
-    window 1 0.500,0.069 0.500x0.931 hidden
-    window 2 0.500,0.069 0.500x0.931
+    window 1 0.500,0.075 0.500x0.925 hidden
+    window 2 0.500,0.075 0.500x0.925
 
 $ layout tabbed
 workspace splith focus=3
   tabbed 0.000,0.000 1.000x1.000
-    window 3 0.000,0.035 1.000x0.965
-    stacked 0.000,0.069 1.000x0.931
-      window 1 0.000,0.104 1.000x0.896 hidden
-      window 2 0.000,0.104 1.000x0.896 hidden
+    window 3 0.000,0.037 1.000x0.963
+    stacked 0.000,0.075 1.000x0.925
+      window 1 0.000,0.113 1.000x0.887 hidden
+      window 2 0.000,0.113 1.000x0.887 hidden
 
 $ open
 workspace splith focus=4
   tabbed 0.000,0.000 1.000x1.000
-    window 3 0.000,0.035 1.000x0.965 hidden
-    window 4 0.000,0.035 1.000x0.965
-    stacked 0.000,0.069 1.000x0.931
-      window 1 0.000,0.104 1.000x0.896 hidden
-      window 2 0.000,0.104 1.000x0.896 hidden
+    window 3 0.000,0.037 1.000x0.963 hidden
+    window 4 0.000,0.037 1.000x0.963
+    stacked 0.000,0.075 1.000x0.925
+      window 1 0.000,0.113 1.000x0.887 hidden
+      window 2 0.000,0.113 1.000x0.887 hidden
 
 $ move right
 workspace splith focus=4
   tabbed 0.000,0.000 1.000x1.000
-    window 3 0.000,0.035 1.000x0.965
-    stacked 0.000,0.069 1.000x0.931
-      window 1 0.000,0.139 1.000x0.861 hidden
-      window 4 0.000,0.139 1.000x0.861 hidden
-      window 2 0.000,0.139 1.000x0.861 hidden
+    window 3 0.000,0.037 1.000x0.963
+    stacked 0.000,0.075 1.000x0.925
+      window 1 0.000,0.150 1.000x0.850 hidden
+      window 4 0.000,0.150 1.000x0.850 hidden
+      window 2 0.000,0.150 1.000x0.850 hidden

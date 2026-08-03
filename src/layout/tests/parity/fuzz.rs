@@ -159,7 +159,8 @@ fn compare(sway: &mut Sway, script: &[String]) -> Result<Option<Comparison>, Str
         let _ = writeln!(out, "{command}");
         out
     });
-    let replayed = replay(&text);
+    // Whatever this session's client actually maps at, rather than an assumption.
+    let replayed = replay(&text, sway.client_size());
     if replayed.steps.len() != recorded.len() {
         return Err(format!(
             "replayed {} commands but sway ran {}",

@@ -1,10 +1,11 @@
 # layout on a container that is alone inside a container that is alone
-#
+# 
 # sway 1.12-dev flattens one level here ("flatten once, like i3", cmd_layout); 1.11, which
 # every recording is of, does not — it retypes the inner container and leaves both levels.
 # Recorded because the two answers are one level apart and the source alone does not say
 # which one the fixtures are describing.
 # recorded from sway version 1.11
+# client 400x285
 
 $ open
 workspace splith focus=1

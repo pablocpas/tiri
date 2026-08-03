@@ -2355,8 +2355,7 @@ impl<W: LayoutElement> Workspace<W> {
     /// no parent to read, which is the workspace itself. So this chooses, and everything
     /// after it is the ordinary split path, wrapping and all.
     pub fn split_toggle(&mut self) {
-        let parent_is_vertical =
-            self.tiling.command_target_parent_layout() == Some(Layout::SplitV);
+        let parent_is_vertical = self.tiling.command_target_parent_layout() == Some(Layout::SplitV);
         if parent_is_vertical {
             self.split_horizontal();
         } else {

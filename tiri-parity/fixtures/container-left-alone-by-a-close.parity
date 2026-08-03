@@ -1,4 +1,5 @@
 # recorded from sway version 1.11
+# client 400x285
 
 $ open
 workspace splith focus=1

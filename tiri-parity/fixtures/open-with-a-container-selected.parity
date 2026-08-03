@@ -1,5 +1,6 @@
 # where a new window lands when a container is selected
 # recorded from sway version 1.11
+# client 400x285
 
 $ open
 workspace splith focus=1

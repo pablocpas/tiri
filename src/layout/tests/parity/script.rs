@@ -47,7 +47,7 @@ impl fmt::Display for ParseError {
 ///
 /// Blank lines and `#` comments are dropped. Window ids are assigned here rather than at
 /// replay time so that a parsed script fully determines which window is which.
-pub(crate) fn parse(text: &str) -> Result<Vec<Step>, ParseError> {
+pub(crate) fn parse(text: &str, client: (i32, i32)) -> Result<Vec<Step>, ParseError> {
     let mut steps = Vec::new();
     let mut next_id = 1;
 
@@ -57,7 +57,7 @@ pub(crate) fn parse(text: &str) -> Result<Vec<Step>, ParseError> {
             continue;
         }
 
-        let op = match op_for(command, &mut next_id) {
+        let op = match op_for(command, &mut next_id, client) {
             Ok(op) => op,
             Err(reason) => {
                 return Err(ParseError {
@@ -82,7 +82,7 @@ pub(crate) fn parse(text: &str) -> Result<Vec<Step>, ParseError> {
 /// what i3 documents the command to mean, and a wrong claim here would make every script
 /// silently test the wrong thing. Commands are added as scripts need them; an unknown one is
 /// an error, never a no-op, so a typo cannot quietly weaken a test.
-fn op_for(command: &str, next_id: &mut usize) -> Result<Op, Reason> {
+fn op_for(command: &str, next_id: &mut usize, client: (i32, i32)) -> Result<Op, Reason> {
     let words: Vec<&str> = command.split_whitespace().collect();
 
     Ok(match words.as_slice() {
@@ -91,7 +91,7 @@ fn op_for(command: &str, next_id: &mut usize) -> Result<Op, Reason> {
             let id = *next_id;
             *next_id += 1;
             Op::AddWindow {
-                params: TestWindowParams::mapped_at(id, tiri_parity::session::CLIENT),
+                params: TestWindowParams::mapped_at(id, client),
             }
         }
         ["close"] => Op::CloseFocused,

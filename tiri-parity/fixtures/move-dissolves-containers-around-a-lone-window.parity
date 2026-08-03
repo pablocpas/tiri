@@ -1,5 +1,6 @@
 # a move that dissolves the containers a lone window sits in
 # recorded from sway version 1.11
+# client 400x285
 
 $ open
 workspace splith focus=1

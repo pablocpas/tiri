@@ -30,9 +30,14 @@ pub(crate) struct Observation {
 ///
 /// Observing per command is the point: it localizes a divergence to the one command that
 /// caused it, instead of leaving a forty-step sequence to bisect by hand.
+///
+/// `client` is the size the windows map at, and it is a parameter rather than a constant
+/// because it belongs to the recording being replayed: sway floats a window at the size it
+/// mapped with, so replaying a fixture against a differently-sized client compares two
+/// different scripts and calls the difference a divergence.
 #[track_caller]
-pub(crate) fn replay(text: &str) -> Replay {
-    let steps = match script::parse(text) {
+pub(crate) fn replay(text: &str, client: (i32, i32)) -> Replay {
+    let steps = match script::parse(text, client) {
         Ok(steps) => steps,
         Err(err) => panic!("{err}"),
     };

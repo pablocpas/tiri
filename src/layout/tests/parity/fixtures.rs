@@ -45,7 +45,7 @@ fn tiri_matches_every_recorded_sway_session() {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         let fixture = known::read(&path);
 
-        let actual = replay(&fixture.script());
+        let actual = replay(&fixture.script(), fixture.client);
         if actual.steps.len() != fixture.steps.len() {
             let _ = writeln!(
                 report,

@@ -1,5 +1,6 @@
 # a move by a window alone inside a stacked container dissolves the split it just got
 # recorded from sway version 1.11
+# client 400x285
 
 $ open
 workspace splith focus=1
