@@ -23,7 +23,7 @@ pub const OUTPUT: (u32, u32) = (1280, 720);
 /// differs between the two sides would show up as a layout difference. The recorder asks
 /// `foot` for 400x300 and foot rounds down to whole character cells; this is the result, and
 /// if a re-record moves it, this moves with it.
-pub const CLIENT: (i32, i32) = (396, 288);
+pub const CLIENT: (i32, i32) = (396, 300);
 
 /// How long to wait for sway, or for a window to appear or vanish.
 const PATIENCE: Duration = Duration::from_secs(10);
@@ -244,6 +244,7 @@ impl Sway {
             if let Some(&new) = now.difference(&before).next() {
                 self.opened += 1;
                 self.order.insert(new, self.opened);
+                self.check_client_size(new)?;
                 return Ok(());
             }
             if started.elapsed() > PATIENCE {
@@ -251,6 +252,30 @@ impl Sway {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    /// Fail loudly when the client is not the size the replayer thinks it is.
+    ///
+    /// sway reports a view's natural size as its `geometry`, and that is what a window gets
+    /// when it starts floating, so a client that mapped at some other size makes every
+    /// floating comparison meaningless in a way nothing else would report. It is a property
+    /// of the machine — a font, a terminal default — so it belongs in a message that names
+    /// the constant to change, not in a divergence.
+    fn check_client_size(&self, node: i64) -> Result<(), String> {
+        let tree = self.tree()?;
+        let value: serde_json::Value =
+            serde_json::from_str(&tree).map_err(|err| format!("unreadable tree: {err}"))?;
+        let Some(geometry) = find_geometry(&value, node) else {
+            return Ok(());
+        };
+        if geometry != CLIENT {
+            return Err(format!(
+                "the client mapped at {}x{} but session::CLIENT says {}x{}: \
+                 re-record the fixtures and move the constant with them",
+                geometry.0, geometry.1, CLIENT.0, CLIENT.1
+            ));
+        }
+        Ok(())
     }
 
     /// Close what is focused, and wait for *all* of it to go.
@@ -301,6 +326,22 @@ impl Sway {
         sway::normalize(&self.tree()?, &self.order)
             .map_err(|err| format!("cannot normalize sway's tree: {err:?}"))
     }
+}
+
+/// The natural size sway reports for one node, which is the size its client mapped with.
+fn find_geometry(node: &serde_json::Value, id: i64) -> Option<(i32, i32)> {
+    if node.get("id").and_then(serde_json::Value::as_i64) == Some(id) {
+        let geometry = node.get("geometry")?;
+        let width = geometry.get("width")?.as_i64()? as i32;
+        let height = geometry.get("height")?.as_i64()? as i32;
+        return Some((width, height));
+    }
+    ["nodes", "floating_nodes"]
+        .iter()
+        .filter_map(|key| node.get(key))
+        .filter_map(|value| value.as_array())
+        .flatten()
+        .find_map(|child| find_geometry(child, id))
 }
 
 fn collect_leaves(node: &serde_json::Value, out: &mut HashSet<i64>) {
