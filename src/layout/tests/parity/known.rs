@@ -56,6 +56,22 @@ which is the same answer in both. Found by the fuzz in twenty-two scripts, the f
 found after the recorder was unblocked.",
     },
     Divergence {
+        fixture: "layout-under-a-fullscreen-container.parity",
+        step: 6,
+        reason: "\
+The third route to the two above, found by the fuzz, and the one that says the cause is a \
+rule rather than an accident of `split`: `layout` builds a container while a fullscreen is \
+up and it is never given a box either. sway arranges a workspace with a fullscreen by \
+arranging that node against the output and returning, so nothing created under it while that \
+holds is ever laid out. Erasing the decoration then reads the whole subtree at 0x0, which is \
+what the comparison shows.
+
+Three entries for one line of sway is the ledger asking a question: either tiri stops laying \
+out the tiled tree while a fullscreen is up, which is that line and would close all three, or \
+it keeps answering where the windows will be and the family keeps producing routes. That is a \
+decision about what tiri publishes, not a fix.",
+    },
+    Divergence {
         fixture: "floating-the-workspace.parity",
         step: 3,
         reason: "\
