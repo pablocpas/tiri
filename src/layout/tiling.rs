@@ -368,7 +368,21 @@ impl<W: LayoutElement> TilingSpace<W> {
     pub(super) fn take_workspace_subtree_for_floating(
         &mut self,
     ) -> Option<(DetachedNode<W>, Rectangle<f64, Logical>)> {
-        let rect = self.working_area;
+        // What sway floats here is a container, and a container's default floating size is
+        // `container_floating_set_default_size`: half the workspace by three quarters of it,
+        // centred. `floating_natural_resize` overwrites that with the client's own size only
+        // when there is a view to ask, and a wrapper around the workspace's children is not
+        // one — which is why the number a floating *window* no longer gets is still this
+        // one's.
+        let area = self.working_area;
+        let size = Size::from((area.size.w * 0.5, area.size.h * 0.75));
+        let rect = Rectangle::new(
+            Point::from((
+                area.loc.x + (area.size.w - size.w) / 2.0,
+                area.loc.y + (area.size.h - size.h) / 2.0,
+            )),
+            size,
+        );
         let subtree = self.tree.take_whole_tree()?;
 
         self.sync_fullscreen_window();

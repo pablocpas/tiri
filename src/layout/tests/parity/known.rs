@@ -32,14 +32,15 @@ pub(super) const KNOWN: &[Divergence] = &[
         step: 3,
         reason: "\
 `floating toggle` with the workspace selected. sway's `cmd_floating` has no container to act \
-on there, so it calls `workspace_wrap_children`, sets the workspace to splith, focuses the \
-wrapper and floats *that* — a container, even when it holds a single window. tiri floats the \
-window itself and leaves the workspace selected. The size follows from the same distinction \
-and is already measured: `container_floating_set_default_size` gives 50% by 75% of the \
-workspace, and `floating_natural_resize` then overwrites it with the natural size only for a \
-view, so a floating container keeps the halves-and-three-quarters that a floating window no \
-longer gets. Not a rule to work out, a path to build: tiri's workspace-floating route hands \
-`add_subtree` a lone window and never wraps it.",
+on, so `workspace_wrap_children` builds one, the workspace goes splith, and the wrapper is \
+what gets focused and floated — a container, even around a single window. The geometry now \
+agrees exactly; what is left is the wrapper itself and the focus that sits on it.
+
+That last piece is not in the layout, it is in what the two publish. tiri gives *every* \
+floating group a container root and sway only has one when the group really is a container, \
+so the tiri normalizer unwraps a lone floating group to keep the ordinary case comparable — \
+and unwraps this one with it, where the container is real and addressable. Closing it means \
+tiri's IPC saying which of the two it has, not the normalizer guessing from the child count.",
     },
     Divergence {
         fixture: "move-into-a-stacked-inside-a-tabbed.parity",
