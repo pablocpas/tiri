@@ -220,6 +220,12 @@ now the sway rule, which needed a `natural_size` on `LayoutElement`: `size()` is
 tiling last stretched the window to, and the whole point of the rule is that it survives the
 window having been tiled at some other size in between.
 
+The 50% by 75% turns out to be sway's too, for the other case.
+`container_floating_set_default_size` writes it first and `floating_natural_resize` then
+overwrites it *only for a view*, so a floating **container** — what `floating toggle` on a
+selected workspace produces — keeps exactly those proportions. Two rules that look like one
+number, which is why measuring the window case did not settle the container one.
+
 It also pinned down a piece of harness skew the corpus had never exercised. A window's own
 size is invisible while it is tiled, so the replayer's 100x200 test window and the recorder's
 `foot` had disagreed harmlessly all along; the moment floating size became behaviour, the

@@ -28,6 +28,20 @@ pub(super) struct Divergence {
 /// nobody recording anything.
 pub(super) const KNOWN: &[Divergence] = &[
     Divergence {
+        fixture: "floating-the-workspace.parity",
+        step: 3,
+        reason: "\
+`floating toggle` with the workspace selected. sway's `cmd_floating` has no container to act \
+on there, so it calls `workspace_wrap_children`, sets the workspace to splith, focuses the \
+wrapper and floats *that* — a container, even when it holds a single window. tiri floats the \
+window itself and leaves the workspace selected. The size follows from the same distinction \
+and is already measured: `container_floating_set_default_size` gives 50% by 75% of the \
+workspace, and `floating_natural_resize` then overwrites it with the natural size only for a \
+view, so a floating container keeps the halves-and-three-quarters that a floating window no \
+longer gets. Not a rule to work out, a path to build: tiri's workspace-floating route hands \
+`add_subtree` a lone window and never wraps it.",
+    },
+    Divergence {
         fixture: "move-into-a-stacked-inside-a-tabbed.parity",
         step: 9,
         reason: "\
