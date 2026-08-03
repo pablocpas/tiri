@@ -2274,6 +2274,12 @@ impl<W: LayoutElement> Workspace<W> {
         self.dispatch_active_layer(|_| {}, |t| t.expand_column_to_available_width());
     }
 
+    /// sway's `focus next|prev [sibling]`. Tiling only: a floating window has no parent
+    /// laying its siblings out in a direction to read one from.
+    pub fn focus_along_parent(&mut self, forward: bool, descend: bool) -> bool {
+        self.tiling.focus_along_parent(forward, descend)
+    }
+
     pub fn focus_parent(&mut self) {
         match self.command_target() {
             CommandTarget::FloatingWindow | CommandTarget::FloatingContainer => {

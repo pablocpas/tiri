@@ -74,6 +74,18 @@ const VOCABULARY: &[(&str, u32)] = &[
     ("split toggle", 2),
     ("floating toggle", 2),
     ("fullscreen toggle", 2),
+    // The resize forms carry a size, and a search that only ever asked for the same one
+    // would be asking one question many times: three amounts, one of them big enough to run
+    // into the floor that refuses the whole change.
+    ("resize grow width 100 px", 2),
+    ("resize shrink width 200 px", 2),
+    ("resize grow height 400 px", 1),
+    ("resize grow left 150 px", 1),
+    ("resize shrink down 100 px", 1),
+    ("resize set width 500 px", 1),
+    ("focus next", 2),
+    ("focus prev", 2),
+    ("focus next sibling", 1),
     ("focus left", 3),
     ("focus right", 3),
     ("focus up", 3),

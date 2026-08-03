@@ -1,5 +1,6 @@
 //! Focus and selection: state, queries and directional navigation.
 
+use super::ContainerData;
 use super::ContainerTree;
 use super::Direction;
 use super::LayoutElement;
@@ -164,10 +165,45 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.focus_in_direction_internal(direction, false)
     }
 
+    /// sway's `focus next|prev`: the direction is whichever way the parent lays its children
+    /// out, and everything after that is an ordinary directional focus.
+    ///
+    /// `sibling` stops the focus descending into the container it lands on, so the container
+    /// itself is what gets selected. That is the whole of the difference, which is why it is
+    /// a flag on the same walk.
+    pub(in crate::layout) fn focus_along_parent(&mut self, forward: bool, descend: bool) -> bool {
+        let Some(selected_key) = self.selected_node_key() else {
+            return false;
+        };
+        let Some(parent_layout) = self
+            .parent_of(selected_key)
+            .and_then(|parent_key| self.get_container(parent_key).map(ContainerData::layout))
+        else {
+            return false;
+        };
+
+        let direction = match (parent_layout.is_horizontal(), forward) {
+            (true, true) => Direction::Right,
+            (true, false) => Direction::Left,
+            (false, true) => Direction::Down,
+            (false, false) => Direction::Up,
+        };
+        self.focus_in_direction_with(direction, true, descend)
+    }
+
     pub(super) fn focus_in_direction_internal(
         &mut self,
         direction: Direction,
         allow_wrap: bool,
+    ) -> bool {
+        self.focus_in_direction_with(direction, allow_wrap, true)
+    }
+
+    fn focus_in_direction_with(
+        &mut self,
+        direction: Direction,
+        allow_wrap: bool,
+        descend: bool,
     ) -> bool {
         self.clear_focus_history();
         if self.is_empty() {
@@ -217,7 +253,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             // First try direct movement without wrapping.
             if let Some(new_idx) = direction.sibling_index(current_idx, child_count) {
                 if let Some(target_key) = container.child_key(new_idx) {
-                    self.focus_node_key(target_key);
+                    self.focus_landing_on(target_key, descend);
                     return true;
                 }
             }
@@ -230,12 +266,23 @@ impl<W: LayoutElement> ContainerTree<W> {
                 .get_container(container_key)
                 .and_then(|container| container.child_key(wrap_idx))
             {
-                self.focus_node_key(target_key);
+                self.focus_landing_on(target_key, descend);
                 return true;
             }
         }
 
         false
+    }
+
+    /// Land on `key`: on the window inside it, or on the container itself when the focus was
+    /// told not to descend.
+    fn focus_landing_on(&mut self, key: NodeKey, descend: bool) {
+        if !descend && matches!(self.get_node(key), Some(NodeData::Container(_))) {
+            self.focus_node_key(key);
+            self.selected_key = Some(key);
+            return;
+        }
+        self.focus_node_key(key);
     }
 
     /// Focus window by its ID if present.

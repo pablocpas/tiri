@@ -173,6 +173,17 @@ fn op_for(command: &str, next_id: &mut usize, client: (i32, i32)) -> Result<Op, 
         ["layout", "toggle", "split"] => Op::ToggleSplitLayout,
         ["layout", "toggle", "all"] => Op::ToggleLayoutAll,
 
+        // sway reads the direction off the parent's layout and then does an ordinary
+        // directional focus; `sibling` only stops it descending into what it lands on.
+        ["focus", step @ ("next" | "prev")] => Op::FocusAlongParent {
+            forward: *step == "next",
+            descend: true,
+        },
+        ["focus", step @ ("next" | "prev"), "sibling"] => Op::FocusAlongParent {
+            forward: *step == "next",
+            descend: false,
+        },
+
         ["focus", arg] => match *arg {
             "left" => Op::FocusColumnLeft,
             "right" => Op::FocusColumnRight,

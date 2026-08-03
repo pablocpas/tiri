@@ -1333,6 +1333,18 @@ impl<W: LayoutElement> TilingSpace<W> {
         self.focus_in_direction_with_fullscreen_scope(Direction::Up, false)
     }
 
+    /// sway's `focus next|prev [sibling]`.
+    pub fn focus_along_parent(&mut self, forward: bool, descend: bool) -> bool {
+        if self.fullscreen_window.is_some() {
+            return false;
+        }
+        let moved = self.tree.focus_along_parent(forward, descend);
+        if moved {
+            self.tree.layout();
+        }
+        moved
+    }
+
     pub fn focus_parent(&mut self) -> bool {
         if self.fullscreen_window.is_some() {
             return false;

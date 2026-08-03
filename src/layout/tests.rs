@@ -698,6 +698,11 @@ enum Op {
         change: SizeChange,
     },
     /// sway's `resize grow|shrink <edge>`: the resize that takes from one side only.
+    /// sway's `focus next|prev [sibling]`.
+    FocusAlongParent {
+        forward: bool,
+        descend: bool,
+    },
     ResizeWindowEdge {
         #[proptest(strategy = "proptest::option::of(1..=5usize)")]
         id: Option<usize>,
@@ -1777,6 +1782,9 @@ impl Op {
             }
             // Container tree operations (i3-like)
             Op::FocusParent => layout.focus_parent(),
+            Op::FocusAlongParent { forward, descend } => {
+                layout.focus_along_parent(forward, descend)
+            }
             Op::FocusChild => layout.focus_child(),
             Op::SplitHorizontal => layout.split_horizontal(),
             Op::SplitVertical => layout.split_vertical(),

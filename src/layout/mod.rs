@@ -4298,6 +4298,14 @@ impl<W: LayoutElement> Layout<W> {
         workspace.toggle_full_width();
     }
 
+    pub fn focus_along_parent(&mut self, forward: bool, descend: bool) {
+        self.clear_sticky_focus();
+        if let Some(workspace) = self.active_workspace_mut() {
+            workspace.focus_along_parent(forward, descend);
+            self.seat_focus_record_active_chain();
+        }
+    }
+
     pub fn focus_parent(&mut self) {
         self.clear_sticky_focus();
         if let Some(workspace) = self.active_workspace_mut() {
