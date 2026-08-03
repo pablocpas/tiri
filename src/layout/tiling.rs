@@ -23,7 +23,7 @@ use tiri_ipc::{ColumnDisplay, LayoutTreeNode, SizeChange};
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::container::{
     ContainerMetrics, ContainerTree, DetachedContainer, DetachedNode, Direction, InsertParentInfo,
-    Layout, LeafLayoutInfo, NodeKey, ResizeTarget, RootPolicy, TakenSubtree,
+    Layout, LeafLayoutInfo, NodeKey, ResizeTarget, RootPolicy, TakenSubtree, TreeCommandTarget,
 };
 use super::focus_ring::{
     render_container_selection, ContainerSelectionStyle, FocusRingEdges, FocusRingIndicatorEdge,
@@ -1455,7 +1455,26 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     fn move_command_target(&mut self, direction: Direction) -> bool {
         let target = self.tree.command_target(RootPolicy::ImplicitWorkspace);
+        // sway's `container_move_in_direction` opens by refusing to move a fullscreen
+        // container within its workspace: one fullscreen on the workspace considers outputs
+        // and nothing else, one fullscreen globally does not move at all. Neither of them
+        // ever looks at the tree, so nothing below applies.
+        if self.target_is_fullscreen(target) {
+            return false;
+        }
         self.mutate_tree(|tree| tree.move_target_in_direction(direction, target))
+    }
+
+    fn target_is_fullscreen(&self, target: TreeCommandTarget) -> bool {
+        let TreeCommandTarget::Leaf(key) = target else {
+            return false;
+        };
+        let Some(fullscreen) = self.pending_fullscreen_window() else {
+            return false;
+        };
+        self.tree
+            .get_tile(key)
+            .is_some_and(|tile| tile.window().id() == fullscreen)
     }
 
     // Move operations using ContainerTree

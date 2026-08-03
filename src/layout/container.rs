@@ -42,7 +42,7 @@ mod tab_bar_model;
 mod tree_store;
 
 pub(super) use command::RootPolicy;
-use command::TreeCommandTarget;
+pub(super) use command::TreeCommandTarget;
 use geometry::PendingLayout;
 pub(super) use resize::ResizeTarget;
 
