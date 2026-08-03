@@ -324,7 +324,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         ctx: LeafLayoutContext,
         data: &mut LayoutData,
     ) {
-        let (layout, child_count, focused_idx, child_percents_sum) = match self.get_node(node_key) {
+        let (layout, child_count, focused_idx) = match self.get_node(node_key) {
             Some(NodeData::Leaf(tile)) => {
                 let (offset, show_titlebar) = if tile.window().pending_sizing_mode().is_fullscreen()
                 {
@@ -346,13 +346,10 @@ impl<W: LayoutElement> ContainerTree<W> {
             }
             Some(NodeData::Container(container)) => {
                 data.container_geometries.insert(node_key, rect);
-                let percents = container.child_percents_slice();
-                let sum: f64 = percents.iter().copied().sum();
                 (
                     container.layout(),
                     container.child_count(),
                     container.focused_child_index(),
-                    sum,
                 )
             }
             None => return,
@@ -363,7 +360,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         let percents =
-            self.get_normalized_child_percents(node_key, child_count, child_percents_sum);
+            self.get_normalized_child_percents(node_key, child_count);
         let (child_rects, _) = self.child_rects_for_layout(layout, rect, child_count, &percents);
 
         match layout {
@@ -531,18 +528,11 @@ impl<W: LayoutElement> ContainerTree<W> {
         &self,
         container_key: NodeKey,
         child_count: usize,
-        percents_sum: f64,
     ) -> Vec<f64> {
         let Some(NodeData::Container(container)) = self.get_node(container_key) else {
             return vec![1.0 / child_count.max(1) as f64; child_count];
         };
-
-        let percents = container.child_percents_slice();
-        if percents_sum > f64::EPSILON {
-            percents.iter().map(|p| p / percents_sum).collect()
-        } else {
-            vec![1.0 / child_count.max(1) as f64; child_count]
-        }
+        super::resolved_percents(container.child_percents_slice(), child_count)
     }
 
     pub(in crate::layout) fn distribute_split_lengths(

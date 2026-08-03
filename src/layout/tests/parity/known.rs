@@ -55,49 +55,19 @@ Implementing that means implementing a compositor that hides the window it just 
 which is not a rule to port but a consequence of one not being applied. tiri raises the tab \
 the window landed in and the divergence lasts exactly one command.",
     },
-    // The four below are one mechanism, not four bugs, and the tree agrees in all of them:
-    // only the size shares differ. sway invalidates a fraction whenever `move` disturbs it —
-    // the container it moved, the ancestor it emptied — and `arrange` later fills an invalid
-    // one with the average of the siblings that still have one, then normalizes. Three of the
-    // four therefore come out even in sway and lopsided in tiri, which keeps the share the
-    // disturbed slot was holding and divides it. The fourth comes out the other way round,
-    // and is where the rule is a sway bug rather than a rule: i3 invalidates the container
-    // that moved, sway invalidates the one that stayed.
-    //
-    // Modelling it means a fraction that can be unset, which tiri has no notion of. Until it
-    // does, all four stay recorded: patching the arithmetic at each of these sites is exactly
-    // the whack-a-mole this suite exists to stop.
     Divergence {
         fixture: "nested-same-orientation-after-a-move.parity",
         step: 8,
         reason: "\
-The sway bug, and the one of the four where tiri's answer is i3's. A window promoted out of a \
-container keeps the percent it had inside that container, and the container it left has its \
-own percent invalidated though it never moved. sway 0.214/0.214/0.25/0.322, tiri even. \
-Building sway with those two swapped round produces tiri's answer and moves nothing in the \
-other fixtures.",
-    },
-    Divergence {
-        fixture: "cross-the-workspace-leaving-one-container.parity",
-        step: 7,
-        reason: "\
-sway a third each, tiri 0.5/0.25/0.25. Kept because it is what pinned the wrapping rule down \
-— the sibling case, one fixture over, wraps instead of splicing and passes.",
-    },
-    Divergence {
-        fixture: "move-up-then-right.parity",
-        step: 5,
-        reason: "\
-i3 #145. sway a third each, tiri 0.25/0.25/0.5. The shortest script that reaches the splice \
-at all.",
-    },
-    Divergence {
-        fixture: "move-up-after-focus-child.parity",
-        step: 8,
-        reason: "\
-sway a quarter each, tiri 0.5/0.167/0.167/0.167. Found by the fuzz; the deepest of the four, \
-and the one that shows the share the squashed pair was holding surviving into a workspace \
-that sway has levelled.",
+One line of sway, and the only size share left in the corpus. Every reparenting site in \
+`cmd_move` invalidates the fraction of the container it just moved — six of them — and the \
+seventh, promoting a node to sit beside an ancestor, invalidates *the ancestor's* instead and \
+keeps the moved node's, which is the two the wrong way round. i3 does what the other six do, \
+and so does `reparent` here. sway 0.214/0.214/0.25/0.322, tiri even. Building sway with them \
+swapped produces tiri's answer and moves nothing else in the corpus. The rest of the rule is \
+implemented, which is what closed the three divergences that used to sit beside this one: an \
+unset fraction, and the resolve that fills it with the average of the siblings that kept \
+theirs.",
     },
 ];
 

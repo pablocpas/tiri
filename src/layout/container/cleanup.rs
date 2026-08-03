@@ -90,14 +90,13 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// container's own index, so the last one taken ends up first: the contents land in the
     /// parent **reversed**. That is the recorded behaviour, and it is what the tree does.
     ///
-    /// The size shares are the one thing not taken from sway here. sway carries no share
-    /// across at all — each arriving child keeps the fraction it had inside the pair and the
-    /// list is renormalized, which only comes out even because `cmd_move` invalidates the
-    /// fractions it touches and `arrange` fills an invalid one with the average of the rest.
-    /// That invalidation is the sway bug `nested-same-orientation-after-a-move` records, so
-    /// reproducing half of it here would import the bug without its compensation. The pair's
-    /// share is divided among the children that replace it instead, which is what tiri does
-    /// everywhere else something is spliced.
+    /// No share crosses over: each arriving child keeps the fraction it had inside the pair,
+    /// the pair's own is dropped with it, and the list is left for the end-of-command resolve
+    /// to normalize. That only comes out right because the other half is in place — `cmd_move`
+    /// invalidates the fraction of what it moved, and the resolve fills an unset one with the
+    /// average of the rest. Dividing the pair's share among its children instead, which is
+    /// what this did while only half the rule existed, is what left the workspace lopsided
+    /// where sway had levelled it.
     fn splice_squashed_pair(&mut self, con_key: NodeKey, child_key: NodeKey) -> usize {
         let Some(parent_key) = self.parent_of(con_key) else {
             return 0;
@@ -119,25 +118,16 @@ impl<W: LayoutElement> ContainerTree<W> {
             return 0;
         }
 
-        let total: f64 = shares.iter().sum();
-        if total > f64::EPSILON {
-            for share in &mut shares {
-                *share /= total;
-            }
-        }
-
         if let Some(parent) = self.get_container_mut(parent_key) {
             let shares_were_consistent = parent.child_percents.len() == parent.children.len();
             parent.children.remove(idx);
-            let replaced = if shares_were_consistent {
-                parent.child_percents.remove(idx)
-            } else {
-                0.0
-            };
+            if shares_were_consistent {
+                parent.child_percents.remove(idx);
+            }
             for (grandchild, share) in taken.iter().zip(&shares) {
                 parent.children.insert(idx, *grandchild);
                 if shares_were_consistent {
-                    parent.child_percents.insert(idx, replaced * share);
+                    parent.child_percents.insert(idx, *share);
                 }
             }
 

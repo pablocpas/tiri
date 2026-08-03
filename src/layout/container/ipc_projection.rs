@@ -92,9 +92,8 @@ impl<W: LayoutElement> ContainerTree<W> {
             }
             Some(NodeData::Container(container)) => {
                 let child_count = container.child_count();
-                let percents_sum: f64 = container.child_percents_slice().iter().copied().sum();
                 let percents =
-                    self.get_normalized_child_percents(node_key, child_count, percents_sum);
+                    self.get_normalized_child_percents(node_key, child_count);
                 let mut children = Vec::with_capacity(child_count);
 
                 for (idx, child_key) in container.children().iter().enumerate() {

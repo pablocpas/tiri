@@ -470,6 +470,28 @@ impl ContainerData {
         }
     }
 
+    /// Resolve the stored shares the way sway's `arrange` does, in place.
+    ///
+    /// Run at the end of a command, never during one: sway invalidates fractions while the
+    /// tree moves and only fills them in when it arranges, so filling early answers the
+    /// question with the siblings a mid-command tree happens to have.
+    pub(super) fn resolve_child_percents(&mut self) {
+        self.child_percents = resolved_percents(&self.child_percents, self.children.len());
+    }
+
+    /// Mark a child's share unset, sway's `width_fraction = height_fraction = 0`.
+    ///
+    /// The others are left exactly as they are — the point is that this child's share is not
+    /// known yet, not that anyone else's changed.
+    pub(super) fn unset_child_percent(&mut self, idx: usize) {
+        if self.child_percents.len() != self.children.len() {
+            self.recalculate_percentages();
+        }
+        if let Some(percent) = self.child_percents.get_mut(idx) {
+            *percent = 0.0;
+        }
+    }
+
     pub(super) fn normalize_child_percents(&mut self) {
         if self.child_percents.is_empty() {
             return;
@@ -933,6 +955,57 @@ impl Direction {
             (idx + 1 < count).then_some(idx + 1)
         }
     }
+}
+
+/// sway's `apply_horiz_layout`/`apply_vert_layout`, which is the only place a size share is
+/// decided.
+///
+/// A child whose fraction is unset — zero, which is what `cmd_move` writes over the ones it
+/// disturbs — takes the average of the children that still have one, and then the whole list
+/// is normalized to sum to 1. Nothing else is consulted: not how many children there are, not
+/// what the unset one used to hold. That average is why a container emptied by a move lands
+/// on exactly `1/n`, and why three of the four size divergences in the corpus were tiri
+/// deciding a share at the moment of the mutation instead of leaving it to be filled in.
+pub(super) fn resolved_percents(percents: &[f64], count: usize) -> Vec<f64> {
+    if count == 0 {
+        return Vec::new();
+    }
+    let even = vec![1.0 / count as f64; count];
+    if percents.len() != count {
+        return even;
+    }
+
+    let mut resolved: Vec<f64> = percents
+        .iter()
+        .map(|percent| {
+            if percent.is_finite() && *percent > 0.0 {
+                *percent
+            } else {
+                0.0
+            }
+        })
+        .collect();
+
+    let set = resolved.iter().filter(|percent| **percent > 0.0).count();
+    let known: f64 = resolved.iter().sum();
+    if set == 0 {
+        return even;
+    }
+    let average = known / set as f64;
+    for percent in &mut resolved {
+        if *percent <= 0.0 {
+            *percent = average;
+        }
+    }
+
+    let total: f64 = resolved.iter().sum();
+    if total <= f64::EPSILON {
+        return even;
+    }
+    for percent in &mut resolved {
+        *percent /= total;
+    }
+    resolved
 }
 
 #[cfg(test)]

@@ -265,15 +265,33 @@ shapes come out evenly, which is what tiri already does, and moves exactly one s
 whole corpus. Nothing to fix here: the fixture stays recorded from released sway, and the
 divergence is ignored. `TIRI_PARITY_SWAY` points the tooling at a particular sway build.
 
-That last sentence was written when this looked like one fixture. It is the same mechanism
-behind every size-share divergence left in the corpus, and three of the four come out the
-other way round — even in sway, lopsided in tiri. The invalidation is one half of a rule
-whose other half is `arrange` filling an invalid fraction with the average of the siblings
-that still have one. tiri has no way to say a fraction is unset, so it resolves every share
-at the moment of the mutation instead, and lands somewhere else whenever sway would have
-deferred. Reproducing the invalidation without the fill, or the fill without a fraction that
-can be unset, imports the bug and none of its compensation, which is why the four are
-recorded together rather than patched apart.
+That last sentence was written when this looked like one fixture, and it was wrong: the same
+mechanism was behind every size-share divergence in the corpus, and three of the four came
+out the *other* way round — even in sway, lopsided in tiri. It is now implemented, and only
+the one bug is left.
+
+The rule has two halves and neither works alone:
+
+- **an unset fraction.** `cmd_move` writes `width_fraction = height_fraction = 0` over what
+  it disturbs. tiri had no way to say that, so it decided every share at the moment of the
+  mutation and landed somewhere else whenever sway deferred. A zero in `child_percents` now
+  means unset, written by `reparent` — the one place a move puts a node somewhere new.
+- **the fill.** `apply_horiz_layout`/`apply_vert_layout` give every unset child the average
+  of the children that still have a fraction, then normalize the list to 1. That average is
+  why a container emptied by a move lands on exactly `1/n`. It runs once, when sway arranges,
+  after the move *and* the squash have finished — resolving as each of them goes answers with
+  the siblings a half-finished tree happens to have.
+
+Which of the two sway invalidates is where the bug lives. Six of the seven reparenting sites
+in `cmd_move` invalidate the container that moved; the seventh — promoting a node to sit
+beside an ancestor — invalidates the ancestor's and keeps the moved node's. i3 does what the
+other six do, and so does `reparent`, so the rule here has no special case and the deviation
+is a special case *not* implemented. `nested-same-orientation-after-a-move` is the recording
+of the difference and stays in the ledger.
+
+Landing the halves separately does not work and the corpus says so: carrying the squash's
+raw fractions without the invalidation moves `move-across-the-workspace`, `move-at-an-edge`
+and `wrapper-left-by-a-move`, all three of which agree before and after.
 
 ## Known divergences
 

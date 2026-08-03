@@ -67,7 +67,24 @@ impl<W: LayoutElement> ContainerTree<W> {
         if preserve_selected_container && self.nodes.contains_key(node_key) {
             self.selected_key = Some(node_key);
         }
+        // sway resolves the shares once, when it arranges, after the move and the squash have
+        // both finished with the tree. Resolving as each of them goes would answer with the
+        // siblings a half-finished tree happens to have.
+        self.resolve_percents(self.root);
         true
+    }
+
+    /// Fill in every share the command left unset, from the workspace down.
+    fn resolve_percents(&mut self, key: NodeKey) {
+        let Some(children) = self.get_container(key).map(|c| c.children.clone()) else {
+            return;
+        };
+        if let Some(container) = self.get_container_mut(key) {
+            container.resolve_child_percents();
+        }
+        for child in children {
+            self.resolve_percents(child);
+        }
     }
 
     /// Resolve the command target into the node to move, and whether it is a container whose
@@ -250,10 +267,27 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Take a node out of its parent's child list and put it in `parent_key` at `insert_at`.
+    ///
+    /// Every one of sway's reparenting sites in `cmd_move` follows the insert with
+    /// `width_fraction = height_fraction = 0` on the container it just moved, so that is here
+    /// rather than at each caller. The share it had was relative to a parent it has left, and
+    /// what it should be here is not decided until the command ends and the whole list is
+    /// resolved.
+    ///
+    /// sway has one exception, and it is not reproduced: promoting a node to sit beside an
+    /// ancestor invalidates *the ancestor's* fraction and keeps the moved node's, which is
+    /// the two the wrong way round — i3 does what this does, and
+    /// `nested-same-orientation-after-a-move` is the recording of the difference.
     fn reparent(&mut self, node_key: NodeKey, parent_key: NodeKey, insert_at: usize) {
         self.detach_child(node_key);
         if let Some(parent) = self.get_container_mut(parent_key) {
             parent.insert_child(insert_at, node_key);
+            let idx = parent
+                .children()
+                .iter()
+                .position(|key| *key == node_key)
+                .unwrap_or(insert_at);
+            parent.unset_child_percent(idx);
         }
         self.set_parent(node_key, Some(parent_key));
     }
