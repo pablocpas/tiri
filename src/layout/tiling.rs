@@ -3088,11 +3088,42 @@ impl<W: LayoutElement> TilingSpace<W> {
 
 impl<W: LayoutElement> TilingSpace<W> {
     pub(crate) fn layout_tree(&self) -> Option<LayoutTreeNode> {
-        self.tree.layout_tree()
+        self.hide_behind_fullscreen(self.tree.layout_tree()?)
     }
 
     pub(crate) fn layout_tree_unfocused(&self) -> Option<LayoutTreeNode> {
-        self.tree.layout_tree_unfocused()
+        self.hide_behind_fullscreen(self.tree.layout_tree_unfocused()?)
+    }
+
+    /// The last clause of sway's `view_is_visible`: a view hidden by another fullscreen view
+    /// is not visible, whatever the tabs above it say.
+    ///
+    /// It lives here rather than in the projection because the fullscreen window is the
+    /// tiling space's state, and it comes last for the same reason it does in sway — a
+    /// fullscreen view on an inactive tab is still on an inactive tab.
+    fn hide_behind_fullscreen(&self, mut root: LayoutTreeNode) -> Option<LayoutTreeNode> {
+        let Some(fullscreen) = self
+            .pending_fullscreen_window()
+            .and_then(|id| self.tree.window_key(id))
+            .and_then(|key| self.tree.get_tile(key))
+            .map(|tile| tile.window().ipc_id())
+        else {
+            return Some(root);
+        };
+
+        fn hide_all_but(node: &mut LayoutTreeNode, fullscreen: u64) {
+            if let Some(window) = node.window_id {
+                node.visible &= window == fullscreen;
+                return;
+            }
+            for child in &mut node.children {
+                hide_all_but(child, fullscreen);
+            }
+            node.visible = node.children.iter().any(|child| child.visible);
+        }
+
+        hide_all_but(&mut root, fullscreen);
+        Some(root)
     }
 }
 

@@ -1,0 +1,46 @@
+# recorded from sway version 1.11
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splith focus=2
+  window 1 0.000,0.000 0.500x1.000
+  window 2 0.500,0.000 0.500x1.000
+
+$ layout tabbed
+workspace splith focus=2
+  tabbed 0.000,0.000 1.000x1.000
+    window 1 0.000,0.035 1.000x0.965 hidden
+    window 2 0.000,0.035 1.000x0.965
+
+$ move left
+workspace splith focus=2
+  tabbed 0.000,0.000 1.000x1.000
+    window 2 0.000,0.035 1.000x0.965
+    window 1 0.000,0.035 1.000x0.965 hidden
+
+$ move left
+workspace splith focus=2
+  window 2 0.000,0.000 0.500x1.000
+  tabbed 0.500,0.000 0.500x1.000
+    window 1 0.500,0.035 0.500x0.965
+
+$ focus left
+workspace splith focus=1
+  window 2 0.000,0.000 0.500x1.000
+  tabbed 0.500,0.000 0.500x1.000
+    window 1 0.500,0.035 0.500x0.965
+
+$ fullscreen toggle
+workspace splith focus=1
+  window 2 0.000,0.000 0.500x1.000 hidden
+  tabbed 0.500,0.000 0.500x1.000
+    window 1 0.000,0.000 1.000x1.000
+
+$ fullscreen toggle
+workspace splith focus=1
+  window 2 0.000,0.000 0.500x1.000
+  tabbed 0.500,0.000 0.500x1.000
+    window 1 0.500,0.035 0.500x0.965
