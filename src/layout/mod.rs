@@ -4326,6 +4326,12 @@ impl<W: LayoutElement> Layout<W> {
         }
     }
 
+    pub fn split_toggle(&mut self) {
+        if let Some(workspace) = self.active_workspace_mut() {
+            workspace.split_toggle();
+        }
+    }
+
     pub fn set_layout_mode(&mut self, layout: ContainerLayout) {
         if let Some(workspace) = self.active_workspace_mut() {
             workspace.set_layout_mode(layout);

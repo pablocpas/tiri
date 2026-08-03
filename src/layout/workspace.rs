@@ -2345,6 +2345,22 @@ impl<W: LayoutElement> Workspace<W> {
         );
     }
 
+    /// `split toggle`, which sway does not implement as an operation of its own.
+    ///
+    /// `cmd_split` reads the layout of the parent of whatever the command is aimed at and
+    /// runs `split h` when it is vertical and `split v` otherwise — including when there is
+    /// no parent to read, which is the workspace itself. So this chooses, and everything
+    /// after it is the ordinary split path, wrapping and all.
+    pub fn split_toggle(&mut self) {
+        let parent_is_vertical =
+            self.tiling.command_target_parent_layout() == Some(Layout::SplitV);
+        if parent_is_vertical {
+            self.split_horizontal();
+        } else {
+            self.split_vertical();
+        }
+    }
+
     pub fn set_layout_mode(&mut self, layout: Layout) {
         self.dispatch_layout(
             |t| {

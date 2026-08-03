@@ -99,7 +99,8 @@ fn op_for(command: &str, next_id: &mut usize) -> Result<Op, Reason> {
         ["split", arg] => match *arg {
             "h" | "horizontal" => Op::SplitHorizontal,
             "v" | "vertical" => Op::SplitVertical,
-            "toggle" => Op::ToggleSplitLayout,
+            // Not `layout toggle split`: sway's `split toggle` is a `split`, and wraps.
+            "toggle" => Op::SplitToggle,
             _ => return Err(Reason::BadArgument),
         },
 

@@ -1537,6 +1537,19 @@ impl<W: LayoutElement> TilingSpace<W> {
         self.mutate_tree(|tree| tree.set_root_container_layout(layout))
     }
 
+    /// The layout of the parent of whatever a command is aimed at.
+    ///
+    /// sway's `container_parent_layout(config->handler_context.container)`. `None` when the
+    /// workspace itself is what is selected: sway has no container to ask there, because a
+    /// workspace is not one.
+    pub fn command_target_parent_layout(&self) -> Option<Layout> {
+        let key = self.tree.selected_node_key()?;
+        if Some(key) == self.tree.root_node_key() {
+            return None;
+        }
+        self.tree.parent_layout(key)
+    }
+
     /// Toggle between horizontal and vertical split for the focused container.
     pub fn toggle_split_layout(&mut self) {
         if self.toggle_split_for_active_selection() {
