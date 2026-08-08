@@ -131,11 +131,6 @@ impl<W: LayoutElement> ContainerTree<W> {
                     child_count,
                     "vertical fractions length must match child count"
                 );
-                assert_eq!(
-                    container.focus_stack.len(),
-                    child_count,
-                    "focus_stack length must match child count"
-                );
 
                 let mut child_set = HashSet::with_capacity(child_count);
                 for child in container.children() {
@@ -146,18 +141,6 @@ impl<W: LayoutElement> ContainerTree<W> {
                     assert!(
                         child_set.insert(*child),
                         "container children must not contain duplicates"
-                    );
-                }
-
-                let mut focus_set = HashSet::with_capacity(child_count);
-                for child in &container.focus_stack {
-                    assert!(
-                        child_set.contains(child),
-                        "focus_stack entries must be children of the container"
-                    );
-                    assert!(
-                        focus_set.insert(*child),
-                        "focus_stack must not contain duplicates"
                     );
                 }
 

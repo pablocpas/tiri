@@ -84,9 +84,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             .filter(|key| self.get_node(*key).is_some())
         {
             Some(key) if key != self.root => Some(key),
-            Some(_) => self
-                .get_container(self.root)
-                .and_then(ContainerData::focused_child_key),
+            Some(_) => self.active_child(self.root),
             None => self.effective_focused_key(),
         };
 

@@ -659,10 +659,17 @@ fn promote_to_fixture(seed: u64, listing: &str) -> Option<String> {
         return None;
     }
     let path = format!("tiri-parity/fixtures/found-seed-{seed:x}.parity");
+    // `$ ` per command: what the fuzz prints is a listing for a human, what the reader wants
+    // is a script, and the difference is one prefix. Writing the listing straight out produced
+    // a file the corpus refused to load.
+    let script: String = listing.lines().fold(String::new(), |mut out, command| {
+        let _ = writeln!(out, "$ {command}");
+        out
+    });
     let body = format!(
         "# Found by the differential fuzz, seed {seed:#x}, and shrunk. Replace this note with \
          what the divergence turned out to be — the fixture is the recording, the note is why \
-         anyone should care.\n{listing}"
+         anyone should care.\n{script}"
     );
     std::fs::write(&path, body).ok()?;
     Some(path)

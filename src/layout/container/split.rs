@@ -90,7 +90,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let Some(child_key) = self
             .get_container(container_key)
             .filter(|container| container.child_count() == 1)
-            .and_then(ContainerData::focused_child_key)
+            .and_then(|_| self.active_child(container_key))
         else {
             return;
         };
@@ -196,7 +196,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     ) -> Option<NodeKey> {
         let root_key = self.root;
 
-        let (old_children, old_focus_stack, old_fractions) = {
+        let (old_children, old_fractions) = {
             let root = self.get_container_mut(root_key)?;
             if root.children.is_empty() {
                 return None;
@@ -204,18 +204,15 @@ impl<W: LayoutElement> ContainerTree<W> {
 
             (
                 std::mem::take(&mut root.children),
-                std::mem::take(&mut root.focus_stack),
                 std::mem::take(&mut root.fractions),
             )
         };
 
         let mut wrapper = ContainerData::new(wrapper_layout);
         wrapper.children = old_children;
-        wrapper.focus_stack = old_focus_stack;
         wrapper.fractions = old_fractions;
         wrapper.set_layout(wrapper_layout);
         wrapper.resolve_child_percents();
-        wrapper.ensure_focus_stack();
         // No box. `workspace_wrap_children` builds the wrapper with `container_create`, which
         // zeroes `pending`, and hands it nothing but the workspace's layout — the box arrives
         // when the workspace is next arranged. Copying the workspace's in advance was
@@ -231,7 +228,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         let root = self.get_container_mut(root_key)?;
         root.set_layout(root_layout);
         root.insert_child(0, wrapper_key);
-        root.ensure_focus_stack();
         self.set_parent(wrapper_key, Some(root_key));
 
         if let Some(focused_key) = self.focused_key {

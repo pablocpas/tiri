@@ -32,13 +32,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     pub(super) fn sync_container_focus_from_key(&mut self, key: NodeKey) {
-        let mut current = key;
-        while let Some(parent_key) = self.parent_of(current) {
-            if let Some(container) = self.get_container_mut(parent_key) {
-                container.bubble_focus(current);
-            }
-            current = parent_key;
-        }
+        self.raise_in_focus_order(key);
     }
 
     pub(super) fn leaf_under_key(&self, mut key: NodeKey) -> Option<NodeKey> {
@@ -49,7 +43,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     if container.children.is_empty() {
                         return None;
                     }
-                    key = container.focused_child_key()?;
+                    key = self.active_child(key)?;
                 }
             }
         }

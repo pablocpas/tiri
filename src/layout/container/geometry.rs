@@ -447,7 +447,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                 (
                     container.layout(),
                     container.child_count(),
-                    container.focused_child_index(),
+                    self.active_child_index(node_key),
                 )
             }
             None => return,

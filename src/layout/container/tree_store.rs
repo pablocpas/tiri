@@ -76,13 +76,12 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         };
         parent.children[idx] = new_key;
-        if let Some(pos) = parent.focus_stack.iter().position(|key| *key == old_key) {
-            parent.focus_stack[pos] = new_key;
-        } else if !parent.focus_stack.contains(&new_key) {
-            parent.focus_stack.push(new_key);
-        }
-        parent.ensure_focus_stack();
         self.set_parent(new_key, Some(parent_key));
+        // The replacement takes the old node's place in the seat's order too, so a switcher
+        // showing what was there goes on showing what replaced it.
+        if let Some(pos) = self.focus_stack.iter().position(|key| *key == old_key) {
+            self.focus_stack[pos] = new_key;
+        }
         true
     }
 
@@ -117,6 +116,21 @@ impl<W: LayoutElement> ContainerTree<W> {
         wrapper.insert_child_with_fractions(0, child_key, fractions);
         wrapper.resolve_child_percents();
         self.set_parent(child_key, Some(wrapper_key));
+
+        // `container_split` ends by putting the focus back, onto the wrapper and then onto the
+        // child:
+        //
+        //     if (set_focus) {
+        //         seat_set_raw_focus(seat, &cont->node);
+        //         seat_set_raw_focus(seat, &child->node);
+        //     }
+        //
+        // It reads like bookkeeping and it is the opposite: a container the seat has never
+        // heard of answers for nothing, so without this the wrapper is invisible to
+        // `seat_get_active_tiling_child` and its parent goes on showing a sibling.
+        if self.focus_chain_passes_through(child_key) {
+            self.raise_in_focus_order(child_key);
+        }
         Some(wrapper_key)
     }
 

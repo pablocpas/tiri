@@ -43,10 +43,10 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         match self.get_node(root_key) {
             Some(NodeData::Leaf(_)) => Some(0),
-            Some(NodeData::Container(container)) => {
+            Some(NodeData::Container(_)) => {
                 // Nothing focused yet: fall back to the container's own focus history.
                 let Some(focused_key) = self.effective_focused_key() else {
-                    return container.focused_child_index();
+                    return self.active_child_index(root_key);
                 };
                 // Walk up from the focused leaf to the root child that holds it.
                 let mut child = focused_key;
@@ -56,7 +56,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     }
                     child = parent;
                 }
-                container.focused_child_index()
+                self.active_child_index(root_key)
             }
             None => None,
         }

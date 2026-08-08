@@ -145,10 +145,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         let Some(selected_key) = self.selected_key else {
             return false;
         };
-        let Some(container) = self.get_container(selected_key) else {
+        if self.get_container(selected_key).is_none() {
             return false;
-        };
-        let Some(child_key) = container.focused_child_key() else {
+        }
+        let Some(child_key) = self.active_child(selected_key) else {
             return false;
         };
         self.selected_key = Some(child_key);
@@ -317,10 +317,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         let Some(parent_key) = self.parent_of(focused_key) else {
             return false;
         };
-        let Some(parent) = self.get_container(parent_key) else {
+        if self.get_container(parent_key).is_none() {
             return false;
-        };
-        let Some(child_key) = parent.focused_child_key() else {
+        }
+        let Some(child_key) = self.active_child(parent_key) else {
             return false;
         };
         self.focus_node_key(child_key);
@@ -374,5 +374,73 @@ impl<W: LayoutElement> ContainerTree<W> {
         } else {
             self.focus_first_leaf();
         }
+    }
+}
+
+impl<W: LayoutElement> ContainerTree<W> {
+    /// sway's `seat_get_active_tiling_child`: which child of `parent` a switcher shows.
+    ///
+    /// The first entry in the seat's focus order whose *direct parent* is `parent`. Not a
+    /// descendant — a child. That single word is the whole of the rule: a node moved deeper
+    /// into a switcher stops answering for the one it left, without the move touching any
+    /// focus state at all.
+    pub(in crate::layout) fn active_tiling_child(&self, parent: NodeKey) -> Option<NodeKey> {
+        self.focus_stack
+            .iter()
+            .copied()
+            .find(|key| self.parent_of(*key) == Some(parent))
+    }
+
+    /// Which child of `parent` is the active one, the only question either order is asked.
+    ///
+    /// [`Self::active_tiling_child`] with the fallback sway gets for free: a container
+    /// nothing inside has ever been focused still shows something, and what it shows is its
+    /// first child. sway never reaches that state — every container it builds is built
+    /// around a node the seat already knows — so it has no rule for it and neither is this
+    /// one; it is where tiri builds containers before anything has been focused into them.
+    pub(in crate::layout) fn active_child(&self, parent: NodeKey) -> Option<NodeKey> {
+        self.active_tiling_child(parent)
+            .or_else(|| self.get_container(parent)?.children().first().copied())
+    }
+
+    /// Where [`Self::active_child`] sits in its parent's child list.
+    pub(in crate::layout) fn active_child_index(&self, parent: NodeKey) -> Option<usize> {
+        let key = self.active_child(parent)?;
+        self.child_index(parent, key)
+    }
+
+    /// Put a node at the head of the seat's focus order, and every ancestor with it.
+    ///
+    /// sway's `seat_set_focus` walks up from the focused node adding each ancestor, so a
+    /// container is ahead of its siblings exactly when something inside it was focused more
+    /// recently than anything inside them.
+    pub(in crate::layout) fn raise_in_focus_order(&mut self, key: NodeKey) {
+        let mut chain = Vec::new();
+        let mut current = Some(key);
+        while let Some(node) = current {
+            chain.push(node);
+            current = self.parent_of(node);
+        }
+        for node in chain.into_iter().rev() {
+            self.focus_stack.retain(|entry| *entry != node);
+            self.focus_stack.insert(0, node);
+        }
+    }
+
+    /// Whether the focused leaf is `key` or sits somewhere under it.
+    ///
+    /// sway asks `seat_get_focus(seat) == &child->node`, which is the same question where it
+    /// asks it — the seat's focus is whatever node it last set, container or view alike.
+    pub(in crate::layout) fn focus_chain_passes_through(&self, key: NodeKey) -> bool {
+        let Some(focused) = self.focused_key.or(self.selected_key) else {
+            return false;
+        };
+        self.is_descendant(focused, key)
+    }
+
+    /// Drop nodes the tree no longer holds.
+    pub(in crate::layout) fn prune_focus_order(&mut self) {
+        let nodes = &self.nodes;
+        self.focus_stack.retain(|key| nodes.contains_key(*key));
     }
 }

@@ -294,10 +294,6 @@ pub struct ContainerData {
     layout: Layout,
     /// Child node keys (indices into the tree's SlotMap)
     children: Vec<NodeKey>,
-    /// Most-recently-used child first. For tabbed/stacked containers the first child is also
-    /// the visible branch; it may intentionally differ from the seat-focused leaf after the
-    /// Sway sibling-switcher move case.
-    focus_stack: Vec<NodeKey>,
     /// Preserve container even if it has a single child (explicit split).
     user_created: bool,
     /// Previous split layout for i3-style `layout toggle split`.
@@ -384,6 +380,17 @@ pub struct ContainerTree<W: LayoutElement> {
     focused_key: Option<NodeKey>,
     /// Currently selected node key (container selection via focus-parent).
     selected_key: Option<NodeKey>,
+    /// Every node, most recently focused first.
+    ///
+    /// sway's `sway_seat::focus_stack`, and the reason it is one list rather than one per
+    /// container: `seat_get_active_tiling_child` decides which tab a switcher shows by walking
+    /// this and taking the first entry whose *direct parent* is that switcher. A move changes
+    /// the answer without touching the list, because what changed is the moved node's parent.
+    ///
+    /// Per-container orders are a projection of this, and a projection loses the coupling —
+    /// which is why keeping N of them in step took a special case per command, each right
+    /// about the recordings it was written from.
+    focus_stack: Vec<NodeKey>,
     /// The node covering the output, if one does.
     ///
     /// sway's `workspace->fullscreen`: a stored pointer, maintained by whoever sets fullscreen
@@ -478,7 +485,6 @@ impl ContainerData {
         Self {
             layout,
             children: Vec::new(),
-            focus_stack: Vec::new(),
             user_created: false,
             prev_split_layout: None,
             fractions: AxisFractions::default(),
@@ -540,36 +546,6 @@ impl ContainerData {
         self.children.len()
     }
 
-    /// Get focused child key
-    pub(super) fn focused_child_key(&self) -> Option<NodeKey> {
-        self.focus_stack
-            .first()
-            .copied()
-            .or_else(|| self.children.first().copied())
-    }
-
-    pub(super) fn focused_child_index(&self) -> Option<usize> {
-        let key = self.focused_child_key()?;
-        self.children.iter().position(|child| *child == key)
-    }
-
-    pub(super) fn bubble_focus(&mut self, node_key: NodeKey) {
-        self.ensure_focus_stack();
-        if let Some(pos) = self.focus_stack.iter().position(|key| *key == node_key) {
-            self.focus_stack.remove(pos);
-        }
-        self.focus_stack.insert(0, node_key);
-    }
-
-    fn ensure_focus_stack(&mut self) {
-        self.focus_stack.retain(|key| self.children.contains(key));
-        for child in &self.children {
-            if !self.focus_stack.contains(child) {
-                self.focus_stack.push(*child);
-            }
-        }
-    }
-
     /// Add a child node by key
     pub(super) fn add_child(&mut self, node_key: NodeKey) {
         let idx = self.children.len();
@@ -601,7 +577,6 @@ impl ContainerData {
         }
 
         let key = self.children.remove(idx);
-        self.focus_stack.retain(|child| *child != key);
         let old_len = self.children.len() + 1;
         if normalize_active && matches!(self.layout, Layout::SplitH | Layout::SplitV) {
             let layout = self.layout;
@@ -618,11 +593,7 @@ impl ContainerData {
 
         if self.children.is_empty() {
             self.fractions.clear();
-            self.focus_stack.clear();
-            return Some(key);
         }
-
-        self.ensure_focus_stack();
         Some(key)
     }
 
@@ -637,7 +608,6 @@ impl ContainerData {
 
         if old_len == 0 {
             self.children.insert(idx, node_key);
-            self.focus_stack.push(node_key);
             self.fractions.clear();
             self.fractions.resize_unset(1);
             self.fractions.for_layout_mut(self.layout)[0] = 1.0;
@@ -656,9 +626,6 @@ impl ContainerData {
         } else {
             self.fractions.insert_unset(idx, old_len);
         }
-        if !self.focus_stack.contains(&node_key) {
-            self.focus_stack.push(node_key);
-        }
     }
 
     /// Insert a child with both shares unset, preserving all existing sibling fractions.
@@ -671,11 +638,6 @@ impl ContainerData {
         let old_len = self.children.len();
         self.children.insert(idx, node_key);
         self.fractions.insert_unset(idx, old_len);
-
-        if !self.focus_stack.contains(&node_key) {
-            self.focus_stack.push(node_key);
-        }
-        self.ensure_focus_stack();
     }
 
     /// Insert a child with the fractions it carried in its previous parent.
@@ -1002,15 +964,15 @@ impl<W: LayoutElement> DetachedNode<W> {
 
 impl<W: LayoutElement> DetachedContainer<W> {
     pub(super) fn new(layout: Layout, children: Vec<DetachedNode<W>>) -> Self {
+        let focus_stack = (0..children.len()).collect();
         let mut container = Self {
             layout,
             children,
             fractions: AxisFractions::default(),
-            focus_stack: Vec::new(),
+            focus_stack,
             user_created: false,
             prev_split_layout: None,
         };
-        container.ensure_focus_stack();
         container.recalculate_percentages();
         container
     }
@@ -1025,24 +987,6 @@ impl<W: LayoutElement> DetachedContainer<W> {
             self.fractions.for_layout_mut(self.layout),
             self.children.len(),
         );
-    }
-
-    fn ensure_focus_stack(&mut self) {
-        self.focus_stack.retain(|idx| *idx < self.children.len());
-        let mut seen = vec![false; self.children.len()];
-        self.focus_stack.retain(|idx| {
-            if seen[*idx] {
-                false
-            } else {
-                seen[*idx] = true;
-                true
-            }
-        });
-        for (idx, seen) in seen.iter().enumerate() {
-            if !seen {
-                self.focus_stack.push(idx);
-            }
-        }
     }
 }
 
@@ -1069,6 +1013,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             root,
             focused_key: None,
             selected_key: None,
+            focus_stack: Vec::new(),
             fullscreen_key: None,
             leaf_layouts: Vec::new(),
             pending_layouts: None,

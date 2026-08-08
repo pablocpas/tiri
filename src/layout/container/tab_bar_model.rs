@@ -36,7 +36,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                 container.geometry,
                 container.children.len(),
             ) {
-                let focused_idx = container.focused_child_index().unwrap_or(0);
+                let focused_idx = self.active_child_index(node_key).unwrap_or(0);
                 let tabs = container
                     .children
                     .iter()
@@ -63,7 +63,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             }
         }
 
-        let focused_idx = container.focused_child_index().unwrap_or(0);
+        let focused_idx = self.active_child_index(node_key).unwrap_or(0);
         for (idx, &child_key) in container.children.iter().enumerate() {
             path.push(idx);
             let child_visible = match container.layout {
@@ -113,7 +113,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         match self.get_node(node_key) {
             Some(NodeData::Leaf(tile)) => Some(tile.window()),
             Some(NodeData::Container(container)) => {
-                let child_key = container.focused_child_key()?;
+                let _ = container;
+                let child_key = self.active_child(node_key)?;
                 self.focused_window_in_subtree(child_key)
             }
             None => None,

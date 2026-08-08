@@ -11,10 +11,8 @@
 //! the disagreements did not share a cause, which is what made them look like eight bugs.
 
 use super::ChildFractions;
-use super::ContainerData;
 use super::ContainerTree;
 use super::Direction;
-use super::Layout;
 use super::LayoutElement;
 use super::NodeData;
 use super::NodeKey;
@@ -307,7 +305,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         // Entering across the container's axis says nothing about where inside it the node
         // belongs — any move into tabs, a horizontal one into a stack. So the same question
         // is asked again of whatever was last focused in there, however deep that goes.
-        let Some(child_key) = destination.focused_child_key() else {
+        let Some(child_key) = self.active_child(destination_key) else {
             return;
         };
         self.move_into_from_direction(node_key, child_key, direction);
@@ -359,7 +357,6 @@ impl<W: LayoutElement> ContainerTree<W> {
             // Which is why the switcher it left goes back to showing something else without
             // being told, and why the switchers *above* the destination do not move at all:
             // the node was never their direct child and still is not.
-            parent.bubble_focus(node_key);
             match carried {
                 Some(carried) => parent.set_child_fractions(idx, carried),
                 None => parent.unset_child_fractions(idx),
@@ -383,31 +380,5 @@ impl<W: LayoutElement> ContainerTree<W> {
             .remove_child_preserving_percents(idx);
         self.set_parent(node_key, None);
         Some((parent_key, idx))
-    }
-
-    pub(super) fn wrap_child_in_container(
-        &mut self,
-        parent_key: NodeKey,
-        child_idx: usize,
-        layout: Layout,
-    ) -> Option<NodeKey> {
-        let child_key = self.get_container(parent_key)?.child_key(child_idx)?;
-        if matches!(self.get_node(child_key), Some(NodeData::Container(_))) {
-            return Some(child_key);
-        }
-
-        let _ = self.get_container_mut(parent_key)?.remove_child(child_idx);
-        self.set_parent(child_key, None);
-
-        let mut wrapper = ContainerData::new(layout);
-        wrapper.add_child(child_key);
-        let wrapper_key = self.insert_node(NodeData::Container(wrapper));
-        self.set_parent(child_key, Some(wrapper_key));
-
-        self.get_container_mut(parent_key)?
-            .insert_child(child_idx, wrapper_key);
-        self.set_parent(wrapper_key, Some(parent_key));
-
-        Some(wrapper_key)
     }
 }

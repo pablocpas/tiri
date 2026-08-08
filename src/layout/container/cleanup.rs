@@ -109,7 +109,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         };
 
         let taken = child.children.clone();
-        let child_focus = child.focus_stack.clone();
         let child_fractions = child.fractions.clone();
         if taken.is_empty() {
             return 0;
@@ -126,21 +125,14 @@ impl<W: LayoutElement> ContainerTree<W> {
                     .fractions
                     .splice_child(idx, old_len, &child_fractions);
 
-            let mut focus = Vec::with_capacity(parent.focus_stack.len() + taken.len() - 1);
-            for key in std::mem::take(&mut parent.focus_stack) {
-                if key == con_key {
-                    focus.extend(child_focus.iter().filter(|key| taken.contains(key)));
-                } else {
-                    focus.push(key);
-                }
-            }
-            parent.focus_stack = focus;
-
+            // No focus order to splice. The grandchildren are already in the seat's order
+            // wherever they belong in it, and destroying the two levels above them changes
+            // who their parent is and nothing else — which is the whole of what the order is
+            // read for.
             if !fractions_were_consistent {
                 parent.fractions.resize_unset(parent.children.len());
                 parent.recalculate_percentages();
             }
-            parent.ensure_focus_stack();
         }
 
         for grandchild in &taken {
@@ -148,11 +140,12 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         // Whatever pointed at either level now points at the grandchild that was focused
-        // inside them, which is where the focus was all along.
-        let inherits = child_focus
+        // inside them, which is where the focus was all along — and the seat's order already
+        // says which one that is, without the pair having to be asked.
+        let inherits = taken
             .iter()
             .copied()
-            .find(|key| taken.contains(key))
+            .find(|key| self.focus_stack.contains(key))
             .or_else(|| taken.first().copied());
         for key in [&mut self.selected_key, &mut self.focused_key] {
             if *key == Some(con_key) || *key == Some(child_key) {
@@ -164,6 +157,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             self.nodes.remove(key);
             self.parents.remove(key);
         }
+        self.prune_focus_order();
 
         taken.len() - 1
     }

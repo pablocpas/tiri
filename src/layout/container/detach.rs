@@ -137,7 +137,6 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         let layout = container.layout();
         let children = container.children.clone();
-        let focus_stack = container.focus_stack.clone();
         let fractions = container.fractions.clone();
         let prev_split_layout = container.prev_split_layout;
 
@@ -145,10 +144,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         if let Some(root) = self.get_container_mut(root_key) {
             root.set_layout(layout);
             root.children = children.clone();
-            root.focus_stack = focus_stack;
             root.fractions = fractions;
             root.prev_split_layout = prev_split_layout;
-            root.ensure_focus_stack();
         }
         for child in children {
             self.set_parent(child, Some(root_key));
@@ -179,11 +176,19 @@ impl<W: LayoutElement> ContainerTree<W> {
                 for (idx, key) in child_keys.iter().enumerate() {
                     index_by_key.insert(*key, idx);
                 }
-                let focus_stack = container
+                // The order has to travel as positions: the keys do not survive leaving the
+                // tree, and a subtree that comes back has new ones. Which child a switcher
+                // shows is behaviour, so it cannot be dropped and re-derived on arrival.
+                let mut focus_stack: Vec<usize> = self
                     .focus_stack
                     .iter()
                     .filter_map(|key| index_by_key.get(key).copied())
                     .collect();
+                for idx in 0..child_keys.len() {
+                    if !focus_stack.contains(&idx) {
+                        focus_stack.push(idx);
+                    }
+                }
                 DetachedNode::Container(DetachedContainer {
                     layout: container.layout,
                     children,
@@ -214,18 +219,31 @@ impl<W: LayoutElement> ContainerTree<W> {
                 if let Some(node) = self.get_container_mut(container_key) {
                     node.children = child_keys;
                     node.fractions = container.fractions;
-                    node.focus_stack = container
-                        .focus_stack
-                        .iter()
-                        .filter_map(|idx| node.children.get(*idx).copied())
-                        .collect();
                     node.user_created = container.user_created;
                     node.prev_split_layout = container.prev_split_layout;
                     if !node.fractions.is_compatible_with(node.children.len()) {
                         node.fractions.resize_unset(node.children.len());
                         node.recalculate_percentages();
                     }
-                    node.ensure_focus_stack();
+                }
+
+                // Back into the seat's order, keeping the sequence the subtree carried.
+                // Appended rather than promoted: arriving is not being focused, and whatever
+                // focuses next will raise its own chain.
+                let restored: Vec<NodeKey> = container
+                    .focus_stack
+                    .iter()
+                    .filter_map(|idx| {
+                        self.get_container(container_key)?
+                            .children()
+                            .get(*idx)
+                            .copied()
+                    })
+                    .collect();
+                for key in restored {
+                    if !self.focus_stack.contains(&key) {
+                        self.focus_stack.push(key);
+                    }
                 }
 
                 container_key
