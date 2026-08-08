@@ -168,9 +168,9 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// sway's `focus next|prev`: the direction is whichever way the parent lays its children
     /// out, and everything after that is an ordinary directional focus.
     ///
-    /// `sibling` stops the focus descending into the container it lands on, so the container
-    /// itself is what gets selected. That is the whole of the difference, which is why it is
-    /// a flag on the same walk.
+    /// `sibling` stops a direct step descending into the container it lands on. Sway's wrap
+    /// fallback is deliberately different: it always resolves the wrapped-to container's
+    /// inactive view, so wrapping descends even for `next|prev sibling`.
     pub(in crate::layout) fn focus_along_parent(&mut self, forward: bool, descend: bool) -> bool {
         let Some(selected_key) = self.selected_node_key() else {
             return false;
@@ -266,7 +266,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                 .get_container(container_key)
                 .and_then(|container| container.child_key(wrap_idx))
             {
-                self.focus_landing_on(target_key, descend);
+                self.focus_landing_on(target_key, true);
                 return true;
             }
         }

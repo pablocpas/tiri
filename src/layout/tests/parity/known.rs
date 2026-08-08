@@ -26,55 +26,10 @@ pub(super) struct Divergence {
 /// compared, and other fixtures are untouched. Without this the choice would be between a
 /// red suite and deleting the fixture that found the problem, and both of those end with
 /// nobody recording anything.
-pub(super) const KNOWN: &[Divergence] = &[
-    Divergence {
-        fixture: "a-container-around-a-fullscreen-window.parity",
-        step: 5,
-        reason: "\
-A container built around a window that is already fullscreen has no box at all in sway: \
-0x0, while the window inside it covers the output. It lasts exactly as long as the \
-fullscreen does — the step after, leaving fullscreen gives the container the workspace and \
-both agree again. sway arranges a workspace with a fullscreen container by arranging the \
-fullscreen node against the output and never descending the tiled tree underneath, so a \
-container created while that is true is simply never given a box. Nothing reads it while it \
-is 0x0, which is why it survives in sway. tiri lays the container out whatever is fullscreen \
-above it and reports the workspace, which is where the container will be the moment it \
-matters. Recorded so the search moves past it; copying it would mean publishing a rectangle \
-that describes nothing.",
-    },
-    Divergence {
-        fixture: "split-around-a-fullscreen-window.parity",
-        step: 4,
-        reason: "\
-The other half of the entry above, and the same cause read from the other side. sway never \
-descends the tiled tree while a fullscreen is up, so a container created there keeps whatever \
-box it happened to inherit — nothing in the first case, the whole output in this one, because \
-`split` hands the new container the box of the child it wrapped and that child was covering \
-the screen. Neither number is a layout: they are two different accidents of not being \
-arranged. tiri reports the slot the container will occupy the moment the fullscreen ends, \
-which is the same answer in both. Found by the fuzz in twenty-two scripts, the first thing it \
-found after the recorder was unblocked.",
-    },
-    Divergence {
-        fixture: "layout-under-a-fullscreen-container.parity",
-        step: 6,
-        reason: "\
-The third route to the two above, found by the fuzz, and the one that says the cause is a \
-rule rather than an accident of `split`: `layout` builds a container while a fullscreen is \
-up and it is never given a box either. sway arranges a workspace with a fullscreen by \
-arranging that node against the output and returning, so nothing created under it while that \
-holds is ever laid out. Erasing the decoration then reads the whole subtree at 0x0, which is \
-what the comparison shows.
-
-Three entries for one line of sway is the ledger asking a question: either tiri stops laying \
-out the tiled tree while a fullscreen is up, which is that line and would close all three, or \
-it keeps answering where the windows will be and the family keeps producing routes. That is a \
-decision about what tiri publishes, not a fix.",
-    },
-    Divergence {
-        fixture: "floating-the-workspace.parity",
-        step: 3,
-        reason: "\
+pub(super) const KNOWN: &[Divergence] = &[Divergence {
+    fixture: "floating-the-workspace.parity",
+    step: 3,
+    reason: "\
 `floating toggle` with the workspace selected. sway's `cmd_floating` has no container to act \
 on, so `workspace_wrap_children` builds one, the workspace goes splith, and the wrapper is \
 what gets focused and floated — a container, even around a single window. The geometry now \
@@ -85,36 +40,7 @@ floating group a container root and sway only has one when the group really is a
 so the tiri normalizer unwraps a lone floating group to keep the ordinary case comparable — \
 and unwraps this one with it, where the container is real and addressable. Closing it means \
 tiri's IPC saying which of the two it has, not the normalizer guessing from the child count.",
-    },
-    Divergence {
-        fixture: "move-into-a-stacked-inside-a-tabbed.parity",
-        step: 9,
-        reason: "\
-Which tab the outer container shows. A window moved into a stacked container nested in a \
-tabbed one is focused in both, but sway leaves the tabbed showing the sibling it was showing \
-before, so the window it says is focused is one the user cannot see. Measured rather than \
-guessed at: the state is still there two seconds later, and the first `focus` command of any \
-kind heals it. `cmd_move`'s directional branch is the whole reason — it moves the node and \
-never touches the seat, so the destination goes on showing whatever it was showing. \
-Implementing that means implementing a compositor that hides the window it just focused, \
-which is not a rule to port but a consequence of one not being applied. tiri raises the tab \
-the window landed in and the divergence lasts exactly one command.",
-    },
-    Divergence {
-        fixture: "nested-same-orientation-after-a-move.parity",
-        step: 8,
-        reason: "\
-One line of sway, and the only size share left in the corpus. Every reparenting site in \
-`cmd_move` invalidates the fraction of the container it just moved — six of them — and the \
-seventh, promoting a node to sit beside an ancestor, invalidates *the ancestor's* instead and \
-keeps the moved node's, which is the two the wrong way round. i3 does what the other six do, \
-and so does `reparent` here. sway 0.214/0.214/0.25/0.322, tiri even. Building sway with them \
-swapped produces tiri's answer and moves nothing else in the corpus. The rest of the rule is \
-implemented, which is what closed the three divergences that used to sit beside this one: an \
-unset fraction, and the resolve that fills it with the average of the siblings that kept \
-theirs.",
-    },
-];
+}];
 
 /// What makes two divergences "the same one".
 ///

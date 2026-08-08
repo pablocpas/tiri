@@ -1,5 +1,5 @@
 # an edge resize climbs past an inner split with no sibling on that edge
-# recorded from sway version 1.11
+# recorded from sway version 1.12-8886939 (Aug  5 2026, branch 'HEAD')
 # client 400x285
 
 $ open

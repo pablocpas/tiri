@@ -2282,7 +2282,7 @@ fn i3_550_split_inside_tabbed_keeps_single_nested_split_wrapper() {
     );
 }
 #[test]
-fn i3_550_split_inside_tabbed_nests_a_level_each_time_like_sway() {
+fn i3_550_sway_112_flattens_the_lone_split_before_the_next_layout() {
     let layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow {
@@ -2301,9 +2301,8 @@ fn i3_550_split_inside_tabbed_nests_a_level_each_time_like_sway() {
         @"
     SplitH
       Tabbed
-        Tabbed
-          SplitV
-            Window 1 *
+        SplitV
+          Window 1 *
     "
     );
 }
@@ -2362,7 +2361,7 @@ fn i3_550_repeat_tabbed_layout_does_not_create_redundant_wrappers() {
     );
 }
 #[test]
-fn i3_550_layout_tabbed_on_a_split_wrapper_retypes_it_like_sway() {
+fn i3_550_layout_tabbed_flattens_the_lone_split_like_sway_112() {
     // Mirrors i3_test_cases/t/550-split-redundant-containers.t
     // ("split v inside tabbed and back to just tabbed").
     let layout = check_ops([
@@ -2382,8 +2381,7 @@ fn i3_550_layout_tabbed_on_a_split_wrapper_retypes_it_like_sway() {
         @"
     SplitH
       Tabbed
-        Tabbed
-          Window 1 *
+        Window 1 *
     "
     );
 }

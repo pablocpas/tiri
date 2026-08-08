@@ -697,17 +697,17 @@ enum Op {
         #[proptest(strategy = "arbitrary_size_change()")]
         change: SizeChange,
     },
-    /// sway's `resize grow|shrink <edge>`: the resize that takes from one side only.
     /// sway's `focus next|prev [sibling]`.
     FocusAlongParent {
         forward: bool,
         descend: bool,
     },
+    /// sway's `resize grow|shrink <edge>`: the resize that takes from one side only.
     ResizeWindowEdge {
         #[proptest(strategy = "proptest::option::of(1..=5usize)")]
         id: Option<usize>,
-        #[proptest(strategy = "arbitrary_size_change()")]
-        change: SizeChange,
+        #[proptest(strategy = "-1000..1000i32")]
+        amount: i32,
         #[proptest(strategy = "arbitrary_direction()")]
         direction: Direction,
     },
@@ -1481,11 +1481,11 @@ impl Op {
             }
             Op::ResizeWindowEdge {
                 id,
-                change,
+                amount,
                 direction,
             } => {
                 let id = id.filter(|id| layout.has_window(id));
-                layout.resize_window_edge(id.as_ref(), change, direction);
+                layout.resize_window(id.as_ref(), ResizeRequest::Edge { direction, amount });
             }
             Op::ResetWindowHeight { id } => {
                 let id = id.filter(|id| layout.has_window(id));

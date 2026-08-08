@@ -1,4 +1,4 @@
-# recorded from sway version 1.11
+# recorded from sway version 1.12-8886939 (Aug  5 2026, branch 'HEAD')
 # client 400x285
 
 $ open
@@ -22,8 +22,8 @@ workspace splitv focus=@
 
 $ layout tabbed
 workspace tabbed focus=@
-  window 1 0.000,0.037 1.000x0.963 hidden
-  window 2 0.000,0.037 1.000x0.963
+  window 1 0.000,0.032 1.000x0.968 hidden
+  window 2 0.000,0.032 1.000x0.968
 
 $ layout toggle split
 workspace splitv focus=@

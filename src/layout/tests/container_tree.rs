@@ -990,6 +990,149 @@ fn toggle_split_layout_switches_orientation() {
     "
     );
 }
+
+#[test]
+fn sway_112_layout_flattens_a_doubly_nested_lone_container_once() {
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::SetLayoutStacked,
+        Op::SplitVertical,
+        Op::ToggleSplitLayout,
+    ]);
+
+    let workspace = layout.active_workspace().expect("active workspace");
+    let tree = workspace.tiling().debug_tree();
+    assert_snapshot!(
+        tree.as_str(),
+        @"
+    SplitH
+      SplitH
+        Window 1 *
+    "
+    );
+}
+
+#[test]
+fn layout_axis_changes_keep_width_and_height_fractions_independent() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::ResizeWindowEdge {
+            id: None,
+            amount: 150,
+            direction: Direction::Left,
+        },
+        Op::CompleteAnimations,
+    ]);
+
+    let resized_width = requested_size(&layout, 2).w;
+    assert!(resized_width > requested_size(&layout, 1).w);
+
+    check_ops_on_layout(&mut layout, [Op::ToggleLayoutAll, Op::CompleteAnimations]);
+    let vertical_first = requested_size(&layout, 1);
+    let vertical_second = requested_size(&layout, 2);
+    assert!((vertical_first.h - vertical_second.h).abs() <= 1);
+
+    check_ops_on_layout(&mut layout, [Op::SetLayoutSplitH, Op::CompleteAnimations]);
+    assert!((requested_size(&layout, 2).w - resized_width).abs() <= 1);
+}
+
+#[test]
+fn detached_snapshot_does_not_relabel_fractions_after_parent_axis_change() {
+    let mut harness = TreeHarness::new();
+    for id in 1..=3 {
+        harness.add_window(id);
+    }
+
+    let root = harness.tree.root_node_key().unwrap();
+    assert!(harness
+        .tree
+        .set_child_percent(root, 1, ContainerLayout::SplitH, 0.6));
+
+    let key = harness.tree.window_key(&2).unwrap();
+    let (subtree, info) = harness.tree.take_subtree_at(key).unwrap();
+    let info = info.expect("a root child has insertion metadata");
+
+    assert!(harness
+        .tree
+        .set_root_container_layout(ContainerLayout::SplitV));
+    assert!(harness
+        .tree
+        .insert_subtree_with_parent_info(&info, subtree, true));
+
+    for idx in 0..3 {
+        assert!(
+            (harness.tree.child_percent(root, idx).unwrap() - 1.0 / 3.0).abs() < 0.000_001,
+            "the old horizontal snapshot must not become a vertical resize"
+        );
+    }
+}
+
+#[test]
+fn split_wrapper_preserves_the_wrapped_windows_parent_share() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::ToggleSplitLayout,
+        Op::MoveWindowUp,
+        Op::ResizeWindowEdge {
+            id: None,
+            amount: -100,
+            direction: Direction::Down,
+        },
+        Op::CompleteAnimations,
+    ]);
+
+    let resized_height = requested_size(&layout, 2).h;
+    assert!(resized_height < requested_size(&layout, 1).h);
+    check_ops_on_layout(&mut layout, [Op::SplitHorizontal, Op::CompleteAnimations]);
+    assert!((requested_size(&layout, 2).h - resized_height).abs() <= 1);
+}
+
+#[test]
+fn tabbed_mutations_leave_fractions_unresolved_until_a_split_is_active() {
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::ResizeWindowEdge {
+            id: None,
+            amount: 150,
+            direction: Direction::Left,
+        },
+        Op::SetLayoutTabbed,
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::FocusAlongParent {
+            forward: false,
+            descend: true,
+        },
+        Op::CloseWindow(2),
+        Op::SetLayoutSplitH,
+        Op::CompleteAnimations,
+    ]);
+
+    assert!((requested_size(&layout, 1).w - requested_size(&layout, 3).w).abs() <= 1);
+}
+
 #[test]
 fn toggle_layout_all_cycles_through_all_layouts() {
     // Recorded from sway

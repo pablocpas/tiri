@@ -1,5 +1,5 @@
 # tiled resize refuses the whole change below sway's 100x60 pixel floor
-# recorded from sway version 1.12 source-derived container_resize_tiled
+# recorded from sway version 1.12-8886939 (Aug  5 2026, branch 'HEAD')
 # client 400x285
 
 $ open

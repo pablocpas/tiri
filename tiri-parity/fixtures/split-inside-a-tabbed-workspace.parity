@@ -1,5 +1,5 @@
 # split inside a tabbed workspace keeps the workspace tabbed
-# recorded from sway version 1.11
+# recorded from sway version 1.12-8886939 (Aug  5 2026, branch 'HEAD')
 # client 400x285
 
 $ open
@@ -12,13 +12,13 @@ workspace splith focus=@
 
 $ layout tabbed
 workspace tabbed focus=@
-  window 1 0.000,0.037 1.000x0.963
+  window 1 0.000,0.032 1.000x0.968
 
 $ focus child
 workspace tabbed focus=1
-  window 1 0.000,0.037 1.000x0.963
+  window 1 0.000,0.032 1.000x0.968
 
 $ split v
 workspace tabbed focus=1
-  splitv 0.000,0.075 1.000x0.925
-    window 1 0.000,0.037 1.000x0.963
+  splitv 0.000,0.064 1.000x0.936
+    window 1 0.000,0.032 1.000x0.968

@@ -350,6 +350,53 @@ fn floating_initial_size_is_stable_across_focus_changes_and_width_resize() {
         "explicit width resize should keep current floating height"
     );
 }
+
+#[test]
+fn floating_edge_resize_anchors_the_opposite_edge() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::ToggleWindowFloating { id: None },
+    ]);
+
+    let before = tile_rect(&layout, 1);
+    let before_size = requested_size(&layout, 1);
+    check_ops_on_layout(
+        &mut layout,
+        [Op::ResizeWindowEdge {
+            id: None,
+            amount: 40,
+            direction: Direction::Left,
+        }],
+    );
+
+    let after_left = tile_rect(&layout, 1);
+    let after_left_size = requested_size(&layout, 1);
+    assert_eq!(after_left_size.w, before_size.w + 40);
+    assert!((after_left.loc.x - (before.loc.x - 40.)).abs() < 0.001);
+    assert!(
+        (after_left.loc.x + f64::from(after_left_size.w)
+            - (before.loc.x + f64::from(before_size.w)))
+        .abs()
+            < 0.001
+    );
+
+    check_ops_on_layout(
+        &mut layout,
+        [Op::ResizeWindowEdge {
+            id: None,
+            amount: -20,
+            direction: Direction::Right,
+        }],
+    );
+
+    let after_right = tile_rect(&layout, 1);
+    assert_eq!(requested_size(&layout, 1).w, after_left_size.w - 20);
+    assert!((after_right.loc.x - after_left.loc.x).abs() < 0.001);
+}
+
 #[test]
 fn floating_toggle_single_selected_container_moves_to_tiling() {
     let mut layout = check_ops([
@@ -855,6 +902,42 @@ fn floating_to_tiling_restore_uses_leaf_reference_as_sibling() {
         "leaf reference restore should insert after window 1 and before window 2: {idx1:?} {idx3:?} {idx2:?}"
     );
 }
+
+#[test]
+fn floating_restore_does_not_relabel_resize_after_workspace_axis_change() {
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::ResizeWindowEdge {
+            id: Some(2),
+            amount: 150,
+            direction: Direction::Left,
+        },
+        Op::ToggleWindowFloating { id: Some(2) },
+        Op::FocusWindow(1),
+        Op::FocusParent,
+        Op::SetLayoutSplitV,
+        Op::ToggleWindowFloating { id: Some(2) },
+        Op::CompleteAnimations,
+    ]);
+
+    let heights = [1, 2, 3].map(|id| requested_size(&layout, id).h);
+    assert!(
+        heights
+            .windows(2)
+            .all(|pair| (pair[0] - pair[1]).abs() <= 1),
+        "the detached horizontal resize must not become a vertical resize: {heights:?}"
+    );
+}
+
 #[test]
 fn floating_to_tiling_restore_uses_container_reference_as_child() {
     let mut layout = check_ops([

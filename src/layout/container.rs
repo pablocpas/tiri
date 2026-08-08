@@ -89,10 +89,32 @@ pub enum ResizeReach {
 }
 
 /// Pixel geometry needed to reproduce sway's tiled-resize preflight.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(in crate::layout) struct ResizeSpace {
-    pub available: f64,
     pub min_size: f64,
+    /// Settled pixel span of every child along the resized axis.
+    pub child_spans: Vec<f64>,
+}
+
+/// One tiled resize delta in both coordinate systems used by sway.
+///
+/// Fractions are the persistent tree state, while the minimum-size preflight is performed
+/// in pixels. Keeping the original pixel delta avoids converting a fixed request to a
+/// fraction and back, where a value such as 150 px can become 150.00000000000003 and make
+/// `ceil` reject a resize that lands exactly on the minimum.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::layout) struct ResizeDelta {
+    pub fraction: f64,
+    pub pixels: f64,
+}
+
+/// Sway stores both fractions on the child node, independently of its current parent axis.
+/// Tiri stores them in the parent, so tree surgery carries this axis-neutral form across a
+/// reparenting boundary.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ChildFractions {
+    width: f64,
+    height: f64,
 }
 
 /// Direction for navigation and movement
@@ -126,6 +148,115 @@ pub struct TabBarInfo {
 
 const MIN_CHILD_PERCENT: f64 = 0.05;
 
+/// Per-child fractions, named by what they mean instead of by which axis happens to be active.
+///
+/// Sway keeps width and height fractions independently. Making both axes explicit prevents a
+/// detached snapshot from accidentally relabelling widths as heights when its destination has
+/// changed layout in the meantime.
+#[derive(Debug, Clone, Default)]
+pub(super) struct AxisFractions {
+    horizontal: Vec<f64>,
+    vertical: Vec<f64>,
+}
+
+impl AxisFractions {
+    fn for_layout(&self, layout: Layout) -> &[f64] {
+        match layout {
+            Layout::SplitV => &self.vertical,
+            Layout::SplitH | Layout::Tabbed | Layout::Stacked => &self.horizontal,
+        }
+    }
+
+    fn for_layout_mut(&mut self, layout: Layout) -> &mut Vec<f64> {
+        match layout {
+            Layout::SplitV => &mut self.vertical,
+            Layout::SplitH | Layout::Tabbed | Layout::Stacked => &mut self.horizontal,
+        }
+    }
+
+    fn other_for_layout_mut(&mut self, layout: Layout) -> &mut Vec<f64> {
+        match layout {
+            Layout::SplitV => &mut self.horizontal,
+            Layout::SplitH | Layout::Tabbed | Layout::Stacked => &mut self.vertical,
+        }
+    }
+
+    fn is_compatible_with(&self, child_count: usize) -> bool {
+        self.horizontal.len() == child_count && self.vertical.len() == child_count
+    }
+
+    fn clear(&mut self) {
+        self.horizontal.clear();
+        self.vertical.clear();
+    }
+
+    fn resize_unset(&mut self, child_count: usize) {
+        self.horizontal.resize(child_count, 0.0);
+        self.vertical.resize(child_count, 0.0);
+    }
+
+    fn insert_unset(&mut self, idx: usize, old_len: usize) {
+        self.resize_unset(old_len);
+        self.horizontal.insert(idx, 0.0);
+        self.vertical.insert(idx, 0.0);
+    }
+
+    fn remove_raw(&mut self, idx: usize, old_len: usize) {
+        for percents in [&mut self.horizontal, &mut self.vertical] {
+            if percents.len() == old_len {
+                percents.remove(idx);
+            } else {
+                percents.resize(old_len.saturating_sub(1), 0.0);
+            }
+        }
+    }
+
+    fn child(&self, idx: usize) -> ChildFractions {
+        ChildFractions {
+            width: self.horizontal.get(idx).copied().unwrap_or(0.0),
+            height: self.vertical.get(idx).copied().unwrap_or(0.0),
+        }
+    }
+
+    fn set_child(&mut self, idx: usize, child_count: usize, fractions: ChildFractions) {
+        if idx >= child_count {
+            return;
+        }
+        self.resize_unset(child_count);
+        self.horizontal[idx] = fractions.width;
+        self.vertical[idx] = fractions.height;
+    }
+
+    pub(super) fn swap_children(&mut self, a: usize, b: usize) {
+        self.horizontal.swap(a, b);
+        self.vertical.swap(a, b);
+    }
+
+    fn move_child(&mut self, from: usize, to: usize) {
+        let horizontal = self.horizontal.remove(from);
+        let vertical = self.vertical.remove(from);
+        self.horizontal.insert(to, horizontal);
+        self.vertical.insert(to, vertical);
+    }
+
+    /// Replace one parent's slot with all children of a squashed container.
+    ///
+    /// Sway moves each child into the same slot in source order, so the resulting order is
+    /// reversed. Tree keys and both fraction axes must make that reversal together.
+    fn splice_child(&mut self, idx: usize, old_len: usize, children: &Self) -> bool {
+        if !self.is_compatible_with(old_len) || children.horizontal.len() != children.vertical.len()
+        {
+            return false;
+        }
+
+        self.horizontal
+            .splice(idx..=idx, children.horizontal.iter().rev().copied());
+        self.vertical
+            .splice(idx..=idx, children.vertical.iter().rev().copied());
+        true
+    }
+}
+
 /// Node type in the container tree
 // Tile<W> dwarfs ContainerData, but trees hold one node per window; boxing the
 // tile would add an indirection on every render-path access for negligible savings.
@@ -150,7 +281,7 @@ pub enum DetachedNode<W: LayoutElement> {
 pub struct DetachedContainer<W: LayoutElement> {
     layout: Layout,
     children: Vec<DetachedNode<W>>,
-    child_percents: Vec<f64>,
+    fractions: AxisFractions,
     focus_stack: Vec<usize>,
     user_created: bool,
     prev_split_layout: Option<Layout>,
@@ -163,14 +294,16 @@ pub struct ContainerData {
     layout: Layout,
     /// Child node keys (indices into the tree's SlotMap)
     children: Vec<NodeKey>,
-    /// Focus history (most recently used first)
+    /// Most-recently-used child first. For tabbed/stacked containers the first child is also
+    /// the visible branch; it may intentionally differ from the seat-focused leaf after the
+    /// Sway sibling-switcher move case.
     focus_stack: Vec<NodeKey>,
     /// Preserve container even if it has a single child (explicit split).
     user_created: bool,
     /// Previous split layout for i3-style `layout toggle split`.
     prev_split_layout: Option<Layout>,
-    /// Relative sizes of children (sum normalized to 1.0 for split layouts)
-    child_percents: Vec<f64>,
+    /// Width and height fractions are independent in sway, including while an axis is dormant.
+    fractions: AxisFractions,
     /// Cached geometry for rendering
     geometry: Rectangle<f64, Logical>,
 }
@@ -189,7 +322,7 @@ pub(super) struct InsertParentInfo {
     pub parent_path: Vec<usize>,
     pub insert_idx: usize,
     pub layout: Layout,
-    pub child_percents: Vec<f64>,
+    pub fractions: Option<AxisFractions>,
 }
 
 /// Subtree detached from a tree along with its origin info and geometry.
@@ -243,10 +376,20 @@ pub struct ContainerTree<W: LayoutElement> {
     /// "is the parent the workspace?" was working around its absence, and each of those
     /// workarounds disagreed with sway somewhere.
     root: NodeKey,
-    /// Focused leaf node key (source of truth for focus).
+    /// Leaf with logical/seat focus.
+    ///
+    /// Visibility in tabbed/stacked containers comes from each container's `focus_stack`, not
+    /// from recomputing a path from this key. Sway can intentionally leave those two states on
+    /// different branches after moving between sibling switchers.
     focused_key: Option<NodeKey>,
     /// Currently selected node key (container selection via focus-parent).
     selected_key: Option<NodeKey>,
+    /// The node covering the output, if one does.
+    ///
+    /// sway's `workspace->fullscreen`: a stored pointer, maintained by whoever sets fullscreen
+    /// rather than derived when arranging, and read by `arrange_workspace` to decide whether
+    /// the tiled tree is laid out at all.
+    fullscreen_key: Option<NodeKey>,
     /// Cached layout info for leaves
     leaf_layouts: Vec<LeafLayoutInfo>,
     /// Pending layouts waiting for transactions to complete.
@@ -279,6 +422,56 @@ pub(super) struct PreviewLeafGeometry {
 // ContainerData Implementation
 // ============================================================================
 
+fn recalculate_percentages_for(percents: &mut Vec<f64>, child_count: usize) {
+    if child_count == 0 {
+        percents.clear();
+        return;
+    }
+    percents.clear();
+    percents.resize(child_count, 1.0 / child_count as f64);
+}
+
+fn normalize_percentages_for(percents: &mut Vec<f64>, child_count: usize) {
+    if percents.len() != child_count {
+        recalculate_percentages_for(percents, child_count);
+        return;
+    }
+    let sum: f64 = percents
+        .iter()
+        .copied()
+        .filter(|percent| percent.is_finite() && *percent >= 0.0)
+        .sum();
+    if sum <= f64::EPSILON
+        || percents
+            .iter()
+            .any(|percent| !percent.is_finite() || *percent < 0.0)
+    {
+        recalculate_percentages_for(percents, child_count);
+        return;
+    }
+    for percent in percents {
+        *percent /= sum;
+    }
+}
+
+fn insert_percent_at(percents: &mut Vec<f64>, idx: usize, old_len: usize) {
+    normalize_percentages_for(percents, old_len);
+    let new_share = 1.0 / (old_len as f64 + 1.0);
+    for percent in percents.iter_mut() {
+        *percent *= 1.0 - new_share;
+    }
+    percents.insert(idx, new_share);
+    normalize_percentages_for(percents, old_len + 1);
+}
+
+fn remove_percent_at(percents: &mut Vec<f64>, idx: usize, old_len: usize) {
+    normalize_percentages_for(percents, old_len);
+    if idx < percents.len() {
+        percents.remove(idx);
+    }
+    normalize_percentages_for(percents, old_len.saturating_sub(1));
+}
+
 impl ContainerData {
     /// Create a new container with given layout
     pub(super) fn new(layout: Layout) -> Self {
@@ -288,7 +481,7 @@ impl ContainerData {
             focus_stack: Vec::new(),
             user_created: false,
             prev_split_layout: None,
-            child_percents: Vec::new(),
+            fractions: AxisFractions::default(),
             geometry: Rectangle::from_size(Size::from((0.0, 0.0))),
         }
     }
@@ -300,6 +493,12 @@ impl ContainerData {
 
     /// Set container layout
     pub(super) fn set_layout(&mut self, layout: Layout) {
+        if matches!(layout, Layout::SplitH | Layout::SplitV)
+            && (!matches!(self.layout, Layout::SplitH | Layout::SplitV) || layout != self.layout)
+        {
+            let active = self.fractions.for_layout_mut(layout);
+            *active = resolved_percents(active, self.children.len());
+        }
         if self.layout != layout && matches!(self.layout, Layout::SplitH | Layout::SplitV) {
             self.prev_split_layout = Some(self.layout);
         }
@@ -354,26 +553,6 @@ impl ContainerData {
         self.children.iter().position(|child| *child == key)
     }
 
-    /// Replace `old_key` with `new_key` in place, keeping its child slot, size share and
-    /// focus-stack position.
-    pub(super) fn replace_child_preserving_focus(
-        &mut self,
-        old_key: NodeKey,
-        new_key: NodeKey,
-    ) -> bool {
-        let Some(idx) = self.children.iter().position(|key| *key == old_key) else {
-            return false;
-        };
-        self.children[idx] = new_key;
-        if let Some(pos) = self.focus_stack.iter().position(|key| *key == old_key) {
-            self.focus_stack[pos] = new_key;
-        } else if !self.focus_stack.contains(&new_key) {
-            self.focus_stack.push(new_key);
-        }
-        self.ensure_focus_stack();
-        true
-    }
-
     pub(super) fn bubble_focus(&mut self, node_key: NodeKey) {
         self.ensure_focus_stack();
         if let Some(pos) = self.focus_stack.iter().position(|key| *key == node_key) {
@@ -399,39 +578,48 @@ impl ContainerData {
 
     /// Remove a child at index, returns the removed node key
     pub(super) fn remove_child(&mut self, idx: usize) -> Option<NodeKey> {
+        self.remove_child_with_percent_policy(idx, true)
+    }
+
+    /// Remove a child without renormalizing the shares that remain.
+    ///
+    /// During a directional move Sway keeps every sibling's raw fraction until the complete
+    /// move and workspace squash have finished. Normalizing at detach time is usually
+    /// algebraically invisible, but becomes observable if squash subsequently replaces one
+    /// of those siblings with grandchildren carrying fractions from another parent.
+    pub(super) fn remove_child_preserving_percents(&mut self, idx: usize) -> Option<NodeKey> {
+        self.remove_child_with_percent_policy(idx, false)
+    }
+
+    fn remove_child_with_percent_policy(
+        &mut self,
+        idx: usize,
+        normalize_active: bool,
+    ) -> Option<NodeKey> {
         if idx >= self.children.len() {
             return None;
         }
 
         let key = self.children.remove(idx);
         self.focus_stack.retain(|child| *child != key);
-        let removed_percent = if self.child_percents.len() == self.children.len() + 1 {
-            self.child_percents.remove(idx)
+        let old_len = self.children.len() + 1;
+        if normalize_active && matches!(self.layout, Layout::SplitH | Layout::SplitV) {
+            let layout = self.layout;
+            remove_percent_at(self.fractions.for_layout_mut(layout), idx, old_len);
+            let other = self.fractions.other_for_layout_mut(layout);
+            if other.len() == old_len {
+                other.remove(idx);
+            } else {
+                other.resize(self.children.len(), 0.0);
+            }
         } else {
-            0.0
-        };
+            self.fractions.remove_raw(idx, old_len);
+        }
 
         if self.children.is_empty() {
-            self.child_percents.clear();
+            self.fractions.clear();
             self.focus_stack.clear();
             return Some(key);
-        }
-
-        if self.child_percents.len() != self.children.len() {
-            self.recalculate_percentages();
-            self.ensure_focus_stack();
-            return Some(key);
-        }
-
-        let remaining = 1.0 - removed_percent;
-        if remaining > f64::EPSILON {
-            let scale = 1.0 / remaining;
-            for percent in &mut self.child_percents {
-                *percent *= scale;
-            }
-            self.normalize_child_percents();
-        } else {
-            self.recalculate_percentages();
         }
 
         self.ensure_focus_stack();
@@ -450,112 +638,134 @@ impl ContainerData {
         if old_len == 0 {
             self.children.insert(idx, node_key);
             self.focus_stack.push(node_key);
-            self.child_percents.clear();
-            self.child_percents.push(1.0);
+            self.fractions.clear();
+            self.fractions.resize_unset(1);
+            self.fractions.for_layout_mut(self.layout)[0] = 1.0;
             return;
         }
 
-        if self.child_percents.len() != old_len {
-            self.child_percents.clear();
-            let value = 1.0 / old_len as f64;
-            self.child_percents.resize(old_len, value);
-        } else {
-            self.normalize_child_percents();
-        }
-
-        let new_share = 1.0 / (old_len as f64 + 1.0);
-        let scale = 1.0 - new_share;
-        for percent in &mut self.child_percents {
-            *percent *= scale;
-        }
-
         self.children.insert(idx, node_key);
-        self.child_percents.insert(idx, new_share);
-        self.normalize_child_percents();
+        if matches!(self.layout, Layout::SplitH | Layout::SplitV) {
+            let layout = self.layout;
+            insert_percent_at(self.fractions.for_layout_mut(layout), idx, old_len);
+            let other = self.fractions.other_for_layout_mut(layout);
+            if other.len() != old_len {
+                other.resize(old_len, 0.0);
+            }
+            other.insert(idx, 0.0);
+        } else {
+            self.fractions.insert_unset(idx, old_len);
+        }
         if !self.focus_stack.contains(&node_key) {
             self.focus_stack.push(node_key);
         }
     }
 
+    /// Insert a child with both shares unset, preserving all existing sibling fractions.
+    ///
+    /// This is Sway's reparenting primitive: the moved node no longer has a meaningful
+    /// fraction in its new parent, while nodes already there keep their raw values. The
+    /// end-of-command resolve fills and normalizes the list once tree surgery is complete.
+    pub(super) fn insert_child_unset(&mut self, idx: usize, node_key: NodeKey) {
+        let idx = idx.min(self.children.len());
+        let old_len = self.children.len();
+        self.children.insert(idx, node_key);
+        self.fractions.insert_unset(idx, old_len);
+
+        if !self.focus_stack.contains(&node_key) {
+            self.focus_stack.push(node_key);
+        }
+        self.ensure_focus_stack();
+    }
+
+    /// Insert a child with the fractions it carried in its previous parent.
+    pub(super) fn insert_child_with_fractions(
+        &mut self,
+        idx: usize,
+        node_key: NodeKey,
+        fractions: ChildFractions,
+    ) {
+        self.insert_child_unset(idx, node_key);
+        let idx = self
+            .children
+            .iter()
+            .position(|key| *key == node_key)
+            .expect("the child was just inserted");
+        self.set_child_fractions(idx, fractions);
+    }
+
+    /// Read both axis fractions for one child, regardless of which axis is active here.
+    pub(super) fn child_fractions(&self, idx: usize) -> ChildFractions {
+        self.fractions.child(idx)
+    }
+
+    /// Store both axis fractions for one child.
+    pub(super) fn set_child_fractions(&mut self, idx: usize, fractions: ChildFractions) {
+        self.fractions
+            .set_child(idx, self.children.len(), fractions);
+    }
+
+    /// Exchange two children, shares and all.
+    ///
+    /// A swap is the one move where both nodes keep what they had: sway's neighbour-swap
+    /// branch trades the containers' positions and their fractions together, so neither
+    /// arrives anywhere needing a share worked out.
+    pub(super) fn swap_child_slots(&mut self, a: usize, b: usize) {
+        self.children.swap(a, b);
+        self.fractions.swap_children(a, b);
+    }
+
+    pub(super) fn unset_child_fractions(&mut self, idx: usize) {
+        self.set_child_fractions(
+            idx,
+            ChildFractions {
+                width: 0.0,
+                height: 0.0,
+            },
+        );
+    }
+
     pub(super) fn recalculate_percentages(&mut self) {
-        if self.children.is_empty() {
-            self.child_percents.clear();
-            return;
-        }
-        let count = self.children.len() as f64;
-        let value = 1.0 / count;
-        if self.child_percents.len() != self.children.len() {
-            self.child_percents.resize(self.children.len(), value);
-        }
-        for percent in &mut self.child_percents {
-            *percent = value;
-        }
+        recalculate_percentages_for(
+            self.fractions.for_layout_mut(self.layout),
+            self.children.len(),
+        );
     }
 
     /// Resolve the stored shares the way sway's `arrange` does, in place.
     ///
-    /// Run at the end of a command, never during one: sway invalidates fractions while the
-    /// tree moves and only fills them in when it arranges, so filling early answers the
-    /// question with the siblings a mid-command tree happens to have.
+    /// Called from the arrange pass, never from a command: sway invalidates fractions while
+    /// the tree moves and only fills them in when it arranges, so filling early answers the
+    /// question with the siblings a half-finished tree happens to have.
     pub(super) fn resolve_child_percents(&mut self) {
-        self.child_percents = resolved_percents(&self.child_percents, self.children.len());
-    }
-
-    /// Mark a child's share unset, sway's `width_fraction = height_fraction = 0`.
-    ///
-    /// The others are left exactly as they are — the point is that this child's share is not
-    /// known yet, not that anyone else's changed.
-    pub(super) fn unset_child_percent(&mut self, idx: usize) {
-        if self.child_percents.len() != self.children.len() {
-            self.recalculate_percentages();
-        }
-        if let Some(percent) = self.child_percents.get_mut(idx) {
-            *percent = 0.0;
-        }
-    }
-
-    pub(super) fn normalize_child_percents(&mut self) {
-        if self.child_percents.is_empty() {
-            return;
-        }
-        let mut sum = 0.0;
-        for percent in &self.child_percents {
-            if !percent.is_finite() || *percent < 0.0 {
-                sum = 0.0;
-                break;
-            }
-            sum += *percent;
-        }
-        if sum <= f64::EPSILON {
-            self.recalculate_percentages();
-            return;
-        }
-        for percent in &mut self.child_percents {
-            *percent /= sum;
+        if matches!(self.layout, Layout::SplitH | Layout::SplitV) {
+            let active = self.fractions.for_layout_mut(self.layout);
+            *active = resolved_percents(active, self.children.len());
         }
     }
 
     pub(super) fn child_percent(&self, idx: usize) -> f64 {
-        self.child_percents.get(idx).copied().unwrap_or(0.0)
+        self.child_percents_slice().get(idx).copied().unwrap_or(0.0)
     }
 
     /// Get child percentages as a slice (avoids cloning)
     pub(super) fn child_percents_slice(&self) -> &[f64] {
-        &self.child_percents
+        self.fractions.for_layout(self.layout)
     }
 
     pub(super) fn set_child_percent(&mut self, idx: usize, percent: f64) {
-        if self.child_percents.len() != self.children.len() {
+        if self.child_percents_slice().len() != self.children.len() {
             self.recalculate_percentages();
         }
 
-        if self.child_percents.is_empty() || idx >= self.child_percents.len() {
+        let child_percents = self.fractions.for_layout_mut(self.layout);
+        if child_percents.is_empty() || idx >= child_percents.len() {
             return;
         }
 
-        let len = self.child_percents.len();
+        let len = child_percents.len();
         if len == 1 {
-            self.child_percents[0] = 1.0;
+            child_percents[0] = 1.0;
             return;
         }
 
@@ -563,7 +773,7 @@ impl ContainerData {
         let max = 1.0 - min * (len as f64 - 1.0);
         let new_percent = percent.clamp(min, max.max(min));
 
-        self.child_percents[idx] = new_percent;
+        child_percents[idx] = new_percent;
 
         let mut remaining = 1.0 - new_percent;
         if remaining <= f64::EPSILON {
@@ -571,7 +781,7 @@ impl ContainerData {
         }
 
         let mut others_sum = 0.0;
-        for (i, value) in self.child_percents.iter().enumerate() {
+        for (i, value) in child_percents.iter().enumerate() {
             if i != idx {
                 others_sum += *value;
             }
@@ -579,21 +789,21 @@ impl ContainerData {
 
         if others_sum <= f64::EPSILON {
             let share = remaining / (len as f64 - 1.0);
-            for (i, value) in self.child_percents.iter_mut().enumerate() {
+            for (i, value) in child_percents.iter_mut().enumerate() {
                 if i != idx {
                     *value = share;
                 }
             }
         } else {
             let scale = remaining / others_sum;
-            for (i, value) in self.child_percents.iter_mut().enumerate() {
+            for (i, value) in child_percents.iter_mut().enumerate() {
                 if i != idx {
                     *value *= scale;
                 }
             }
         }
 
-        self.normalize_child_percents();
+        normalize_percentages_for(child_percents, len);
     }
 
     /// sway's `container_resize_tiled`: move `amount` of this container's extent into the
@@ -613,15 +823,16 @@ impl ContainerData {
         &mut self,
         idx: usize,
         reach: ResizeReach,
-        amount: f64,
+        delta: ResizeDelta,
         space: ResizeSpace,
     ) -> bool {
-        if self.child_percents.len() != self.children.len() {
+        if self.child_percents_slice().len() != self.children.len() {
             self.recalculate_percentages();
         }
 
-        let len = self.child_percents.len();
-        if idx >= len {
+        let child_percents = self.fractions.for_layout_mut(self.layout);
+        let len = child_percents.len();
+        if idx >= len || space.child_spans.len() != len {
             return false;
         }
 
@@ -632,31 +843,28 @@ impl ContainerData {
             ResizeReach::After if idx + 1 < len => payers.push(idx + 1),
             ResizeReach::Before | ResizeReach::After => {}
         }
-        let Some(each) = (!payers.is_empty()).then(|| amount / payers.len() as f64) else {
+        let Some(each) = (!payers.is_empty()).then(|| delta.fraction / payers.len() as f64) else {
             return false;
         };
 
-        if space.available <= 0.0 {
-            return false;
-        }
-        let amount_size = amount * space.available;
-        let payer_check_size = (amount_size / payers.len() as f64).ceil();
+        let payer_check_size = (delta.pixels / payers.len() as f64).ceil();
 
         // Nothing at all rather than something lopsided: sway checks every share first and
         // abandons the resize if any of them would not fit, which is why dragging a window
         // into a wall stops instead of squashing the neighbour past it.
-        if self.child_percents[idx] * space.available + amount_size < space.min_size {
+        if space.child_spans[idx] + delta.pixels < space.min_size {
             return false;
         }
-        if payers.iter().any(|payer| {
-            self.child_percents[*payer] * space.available - payer_check_size < space.min_size
-        }) {
+        if payers
+            .iter()
+            .any(|payer| space.child_spans[*payer] - payer_check_size < space.min_size)
+        {
             return false;
         }
 
-        self.child_percents[idx] += amount;
+        child_percents[idx] += delta.fraction;
         for payer in payers {
-            self.child_percents[payer] -= each;
+            child_percents[payer] -= each;
         }
         true
     }
@@ -667,16 +875,17 @@ impl ContainerData {
         neighbor_idx: usize,
         percent: f64,
     ) -> bool {
-        if self.child_percents.len() != self.children.len() {
+        if self.child_percents_slice().len() != self.children.len() {
             self.recalculate_percentages();
         }
 
-        let len = self.child_percents.len();
+        let child_percents = self.fractions.for_layout_mut(self.layout);
+        let len = child_percents.len();
         if len < 2 || idx >= len || neighbor_idx >= len || idx == neighbor_idx {
             return false;
         }
 
-        let total = self.child_percents[idx] + self.child_percents[neighbor_idx];
+        let total = child_percents[idx] + child_percents[neighbor_idx];
         if total <= f64::EPSILON {
             return false;
         }
@@ -690,14 +899,14 @@ impl ContainerData {
         let new_percent = percent.clamp(min, max_target);
         let neighbor_percent = total - new_percent;
 
-        if (self.child_percents[idx] - new_percent).abs() <= f64::EPSILON
-            && (self.child_percents[neighbor_idx] - neighbor_percent).abs() <= f64::EPSILON
+        if (child_percents[idx] - new_percent).abs() <= f64::EPSILON
+            && (child_percents[neighbor_idx] - neighbor_percent).abs() <= f64::EPSILON
         {
             return false;
         }
 
-        self.child_percents[idx] = new_percent;
-        self.child_percents[neighbor_idx] = neighbor_percent;
+        child_percents[idx] = new_percent;
+        child_percents[neighbor_idx] = neighbor_percent;
         true
     }
 
@@ -796,7 +1005,7 @@ impl<W: LayoutElement> DetachedContainer<W> {
         let mut container = Self {
             layout,
             children,
-            child_percents: Vec::new(),
+            fractions: AxisFractions::default(),
             focus_stack: Vec::new(),
             user_created: false,
             prev_split_layout: None,
@@ -806,61 +1015,16 @@ impl<W: LayoutElement> DetachedContainer<W> {
         container
     }
 
-    pub(crate) fn from_parts(
-        layout: Layout,
-        children: Vec<DetachedNode<W>>,
-        child_percents: Vec<f64>,
-        focus_stack: Vec<usize>,
-        user_created: bool,
-        prev_split_layout: Option<Layout>,
-    ) -> Self {
-        let mut container = Self {
-            layout,
-            children,
-            child_percents,
-            focus_stack,
-            user_created,
-            prev_split_layout,
-        };
-        container.normalize_child_percents();
-        container.ensure_focus_stack();
-        container
-    }
-
     fn recalculate_percentages(&mut self) {
         if self.children.is_empty() {
-            self.child_percents.clear();
+            self.fractions.clear();
             return;
         }
-        let count = self.children.len() as f64;
-        let value = 1.0 / count;
-        self.child_percents.clear();
-        self.child_percents.resize(self.children.len(), value);
-    }
-
-    fn normalize_child_percents(&mut self) {
-        if self.child_percents.len() != self.children.len() {
-            self.recalculate_percentages();
-            return;
-        }
-        if self.child_percents.is_empty() {
-            return;
-        }
-        let mut sum = 0.0;
-        for percent in &self.child_percents {
-            if !percent.is_finite() || *percent < 0.0 {
-                sum = 0.0;
-                break;
-            }
-            sum += *percent;
-        }
-        if sum <= f64::EPSILON {
-            self.recalculate_percentages();
-            return;
-        }
-        for percent in &mut self.child_percents {
-            *percent /= sum;
-        }
+        self.fractions.resize_unset(self.children.len());
+        recalculate_percentages_for(
+            self.fractions.for_layout_mut(self.layout),
+            self.children.len(),
+        );
     }
 
     fn ensure_focus_stack(&mut self) {
@@ -905,6 +1069,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             root,
             focused_key: None,
             selected_key: None,
+            fullscreen_key: None,
             leaf_layouts: Vec::new(),
             pending_layouts: None,
             pending_transaction: None,
@@ -939,7 +1104,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         child_idx: usize,
         layout: Layout,
         reach: ResizeReach,
-        amount: f64,
+        delta: ResizeDelta,
         space: ResizeSpace,
     ) -> bool {
         let Some(container) = self.get_container_mut(container_key) else {
@@ -948,7 +1113,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         if container.layout() != layout || child_idx >= container.child_count() {
             return false;
         }
-        container.resize_child(child_idx, reach, amount, space)
+        container.resize_child(child_idx, reach, delta, space)
     }
 
     /// Give the `child_idx`-th child of `container_key` a `percent` share, provided the

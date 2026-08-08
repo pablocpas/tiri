@@ -138,7 +138,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let layout = container.layout();
         let children = container.children.clone();
         let focus_stack = container.focus_stack.clone();
-        let percents = container.child_percents_slice().to_vec();
+        let fractions = container.fractions.clone();
         let prev_split_layout = container.prev_split_layout;
 
         let root_key = self.root;
@@ -146,7 +146,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             root.set_layout(layout);
             root.children = children.clone();
             root.focus_stack = focus_stack;
-            root.child_percents = percents;
+            root.fractions = fractions;
             root.prev_split_layout = prev_split_layout;
             root.ensure_focus_stack();
         }
@@ -184,14 +184,14 @@ impl<W: LayoutElement> ContainerTree<W> {
                     .iter()
                     .filter_map(|key| index_by_key.get(key).copied())
                     .collect();
-                DetachedNode::Container(DetachedContainer::from_parts(
-                    container.layout,
+                DetachedNode::Container(DetachedContainer {
+                    layout: container.layout,
                     children,
-                    container.child_percents,
+                    fractions: container.fractions,
                     focus_stack,
-                    container.user_created,
-                    container.prev_split_layout,
-                ))
+                    user_created: container.user_created,
+                    prev_split_layout: container.prev_split_layout,
+                })
             }
         }
     }
@@ -213,7 +213,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
                 if let Some(node) = self.get_container_mut(container_key) {
                     node.children = child_keys;
-                    node.child_percents = container.child_percents;
+                    node.fractions = container.fractions;
                     node.focus_stack = container
                         .focus_stack
                         .iter()
@@ -221,10 +221,9 @@ impl<W: LayoutElement> ContainerTree<W> {
                         .collect();
                     node.user_created = container.user_created;
                     node.prev_split_layout = container.prev_split_layout;
-                    if node.child_percents.len() != node.children.len() {
+                    if !node.fractions.is_compatible_with(node.children.len()) {
+                        node.fractions.resize_unset(node.children.len());
                         node.recalculate_percentages();
-                    } else {
-                        node.normalize_child_percents();
                     }
                     node.ensure_focus_stack();
                 }

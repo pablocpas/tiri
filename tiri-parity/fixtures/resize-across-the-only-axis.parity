@@ -1,5 +1,5 @@
 # resizing along an axis no ancestor is laid out on
-# recorded from sway version 1.11
+# recorded from sway version 1.12-8886939 (Aug  5 2026, branch 'HEAD')
 # client 400x285
 
 $ open

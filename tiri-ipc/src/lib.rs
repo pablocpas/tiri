@@ -905,6 +905,30 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg())]
         output: String,
     },
+    /// Grow the focused window horizontally, taking equally from all tiled siblings.
+    ResizeGrowWidth {},
+    /// Shrink the focused window horizontally, giving equally to all tiled siblings.
+    ResizeShrinkWidth {},
+    /// Grow the focused window vertically, taking equally from all tiled siblings.
+    ResizeGrowHeight {},
+    /// Shrink the focused window vertically, giving equally to all tiled siblings.
+    ResizeShrinkHeight {},
+    /// Grow the focused window through its left edge.
+    ResizeGrowLeft {},
+    /// Shrink the focused window through its left edge.
+    ResizeShrinkLeft {},
+    /// Grow the focused window through its right edge.
+    ResizeGrowRight {},
+    /// Shrink the focused window through its right edge.
+    ResizeShrinkRight {},
+    /// Grow the focused window through its top edge.
+    ResizeGrowUp {},
+    /// Shrink the focused window through its top edge.
+    ResizeShrinkUp {},
+    /// Grow the focused window through its bottom edge.
+    ResizeGrowDown {},
+    /// Shrink the focused window through its bottom edge.
+    ResizeShrinkDown {},
     /// Change the width of a window.
     #[cfg_attr(
         feature = "clap",

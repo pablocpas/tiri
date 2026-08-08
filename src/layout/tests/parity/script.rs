@@ -137,11 +137,11 @@ fn op_for(command: &str, next_id: &mut usize, client: (i32, i32)) -> Result<Op, 
         ["resize", grow_or_shrink @ ("grow" | "shrink"), edge @ ("left" | "right" | "up" | "down"), amount, "px"] =>
         {
             let amount: i32 = amount.parse().map_err(|_| Reason::BadArgument)?;
-            let change = SizeChange::AdjustFixed(if *grow_or_shrink == "shrink" {
+            let amount = if *grow_or_shrink == "shrink" {
                 -amount
             } else {
                 amount
-            });
+            };
             let direction = match *edge {
                 "left" => Direction::Left,
                 "right" => Direction::Right,
@@ -150,7 +150,7 @@ fn op_for(command: &str, next_id: &mut usize, client: (i32, i32)) -> Result<Op, 
             };
             Op::ResizeWindowEdge {
                 id: None,
-                change,
+                amount,
                 direction,
             }
         }
@@ -167,7 +167,7 @@ fn op_for(command: &str, next_id: &mut usize, client: (i32, i32)) -> Result<Op, 
             "splith" => Op::SetLayoutSplitH,
             "splitv" => Op::SetLayoutSplitV,
             "tabbed" => Op::SetLayoutTabbed,
-            "stacking" | "stacked" => Op::SetLayoutStacked,
+            "stacking" => Op::SetLayoutStacked,
             _ => return Err(Reason::BadArgument),
         },
         ["layout", "toggle", "split"] => Op::ToggleSplitLayout,

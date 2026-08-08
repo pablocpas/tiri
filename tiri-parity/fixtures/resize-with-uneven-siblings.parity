@@ -1,5 +1,5 @@
 # sway 1.12 divides the cost equally across all siblings, whatever sizes they had
-# recorded from sway version 1.12 source-derived container_resize_tiled
+# recorded from sway version 1.12-8886939 (Aug  5 2026, branch 'HEAD')
 # client 400x285
 
 $ open

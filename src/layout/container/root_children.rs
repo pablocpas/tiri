@@ -107,10 +107,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         let node_key = container.children.remove(from);
-        let percent = container.child_percents.remove(from);
         container.children.insert(to, node_key);
-        container.child_percents.insert(to, percent);
-        container.normalize_child_percents();
+        container.fractions.move_child(from, to);
 
         self.resync_focus();
         true

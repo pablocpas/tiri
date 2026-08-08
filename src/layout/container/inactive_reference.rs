@@ -189,7 +189,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     parent_path: path,
                     insert_idx: container.child_count(),
                     layout: container.layout(),
-                    child_percents: Vec::new(),
+                    fractions: None,
                 })
             }
             ResolvedInactiveTilingReference::Leaf { path, .. } => {
@@ -198,7 +198,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                         parent_path: Vec::new(),
                         insert_idx: 1,
                         layout: self.root_container_layout(),
-                        child_percents: Vec::new(),
+                        fractions: None,
                     });
                 }
 
@@ -210,7 +210,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     parent_path,
                     insert_idx: (leaf_idx + 1).min(parent.child_count()),
                     layout: parent.layout(),
-                    child_percents: Vec::new(),
+                    fractions: None,
                 })
             }
         }

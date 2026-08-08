@@ -24,7 +24,7 @@ use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
 use super::workspace::{InteractiveResize, ResolvedSize};
 use super::{
     resize_edges_for_point, ConfigureIntent, InteractiveResizeData, LayoutElement, Options,
-    RemovedTile, SizeFrac,
+    RemovedTile, ResizeAxis, ResizeRequest, SizeFrac,
 };
 use crate::animation::{Animation, Clock};
 use crate::layout::tab_bar::{
@@ -1724,6 +1724,45 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
     }
 
+    /// Apply a keyboard/IPC resize to a floating target.
+    ///
+    /// Axis requests change the size directly. Edge requests reuse the same geometry operation as
+    /// an edge drag, including anchoring the opposite edge, but remain a one-shot command rather
+    /// than becoming interactive state owned by the input layer.
+    pub fn resize_window(&mut self, id: Option<&W::Id>, request: ResizeRequest) {
+        match request {
+            ResizeRequest::Axis {
+                axis: ResizeAxis::Horizontal,
+                change,
+            } => self.set_window_width(id, change, true),
+            ResizeRequest::Axis {
+                axis: ResizeAxis::Vertical,
+                change,
+            } => self.set_window_height(id, change, true),
+            ResizeRequest::Edge { direction, amount } => {
+                self.resize_window_edge(id, direction, amount)
+            }
+        }
+    }
+
+    fn resize_window_edge(&mut self, id: Option<&W::Id>, direction: Direction, amount: i32) {
+        let Some(id) = self.resolve_target_id(id) else {
+            return;
+        };
+        let amount = f64::from(amount);
+        let (edge, delta) = match direction {
+            Direction::Left => (ResizeEdge::LEFT, Point::from((-amount, 0.))),
+            Direction::Right => (ResizeEdge::RIGHT, Point::from((amount, 0.))),
+            Direction::Up => (ResizeEdge::TOP, Point::from((0., -amount))),
+            Direction::Down => (ResizeEdge::BOTTOM, Point::from((0., amount))),
+        };
+
+        if self.interactive_resize_begin(id.clone(), edge) {
+            self.interactive_resize_update(&id, delta);
+            self.interactive_resize_end(Some(&id));
+        }
+    }
+
     pub fn set_window_height(&mut self, id: Option<&W::Id>, change: SizeChange, animate: bool) {
         let Some(target_id) = id.or(self.active_window_id.as_ref()) else {
             return;
@@ -3167,7 +3206,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
         })
     }
 
-    #[cfg(test)]
     pub fn view_size(&self) -> Size<f64, Logical> {
         self.view_size
     }

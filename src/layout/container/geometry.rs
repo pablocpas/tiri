@@ -106,7 +106,18 @@ impl<W: LayoutElement> ContainerTree<W> {
         snapshot != current
     }
 
+    /// Point `workspace->fullscreen` at a node, or at nothing.
+    ///
+    /// Whoever grants or revokes fullscreen is the one who knows; the arrange pass only reads
+    /// this. Setting it does not itself arrange — the caller was in the middle of a command
+    /// and will.
+    pub(in crate::layout) fn set_fullscreen_key(&mut self, key: Option<NodeKey>) {
+        self.fullscreen_key = key;
+    }
+
     fn layout_atomic(&mut self, animate_resize: bool) {
+        self.resolve_percents(self.root);
+
         if self.pending_layouts.is_some() && !self.apply_pending_layouts_if_ready() {
             self.pending_relayout = true;
             self.readdress_leaf_layouts();
@@ -125,7 +136,17 @@ impl<W: LayoutElement> ContainerTree<W> {
             return;
         }
 
-        let data = self.collect_layout_data(root_key);
+        // sway's `arrange_workspace` asks one question before it lays anything out: is there a
+        // fullscreen container? If there is, it gives that container the output's box, arranges
+        // it, and returns — the tiled tree underneath is never descended, so every node outside
+        // the fullscreen keeps whatever box it last had.
+        let data = match self
+            .fullscreen_key
+            .filter(|key| self.nodes.contains_key(*key))
+        {
+            Some(fullscreen_key) => self.collect_fullscreen_layout_data(fullscreen_key),
+            None => self.collect_layout_data(root_key),
+        };
         let changed = self.changed_layout_keys(&data);
         if changed.is_empty() {
             self.pending_layouts = None;
@@ -151,6 +172,26 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
         self.readdress_leaf_layouts();
         self.debug_layout_state("layout_atomic_requested");
+    }
+
+    /// Fill in every share left unset, from the workspace down.
+    ///
+    /// This is where sway decides a size share, and the only place: `apply_horiz_layout` runs
+    /// as `arrange_container` descends, and it writes what it worked out back onto the
+    /// children. So it happens once per arrange rather than once per command, it covers every
+    /// command rather than the ones that remembered to ask, and a command is free to leave a
+    /// share unset while it moves the tree — which is what `cmd_move` does, and what makes
+    /// the deferral mean anything.
+    fn resolve_percents(&mut self, key: NodeKey) {
+        let Some(children) = self.get_container(key).map(|c| c.children().to_vec()) else {
+            return;
+        };
+        if let Some(container) = self.get_container_mut(key) {
+            container.resolve_child_percents();
+        }
+        for child in children {
+            self.resolve_percents(child);
+        }
     }
 
     /// Point the cached layout at where its leaves are *now*.
@@ -238,6 +279,63 @@ impl<W: LayoutElement> ContainerTree<W> {
             LeafLayoutContext::default(),
             &mut data,
         );
+        data
+    }
+
+    /// Lay out only the fullscreen node's subtree, against the output.
+    ///
+    /// The other half of `arrange_workspace`'s fullscreen branch. sway reaches it with a whole
+    /// tree of containers still holding the `pending` boxes it gave them last time and simply
+    /// does not visit them, so that is what the leaves outside the subtree get here: the
+    /// entries they already had. They are not stale — they are the answer, until the
+    /// fullscreen goes away and the tree is arranged again.
+    ///
+    /// sway hands the node `output->lx/ly/width/height` — the whole output, bar and gaps
+    /// included — and the layout area is used here instead. The difference is not observable:
+    /// the one place the fullscreen rectangle is published is the IPC tree, and that already
+    /// answers with the output's box regardless of what the node holds. What the node's box
+    /// still drives is the size asked of the window, and a fullscreen tile is sized from the
+    /// view rather than from its slot, so feeding the output box in twice only makes the
+    /// unfullscreen look like a resize it is not.
+    fn collect_fullscreen_layout_data(&self, fullscreen_key: NodeKey) -> LayoutData {
+        let mut data = LayoutData {
+            leaf_layouts: Vec::new(),
+            container_geometries: HashMap::new(),
+            tab_bar_offsets: HashMap::new(),
+            titlebar_flags: HashMap::new(),
+            tabbed_context_flags: HashMap::new(),
+        };
+
+        // Seeded with where the node actually is, so the addresses beside the geometry stay
+        // absolute — they are read as paths from the workspace, not from here.
+        let Some(mut path) = self.find_node_path(fullscreen_key) else {
+            return self.collect_layout_data(self.root);
+        };
+        self.collect_layout_node(
+            fullscreen_key,
+            self.layout_area(),
+            &mut path,
+            true,
+            LeafLayoutContext::default(),
+            &mut data,
+        );
+
+        // The held entries keep their rectangle — that is the box sway is not revisiting — but
+        // not their address: the tree can be reshaped while a fullscreen is up, and a path
+        // into a tree that has moved on is simply wrong. A leaf that is gone is dropped.
+        let arranged: HashSet<NodeKey> = data.leaf_layouts.iter().map(|info| info.key).collect();
+        let held: Vec<LeafLayoutInfo> = self
+            .leaf_layouts
+            .iter()
+            .filter(|info| !arranged.contains(&info.key))
+            .filter_map(|info| {
+                Some(LeafLayoutInfo {
+                    path: self.find_node_path(info.key)?,
+                    ..info.clone()
+                })
+            })
+            .collect();
+        data.leaf_layouts.extend(held);
         data
     }
 

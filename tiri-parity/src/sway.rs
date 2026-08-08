@@ -1,4 +1,4 @@
-//! Normalize sway's `get_tree` into the observable model.
+//! Normalize sway/i3 `get_tree` into the observable model.
 //!
 //! Shapes here were checked against sway 1.11 running headless; see `docs/design/parity.md`
 //! for the scenarios and what each rule is derived from.
@@ -23,6 +23,10 @@ pub struct SwayNode {
     pub visible: Option<bool>,
     #[serde(default)]
     pub marks: Vec<String>,
+    /// i3 publishes the per-container focus stack instead of sway's leaf `visible` field.
+    /// Its first entry is the visible child of a tabbed or stacked container.
+    #[serde(default)]
+    pub focus: Vec<i64>,
     pub rect: SwayRect,
     #[serde(default)]
     pub nodes: Vec<SwayNode>,
@@ -67,10 +71,16 @@ pub fn normalize(json: &str, order: &OpenOrder) -> Result<Workspace, Error> {
 
     let mut nodes = Vec::new();
     for child in &ws.nodes {
-        nodes.push(convert(child, area, order, false)?);
+        nodes.push(convert(
+            child,
+            area,
+            order,
+            false,
+            child_visible(ws, child),
+        )?);
     }
     for child in &ws.floating_nodes {
-        nodes.push(convert(child, area, order, true)?);
+        nodes.push(convert(child, area, order, true, true)?);
     }
 
     Ok(Workspace {
@@ -141,6 +151,7 @@ fn convert(
     area: SwayRect,
     order: &OpenOrder,
     floating: bool,
+    visible: bool,
 ) -> Result<Node, Error> {
     // A leaf is a node with no children of its own. sway reports `layout: none` for them.
     let is_leaf = node.nodes.is_empty() && node.floating_nodes.is_empty();
@@ -152,7 +163,7 @@ fn convert(
             rect: frac(node.rect, area),
             // sway omits `visible` on anything that is not a leaf; a leaf without it is on
             // screen.
-            visible: node.visible.unwrap_or(true),
+            visible: node.visible.unwrap_or(visible),
             floating,
             marks: node.marks.clone(),
         }));
@@ -160,8 +171,17 @@ fn convert(
 
     let layout = Layout::from_sway(&node.layout).unwrap_or(Layout::SplitH);
     let mut nodes = Vec::new();
-    for child in node.nodes.iter().chain(node.floating_nodes.iter()) {
-        nodes.push(convert(child, area, order, floating)?);
+    for child in &node.nodes {
+        nodes.push(convert(
+            child,
+            area,
+            order,
+            floating,
+            visible && child_visible(node, child),
+        )?);
+    }
+    for child in &node.floating_nodes {
+        nodes.push(convert(child, area, order, floating, visible)?);
     }
 
     Ok(Node::Container(Container {
@@ -169,6 +189,17 @@ fn convert(
         rect: frac(node.rect, area),
         nodes,
     }))
+}
+
+fn child_visible(parent: &SwayNode, child: &SwayNode) -> bool {
+    if !matches!(parent.layout.as_str(), "tabbed" | "stacked") {
+        return true;
+    }
+    // An empty focus stack is tolerated for trimmed test data and early startup trees.
+    parent
+        .focus
+        .first()
+        .is_none_or(|focused| *focused == child.id)
 }
 
 fn frac(r: SwayRect, area: SwayRect) -> FracRect {

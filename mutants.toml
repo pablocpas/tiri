@@ -1,0 +1,16 @@
+# Mutation testing: does the corpus notice when the layout is wrong?
+#
+# Every other measure here answers "did we find anything". This one answers "would we have".
+# It edits the tree code — flips a comparison, drops a call, returns a default — and asks
+# whether anything goes red. A mutant that survives is a change to the layout that all 93
+# recordings and 516 tests agree with, which means there is behaviour nobody is watching.
+#
+# Scoped to the container tree, because that is where the sway rules live and where a silent
+# hole costs the most. The test command deliberately excludes the differential fuzz: that
+# needs a live sway and minutes per run, and mutation testing runs the suite hundreds of
+# times. The fixtures are the fuzz's findings made cheap and repeatable, which is exactly the
+# property this needs.
+examine_globs = ["src/layout/container.rs", "src/layout/container/**/*.rs"]
+additional_cargo_test_args = ["--lib", "layout::"]
+timeout_multiplier = 4.0
+minimum_test_timeout = 60

@@ -183,6 +183,16 @@ fn pinned_options() -> Options {
                 off: true,
                 ..Default::default()
             },
+            tab_bar: tiri_config::TabBar {
+                off: false,
+                show_in_split: false,
+                height: 0.,
+                padding_x: 8.,
+                padding_y: 3.,
+                border_width: 0.,
+                font: "sans 12px".into(),
+                ..Default::default()
+            },
             ..Default::default()
         },
         ..Default::default()

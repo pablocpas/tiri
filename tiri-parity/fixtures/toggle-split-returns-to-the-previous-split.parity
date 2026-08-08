@@ -1,5 +1,5 @@
 # layout toggle split returns to the split layout the container had before
-# recorded from sway version 1.11
+# recorded from sway version 1.12-8886939 (Aug  5 2026, branch 'HEAD')
 # client 400x285
 
 $ open
@@ -28,8 +28,8 @@ workspace splith focus=@0
 $ layout tabbed
 workspace splith focus=@0/0
   tabbed 0.000,0.000 1.000x1.000
-    splith 0.000,0.075 1.000x0.925
-      window 1 0.000,0.037 1.000x0.963
+    splith 0.000,0.064 1.000x0.936
+      window 1 0.000,0.032 1.000x0.968
 
 $ layout toggle split
 workspace splith focus=@0/0

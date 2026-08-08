@@ -1,5 +1,5 @@
 # the opposite: a move that keeps the containers rather than dissolving them
-# recorded from sway version 1.11
+# recorded from sway version 1.12-8886939 (Aug  5 2026, branch 'HEAD')
 # client 400x285
 
 $ open
@@ -24,14 +24,14 @@ workspace splith focus=2
 $ layout stacking
 workspace splith focus=2
   stacked 0.000,0.000 1.000x1.000
-    splith 0.000,0.150 1.000x0.850
-      window 1 0.000,0.075 1.000x0.925 hidden
-    window 2 0.000,0.075 1.000x0.925
+    splith 0.000,0.128 1.000x0.872
+      window 1 0.000,0.064 1.000x0.936 hidden
+    window 2 0.000,0.064 1.000x0.936
 
 $ move down
 workspace splitv focus=2
   splith 0.000,0.000 1.000x0.500
     stacked 0.000,0.000 1.000x0.500
-      splith 0.000,0.075 1.000x0.425
-        window 1 0.000,0.037 1.000x0.463
+      splith 0.000,0.064 1.000x0.436
+        window 1 0.000,0.032 1.000x0.468
   window 2 0.000,0.500 1.000x0.500

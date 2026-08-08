@@ -1,4 +1,4 @@
-# recorded from sway version 1.11
+# recorded from sway version 1.12-8886939 (Aug  5 2026, branch 'HEAD')
 # client 400x285
 
 $ open
@@ -32,31 +32,31 @@ workspace splith focus=4
 $ layout stacking
 workspace splith focus=4
   stacked 0.000,0.000 1.000x1.000
-    window 1 0.000,0.150 1.000x0.850 hidden
-    window 4 0.000,0.150 1.000x0.850
-    window 2 0.000,0.150 1.000x0.850 hidden
-    window 3 0.000,0.150 1.000x0.850 hidden
+    window 1 0.000,0.128 1.000x0.872 hidden
+    window 4 0.000,0.128 1.000x0.872
+    window 2 0.000,0.128 1.000x0.872 hidden
+    window 3 0.000,0.128 1.000x0.872 hidden
 
 $ focus up
 workspace splith focus=1
   stacked 0.000,0.000 1.000x1.000
-    window 1 0.000,0.150 1.000x0.850
-    window 4 0.000,0.150 1.000x0.850 hidden
-    window 2 0.000,0.150 1.000x0.850 hidden
-    window 3 0.000,0.150 1.000x0.850 hidden
+    window 1 0.000,0.128 1.000x0.872
+    window 4 0.000,0.128 1.000x0.872 hidden
+    window 2 0.000,0.128 1.000x0.872 hidden
+    window 3 0.000,0.128 1.000x0.872 hidden
 
 $ layout tabbed
 workspace splith focus=1
   tabbed 0.000,0.000 1.000x1.000
-    window 1 0.000,0.037 1.000x0.963
-    window 4 0.000,0.037 1.000x0.963 hidden
-    window 2 0.000,0.037 1.000x0.963 hidden
-    window 3 0.000,0.037 1.000x0.963 hidden
+    window 1 0.000,0.032 1.000x0.968
+    window 4 0.000,0.032 1.000x0.968 hidden
+    window 2 0.000,0.032 1.000x0.968 hidden
+    window 3 0.000,0.032 1.000x0.968 hidden
 
 $ focus left
 workspace splith focus=3
   tabbed 0.000,0.000 1.000x1.000
-    window 1 0.000,0.037 1.000x0.963 hidden
-    window 4 0.000,0.037 1.000x0.963 hidden
-    window 2 0.000,0.037 1.000x0.963 hidden
-    window 3 0.000,0.037 1.000x0.963
+    window 1 0.000,0.032 1.000x0.968 hidden
+    window 4 0.000,0.032 1.000x0.968 hidden
+    window 2 0.000,0.032 1.000x0.968 hidden
+    window 3 0.000,0.032 1.000x0.968

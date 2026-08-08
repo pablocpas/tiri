@@ -171,16 +171,13 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         if matches!(self.get_node(root_child_key), Some(NodeData::Leaf(_))) {
             // Wrap the root leaf child in a vertical container so tiles can stack inside it.
-            let mut wrapper = ContainerData::new(Layout::SplitV);
-            wrapper.add_child(root_child_key);
-            let wrapper_key = self.insert_node(NodeData::Container(wrapper));
-            self.set_parent(root_child_key, Some(wrapper_key));
-
-            let Some(root_container) = self.get_container_mut(root_key) else {
+            let Some(_) = self.wrap_child_in_new_container(
+                root_key,
+                root_child_key,
+                ContainerData::new(Layout::SplitV),
+            ) else {
                 return false;
             };
-            root_container.replace_child_preserving_focus(root_child_key, wrapper_key);
-            self.set_parent(wrapper_key, Some(root_key));
         }
 
         // Now insert the new tile.
@@ -235,7 +232,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             parent_path,
             insert_idx,
             layout: parent.layout(),
-            child_percents: parent.child_percents_slice().to_vec(),
+            fractions: Some(parent.fractions.clone()),
         })
     }
 
@@ -294,9 +291,14 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         if let Some(container) = self.get_container_mut(container_key) {
             container.insert_child(info.insert_idx, node_key);
-            if info.child_percents.len() == container.child_percents.len() {
-                container.child_percents = info.child_percents.clone();
-                container.normalize_child_percents();
+            if let Some(fractions) = info.fractions.as_ref().filter(|fractions| {
+                container.layout() == info.layout
+                    && fractions.is_compatible_with(container.child_count())
+            }) {
+                // This is an exact snapshot, including any fractions Sway has deliberately
+                // left unset under a tabbed/stacked layout. Resolution belongs to arrange,
+                // not restoration.
+                container.fractions = fractions.clone();
             }
         }
         self.set_parent(node_key, Some(container_key));
@@ -385,11 +387,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let tile_key = self.insert_node(NodeData::Leaf(tile));
         let new_container_key = self.new_split_pair_container(target_key, tile_key, direction);
 
-        let container = self
-            .get_container_mut(parent_key)
-            .expect("insert split parent missing");
-        container.replace_child_preserving_focus(target_key, new_container_key);
-        self.set_parent(new_container_key, Some(parent_key));
+        self.replace_child_node(parent_key, target_key, new_container_key);
 
         self.settle_focus_after_insert(tile_key, focus);
 

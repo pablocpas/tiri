@@ -23,8 +23,8 @@ use tiri_ipc::{ColumnDisplay, LayoutTreeNode, LayoutTreeRect, SizeChange};
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::container::{
     ContainerMetrics, ContainerTree, DetachedContainer, DetachedNode, Direction, InsertParentInfo,
-    Layout, LeafLayoutInfo, NodeKey, ResizeReach, ResizeSpace, ResizeTarget, RootPolicy,
-    TakenSubtree, TreeCommandTarget,
+    Layout, LeafLayoutInfo, NodeKey, ResizeDelta, ResizeReach, ResizeSpace, ResizeTarget,
+    RootPolicy, TakenSubtree, TreeCommandTarget,
 };
 use super::focus_ring::{
     render_container_selection, ContainerSelectionStyle, FocusRingEdges, FocusRingIndicatorEdge,
@@ -36,7 +36,8 @@ use super::tile::{Tile, TileRenderElement};
 use super::tree_space::TreeMutation;
 use super::viewport::FixedViewport;
 use super::{
-    ConfigureIntent, InteractiveResizeData, LayoutElement, Options, RemovedTile, ResizeHit,
+    ConfigureIntent, InteractiveResizeData, LayoutElement, Options, RemovedTile, ResizeAxis,
+    ResizeHit, ResizeRequest,
 };
 use crate::animation::{Animation, Clock};
 use crate::layout::tab_bar::{
@@ -642,7 +643,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             .as_ref()
             .is_some_and(|id| id == window_id)
         {
-            self.fullscreen_window = None;
+            self.set_fullscreen_window(None);
         }
 
         // Create RemovedTile
@@ -2509,7 +2510,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             .as_ref()
             .is_some_and(|id| id == window)
         {
-            self.fullscreen_window = None;
+            self.set_fullscreen_window(None);
         }
 
         RemovedTile {
@@ -2527,7 +2528,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             .as_ref()
             .is_some_and(|win_id| win_id == &id)
         {
-            self.fullscreen_window = None;
+            self.set_fullscreen_window(None);
         }
         Some(removed)
     }
@@ -2538,7 +2539,7 @@ impl<W: LayoutElement> TilingSpace<W> {
 
         if let Some(full_id) = self.fullscreen_window.clone() {
             if self.tree.window_key(&full_id).is_none() {
-                self.fullscreen_window = None;
+                self.set_fullscreen_window(None);
             }
         }
 
@@ -2826,11 +2827,50 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn set_window_width(&mut self, window: Option<&W::Id>, change: SizeChange) {
-        self.set_window_dimension(window, change, Layout::SplitH);
+        self.resize_window(
+            window,
+            ResizeRequest::Axis {
+                axis: ResizeAxis::Horizontal,
+                change,
+            },
+        );
     }
 
     pub fn set_window_height(&mut self, window: Option<&W::Id>, change: SizeChange) {
-        self.set_window_dimension(window, change, Layout::SplitV);
+        self.resize_window(
+            window,
+            ResizeRequest::Axis {
+                axis: ResizeAxis::Vertical,
+                change,
+            },
+        );
+    }
+
+    /// Apply one semantic resize request to a tiled target.
+    pub fn resize_window(&mut self, window: Option<&W::Id>, request: ResizeRequest) {
+        let (change, layout, reach) = match request {
+            ResizeRequest::Axis {
+                axis: ResizeAxis::Horizontal,
+                change,
+            } => (change, Layout::SplitH, ResizeReach::Siblings),
+            ResizeRequest::Axis {
+                axis: ResizeAxis::Vertical,
+                change,
+            } => (change, Layout::SplitV, ResizeReach::Siblings),
+            ResizeRequest::Edge { direction, amount } => {
+                let reach = if direction.is_leading() {
+                    ResizeReach::Before
+                } else {
+                    ResizeReach::After
+                };
+                (
+                    SizeChange::AdjustFixed(amount),
+                    direction.split_layout(),
+                    reach,
+                )
+            }
+        };
+        self.resize_window_with_reach(window, change, layout, reach);
     }
 
     /// Resize a window's share within its nearest ancestor split along `layout`'s axis.
@@ -2839,27 +2879,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     /// extent, and the amount is taken from the siblings. Both halves are somewhere else —
     /// `percent_from_size_change` reads the request, `resize_child` moves the space — so this
     /// is only the sentence that joins them.
-    fn set_window_dimension(&mut self, window: Option<&W::Id>, change: SizeChange, layout: Layout) {
-        self.resize_window(window, change, layout, ResizeReach::Siblings);
-    }
-
-    /// The same resize, taking the space from one side only: sway's `resize grow left|right`
-    /// and `up|down`, where the edge names which neighbour pays.
-    pub fn resize_window_edge(
-        &mut self,
-        window: Option<&W::Id>,
-        change: SizeChange,
-        direction: Direction,
-    ) {
-        let reach = if direction.is_leading() {
-            ResizeReach::Before
-        } else {
-            ResizeReach::After
-        };
-        self.resize_window(window, change, direction.split_layout(), reach);
-    }
-
-    fn resize_window(
+    fn resize_window_with_reach(
         &mut self,
         window: Option<&W::Id>,
         change: SizeChange,
@@ -2869,33 +2889,74 @@ impl<W: LayoutElement> TilingSpace<W> {
         let Some(key) = self.window_target(window) else {
             return;
         };
-        let Some((parent_path, child_idx, available, _, _)) =
+        let Some((parent_path, child_idx, available, child_count, _)) =
             self.resize_container_metrics(key, layout, reach)
         else {
             return;
         };
+        if available <= 0.0 {
+            return;
+        }
 
-        let current_percent = self
-            .tree
-            .child_percent(parent_path, child_idx)
-            .unwrap_or(1.0);
-        // A share to reach, turned into the amount that reaches it: sway's `resize` moves an
-        // amount, and `resize set` is the same move with the amount worked out first.
-        let percent = Self::percent_from_size_change(current_percent, available, change);
-        let amount = percent - current_percent;
+        // sway works the amount out against the node the command was aimed at, and then hands
+        // that amount to `container_resize_tiled`, which climbs to a *different* node — the
+        // nearest ancestor with a sibling to take the space from — and moves it there. So
+        // `resize set height 400` does not make anything 400 tall unless the two happen to be
+        // the same node: it grows the ancestor by however much the target was short of 400.
+        //
+        //     container_resize_tiled(con, AXIS_VERTICAL, height->amount - con->pending.height);
+        //
+        // Reading the current size off the ancestor instead is the whole of the divergence in
+        // `resize-a-branch-inside-a-stacked`: two levels of climb there, and tiri was setting
+        // the workspace's split to the number the user asked of a window inside a stacked.
+        let target_span = self.tree.node_span(key, layout).unwrap_or(0.0);
+        let pixels = match change {
+            SizeChange::AdjustFixed(delta) => delta as f64,
+            SizeChange::SetFixed(px) => px as f64 - target_span,
+            // The proportional forms have no measurement behind them yet: sway reads a ppt
+            // against the nearest parallel ancestor, which is not this container. Kept as they
+            // were rather than guessed at.
+            SizeChange::SetProportion(_) | SizeChange::AdjustProportion(_) => {
+                let current_percent = self
+                    .tree
+                    .child_percent(parent_path, child_idx)
+                    .unwrap_or(1.0);
+                (Self::percent_from_size_change(current_percent, available, change)
+                    - current_percent)
+                    * available
+            }
+        };
+        let delta = ResizeDelta {
+            fraction: pixels / available,
+            pixels,
+        };
 
         let min_size = match layout {
             Layout::SplitH => SWAY_MIN_TILED_WIDTH,
             Layout::SplitV => SWAY_MIN_TILED_HEIGHT,
             Layout::Tabbed | Layout::Stacked => return,
         };
+        let child_spans = (0..child_count)
+            .map(|idx| {
+                self.tree
+                    .child_rect_in(parent_path, idx)
+                    .map(|rect| match layout {
+                        Layout::SplitH => rect.size.w,
+                        Layout::SplitV => rect.size.h,
+                        Layout::Tabbed | Layout::Stacked => 0.0,
+                    })
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some(child_spans) = child_spans else {
+            return;
+        };
         let space = ResizeSpace {
-            available,
             min_size,
+            child_spans,
         };
         if self
             .tree
-            .resize_child(parent_path, child_idx, layout, reach, amount, space)
+            .resize_child(parent_path, child_idx, layout, reach, delta, space)
         {
             self.tree.layout();
         }
@@ -2931,7 +2992,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                 }
             }
 
-            self.fullscreen_window = Some(window.clone());
+            self.set_fullscreen_window(Some(window.clone()));
             self.tree.layout();
             if let Some(selected_key) = selected_container {
                 self.tree.select_container(selected_key);
@@ -2953,13 +3014,18 @@ impl<W: LayoutElement> TilingSpace<W> {
                 return false;
             }
 
+            // This is what actually takes the window out of fullscreen: the arrange pass sizes
+            // a tile by asking whether its window is *still* pending fullscreen, so until a
+            // non-fullscreen request has gone out there is nothing for it to notice. The size
+            // is provisional — the arrange right below re-decides it against the slot the
+            // window lands in.
             if tile.pending_maximized {
                 tile.request_maximized(self.working_area.size, !self.options.animations.off, None);
             } else {
                 tile.request_tile_size(self.working_area.size, !self.options.animations.off, None);
             }
 
-            self.fullscreen_window = None;
+            self.set_fullscreen_window(None);
             self.tree.layout();
             if let Some(selected_key) = selected_container {
                 self.tree.select_container(selected_key);
@@ -2973,6 +3039,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             // Keep compositor-level fullscreen sticky while the tracked window still exists.
             // This matches sway behavior better than relying on pending_sizing_mode() snapshots.
             if self.tree.window_key(id).is_some() {
+                self.publish_fullscreen_key();
                 return;
             }
         }
@@ -2982,6 +3049,28 @@ impl<W: LayoutElement> TilingSpace<W> {
             .find(|tile| tile.window().pending_sizing_mode().is_fullscreen())
             .map(|tile| tile.window().id().clone());
         self.fullscreen_window = next_fullscreen;
+        self.publish_fullscreen_key();
+    }
+
+    /// Set, or clear, the window covering the output.
+    ///
+    /// The only writer of `fullscreen_window`, because it is two pieces of state and they have
+    /// to move together: the space knows a *window* is fullscreen — compositor state, not tree
+    /// shape — while the arrange pass needs the *node*, which is sway's `workspace->fullscreen`
+    /// and the thing that decides whether the tiled tree gets laid out at all. Left to
+    /// separate assignments the two disagree for exactly as long as it takes something to
+    /// arrange in between.
+    fn set_fullscreen_window(&mut self, window: Option<W::Id>) {
+        self.fullscreen_window = window;
+        self.publish_fullscreen_key();
+    }
+
+    fn publish_fullscreen_key(&mut self) {
+        let key = self
+            .fullscreen_window
+            .as_ref()
+            .and_then(|id| self.tree.window_key(id));
+        self.tree.set_fullscreen_key(key);
     }
 
     pub fn set_maximized(&mut self, window: &W::Id, maximize: bool) -> bool {

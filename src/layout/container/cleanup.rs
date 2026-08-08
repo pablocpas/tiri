@@ -110,26 +110,21 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         let taken = child.children.clone();
         let child_focus = child.focus_stack.clone();
-        let mut shares = child.child_percents_slice().to_vec();
-        if shares.len() != taken.len() {
-            shares = vec![1.0 / taken.len().max(1) as f64; taken.len()];
-        }
+        let child_fractions = child.fractions.clone();
         if taken.is_empty() {
             return 0;
         }
 
         if let Some(parent) = self.get_container_mut(parent_key) {
-            let shares_were_consistent = parent.child_percents.len() == parent.children.len();
-            parent.children.remove(idx);
-            if shares_were_consistent {
-                parent.child_percents.remove(idx);
-            }
-            for (grandchild, share) in taken.iter().zip(&shares) {
-                parent.children.insert(idx, *grandchild);
-                if shares_were_consistent {
-                    parent.child_percents.insert(idx, *share);
-                }
-            }
+            let old_len = parent.children.len();
+            parent
+                .children
+                .splice(idx..=idx, taken.iter().rev().copied());
+
+            let fractions_were_consistent =
+                parent
+                    .fractions
+                    .splice_child(idx, old_len, &child_fractions);
 
             let mut focus = Vec::with_capacity(parent.focus_stack.len() + taken.len() - 1);
             for key in std::mem::take(&mut parent.focus_stack) {
@@ -141,9 +136,8 @@ impl<W: LayoutElement> ContainerTree<W> {
             }
             parent.focus_stack = focus;
 
-            if shares_were_consistent {
-                parent.normalize_child_percents();
-            } else {
+            if !fractions_were_consistent {
+                parent.fractions.resize_unset(parent.children.len());
                 parent.recalculate_percentages();
             }
             parent.ensure_focus_stack();
@@ -218,25 +212,9 @@ impl<W: LayoutElement> ContainerTree<W> {
         } else {
             self.get_node_key_at_path(parent_path)?
         };
-        let child_idx = *path.last().unwrap();
 
         let mut container = ContainerData::new(layout);
         container.mark_user_created();
-        container.add_child(key);
-        let container_key = self.insert_node(NodeData::Container(container));
-        self.set_parent(key, Some(container_key));
-
-        if let Some(parent) = self.get_container_mut(parent_key) {
-            parent.children[child_idx] = container_key;
-            if let Some(pos) = parent.focus_stack.iter().position(|k| *k == key) {
-                parent.focus_stack[pos] = container_key;
-            } else if !parent.focus_stack.contains(&container_key) {
-                parent.focus_stack.push(container_key);
-            }
-            parent.ensure_focus_stack();
-        }
-
-        self.set_parent(container_key, Some(parent_key));
-        Some(container_key)
+        self.wrap_child_in_new_container(parent_key, key, container)
     }
 }

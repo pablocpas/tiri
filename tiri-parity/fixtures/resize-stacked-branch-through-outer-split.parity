@@ -1,0 +1,49 @@
+# A directional resize from a leaf inside stacking targets the stacking branch in the
+# nearest outer split which has a neighbour on that edge.
+# recorded from sway version 1.12-8886939 (Aug  5 2026, branch 'HEAD')
+# client 400x285
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ split v
+workspace splitv focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splitv focus=2
+  window 1 0.000,0.000 1.000x0.500
+  window 2 0.000,0.500 1.000x0.500
+
+$ resize grow up 150 px
+workspace splitv focus=2
+  window 1 0.000,0.000 1.000x0.292
+  window 2 0.000,0.292 1.000x0.708
+
+$ split h
+workspace splitv focus=2
+  window 1 0.000,0.000 1.000x0.292
+  splith 0.000,0.292 1.000x0.708
+    window 2 0.000,0.292 1.000x0.708
+
+$ open
+workspace splitv focus=3
+  window 1 0.000,0.000 1.000x0.292
+  splith 0.000,0.292 1.000x0.708
+    window 2 0.000,0.292 0.500x0.708
+    window 3 0.500,0.292 0.500x0.708
+
+$ layout stacking
+workspace splitv focus=3
+  window 1 0.000,0.000 1.000x0.292
+  stacked 0.000,0.292 1.000x0.708
+    window 2 0.000,0.356 1.000x0.644 hidden
+    window 3 0.000,0.356 1.000x0.644
+
+$ resize grow up 150 px
+workspace splitv focus=3
+  window 1 0.000,0.000 1.000x0.083
+  stacked 0.000,0.083 1.000x0.917
+    window 2 0.000,0.147 1.000x0.853 hidden
+    window 3 0.000,0.147 1.000x0.853

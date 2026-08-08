@@ -103,6 +103,41 @@ mod tests;
 /// Size changes up to this many pixels don't animate.
 pub const RESIZE_ANIMATION_THRESHOLD: f64 = 10.;
 
+/// Axis selected by a non-directional resize command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResizeAxis {
+    Horizontal,
+    Vertical,
+}
+
+/// A complete keyboard/IPC resize request.
+///
+/// Axis requests can set or adjust a size and, for tiled windows, share the change across all
+/// siblings. Edge requests are signed pixel adjustments and move only the named edge.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ResizeRequest {
+    Axis {
+        axis: ResizeAxis,
+        change: SizeChange,
+    },
+    Edge {
+        direction: Direction,
+        amount: i32,
+    },
+}
+
+impl ResizeRequest {
+    pub(crate) fn axis(self) -> ResizeAxis {
+        match self {
+            Self::Axis { axis, .. } => axis,
+            Self::Edge { direction, .. } => match direction {
+                Direction::Left | Direction::Right => ResizeAxis::Horizontal,
+                Direction::Up | Direction::Down => ResizeAxis::Vertical,
+            },
+        }
+    }
+}
+
 /// Pointer distance to count as a resize edge.
 const RESIZE_EDGE_THRESHOLD: f64 = 10.;
 
@@ -4366,49 +4401,26 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn set_window_width(&mut self, window: Option<&W::Id>, change: SizeChange) {
-        if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            if window.is_none() || window == Some(move_.tile.window().id()) {
-                return;
-            }
-        }
-
-        let workspace = if let Some(window) = window {
-            self.workspaces_mut().find(|ws| ws.has_window(window))
-        } else {
-            self.active_workspace_mut()
-        };
-
-        let Some(workspace) = workspace else {
-            return;
-        };
-        workspace.set_window_width(window, change);
+        self.resize_window(
+            window,
+            ResizeRequest::Axis {
+                axis: ResizeAxis::Horizontal,
+                change,
+            },
+        );
     }
 
     pub fn set_window_height(&mut self, window: Option<&W::Id>, change: SizeChange) {
-        if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            if window.is_none() || window == Some(move_.tile.window().id()) {
-                return;
-            }
-        }
-
-        let workspace = if let Some(window) = window {
-            self.workspaces_mut().find(|ws| ws.has_window(window))
-        } else {
-            self.active_workspace_mut()
-        };
-
-        let Some(workspace) = workspace else {
-            return;
-        };
-        workspace.set_window_height(window, change);
+        self.resize_window(
+            window,
+            ResizeRequest::Axis {
+                axis: ResizeAxis::Vertical,
+                change,
+            },
+        );
     }
 
-    pub fn resize_window_edge(
-        &mut self,
-        window: Option<&W::Id>,
-        change: SizeChange,
-        direction: Direction,
-    ) {
+    pub fn resize_window(&mut self, window: Option<&W::Id>, request: ResizeRequest) {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if window.is_none() || window == Some(move_.tile.window().id()) {
                 return;
@@ -4424,7 +4436,7 @@ impl<W: LayoutElement> Layout<W> {
         let Some(workspace) = workspace else {
             return;
         };
-        workspace.resize_window_edge(window, change, direction);
+        workspace.resize_window(window, request);
     }
 
     pub fn reset_window_height(&mut self, window: Option<&W::Id>) {

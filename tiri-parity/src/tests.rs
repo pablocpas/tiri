@@ -28,6 +28,50 @@ fn tiri_order(ids: &[(u64, u32)]) -> tiri::OpenOrder {
     ids.iter().copied().collect::<HashMap<_, _>>()
 }
 
+/// Re-measure the one move rule where sway and i3 intentionally differ.
+///
+/// This is opt-in because it needs the system `i3`, `i3-msg`, `Xvfb`, and `xmessage`
+/// binaries. Unlike a source-level assertion, it asks a released i3 what it actually lays
+/// out, on an isolated X server, and therefore catches both mistaken readings and future
+/// behaviour changes.
+#[test]
+fn released_i3_invalidates_the_promoted_window_fraction() {
+    if std::env::var_os("RUN_I3_PARITY").is_none() {
+        eprintln!("set RUN_I3_PARITY=1 to run this; it needs i3 and Xvfb on the machine");
+        return;
+    }
+
+    let script = [
+        "open",
+        "open",
+        "open",
+        "split h",
+        "open",
+        "move left",
+        "move right",
+        "move right",
+    ]
+    .map(str::to_owned);
+
+    let mut i3 = crate::session::I3::start().expect("cannot start headless i3");
+    i3.reset().expect("cannot reset headless i3");
+    let result = i3.run(&script);
+    i3.stop();
+    let steps = result.expect("cannot run the fraction script against i3");
+    let final_state = &steps.last().expect("the script produced no observations").1;
+
+    assert_eq!(
+        final_state.render(),
+        "workspace splith focus=4\n\
+         \x20 window 1 0.000,0.000 0.250x1.000\n\
+         \x20 window 2 0.250,0.000 0.250x1.000\n\
+         \x20 splith 0.500,0.000 0.250x1.000\n\
+         \x20   window 3 0.500,0.000 0.250x1.000\n\
+         \x20 window 4 0.750,0.000 0.250x1.000\n",
+        "i3 no longer follows the equal-share rule documented for this promotion"
+    );
+}
+
 fn leaf(window_id: u64, focused: bool, rect: LayoutTreeRect) -> LayoutTreeNode {
     LayoutTreeNode {
         path: Vec::new(),
@@ -124,6 +168,35 @@ fn sway_workspace_orientation_becomes_the_workspace_layout() {
         "workspace splitv focus=2\n\
          \x20 window 1 0.000,0.000 1.000x0.500\n\
          \x20 window 2 0.000,0.500 1.000x0.500\n"
+    );
+}
+
+#[test]
+fn i3_focus_stack_identifies_the_visible_tab() {
+    // i3 has no sway-style `visible` field. In tabbed/stacked containers, the first child
+    // in the parent's focus stack is the one it renders.
+    let json = r#"
+    {"id":1,"type":"root","layout":"splith","focused":false,
+     "rect":{"x":0,"y":0,"width":1280,"height":720},"nodes":[
+      {"id":2,"type":"output","layout":"output","focused":false,
+       "rect":{"x":0,"y":0,"width":1280,"height":720},"nodes":[
+       {"id":3,"type":"workspace","name":"1","layout":"tabbed","focused":false,
+        "focus":[6,5],"rect":{"x":0,"y":0,"width":1280,"height":720},"nodes":[
+        {"id":5,"type":"con","layout":"none","focused":false,
+         "rect":{"x":0,"y":0,"width":1280,"height":720},"nodes":[]},
+        {"id":6,"type":"con","layout":"none","focused":true,
+         "rect":{"x":0,"y":0,"width":1280,"height":720},"nodes":[]}
+       ]}
+      ]}
+     ]}
+    "#;
+
+    let ws = sway::normalize(json, &sway_order(&[(5, 1), (6, 2)])).unwrap();
+    assert_eq!(
+        ws.render(),
+        "workspace tabbed focus=2\n\
+         \x20 window 1 0.000,0.000 1.000x1.000 hidden\n\
+         \x20 window 2 0.000,0.000 1.000x1.000\n"
     );
 }
 
@@ -447,6 +520,7 @@ fn the_fixture_format_does_not_lose_enough_precision_to_matter() {
 fn a_fixture_round_trips_and_yields_its_script() {
     let text = "\
 # recorded from sway 1.11
+# client 400x285
 
 $ open
 workspace splith focus=1

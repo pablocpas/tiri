@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use super::{ContainerTree, LayoutElement, LeafLayoutInfo, NodeData, NodeKey};
+use super::{ContainerTree, Layout, LayoutElement, LeafLayoutInfo, NodeData, NodeKey};
 
 impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn verify_invariants(&self) {
@@ -122,9 +122,14 @@ impl<W: LayoutElement> ContainerTree<W> {
                 let child_count = container.child_count();
                 assert!(child_count > 0, "container nodes must not be empty");
                 assert_eq!(
-                    container.child_percents_slice().len(),
+                    container.fractions.horizontal.len(),
                     child_count,
-                    "child_percents length must match child count"
+                    "horizontal fractions length must match child count"
+                );
+                assert_eq!(
+                    container.fractions.vertical.len(),
+                    child_count,
+                    "vertical fractions length must match child count"
                 );
                 assert_eq!(
                     container.focus_stack.len(),
@@ -156,18 +161,26 @@ impl<W: LayoutElement> ContainerTree<W> {
                     );
                 }
 
-                let mut percent_sum = 0.0;
-                for percent in container.child_percents_slice() {
-                    assert!(
-                        percent.is_finite() && *percent >= 0.0,
-                        "child percents must be finite and non-negative"
-                    );
-                    percent_sum += *percent;
+                for (axis, fractions) in [
+                    ("horizontal", &container.fractions.horizontal),
+                    ("vertical", &container.fractions.vertical),
+                ] {
+                    for percent in fractions {
+                        assert!(
+                            percent.is_finite() && *percent >= 0.0,
+                            "{axis} fractions must be finite and non-negative"
+                        );
+                    }
                 }
-                assert!(
-                    (percent_sum - 1.0).abs() <= 0.000_001,
-                    "child percents must be normalized"
-                );
+                if matches!(container.layout, Layout::SplitH | Layout::SplitV) {
+                    let percent_sum: f64 = container.child_percents_slice().iter().sum();
+                    assert!(
+                        (percent_sum - 1.0).abs() <= 0.000_001,
+                        "active split child percents must be normalized: layout={:?} fractions={:?}",
+                        container.layout,
+                        container.child_percents_slice(),
+                    );
+                }
 
                 for child in container.children() {
                     self.verify_node(*child, Some(key), visited, leaves);

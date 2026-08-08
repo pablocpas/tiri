@@ -85,7 +85,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     is_sticky: tile.is_sticky(),
                     is_scratchpad: tile.is_scratchpad(),
                     marks: tile.marks().to_vec(),
-                    rect: self.node_rect(node_key, &path[path_prefix_len..], offset),
+                    rect: self.node_rect(node_key, offset),
                     percent,
                     children: Vec::new(),
                 }
@@ -123,7 +123,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     is_sticky: children.iter().any(|child| child.is_sticky),
                     is_scratchpad: children.iter().any(|child| child.is_scratchpad),
                     marks: Vec::new(),
-                    rect: self.node_rect(node_key, &path[path_prefix_len..], offset),
+                    rect: self.node_rect(node_key, offset),
                     percent,
                     children,
                 }
@@ -149,25 +149,20 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    fn node_rect(
-        &self,
-        node_key: NodeKey,
-        path: &[usize],
-        offset: Point<f64, Logical>,
-    ) -> Option<LayoutTreeRect> {
+    fn node_rect(&self, node_key: NodeKey, offset: Point<f64, Logical>) -> Option<LayoutTreeRect> {
+        // Both kinds answer with the box they are holding, and a node that has never been
+        // arranged is holding none. sway's `container_create` zeroes `pending` and only
+        // `arrange` ever fills it in, so a container built while a fullscreen is up — or a
+        // window opened into one — reports 0x0 for as long as that lasts. Working the
+        // rectangle out from the parent instead answers where the node *will* be, which is a
+        // different question and one nothing asked.
         let rect = match self.get_node(node_key)? {
             NodeData::Leaf(_) => self
                 .leaf_layouts()
                 .iter()
                 .find(|info| info.key == node_key)
                 .map(|info| info.rect)
-                .or_else(|| {
-                    if path.is_empty() {
-                        return Some(self.layout_area());
-                    }
-                    let (&child_idx, parent_path) = path.split_last()?;
-                    self.child_rect_in(self.node_at_path(parent_path)?, child_idx)
-                })?,
+                .unwrap_or_default(),
             NodeData::Container(container) => container.geometry(),
         };
 

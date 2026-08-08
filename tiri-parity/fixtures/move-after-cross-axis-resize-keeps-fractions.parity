@@ -1,0 +1,39 @@
+# A move that dissolves a horizontal wrapper keeps the vertical fractions its children had
+# before that wrapper was introduced.
+# recorded from sway version 1.12-8886939 (Aug  5 2026, branch 'HEAD')
+# client 400x285
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ layout toggle split
+workspace splith focus=1
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splith focus=2
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.500
+    window 2 0.000,0.500 1.000x0.500
+
+$ split h
+workspace splith focus=2
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.500
+    splith 0.000,0.500 1.000x0.500
+      window 2 0.000,0.500 1.000x0.500
+
+$ resize set height 400 px
+workspace splith focus=2
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.444
+    splith 0.000,0.444 1.000x0.556
+      window 2 0.000,0.444 1.000x0.556
+
+$ move down
+workspace splith focus=2
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.471
+    window 2 0.000,0.471 1.000x0.529

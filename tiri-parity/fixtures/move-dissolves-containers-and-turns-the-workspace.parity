@@ -1,5 +1,5 @@
 # the same, reached after a close, so the workspace turns as well
-# recorded from sway version 1.11
+# recorded from sway version 1.12-8886939 (Aug  5 2026, branch 'HEAD')
 # client 400x285
 
 $ open
@@ -18,13 +18,13 @@ workspace splith focus=1
 $ layout tabbed
 workspace splith focus=1
   tabbed 0.000,0.000 1.000x1.000
-    window 1 0.000,0.037 1.000x0.963
+    window 1 0.000,0.032 1.000x0.968
 
 $ split h
 workspace splith focus=1
   tabbed 0.000,0.000 1.000x1.000
-    splith 0.000,0.075 1.000x0.925
-      window 1 0.000,0.037 1.000x0.963
+    splith 0.000,0.064 1.000x0.936
+      window 1 0.000,0.032 1.000x0.968
 
 $ move down
 workspace splitv focus=1

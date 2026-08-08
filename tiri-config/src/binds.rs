@@ -338,6 +338,14 @@ pub enum Action {
     ResizeShrinkWidth,
     ResizeGrowHeight,
     ResizeShrinkHeight,
+    ResizeGrowLeft,
+    ResizeShrinkLeft,
+    ResizeGrowRight,
+    ResizeShrinkRight,
+    ResizeGrowUp,
+    ResizeShrinkUp,
+    ResizeGrowDown,
+    ResizeShrinkDown,
     FocusParent,
     FocusChild,
     SplitHorizontal,
@@ -701,6 +709,18 @@ impl From<tiri_ipc::Action> for Action {
             | tiri_ipc::Action::MoveContainerToMonitor { output } => {
                 Self::MoveContainerToMonitor(output)
             }
+            tiri_ipc::Action::ResizeGrowWidth {} => Self::ResizeGrowWidth,
+            tiri_ipc::Action::ResizeShrinkWidth {} => Self::ResizeShrinkWidth,
+            tiri_ipc::Action::ResizeGrowHeight {} => Self::ResizeGrowHeight,
+            tiri_ipc::Action::ResizeShrinkHeight {} => Self::ResizeShrinkHeight,
+            tiri_ipc::Action::ResizeGrowLeft {} => Self::ResizeGrowLeft,
+            tiri_ipc::Action::ResizeShrinkLeft {} => Self::ResizeShrinkLeft,
+            tiri_ipc::Action::ResizeGrowRight {} => Self::ResizeGrowRight,
+            tiri_ipc::Action::ResizeShrinkRight {} => Self::ResizeShrinkRight,
+            tiri_ipc::Action::ResizeGrowUp {} => Self::ResizeGrowUp,
+            tiri_ipc::Action::ResizeShrinkUp {} => Self::ResizeShrinkUp,
+            tiri_ipc::Action::ResizeGrowDown {} => Self::ResizeGrowDown,
+            tiri_ipc::Action::ResizeShrinkDown {} => Self::ResizeShrinkDown,
             tiri_ipc::Action::SetWindowWidth { id: None, change } => Self::SetWindowWidth(change),
             tiri_ipc::Action::SetWindowWidth {
                 id: Some(id),
@@ -1255,6 +1275,40 @@ impl FromStr for Key {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_directional_resize_actions() {
+        let config = crate::Config::parse_mem(
+            r#"
+binds {
+    A { resize-grow-left; }
+    B { resize-shrink-left; }
+    C { resize-grow-right; }
+    D { resize-shrink-right; }
+    E { resize-grow-up; }
+    F { resize-shrink-up; }
+    G { resize-grow-down; }
+    H { resize-shrink-down; }
+}
+"#,
+        )
+        .unwrap();
+
+        let actions: Vec<_> = config.binds.0.into_iter().map(|bind| bind.action).collect();
+        assert_eq!(
+            actions,
+            [
+                Action::ResizeGrowLeft,
+                Action::ResizeShrinkLeft,
+                Action::ResizeGrowRight,
+                Action::ResizeShrinkRight,
+                Action::ResizeGrowUp,
+                Action::ResizeShrinkUp,
+                Action::ResizeGrowDown,
+                Action::ResizeShrinkDown,
+            ]
+        );
+    }
 
     #[test]
     fn parse_xf86_screensaver() {

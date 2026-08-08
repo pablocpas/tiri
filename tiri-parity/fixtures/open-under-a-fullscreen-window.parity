@@ -1,0 +1,19 @@
+# A window opened while a fullscreen is up is never laid out, so it has no box.
+# Found by the fuzz in eleven scripts, the leaf side of the rule the three container
+# fixtures pinned down: sway's arrange gives the fullscreen node the output and returns,
+# and `container_create` leaves everything it did not visit at zero.
+# recorded from sway version 1.12-8886939 (Aug  5 2026, branch 'HEAD')
+# client 400x285
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ fullscreen toggle
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+  window 2 0.000,0.000 0.000x0.000 hidden

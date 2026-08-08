@@ -71,6 +71,17 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.sync_container_focus_from_key(leaf_key);
     }
 
+    /// Move logical/seat focus without changing the active branch of any switcher container.
+    ///
+    /// This deliberately is not a general focus operation. Sway uses it for one move outcome:
+    /// the moved view keeps seat focus while the sibling tab/stack selected during tree surgery
+    /// remains visible.
+    pub(super) fn set_seat_focus_preserving_switcher(&mut self, leaf_key: NodeKey) {
+        if matches!(self.get_node(leaf_key), Some(NodeData::Leaf(_))) {
+            self.focused_key = Some(leaf_key);
+        }
+    }
+
     /// Find a node by key and return path to it.
     pub(super) fn find_node_path(&self, target_key: NodeKey) -> Option<Vec<usize>> {
         let root_key = self.root;

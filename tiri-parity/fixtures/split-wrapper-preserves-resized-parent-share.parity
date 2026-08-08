@@ -1,0 +1,37 @@
+# Wrapping a resized window in a split keeps its share in the parent
+# recorded from sway version 1.12-8886939 (Aug  5 2026, branch 'HEAD')
+# client 400x285
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splith focus=2
+  window 1 0.000,0.000 0.500x1.000
+  window 2 0.500,0.000 0.500x1.000
+
+$ layout toggle split
+workspace splith focus=2
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.500
+    window 2 0.000,0.500 1.000x0.500
+
+$ move up
+workspace splith focus=2
+  splitv 0.000,0.000 1.000x1.000
+    window 2 0.000,0.000 1.000x0.500
+    window 1 0.000,0.500 1.000x0.500
+
+$ resize shrink down 100 px
+workspace splith focus=2
+  splitv 0.000,0.000 1.000x1.000
+    window 2 0.000,0.000 1.000x0.361
+    window 1 0.000,0.361 1.000x0.639
+
+$ split h
+workspace splith focus=2
+  splitv 0.000,0.000 1.000x1.000
+    splith 0.000,0.000 1.000x0.361
+      window 2 0.000,0.000 1.000x0.361
+    window 1 0.000,0.361 1.000x0.639

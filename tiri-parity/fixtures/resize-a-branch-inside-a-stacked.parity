@@ -1,0 +1,90 @@
+# `resize set height` on a container nested inside a stacked one. Found by the tree-only
+# fuzz, eleven commands deep — the first thing it finds with floating and fullscreen both
+# out of the vocabulary.
+#
+# sway's answer is three boxes that do not fit inside each other: the stacked keeps the
+# height it had, its splitv child takes the new one, and the windows keep a third. Recorded
+# three times to the same numbers before being written down.
+# recorded from sway version 1.12-8886939 (Aug  5 2026, branch 'HEAD')
+# client 400x285
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splith focus=2
+  window 1 0.000,0.000 0.500x1.000
+  window 2 0.500,0.000 0.500x1.000
+
+$ layout stacking
+workspace splith focus=2
+  stacked 0.000,0.000 1.000x1.000
+    window 1 0.000,0.064 1.000x0.936 hidden
+    window 2 0.000,0.064 1.000x0.936
+
+$ focus next
+workspace splith focus=1
+  stacked 0.000,0.000 1.000x1.000
+    window 1 0.000,0.064 1.000x0.936
+    window 2 0.000,0.064 1.000x0.936 hidden
+
+$ open
+workspace splith focus=3
+  stacked 0.000,0.000 1.000x1.000
+    window 1 0.000,0.096 1.000x0.904 hidden
+    window 3 0.000,0.096 1.000x0.904
+    window 2 0.000,0.096 1.000x0.904 hidden
+
+$ focus up
+workspace splith focus=1
+  stacked 0.000,0.000 1.000x1.000
+    window 1 0.000,0.096 1.000x0.904
+    window 3 0.000,0.096 1.000x0.904 hidden
+    window 2 0.000,0.096 1.000x0.904 hidden
+
+$ move up
+workspace splitv focus=1
+  window 1 0.000,0.000 1.000x0.500
+  splith 0.000,0.500 1.000x0.500
+    stacked 0.000,0.500 1.000x0.500
+      window 3 0.000,0.564 1.000x0.436
+      window 2 0.000,0.564 1.000x0.436 hidden
+
+$ open
+workspace splitv focus=4
+  window 1 0.000,0.000 1.000x0.333
+  window 4 0.000,0.333 1.000x0.333
+  splith 0.000,0.667 1.000x0.333
+    stacked 0.000,0.667 1.000x0.333
+      window 3 0.000,0.731 1.000x0.269
+      window 2 0.000,0.731 1.000x0.269 hidden
+
+$ move down
+workspace splitv focus=4
+  window 1 0.000,0.000 1.000x0.500
+  splith 0.000,0.500 1.000x0.500
+    stacked 0.000,0.500 1.000x0.500
+      window 4 0.000,0.596 1.000x0.404
+      window 3 0.000,0.596 1.000x0.404 hidden
+      window 2 0.000,0.596 1.000x0.404 hidden
+
+$ split v
+workspace splitv focus=4
+  window 1 0.000,0.000 1.000x0.500
+  splith 0.000,0.500 1.000x0.500
+    stacked 0.000,0.500 1.000x0.500
+      splitv 0.000,0.692 1.000x0.308
+        window 4 0.000,0.596 1.000x0.404
+      window 3 0.000,0.596 1.000x0.404 hidden
+      window 2 0.000,0.596 1.000x0.404 hidden
+
+$ resize set height 400 px
+workspace splitv focus=4
+  window 1 0.000,0.000 1.000x0.349
+  splith 0.000,0.349 1.000x0.651
+    stacked 0.000,0.349 1.000x0.651
+      splitv 0.000,0.540 1.000x0.460
+        window 4 0.000,0.444 1.000x0.556
+      window 3 0.000,0.444 1.000x0.556 hidden
+      window 2 0.000,0.444 1.000x0.556 hidden

@@ -1,5 +1,5 @@
 # resize where the axis is not the parent's: it has to find the ancestor that is
-# recorded from sway version 1.11
+# recorded from sway version 1.12-8886939 (Aug  5 2026, branch 'HEAD')
 # client 400x285
 
 $ open

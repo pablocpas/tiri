@@ -28,7 +28,7 @@ use super::tile::{Tile, TileRenderSnapshot};
 use super::tiling::{RootTilingSubtree, TilingSpace, TilingSpaceRenderElement};
 use super::{
     ActivateWindow, HitType, InsertPosition, InteractiveResizeData, LayoutElement, Options,
-    RemovedTile, ResizeHit, SizeFrac,
+    RemovedTile, ResizeHit, ResizeRequest, SizeFrac,
 };
 use crate::animation::Clock;
 use crate::niri_render_elements;
@@ -566,15 +566,18 @@ impl<W: LayoutElement> Workspace<W> {
 
         // sway's `floating_natural_resize`: the window gets the size it asked for when it
         // mapped, not a fraction of anything. `container_floating_resize_and_center` then
-        // centres it, which is what the caller already does. The working area is only the
-        // ceiling — sway's `floating_maximum_size` defaults to the workspace.
-        // `floating_calculate_constraints`, on its automatic settings: a floor of 75 by 50
-        // whatever the client asked for, and the output as the ceiling. The floor is applied
-        // last, as sway applies it, so it wins on an output too small to hold it.
-        let working_size = self.floating.working_area().size;
+        // centres it, which is what the caller already does.
+        //
+        // The bounds are `floating_calculate_constraints` on its automatic settings: a floor
+        // of 75 by 50 whatever the client asked for, and as the ceiling the box of the whole
+        // output layout — `wlr_output_layout_get_box(root->output_layout, NULL, &box)`, which
+        // is the output itself here and *not* the working area, since gaps and layer-shell
+        // exclusive zones are not part of it. The floor is applied outside the ceiling, as
+        // sway applies it, so it wins on an output too small to hold it.
+        let view_size = self.floating.view_size();
         let mut size = tile.window().natural_size();
-        size.w = size.w.min(working_size.w.floor() as i32).max(75);
-        size.h = size.h.min(working_size.h.floor() as i32).max(50);
+        size.w = size.w.min(view_size.w.floor() as i32).max(75);
+        size.h = size.h.min(view_size.h.floor() as i32).max(50);
 
         // Respect min/max size constraints from the window.
         let min_size = tile.window().min_size();
@@ -2222,32 +2225,32 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn set_window_width(&mut self, window: Option<&W::Id>, change: SizeChange) {
-        self.dispatch_for_window(
+        self.resize_window(
             window,
-            |f| f.set_window_width(window, change, true),
-            |t| t.set_window_width(window, change),
+            ResizeRequest::Axis {
+                axis: super::ResizeAxis::Horizontal,
+                change,
+            },
         );
     }
 
     pub fn set_window_height(&mut self, window: Option<&W::Id>, change: SizeChange) {
-        self.dispatch_for_window(
+        self.resize_window(
             window,
-            |f| f.set_window_height(window, change, true),
-            |t| t.set_window_height(window, change),
+            ResizeRequest::Axis {
+                axis: super::ResizeAxis::Vertical,
+                change,
+            },
         );
     }
 
-    /// sway's `resize grow|shrink <edge>`: the same resize, taking from one side only.
-    ///
-    /// Floating windows have no neighbour to take from, so the edge form is tiling's alone —
-    /// which is why this is the one resize that does not go through `dispatch_for_window`.
-    pub fn resize_window_edge(
-        &mut self,
-        window: Option<&W::Id>,
-        change: SizeChange,
-        direction: Direction,
-    ) {
-        self.tiling.resize_window_edge(window, change, direction);
+    /// Route one semantic resize request to the active layer.
+    pub fn resize_window(&mut self, window: Option<&W::Id>, request: ResizeRequest) {
+        self.dispatch_for_window(
+            window,
+            |f| f.resize_window(window, request),
+            |t| t.resize_window(window, request),
+        );
     }
 
     pub fn reset_window_height(&mut self, window: Option<&W::Id>) {

@@ -1,5 +1,5 @@
 # sway 1.12 makes every sibling pay an equal share when an axis is resized
-# recorded from sway version 1.12 source-derived container_resize_tiled
+# recorded from sway version 1.12-8886939 (Aug  5 2026, branch 'HEAD')
 # client 400x285
 
 $ open
@@ -42,5 +42,5 @@ $ resize grow width 200 px
 workspace splith focus=2
   window 1 0.000,0.000 0.198x1.000
   window 2 0.198,0.000 0.406x1.000
-  window 3 0.605,0.000 0.198x1.000
+  window 3 0.604,0.000 0.198x1.000
   window 4 0.802,0.000 0.198x1.000

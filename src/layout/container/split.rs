@@ -49,6 +49,16 @@ impl<W: LayoutElement> ContainerTree<W> {
         target: TreeCommandTarget,
         root_policy: RootPolicy,
     ) -> bool {
+        self.flatten_layout_parent_once(target, root_policy);
+        self.set_layout_for_prepared_target(layout, target, root_policy)
+    }
+
+    fn set_layout_for_prepared_target(
+        &mut self,
+        layout: Layout,
+        target: TreeCommandTarget,
+        root_policy: RootPolicy,
+    ) -> bool {
         match target {
             // The workspace itself is selected, so it takes the layout. No container is
             // built: the workspace is the container, and it remembers the split it was on
@@ -65,6 +75,52 @@ impl<W: LayoutElement> ContainerTree<W> {
                 self.set_focused_layout_with_policy(layout, root_policy)
             }
         }
+    }
+
+    /// Sway 1.12's one-off flatten at the start of `cmd_layout`.
+    ///
+    /// If the container whose layout the command would change is alone in another real
+    /// container, and itself has only one child, remove the inner level. The command then
+    /// lands on its parent. This is deliberately one operation, not tree normalization:
+    /// deeper single-child chains remain, just as they do in i3 and sway.
+    fn flatten_layout_parent_once(&mut self, target: TreeCommandTarget, root_policy: RootPolicy) {
+        let Some(container_key) = self.layout_container_key_for_target(target, root_policy) else {
+            return;
+        };
+        let Some(child_key) = self
+            .get_container(container_key)
+            .filter(|container| container.child_count() == 1)
+            .and_then(ContainerData::focused_child_key)
+        else {
+            return;
+        };
+        let Some(parent_key) = self.parent_of(container_key) else {
+            return;
+        };
+
+        // Tiri represents the workspace with a root ContainerData. Sway's workspace is a
+        // different type and is not the `pending.parent` tested by cmd_layout, so it must
+        // not satisfy the outer-container half of this rule.
+        if root_policy == RootPolicy::ImplicitWorkspace && parent_key == self.root {
+            return;
+        }
+        let Some(_) = self
+            .get_container(parent_key)
+            .filter(|parent| parent.child_count() == 1)
+        else {
+            return;
+        };
+        if !self.replace_child_node(parent_key, container_key, child_key) {
+            return;
+        }
+        if self.selected_key == Some(container_key) {
+            self.selected_key = Some(child_key);
+        }
+        if self.focused_key == Some(container_key) {
+            self.focused_key = Some(child_key);
+        }
+        self.nodes.remove(container_key);
+        self.parents.remove(container_key);
     }
 
     pub(super) fn layout_container_key_for_target(
@@ -140,7 +196,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     ) -> Option<NodeKey> {
         let root_key = self.root;
 
-        let (old_children, old_focus_stack, old_child_percents, root_geometry) = {
+        let (old_children, old_focus_stack, old_fractions) = {
             let root = self.get_container_mut(root_key)?;
             if root.children.is_empty() {
                 return None;
@@ -149,17 +205,22 @@ impl<W: LayoutElement> ContainerTree<W> {
             (
                 std::mem::take(&mut root.children),
                 std::mem::take(&mut root.focus_stack),
-                std::mem::take(&mut root.child_percents),
-                root.geometry,
+                std::mem::take(&mut root.fractions),
             )
         };
 
         let mut wrapper = ContainerData::new(wrapper_layout);
         wrapper.children = old_children;
         wrapper.focus_stack = old_focus_stack;
-        wrapper.child_percents = old_child_percents;
-        wrapper.geometry = root_geometry;
+        wrapper.fractions = old_fractions;
+        wrapper.set_layout(wrapper_layout);
+        wrapper.resolve_child_percents();
         wrapper.ensure_focus_stack();
+        // No box. `workspace_wrap_children` builds the wrapper with `container_create`, which
+        // zeroes `pending`, and hands it nothing but the workspace's layout — the box arrives
+        // when the workspace is next arranged. Copying the workspace's in advance was
+        // invisible for as long as the arrange always followed; it stops being invisible the
+        // moment there is a fullscreen and the arrange does not descend.
 
         let wrapper_children = wrapper.children.clone();
         let wrapper_key = self.insert_node(NodeData::Container(wrapper));
@@ -168,10 +229,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         let root = self.get_container_mut(root_key)?;
-        root.layout = root_layout;
-        root.children.push(wrapper_key);
-        root.focus_stack.push(wrapper_key);
-        root.child_percents.push(1.0);
+        root.set_layout(root_layout);
+        root.insert_child(0, wrapper_key);
         root.ensure_focus_stack();
         self.set_parent(wrapper_key, Some(root_key));
 
@@ -215,25 +274,18 @@ impl<W: LayoutElement> ContainerTree<W> {
             return true;
         }
 
-        let Some(child_idx) = self.child_index(parent_key, selected_key) else {
+        if self.child_index(parent_key, selected_key).is_none() {
             return false;
-        };
-
-        if let Some(parent) = self.get_container_mut(parent_key) {
-            parent.remove_child(child_idx);
         }
-        self.set_parent(selected_key, None);
 
         let mut wrapper = ContainerData::new(layout);
         wrapper.mark_user_created();
-        wrapper.add_child(selected_key);
-        let wrapper_key = self.insert_node(NodeData::Container(wrapper));
-        self.set_parent(selected_key, Some(wrapper_key));
-
-        if let Some(parent) = self.get_container_mut(parent_key) {
-            parent.insert_child(child_idx, wrapper_key);
+        if self
+            .wrap_child_in_new_container(parent_key, selected_key, wrapper)
+            .is_none()
+        {
+            return false;
         }
-        self.set_parent(wrapper_key, Some(parent_key));
 
         // Keep command context on the originally selected container.
         self.selected_key = Some(selected_key);
@@ -371,14 +423,13 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         // Otherwise put the leaf inside a new explicit split container in its own slot.
-        let Some(child_idx) = self.child_index(parent_key, focused_key) else {
+        let mut wrapper = ContainerData::new(layout);
+        wrapper.mark_user_created();
+        if self
+            .wrap_child_in_new_container(parent_key, focused_key, wrapper)
+            .is_none()
+        {
             return false;
-        };
-        let Some(wrapper_key) = self.wrap_child_in_container(parent_key, child_idx, layout) else {
-            return false;
-        };
-        if let Some(wrapper) = self.get_container_mut(wrapper_key) {
-            wrapper.mark_user_created();
         }
 
         self.focus_node_key(focused_key);
@@ -456,6 +507,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         target: TreeCommandTarget,
         root_policy: RootPolicy,
     ) -> bool {
+        self.flatten_layout_parent_once(target, root_policy);
         let Some((source_key, current)) = self.toggle_source(target, root_policy) else {
             return false;
         };
@@ -469,6 +521,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         target: TreeCommandTarget,
         root_policy: RootPolicy,
     ) -> bool {
+        self.flatten_layout_parent_once(target, root_policy);
         let Some((source_key, current)) = self.toggle_source(target, root_policy) else {
             return false;
         };
@@ -495,7 +548,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                 .get_container_mut(key)
                 .map(|container| container.set_layout_explicit(layout))
                 .is_some(),
-            _ => self.set_layout_for_target(layout, target, root_policy),
+            _ => self.set_layout_for_prepared_target(layout, target, root_policy),
         }
     }
 

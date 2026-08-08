@@ -47,7 +47,9 @@ use self::spatial_movement_grab::SpatialMovementGrab;
 use crate::cursor::CursorOverride;
 #[cfg(feature = "dbus")]
 use crate::dbus::freedesktop_a11y::KbMonBlock;
-use crate::layout::{ActivateWindow, ContainerLayout, Direction, LayoutElement as _};
+use crate::layout::{
+    ActivateWindow, ContainerLayout, Direction, LayoutElement as _, ResizeAxis, ResizeRequest,
+};
 use crate::tiri::{CastTarget, PointerVisibility, State};
 use crate::ui::mru::{WindowMru, WindowMruUi};
 use crate::ui::screenshot_ui::ScreenshotUi;
@@ -77,10 +79,28 @@ pub struct TabletData {
     pub aspect_ratio: f64,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum ResizeAxis {
-    Horizontal,
-    Vertical,
+fn resize_request_for_action(action: &Action) -> Option<ResizeRequest> {
+    let axis = |axis, amount| ResizeRequest::Axis {
+        axis,
+        change: SizeChange::AdjustFixed(amount),
+    };
+    let edge = |direction, amount| ResizeRequest::Edge { direction, amount };
+
+    Some(match action {
+        Action::ResizeGrowWidth => axis(ResizeAxis::Horizontal, RESIZE_STEP),
+        Action::ResizeShrinkWidth => axis(ResizeAxis::Horizontal, -RESIZE_STEP),
+        Action::ResizeGrowHeight => axis(ResizeAxis::Vertical, RESIZE_STEP),
+        Action::ResizeShrinkHeight => axis(ResizeAxis::Vertical, -RESIZE_STEP),
+        Action::ResizeGrowLeft => edge(Direction::Left, RESIZE_STEP),
+        Action::ResizeShrinkLeft => edge(Direction::Left, -RESIZE_STEP),
+        Action::ResizeGrowRight => edge(Direction::Right, RESIZE_STEP),
+        Action::ResizeShrinkRight => edge(Direction::Right, -RESIZE_STEP),
+        Action::ResizeGrowUp => edge(Direction::Up, RESIZE_STEP),
+        Action::ResizeShrinkUp => edge(Direction::Up, -RESIZE_STEP),
+        Action::ResizeGrowDown => edge(Direction::Down, RESIZE_STEP),
+        Action::ResizeShrinkDown => edge(Direction::Down, -RESIZE_STEP),
+        _ => return None,
+    })
 }
 
 pub enum PointerOrTouchStartData<D: SeatHandler> {
@@ -2074,44 +2094,32 @@ impl State {
                     }
                 }
             }
-            Action::ResizeGrowWidth => {
+            action @ (Action::ResizeGrowWidth
+            | Action::ResizeShrinkWidth
+            | Action::ResizeGrowHeight
+            | Action::ResizeShrinkHeight
+            | Action::ResizeGrowLeft
+            | Action::ResizeShrinkLeft
+            | Action::ResizeGrowRight
+            | Action::ResizeShrinkRight
+            | Action::ResizeGrowUp
+            | Action::ResizeShrinkUp
+            | Action::ResizeGrowDown
+            | Action::ResizeShrinkDown) => {
+                let request = resize_request_for_action(&action)
+                    .expect("all keyboard resize actions must have a request");
                 if self.niri.screenshot_ui.is_open() {
-                    self.niri
-                        .screenshot_ui
-                        .set_width(SizeChange::AdjustFixed(RESIZE_STEP));
+                    let change = match request {
+                        ResizeRequest::Axis { change, .. } => change,
+                        ResizeRequest::Edge { amount, .. } => SizeChange::AdjustFixed(amount),
+                    };
+                    match request.axis() {
+                        ResizeAxis::Horizontal => self.niri.screenshot_ui.set_width(change),
+                        ResizeAxis::Vertical => self.niri.screenshot_ui.set_height(change),
+                    }
                     self.niri.queue_redraw_all();
                 } else {
-                    self.resize_focused_window_by_intent(ResizeAxis::Horizontal, true);
-                }
-            }
-            Action::ResizeShrinkWidth => {
-                if self.niri.screenshot_ui.is_open() {
-                    self.niri
-                        .screenshot_ui
-                        .set_width(SizeChange::AdjustFixed(-RESIZE_STEP));
-                    self.niri.queue_redraw_all();
-                } else {
-                    self.resize_focused_window_by_intent(ResizeAxis::Horizontal, false);
-                }
-            }
-            Action::ResizeGrowHeight => {
-                if self.niri.screenshot_ui.is_open() {
-                    self.niri
-                        .screenshot_ui
-                        .set_height(SizeChange::AdjustFixed(RESIZE_STEP));
-                    self.niri.queue_redraw_all();
-                } else {
-                    self.resize_focused_window_by_intent(ResizeAxis::Vertical, true);
-                }
-            }
-            Action::ResizeShrinkHeight => {
-                if self.niri.screenshot_ui.is_open() {
-                    self.niri
-                        .screenshot_ui
-                        .set_height(SizeChange::AdjustFixed(-RESIZE_STEP));
-                    self.niri.queue_redraw_all();
-                } else {
-                    self.resize_focused_window_by_intent(ResizeAxis::Vertical, false);
+                    self.niri.layout.resize_window(None, request);
                 }
             }
             Action::FocusParent => {
@@ -2972,53 +2980,6 @@ impl State {
             CursorOverride::ResizeHover,
             CursorImageStatus::Named(hit.cursor),
         );
-    }
-
-    fn resize_focused_window_by_intent(&mut self, axis: ResizeAxis, grow: bool) {
-        let Some(window_id) = self
-            .niri
-            .layout
-            .focus()
-            .map(|win| crate::layout::LayoutElement::id(win).clone())
-        else {
-            return;
-        };
-
-        let step = RESIZE_STEP as f64;
-        let candidates = match axis {
-            ResizeAxis::Horizontal => {
-                if grow {
-                    [(ResizeEdge::RIGHT, step), (ResizeEdge::LEFT, -step)]
-                } else {
-                    [(ResizeEdge::LEFT, step), (ResizeEdge::RIGHT, -step)]
-                }
-            }
-            ResizeAxis::Vertical => {
-                if grow {
-                    [(ResizeEdge::BOTTOM, step), (ResizeEdge::TOP, -step)]
-                } else {
-                    [(ResizeEdge::TOP, step), (ResizeEdge::BOTTOM, -step)]
-                }
-            }
-        };
-
-        for (edge, delta) in candidates {
-            let delta = match axis {
-                ResizeAxis::Horizontal => Point::from((delta, 0.0)),
-                ResizeAxis::Vertical => Point::from((0.0, delta)),
-            };
-            if self
-                .niri
-                .layout
-                .interactive_resize_begin(window_id.clone(), edge)
-            {
-                self.niri
-                    .layout
-                    .interactive_resize_update(&window_id, delta);
-                self.niri.layout.interactive_resize_end(&window_id);
-                break;
-            }
-        }
     }
 
     fn on_pointer_button<I: InputBackend>(&mut self, event: I::PointerButtonEvent) {
@@ -5557,6 +5518,38 @@ mod tests {
 
     use super::*;
     use crate::animation::Clock;
+
+    #[test]
+    fn keyboard_resize_actions_keep_axis_and_edge_semantics_distinct() {
+        assert_eq!(
+            resize_request_for_action(&Action::ResizeGrowWidth),
+            Some(ResizeRequest::Axis {
+                axis: ResizeAxis::Horizontal,
+                change: SizeChange::AdjustFixed(RESIZE_STEP),
+            })
+        );
+        assert_eq!(
+            resize_request_for_action(&Action::ResizeShrinkHeight),
+            Some(ResizeRequest::Axis {
+                axis: ResizeAxis::Vertical,
+                change: SizeChange::AdjustFixed(-RESIZE_STEP),
+            })
+        );
+        assert_eq!(
+            resize_request_for_action(&Action::ResizeGrowLeft),
+            Some(ResizeRequest::Edge {
+                direction: Direction::Left,
+                amount: RESIZE_STEP,
+            })
+        );
+        assert_eq!(
+            resize_request_for_action(&Action::ResizeShrinkDown),
+            Some(ResizeRequest::Edge {
+                direction: Direction::Down,
+                amount: -RESIZE_STEP,
+            })
+        );
+    }
 
     #[test]
     fn bindings_suppress_keys() {

@@ -1,7 +1,10 @@
 //! Slotmap-backed node storage primitives: raw node access and parent links.
 
+use smithay::utils::{Logical, Rectangle};
+
 use super::ContainerData;
 use super::ContainerTree;
+use super::Layout;
 use super::LayoutElement;
 use super::NodeData;
 use super::NodeKey;
@@ -57,6 +60,88 @@ impl<W: LayoutElement> ContainerTree<W> {
             .children
             .iter()
             .position(|&key| key == child_key)
+    }
+
+    /// Replace a child without changing its slot's fractions or focus position.
+    pub(super) fn replace_child_node(
+        &mut self,
+        parent_key: NodeKey,
+        old_key: NodeKey,
+        new_key: NodeKey,
+    ) -> bool {
+        let Some(parent) = self.get_container_mut(parent_key) else {
+            return false;
+        };
+        let Some(idx) = parent.children.iter().position(|key| *key == old_key) else {
+            return false;
+        };
+        parent.children[idx] = new_key;
+        if let Some(pos) = parent.focus_stack.iter().position(|key| *key == old_key) {
+            parent.focus_stack[pos] = new_key;
+        } else if !parent.focus_stack.contains(&new_key) {
+            parent.focus_stack.push(new_key);
+        }
+        parent.ensure_focus_stack();
+        self.set_parent(new_key, Some(parent_key));
+        true
+    }
+
+    /// Put a child under a new container without changing its parent slot.
+    ///
+    /// The wrapper takes over the child's box as well as its slot, which is sway's
+    /// `container_split` copying `pending.x/y/width/height` off the child before replacing it.
+    /// It is the same box either way once the next arrange runs; it is the answer in between,
+    /// and while a fullscreen is up there is no next arrange to correct it.
+    pub(super) fn wrap_child_in_new_container(
+        &mut self,
+        parent_key: NodeKey,
+        child_key: NodeKey,
+        mut wrapper: ContainerData,
+    ) -> Option<NodeKey> {
+        if wrapper.child_count() != 0 {
+            return None;
+        }
+        let child_idx = self.child_index(parent_key, child_key)?;
+        let fractions = self.get_container(parent_key)?.child_fractions(child_idx);
+        wrapper.set_geometry(self.node_geometry(child_key)?);
+
+        let wrapper_key = self.insert_node(NodeData::Container(wrapper));
+        if !self.replace_child_node(parent_key, child_key, wrapper_key) {
+            self.remove_node_recursive(wrapper_key);
+            return None;
+        }
+
+        let wrapper = self
+            .get_container_mut(wrapper_key)
+            .expect("new wrapper container missing");
+        wrapper.insert_child_with_fractions(0, child_key, fractions);
+        wrapper.resolve_child_percents();
+        self.set_parent(child_key, Some(wrapper_key));
+        Some(wrapper_key)
+    }
+
+    /// The box a node is holding, whichever kind it is.
+    pub(in crate::layout) fn node_geometry(&self, key: NodeKey) -> Option<Rectangle<f64, Logical>> {
+        match self.get_node(key)? {
+            NodeData::Container(container) => Some(container.geometry()),
+            NodeData::Leaf(_) => Some(
+                self.leaf_layouts
+                    .iter()
+                    .find(|info| info.key == key)
+                    .map(|info| info.rect)
+                    .unwrap_or_default(),
+            ),
+        }
+    }
+
+    /// How far a node reaches along an axis — sway's `con->pending.width`/`.height`.
+    pub(in crate::layout) fn node_span(&self, key: NodeKey, layout: Layout) -> Option<f64> {
+        let rect = self.node_geometry(key)?;
+        match layout {
+            Layout::SplitH => Some(rect.size.w),
+            Layout::SplitV => Some(rect.size.h),
+            Layout::Tabbed | Layout::Stacked => None,
+        }
     }
 
     /// Get tile by key (O(1) access).

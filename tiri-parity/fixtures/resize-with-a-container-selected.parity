@@ -1,5 +1,5 @@
 # resize with focus parent held: the container is what grows, not the window
-# recorded from sway version 1.11
+# recorded from sway version 1.12-8886939 (Aug  5 2026, branch 'HEAD')
 # client 400x285
 
 $ open

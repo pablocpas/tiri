@@ -232,12 +232,11 @@ size is invisible while it is tiled, so the replayer's 100x200 test window and t
 difference started reading as a divergence. `session::CLIENT` is the one place that size is
 now stated, and the replayer takes its windows from it.
 
-### How sway redistributes size when a window changes container — a sway bug
+### How sway redistributes size when a window changes container
 
-
-Measured by asking sway for its `percent` values directly rather than inferring them from
-rectangles, across three shapes that differ only in how many children the container being
-left keeps. The rule is i3's `con_fix_percent`, with two inputs that are easy to get wrong:
+The first measurements below were made against Sway 1.11 by asking for its `percent` values
+directly rather than inferring them from rectangles. They exposed deferred fraction resolution,
+but not the full mutation rule used by final Sway 1.12:
 
 1. the window arriving carries **the percent it had inside the container it left** — not an
    equal share, and not the share that slot had in the destination;
@@ -258,36 +257,37 @@ moving out to the right:
 | 2 children | 320, 320, 320, 320 | 320, 320, 320, 320 |
 | 3 children | 351, 351, 320, 259 | 349, 349, 320, 262 |
 
-This is a sway bug — i3 gets it right. `container_move_in_direction` keeps the moved
-container's fractions, which were relative to its old parent, and clears the ancestor's, which
-never moved; the two are the wrong way round. Patching sway to swap them makes all these
-shapes come out evenly, which is what tiri already does, and moves exactly one step in the
-whole corpus. Nothing to fix here: the fixture stays recorded from released sway, and the
-divergence is ignored. `TIRI_PARITY_SWAY` points the tooling at a particular sway build.
+Final Sway 1.12 has two deliberate tree-surgery primitives, not one policy with exceptions:
 
-That last sentence was written when this looked like one fixture, and it was wrong: the same
-mechanism was behind every size-share divergence in the corpus, and three of the four came
-out the *other* way round — even in sway, lopsided in tiri. It is now implemented, and only
-the one bug is left.
+- **ordinary reparenting** unsets both fractions on the arriving node while preserving the
+  destination siblings' raw fractions;
+- **promotion beside an ancestor** preserves both fractions on the arriving node and unsets
+  the ancestor slot it escaped from. When the workspace first changes orientation, the target
+  is unset during that reorientation, so the later promotion correctly carries those zeros.
 
-The rule has two halves and neither works alone:
+Tiri stores width and height explicitly, rather than an “active” vector whose meaning can be
+changed by a mutable axis tag. That makes detach/restore and promotion carry the same semantic
+values even if a container changes orientation while a subtree is away.
 
-- **an unset fraction.** `cmd_move` writes `width_fraction = height_fraction = 0` over what
-  it disturbs. tiri had no way to say that, so it decided every share at the moment of the
-  mutation and landed somewhere else whenever sway deferred. A zero in `child_percents` now
-  means unset, written by `reparent` — the one place a move puts a node somewhere new.
+Both mutation primitives share the second half:
+
 - **the fill.** `apply_horiz_layout`/`apply_vert_layout` give every unset child the average
   of the children that still have a fraction, then normalize the list to 1. That average is
   why a container emptied by a move lands on exactly `1/n`. It runs once, when sway arranges,
   after the move *and* the squash have finished — resolving as each of them goes answers with
   the siblings a half-finished tree happens to have.
 
-Which of the two sway invalidates is where the bug lives. Six of the seven reparenting sites
-in `cmd_move` invalidate the container that moved; the seventh — promoting a node to sit
-beside an ancestor — invalidates the ancestor's and keeps the moved node's. i3 does what the
-other six do, and so does `reparent`, so the rule here has no special case and the deviation
-is a special case *not* implemented. `nested-same-orientation-after-a-move` is the recording
-of the difference and stays in the ledger.
+`nested-same-orientation-after-a-move`, `promotion-invalidates-escaped-ancestor`, and
+`promoting-after-cross-axis-moves-hits-sway-fraction-bug` pin the ordinary, direct-promotion,
+and reoriented-workspace routes against the final Sway 1.12 tag.
+
+This i3 side is measured too, not inferred only from its source. With `i3`, `i3-msg`, Xvfb
+and `xmessage` installed, the opt-in test below runs the exact promotion on an isolated X11
+display and asserts the four equal shares reported by released i3:
+
+```sh
+RUN_I3_PARITY=1 cargo test -p tiri-parity released_i3_invalidates_the_promoted_window_fraction
+```
 
 Landing the halves separately does not work and the corpus says so: carrying the squash's
 raw fractions without the invalidation moves `move-across-the-workspace`, `move-at-an-edge`
@@ -316,11 +316,12 @@ found in their place is in the table.
   `--headless-output-{width,height}`: tiri runs with virtual outputs and no GPU surface,
   driven entirely over IPC. `scripts/profile_tiri_autopilot.py` already uses this shape of
   harness for profiling.
-- **sway 1.11 and `foot`** on the development machine; the probes above ran there.
-- A typed command vocabulary (`Op`, 140 variants, all fuzzable) and 74 parity tests
-  carrying the behaviour of 20 named i3 issues.
+- **Final Sway 1.12** (tag `8886939`) and `foot` on the development machine. The current
+  fixture corpus was re-recorded against that exact build.
+- A typed `Op` command vocabulary and 90 recorded parity scenarios, plus differential fuzzing
+  that draws only from commands the Tiri replayer can parse.
 
-The primitives are in place. What is missing is the model to compare and the harness.
+The observable model and the Sway/i3 harness described below are now in place.
 
 ## The design
 
@@ -478,12 +479,9 @@ those belong to the recorder in step 3, where sway answers instead of a snapshot
   compared relatively. Getting this wrong produces noise that looks like divergence.
 - **Recording is a manual gate.** A fixture is only as good as the sway version it came
   from, so the version belongs in the fixture.
-- **The source read and the sway recorded are not the same sway.** Porting a function means
-  reading sway's tree, and the tree to hand is master while every recording here is of 1.11.
-  `cmd_layout` in master flattens a doubly-nested lone container before acting and 1.11 does
-  not, which is one level of difference produced by trusting the source over the fixture.
-  The rule that follows: a port is a hypothesis until a recording agrees with it, and where
-  the two disagree the recording wins — see
-  `layout-on-a-doubly-nested-lone-container.parity`, which exists only to pin this down.
+- **Source/version skew.** Reading Sway master while recording a release can silently mix two
+  behaviours. The corpus and oracle are pinned to final Sway 1.12 (`8886939`); a source port
+  remains a hypothesis until that binary agrees with it. The doubly-nested layout and
+  promotion fixtures exist specifically because earlier source/release comparisons disagreed.
 - **Client startup is timing-dependent.** The probes needed a sleep after `exec foot`. The
   recorder must wait on the window actually appearing in `get_tree`, not on a timer.

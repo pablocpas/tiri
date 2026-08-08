@@ -289,10 +289,9 @@ fn repeating_a_layout_command_changes_nothing() {
     assert_eq!(last(&once), last(&thrice));
 }
 
-/// Measured: each `layout`/`split` pair inside a tabbed container adds a level, and sway
-/// adds them too. tiri used to collapse these into one wrapper.
+/// Sway 1.12 flattens the single-child split before applying the second `layout`, like i3.
 #[test]
-fn splitting_inside_a_tabbed_container_nests_a_level_each_time() {
+fn layout_inside_a_doubly_nested_lone_container_flattens_once() {
     assert_replay(
         "\
 open
@@ -319,8 +318,7 @@ workspace splith focus=1
 $ layout tabbed
 workspace splith focus=1
   tabbed 0.000,0.000 1.000x1.000
-    tabbed 0.000,0.000 1.000x1.000
-      window 1 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
 ",
     );
 }
