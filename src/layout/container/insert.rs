@@ -57,11 +57,11 @@ impl<W: LayoutElement> ContainerTree<W> {
             self.remove_node_recursive(old_root);
             self.set_parent(node_key, None);
             self.root = node_key;
-            self.focused_key = None;
-            self.selected_key = None;
+            self.seat.clear();
             self.focus_first_leaf();
             if !focus {
-                self.focused_key = self.first_leaf_key();
+                let first = self.first_leaf_key();
+                self.seat.redirect_focused_leaf(first);
             }
             return;
         }
@@ -80,7 +80,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// opened there lands beside that child rather than at the end of the row.
     pub(super) fn insert_key_as_focus_sibling(&mut self, node_key: NodeKey, focus: bool) {
         let sibling_key = match self
-            .selected_key
+            .selected_key()
             .filter(|key| self.get_node(*key).is_some())
         {
             Some(key) if key != self.root => Some(key),

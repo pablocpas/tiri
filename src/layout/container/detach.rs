@@ -17,7 +17,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn remove_window(&mut self, window_id: &W::Id) -> Option<Tile<W>> {
         let node_key = self.window_key(window_id)?;
         let cleanup_key = self.parent_of(node_key);
-        let was_focused = self.focused_key == Some(node_key);
+        let was_focused = self.focused_key() == Some(node_key);
 
         // Detach from the parent's child list before dropping the node itself. The
         // workspace has no parent and is not a window, so nothing routes here for it.
@@ -62,12 +62,12 @@ impl<W: LayoutElement> ContainerTree<W> {
             .and_then(|path| self.insert_parent_info_for_path(&path));
 
         let focused_in_subtree = self
-            .focused_key
+            .focused_key()
             .is_some_and(|key| self.is_descendant_of(key, node_key));
 
-        if let Some(selected_key) = self.selected_key {
+        if let Some(selected_key) = self.selected_key() {
             if self.is_descendant_of(selected_key, node_key) {
-                self.selected_key = None;
+                self.seat.redirect_selection(None);
             }
         }
 
@@ -112,8 +112,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.first_leaf_key()?;
         let old_root = self.root;
         let layout = self.root_container_layout();
-        self.focused_key = None;
-        self.selected_key = None;
+        self.seat.clear();
         let subtree = self.extract_subtree(old_root);
         self.root = self.insert_node(NodeData::Container(ContainerData::new(layout)));
         self.set_parent(self.root, None);
@@ -180,7 +179,8 @@ impl<W: LayoutElement> ContainerTree<W> {
                 // tree, and a subtree that comes back has new ones. Which child a switcher
                 // shows is behaviour, so it cannot be dropped and re-derived on arrival.
                 let mut focus_stack: Vec<usize> = self
-                    .focus_stack
+                    .seat
+                    .order()
                     .iter()
                     .filter_map(|key| index_by_key.get(key).copied())
                     .collect();
@@ -240,11 +240,11 @@ impl<W: LayoutElement> ContainerTree<W> {
                             .copied()
                     })
                     .collect();
-                for key in restored {
-                    if !self.focus_stack.contains(&key) {
-                        self.focus_stack.push(key);
-                    }
-                }
+                // Appended, not placed: a subtree arriving from another tree has no standing
+                // to restore. It left one arena and came back to another, so the keys it had
+                // are gone and with them its place in the order. See `docs/design/parity.md`
+                // on the two trees.
+                self.seat.restore_at(usize::MAX, restored);
 
                 container_key
             }

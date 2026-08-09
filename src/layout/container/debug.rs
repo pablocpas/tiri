@@ -64,7 +64,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             view_size = ?self.view_size,
             scale = self.scale,
             root = ?self.root,
-            focused = ?self.focused_key,
+            focused = ?self.focused_key(),
             "layout summary"
         );
         for info in &self.leaf_layouts {

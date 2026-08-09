@@ -103,7 +103,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         // the active reference source.
         let Some(mut key) = self
             .selected_node_key()
-            .or(self.focused_key)
+            .or(self.focused_key())
             .or_else(|| self.first_leaf_key())
         else {
             return chain;
@@ -128,7 +128,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     ) -> Option<InactiveTilingReference> {
         let key = self
             .selected_node_key()
-            .or(self.focused_key)
+            .or(self.focused_key())
             .or_else(|| self.first_leaf_key())?;
         self.inactive_tiling_reference_for_node_key(key)
     }
@@ -137,7 +137,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         &self,
     ) -> Vec<InactiveTilingReference> {
         let mut chain = Vec::new();
-        let Some(mut key) = self.focused_key.or_else(|| self.first_leaf_key()) else {
+        let Some(mut key) = self.focused_key().or_else(|| self.first_leaf_key()) else {
             return chain;
         };
 

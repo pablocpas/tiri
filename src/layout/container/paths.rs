@@ -31,8 +31,14 @@ impl<W: LayoutElement> ContainerTree<W> {
         Some(current_key)
     }
 
+    /// Put the seat's order back in step with where focus already is.
+    ///
+    /// Called after tree surgery, not by the focus commands: nothing has been focused anew,
+    /// so a selection made by `focus parent` survives it.
     pub(super) fn sync_container_focus_from_key(&mut self, key: NodeKey) {
-        self.raise_in_focus_order(key);
+        let chain = self.focus_chain(key);
+        let leaf = self.leaf_under_key(key);
+        self.seat.touch(&chain, leaf);
     }
 
     pub(super) fn leaf_under_key(&self, mut key: NodeKey) -> Option<NodeKey> {
@@ -54,15 +60,19 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.leaf_under_key(root_key)
     }
 
+    /// sway's `seat_set_focus`: focus this node, whatever kind it is.
+    ///
+    /// What is raised is what was focused. Focusing a container raises the container, and the
+    /// keyboard follows it down to a view the way sway's does — through the order, without
+    /// disturbing it. Raising the leaf instead put a window nobody had focused ahead of one
+    /// somebody had, and every later descent into that subtree answered with it.
     pub(super) fn focus_node_key(&mut self, key: NodeKey) {
         let Some(leaf_key) = self.leaf_under_key(key) else {
-            self.focused_key = None;
-            self.selected_key = None;
+            self.seat.clear();
             return;
         };
-        self.focused_key = Some(leaf_key);
-        self.selected_key = None;
-        self.sync_container_focus_from_key(leaf_key);
+        let chain = self.focus_chain(key);
+        self.seat.focus(&chain, Some(leaf_key));
     }
 
     /// Move logical/seat focus without changing the active branch of any switcher container.
@@ -72,7 +82,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// remains visible.
     pub(super) fn set_seat_focus_preserving_switcher(&mut self, leaf_key: NodeKey) {
         if matches!(self.get_node(leaf_key), Some(NodeData::Leaf(_))) {
-            self.focused_key = Some(leaf_key);
+            self.seat.follow_without_raising(leaf_key);
         }
     }
 
@@ -97,7 +107,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     pub(super) fn clear_focus_history(&mut self) {
-        // Focus history is tracked per-container via focus_stack.
+        // Focus history is the seat's order, kept by SeatFocus.
     }
 
     /// Find a window by ID and return its node key.

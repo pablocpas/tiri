@@ -21,13 +21,13 @@ use crate::utils::transaction::Transaction;
 impl<W: LayoutElement> ContainerTree<W> {
     /// Get the currently focused window
     pub(in crate::layout) fn focused_window(&self) -> Option<&W> {
-        let key = self.focused_key?;
+        let key = self.focused_key()?;
         self.get_tile(key).map(|tile| tile.window())
     }
 
     /// Get the currently focused window (mutable)
     pub(in crate::layout) fn focused_window_mut(&mut self) -> Option<&mut W> {
-        let key = self.focused_key?;
+        let key = self.focused_key()?;
         self.get_tile_mut(key).map(|tile| tile.window_mut())
     }
 
@@ -101,17 +101,18 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     pub(super) fn prune_leaf_layouts(&mut self) {
         if self
-            .focused_key
+            .focused_key()
             .is_some_and(|key| !matches!(self.get_node(key), Some(NodeData::Leaf(_))))
         {
-            self.focused_key = self.first_leaf_key();
+            let first = self.first_leaf_key();
+            self.seat.redirect_focused_leaf(first);
         }
 
         if self
-            .selected_key
+            .selected_key()
             .is_some_and(|key| !self.nodes.contains_key(key))
         {
-            self.selected_key = None;
+            self.seat.redirect_selection(None);
         }
 
         let mut current_paths = HashMap::new();
@@ -131,13 +132,13 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Focused tile (if any).
     pub(in crate::layout) fn focused_tile(&self) -> Option<&Tile<W>> {
-        let key = self.focused_key.or_else(|| self.first_leaf_key())?;
+        let key = self.focused_key().or_else(|| self.first_leaf_key())?;
         self.get_tile(key)
     }
 
     /// Focused tile (mutable) if any.
     pub(in crate::layout) fn focused_tile_mut(&mut self) -> Option<&mut Tile<W>> {
-        let key = self.focused_key.or_else(|| self.first_leaf_key())?;
+        let key = self.focused_key().or_else(|| self.first_leaf_key())?;
         self.get_tile_mut(key)
     }
 

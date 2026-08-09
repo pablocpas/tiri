@@ -79,9 +79,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.set_parent(new_key, Some(parent_key));
         // The replacement takes the old node's place in the seat's order too, so a switcher
         // showing what was there goes on showing what replaced it.
-        if let Some(pos) = self.focus_stack.iter().position(|key| *key == old_key) {
-            self.focus_stack[pos] = new_key;
-        }
+        self.seat.replace(old_key, new_key);
         true
     }
 
@@ -129,7 +127,9 @@ impl<W: LayoutElement> ContainerTree<W> {
         // heard of answers for nothing, so without this the wrapper is invisible to
         // `seat_get_active_tiling_child` and its parent goes on showing a sibling.
         if self.focus_chain_passes_through(child_key) {
-            self.raise_in_focus_order(child_key);
+            let chain = self.focus_chain(child_key);
+            let leaf = self.leaf_under_key(child_key);
+            self.seat.focus(&chain, leaf);
         }
         Some(wrapper_key)
     }

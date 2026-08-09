@@ -485,3 +485,42 @@ those belong to the recorder in step 3, where sway answers instead of a snapshot
   promotion fixtures exist specifically because earlier source/release comparisons disagreed.
 - **Client startup is timing-dependent.** The probes needed a sleep after `exec foot`. The
   recorder must wait on the window actually appearing in `get_tree`, not on a timer.
+
+## Where the model still differs from sway's
+
+Six places, found by making one of them right and watching what stopped working. They are
+listed because the divergences the fuzz keeps finding map onto them one to one, and because
+each is finite: this is a list that can be finished, not a tail.
+
+1. **The seat's focus order** — *fixed*. sway keeps one list per seat over every node and
+   reads three questions off it: which tab a switcher shows, which window a descent lands on,
+   what gets focus when the focused window closes. Tiri kept one list per container plus two
+   loose pointers, which is a projection, and projections lose the coupling. It is now one
+   list behind a type with private fields, because the bug was never the rule — it was thirty
+   places able to change focus and one of them remembering to update the order.
+
+2. **Fractions live in the parent** — sway stores `width_fraction`/`height_fraction` on the
+   child, so a reparent carries them without anyone deciding to. Tiri stores them in the
+   parent indexed by position, which is why `ReparentFractions`, `insert_child_unset`,
+   `remove_child_preserving_percents` and `swap_child_slots` exist at all.
+
+3. **`child_total_width`/`child_total_height` are missing** — sway records on each child the
+   span its fraction was computed against, and `container_resize_tiled` re-derives the
+   fraction from the *rounded* pixel width against it. That round trip is the whole of the
+   `0.199/0.199/0.199/0.203` against tiri's even `0.200`: not a rounding slip, an absent
+   field.
+
+4. **`user_created`** — a flag tiri has and sway does not, consulted in twenty-two places.
+   Extra state means states sway cannot reach, and every one of them is a question sway never
+   asks and tiri has to answer alone.
+
+5. **The workspace is a node** — a deliberate simplification, and i3 agrees with it, but it
+   is paid for in `RootPolicy` and its forty-three uses, and in the one divergence left in the
+   ledger.
+
+6. **Tiling and floating are two trees** — sway has one workspace holding two lists, and a
+   container moves between them without ceasing to be itself. Tiri takes the subtree apart and
+   rebuilds it in the other arena with new keys, so anything keyed by node identity is lost in
+   transit. Today that is the seat's order: a window comes back from floating as though nobody
+   had ever focused it. `i3_135_deep_floating_roundtrip_from_other_workspace_preserves_focus_chain`
+   is where that is visible.

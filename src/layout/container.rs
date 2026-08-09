@@ -36,6 +36,7 @@ mod preview;
 mod query;
 mod resize;
 mod root_children;
+mod seat;
 mod split;
 mod state;
 mod tab_bar_model;
@@ -372,30 +373,13 @@ pub struct ContainerTree<W: LayoutElement> {
     /// "is the parent the workspace?" was working around its absence, and each of those
     /// workarounds disagreed with sway somewhere.
     root: NodeKey,
-    /// Leaf with logical/seat focus.
+    /// The seat's focus: what holds it, and the order everything was last in.
     ///
-    /// Visibility in tabbed/stacked containers comes from each container's `focus_stack`, not
-    /// from recomputing a path from this key. Sway can intentionally leave those two states on
-    /// different branches after moving between sibling switchers.
-    focused_key: Option<NodeKey>,
-    /// Currently selected node key (container selection via focus-parent).
-    selected_key: Option<NodeKey>,
-    /// Every node, most recently focused first.
-    ///
-    /// sway's `sway_seat::focus_stack`, and the reason it is one list rather than one per
-    /// container: `seat_get_active_tiling_child` decides which tab a switcher shows by walking
-    /// this and taking the first entry whose *direct parent* is that switcher. A move changes
-    /// the answer without touching the list, because what changed is the moved node's parent.
-    ///
-    /// Per-container orders are a projection of this, and a projection loses the coupling —
-    /// which is why keeping N of them in step took a special case per command, each right
-    /// about the recordings it was written from.
-    focus_stack: Vec<NodeKey>,
-    /// The node covering the output, if one does.
-    ///
-    /// sway's `workspace->fullscreen`: a stored pointer, maintained by whoever sets fullscreen
-    /// rather than derived when arranging, and read by `arrange_workspace` to decide whether
-    /// the tiled tree is laid out at all.
+    /// Behind a type with private fields because the three used to be loose values assigned
+    /// from thirty places, of which one also kept the order. Every rule that reads the order
+    /// — which tab a switcher shows, which window a descent lands on — was therefore right
+    /// for the commands whose authors remembered and wrong for the rest.
+    seat: seat::SeatFocus,
     fullscreen_key: Option<NodeKey>,
     /// Cached layout info for leaves
     leaf_layouts: Vec<LeafLayoutInfo>,
@@ -1011,9 +995,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             nodes,
             parents,
             root,
-            focused_key: None,
-            selected_key: None,
-            focus_stack: Vec::new(),
+            seat: seat::SeatFocus::default(),
             fullscreen_key: None,
             leaf_layouts: Vec::new(),
             pending_layouts: None,

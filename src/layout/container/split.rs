@@ -113,11 +113,11 @@ impl<W: LayoutElement> ContainerTree<W> {
         if !self.replace_child_node(parent_key, container_key, child_key) {
             return;
         }
-        if self.selected_key == Some(container_key) {
-            self.selected_key = Some(child_key);
+        if self.selected_key() == Some(container_key) {
+            self.seat.keep_selected(child_key);
         }
-        if self.focused_key == Some(container_key) {
-            self.focused_key = Some(child_key);
+        if self.focused_key() == Some(container_key) {
+            self.seat.redirect_focused_leaf(Some(child_key));
         }
         self.nodes.remove(container_key);
         self.parents.remove(container_key);
@@ -230,7 +230,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         root.insert_child(0, wrapper_key);
         self.set_parent(wrapper_key, Some(root_key));
 
-        if let Some(focused_key) = self.focused_key {
+        if let Some(focused_key) = self.focused_key() {
             self.sync_container_focus_from_key(focused_key);
         }
 
@@ -284,11 +284,11 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         // Keep command context on the originally selected container.
-        self.selected_key = Some(selected_key);
-        if let Some(focused_key) = self.focused_key {
+        self.seat.keep_selected(selected_key);
+        if let Some(focused_key) = self.focused_key() {
             self.sync_container_focus_from_key(focused_key);
         } else if let Some(leaf_key) = self.leaf_under_key(selected_key) {
-            self.focused_key = Some(leaf_key);
+            self.seat.redirect_focused_leaf(Some(leaf_key));
             self.sync_container_focus_from_key(leaf_key);
         }
 
@@ -309,7 +309,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let previous = self.root_container_layout();
         match self.wrap_workspace_children(previous, layout) {
             Some(wrapper_key) => {
-                self.selected_key = Some(wrapper_key);
+                self.seat.keep_selected(wrapper_key);
                 true
             }
             None => self.set_root_container_layout(layout),
@@ -372,8 +372,8 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         };
         container.set_layout_explicit(layout);
-        self.selected_key = Some(root_key);
-        if let Some(focused_key) = self.focused_key {
+        self.seat.keep_selected(root_key);
+        if let Some(focused_key) = self.focused_key() {
             self.sync_container_focus_from_key(focused_key);
         }
         true

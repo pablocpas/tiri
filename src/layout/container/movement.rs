@@ -87,7 +87,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             self.set_seat_focus_preserving_switcher(leaf_key);
         }
         if preserve_selected_container && self.nodes.contains_key(node_key) {
-            self.selected_key = Some(node_key);
+            self.seat.keep_selected(node_key);
         }
         true
     }

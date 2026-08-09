@@ -28,7 +28,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Index of currently focused root child, if any.
     pub(in crate::layout) fn focused_root_index(&self) -> Option<usize> {
         let root_key = self.root;
-        if let Some(key) = self.focused_key {
+        if let Some(key) = self.focused_key() {
             if key == root_key {
                 return Some(0);
             }

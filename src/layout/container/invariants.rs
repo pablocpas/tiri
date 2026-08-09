@@ -29,11 +29,11 @@ impl<W: LayoutElement> ContainerTree<W> {
                 "empty tree must retain the workspace and nothing else"
             );
             assert!(
-                self.focused_key.is_none(),
+                self.focused_key().is_none(),
                 "empty tree must not retain focused_key"
             );
             assert!(
-                self.selected_key.is_none_or(|key| key == root_key),
+                self.selected_key().is_none_or(|key| key == root_key),
                 "empty tree must not retain a selected_key below the workspace"
             );
             assert!(
@@ -60,7 +60,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             );
         }
 
-        match self.focused_key {
+        match self.focused_key() {
             Some(key) => {
                 assert!(
                     leaves.contains(&key),
@@ -75,7 +75,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             }
         }
 
-        if let Some(key) = self.selected_key {
+        if let Some(key) = self.selected_key() {
             assert!(
                 visited.contains(&key),
                 "selected_key must point to a node in the tree"

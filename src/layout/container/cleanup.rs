@@ -39,8 +39,8 @@ impl<W: LayoutElement> ContainerTree<W> {
             self.detach_child(container_key);
             self.nodes.remove(container_key);
             self.parents.remove(container_key);
-            if self.selected_key == Some(container_key) {
-                self.selected_key = parent_key;
+            if self.selected_key() == Some(container_key) {
+                self.seat.redirect_selection(parent_key);
             }
             current = parent_key;
         }
@@ -145,12 +145,13 @@ impl<W: LayoutElement> ContainerTree<W> {
         let inherits = taken
             .iter()
             .copied()
-            .find(|key| self.focus_stack.contains(key))
+            .find(|key| self.seat.order().contains(key))
             .or_else(|| taken.first().copied());
-        for key in [&mut self.selected_key, &mut self.focused_key] {
-            if *key == Some(con_key) || *key == Some(child_key) {
-                *key = inherits;
-            }
+        if matches!(self.selected_key(), Some(k) if k == con_key || k == child_key) {
+            self.seat.redirect_selection(inherits);
+        }
+        if matches!(self.focused_key(), Some(k) if k == con_key || k == child_key) {
+            self.seat.redirect_focused_leaf(inherits);
         }
 
         for key in [child_key, con_key] {
