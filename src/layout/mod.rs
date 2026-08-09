@@ -1872,7 +1872,7 @@ impl<W: LayoutElement> Layout<W> {
                     // and sticky_floating are separate fields.
                     if let Some(tile) = mon
                         .sticky_floating
-                        .tiles_mut()
+                        .tiles_mut(&mut mon.sticky_tree)
                         .find(|tile| tile.window().is_wl_surface(wl_surface))
                     {
                         return Some((tile.window_mut(), Some(&mon.output)));

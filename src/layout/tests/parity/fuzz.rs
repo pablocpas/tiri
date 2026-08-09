@@ -155,6 +155,90 @@ const SWAY_1_12_MOVE_SELECTED_WORKSPACE_CRASH: &[&str] = &[
     "move up",
 ];
 
+/// Two more paths to the same pinned-sway failure, reduced from deterministic campaign seeds.
+/// In both, the second workspace-level split leaves `cmd_move_in_direction` arranging a
+/// workspace it just destroyed. Keeping the exact scripts makes an unrelated disconnect on the
+/// same move direction remain a harness failure.
+const SWAY_1_12_MOVE_LEFT_SELECTED_WORKSPACE_CRASH: &[&str] = &[
+    "open",
+    "move up",
+    "layout toggle split",
+    "focus parent",
+    "focus parent",
+    "split v",
+    "move left",
+];
+
+const SWAY_1_12_MOVE_RIGHT_SELECTED_WORKSPACE_CRASH: &[&str] = &[
+    "open",
+    "focus parent",
+    "split toggle",
+    "focus parent",
+    "split toggle",
+    "move right",
+];
+
+/// Further minimal routes to the same `arrange_workspace <- cmd_move_in_direction` SIGSEGV,
+/// found after the arena fixes let the campaign search past its earlier divergences. These
+/// were verified against the pinned binary under gdb. They stay exact: an arbitrary sway
+/// disconnect during the same final command is still a broken harness, not a known crash.
+const SWAY_1_12_MOVE_UP_AFTER_TOGGLE_ALL_CRASH: &[&str] = &[
+    "open",
+    "layout toggle all",
+    "focus parent",
+    "focus parent",
+    "split horizontal",
+    "move up",
+];
+
+const SWAY_1_12_MOVE_DOWN_AFTER_TOGGLE_ALL_CRASH: &[&str] = &[
+    "open",
+    "layout toggle all",
+    "focus parent",
+    "focus parent",
+    "split horizontal",
+    "move down",
+];
+
+const SWAY_1_12_MOVE_RIGHT_AFTER_EXPLICIT_SPLITS_CRASH: &[&str] = &[
+    "open",
+    "focus parent",
+    "split vertical",
+    "focus parent",
+    "split vertical",
+    "move right",
+];
+
+const SWAY_1_12_MOVE_LEFT_NESTED_SWITCHERS_CRASH: &[&str] = &[
+    "layout stacking",
+    "open",
+    "split horizontal",
+    "open",
+    "focus right",
+    "split horizontal",
+    "focus next sibling",
+    "layout splitv",
+    "move down",
+    "focus prev sibling",
+    "move left",
+];
+
+const SWAY_1_12_MOVE_DOWN_NESTED_TABS_CRASH: &[&str] = &[
+    "open",
+    "layout toggle all",
+    "focus parent",
+    "layout tabbed",
+    "open",
+    "move left",
+    "focus parent",
+    "open",
+    "move left",
+    "focus parent",
+    "layout toggle all",
+    "focus parent",
+    "move down",
+];
+
 /// A tiny deterministic generator, so a session is reproducible from its seed alone.
 struct Rng(u64);
 
@@ -333,7 +417,7 @@ fn same_reference_failure(expected: &str, actual: &str) -> bool {
 /// Identify a compositor disconnect by the command whose execution or observation failed.
 /// Comparing only the transport message can shrink one crash into an unrelated crash.
 fn disconnected_during(error: &str) -> Option<&str> {
-    if !error.contains("Unable to connect") {
+    if !error.contains("Unable to connect") && !error.contains("Unable to receive IPC response") {
         return None;
     }
     ["while running `", "after `"]
@@ -381,21 +465,76 @@ fn shrink_reference_failure(name: &str, script: Vec<String>, error: &str) -> Vec
 }
 
 fn is_known_reference_failure(name: &str, script: &[String], error: &str) -> bool {
-    name == "sway"
-        && disconnected_during(error) == Some("move up")
-        && script
-            .iter()
-            .map(String::as_str)
-            .eq(SWAY_1_12_MOVE_SELECTED_WORKSPACE_CRASH.iter().copied())
+    if name != "sway" {
+        return false;
+    }
+
+    let failure = disconnected_during(error);
+    [
+        ("move up", SWAY_1_12_MOVE_SELECTED_WORKSPACE_CRASH),
+        ("move left", SWAY_1_12_MOVE_LEFT_SELECTED_WORKSPACE_CRASH),
+        ("move right", SWAY_1_12_MOVE_RIGHT_SELECTED_WORKSPACE_CRASH),
+        ("move up", SWAY_1_12_MOVE_UP_AFTER_TOGGLE_ALL_CRASH),
+        ("move down", SWAY_1_12_MOVE_DOWN_AFTER_TOGGLE_ALL_CRASH),
+        (
+            "move right",
+            SWAY_1_12_MOVE_RIGHT_AFTER_EXPLICIT_SPLITS_CRASH,
+        ),
+        ("move left", SWAY_1_12_MOVE_LEFT_NESTED_SWITCHERS_CRASH),
+        ("move down", SWAY_1_12_MOVE_DOWN_NESTED_TABS_CRASH),
+    ]
+    .into_iter()
+    .any(|(command, expected)| {
+        failure == Some(command)
+            && script
+                .iter()
+                .map(|command| canonical_command(command))
+                .eq(expected.iter().copied().map(canonical_command))
+    })
+}
+
+fn canonical_command(command: &str) -> &str {
+    match command {
+        "split h" => "split horizontal",
+        "split v" => "split vertical",
+        other => other,
+    }
 }
 
 #[test]
 fn reference_crash_signature_includes_the_failing_command() {
     let move_up = "while running `move up`: Unable to connect to /tmp/sway.sock";
     let move_down = "while running `move down`: Unable to connect to /tmp/sway.sock";
+    let move_right = "after `move right`: Unable to receive IPC response";
     assert!(same_reference_failure(move_up, move_up));
     assert!(!same_reference_failure(move_up, move_down));
     assert!(!same_reference_failure(move_up, "sway rejected `move up`"));
+    assert_eq!(disconnected_during(move_right), Some("move right"));
+}
+
+#[test]
+fn pinned_sway_workspace_move_crashes_are_known_by_exact_script() {
+    for (command, script) in [
+        ("move up", SWAY_1_12_MOVE_SELECTED_WORKSPACE_CRASH),
+        ("move left", SWAY_1_12_MOVE_LEFT_SELECTED_WORKSPACE_CRASH),
+        ("move right", SWAY_1_12_MOVE_RIGHT_SELECTED_WORKSPACE_CRASH),
+        ("move up", SWAY_1_12_MOVE_UP_AFTER_TOGGLE_ALL_CRASH),
+        ("move down", SWAY_1_12_MOVE_DOWN_AFTER_TOGGLE_ALL_CRASH),
+        (
+            "move right",
+            SWAY_1_12_MOVE_RIGHT_AFTER_EXPLICIT_SPLITS_CRASH,
+        ),
+        ("move left", SWAY_1_12_MOVE_LEFT_NESTED_SWITCHERS_CRASH),
+        ("move down", SWAY_1_12_MOVE_DOWN_NESTED_TABS_CRASH),
+    ] {
+        let script: Vec<String> = script.iter().map(|line| (*line).to_owned()).collect();
+        let error = format!("after `{command}`: Unable to connect to /tmp/sway.sock");
+        assert!(is_known_reference_failure("sway", &script, &error));
+
+        let mut different = script.clone();
+        different.insert(0, "focus left".into());
+        assert!(!is_known_reference_failure("sway", &different, &error));
+    }
 }
 
 #[test]

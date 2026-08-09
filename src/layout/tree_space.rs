@@ -1,7 +1,7 @@
 //! Helpers shared between the tiling space and the floating containers — the two
 //! consumers of a `ContainerTree`.
 
-use super::container::{ContainerTree, LeafLayoutInfo};
+use super::container::{ContainerTree, LeafLayoutInfo, NodeKey};
 use super::LayoutElement;
 
 /// Leaf layouts to display: the committed layouts, falling back to pending ones while a
@@ -13,6 +13,20 @@ pub(super) fn display_layouts<W: LayoutElement>(tree: &ContainerTree<W>) -> &[Le
     } else {
         tree.leaf_layouts()
     }
+}
+
+/// The leaf layouts of one branch — the tiled side, or one floating group.
+///
+/// One tree holds both sides now, so a consumer that means "my leaves" has to say which
+/// branch. Each cached layout carries the branch it was arranged in, so this is a filter
+/// rather than a walk up the tree per leaf.
+pub(super) fn branch_display_layouts<'a, W: LayoutElement>(
+    tree: &'a ContainerTree<W>,
+    branch: NodeKey,
+) -> impl DoubleEndedIterator<Item = &'a LeafLayoutInfo> + 'a {
+    display_layouts(tree)
+        .iter()
+        .filter(move |info| info.branch == branch)
 }
 
 /// Span available to a container's children after subtracting inter-child gaps.

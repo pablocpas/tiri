@@ -6,6 +6,7 @@ use super::ContainerData;
 use super::ContainerTree;
 use super::DetachedContainer;
 use super::DetachedNode;
+#[cfg(test)]
 use super::InsertParentInfo;
 use super::LayoutElement;
 use super::NodeData;
@@ -18,6 +19,9 @@ impl<W: LayoutElement> ContainerTree<W> {
         let node_key = self.window_key(window_id)?;
         let cleanup_key = self.parent_of(node_key);
         let was_focused = self.focused_key() == Some(node_key);
+        let former_ancestors = cleanup_key
+            .map(|parent| self.focus_chain(parent))
+            .unwrap_or_default();
 
         // Detach from the parent's child list before dropping the node itself. The
         // workspace has no parent and is not a window, so nothing routes here for it.
@@ -43,7 +47,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.prune_leaf_layouts();
 
         self.prune_selected_key();
-        self.reconcile_focus_after_change(was_focused);
+        self.reconcile_focus_after_change(was_focused, &former_ancestors);
 
         self.layout();
 
@@ -52,18 +56,24 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Detach the subtree rooted at `node_key`, returning it along with enough information
     /// to put it back where it was.
+    #[cfg(test)]
     pub(in crate::layout) fn take_subtree_at(
         &mut self,
         node_key: NodeKey,
     ) -> Option<(DetachedNode<W>, Option<InsertParentInfo>)> {
         self.get_node(node_key)?;
+        let branch_root = self.branch_root(node_key);
         let insert_info = self
-            .find_node_path(node_key)
-            .and_then(|path| self.insert_parent_info_for_path(&path));
+            .branch_relative_path(node_key)
+            .and_then(|path| self.insert_parent_info_for_path(branch_root, &path));
 
         let focused_in_subtree = self
             .focused_key()
             .is_some_and(|key| self.is_descendant_of(key, node_key));
+        let former_ancestors = self
+            .parent_of(node_key)
+            .map(|parent| self.focus_chain(parent))
+            .unwrap_or_default();
 
         if let Some(selected_key) = self.selected_key() {
             if self.is_descendant_of(selected_key, node_key) {
@@ -93,66 +103,11 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.prune_leaf_layouts();
 
         self.prune_selected_key();
-        self.reconcile_focus_after_change(focused_in_subtree);
+        self.reconcile_focus_after_change(focused_in_subtree, &former_ancestors);
 
         self.layout();
 
         Some((subtree, insert_info))
-    }
-
-    /// Everything in the tree as one subtree, leaving an empty workspace behind.
-    ///
-    /// The detached container carries the workspace's own layout, so putting it back rebuilds
-    /// exactly what was taken. Floating the whole workspace used to wrap its children in a
-    /// container first, which is a node the tiling side then had to recognise and remove on
-    /// the way back; taking the workspace's contents directly leaves nothing to undo.
-    ///
-    /// A fresh root replaces the one that left, because the workspace outlives its contents.
-    pub(in crate::layout) fn take_whole_tree(&mut self) -> Option<DetachedNode<W>> {
-        self.first_leaf_key()?;
-        let old_root = self.root;
-        let layout = self.root_container_layout();
-        self.seat.clear();
-        let subtree = self.extract_subtree(old_root);
-        self.root = self.insert_node(NodeData::Container(ContainerData::new(layout)));
-        self.set_parent(self.root, None);
-        self.leaf_layouts.clear();
-        Some(subtree)
-    }
-
-    /// The inverse of [`Self::take_whole_tree`]: the subtree becomes the workspace again.
-    ///
-    /// Its layout and children replace the empty root's rather than being hung under it,
-    /// which is what makes the round trip give back exactly the tree that left.
-    pub(in crate::layout) fn restore_whole_tree(&mut self, subtree: DetachedNode<W>, focus: bool) {
-        self.clear_focus_history();
-
-        let node_key = self.insert_subtree(subtree);
-        let Some(container) = self.get_container(node_key) else {
-            // A lone window: it needs the workspace to live in, like any other.
-            self.insert_key_as_focus_sibling(node_key, focus);
-            return;
-        };
-
-        let layout = container.layout();
-        let children = container.children.clone();
-        let fractions = container.fractions.clone();
-        let prev_split_layout = container.prev_split_layout;
-
-        let root_key = self.root;
-        if let Some(root) = self.get_container_mut(root_key) {
-            root.set_layout(layout);
-            root.children = children.clone();
-            root.fractions = fractions;
-            root.prev_split_layout = prev_split_layout;
-        }
-        for child in children {
-            self.set_parent(child, Some(root_key));
-        }
-        self.nodes.remove(node_key);
-        self.parents.remove(node_key);
-
-        self.focus_first_leaf();
     }
 
     /// Extract a subtree rooted at the given key into a detached representation.

@@ -8,19 +8,6 @@ use super::NodeData;
 use super::NodeKey;
 
 impl<W: LayoutElement> ContainerTree<W> {
-    pub(in crate::layout) fn selected_container_is_root(&self) -> bool {
-        self.selected_container_key()
-            .is_some_and(|selected_key| selected_key == self.root)
-    }
-
-    /// Whether focus resolves to the tree root itself rather than to a node inside it.
-    pub(in crate::layout) fn focus_is_root(&self) -> bool {
-        match self.effective_focused_key() {
-            Some(key) => self.parent_of(key).is_none(),
-            None => true,
-        }
-    }
-
     pub(in crate::layout) fn focused_leaf_targets_workspace_layout(&self) -> bool {
         let focus_path = self.focus_path();
         focus_path.is_empty()
@@ -92,11 +79,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         Some(self.root)
     }
 
-    pub(in crate::layout) fn selected_is_container(&self) -> bool {
-        self.selected_key()
-            .is_some_and(|key| matches!(self.get_node(key), Some(NodeData::Container(_))))
-    }
-
     pub(in crate::layout) fn selected_container_key(&self) -> Option<NodeKey> {
         let key = self.selected_key()?;
         matches!(self.get_node(key), Some(NodeData::Container(_))).then_some(key)
@@ -113,6 +95,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let chain = self.focus_chain(key);
         let leaf = self.leaf_under_key(key);
         self.seat.select(&chain, key, leaf);
+        self.refresh_focus_visibility();
     }
 
     /// Select the container at `key` as the command target.
@@ -123,6 +106,11 @@ impl<W: LayoutElement> ContainerTree<W> {
         } else {
             false
         }
+    }
+
+    /// sway's `seat_set_focus` on a node, whatever kind it is.
+    pub(in crate::layout) fn focus_node(&mut self, key: NodeKey) {
+        self.focus_node_key(key);
     }
 
     pub(in crate::layout) fn clear_selection(&mut self) {
@@ -145,6 +133,32 @@ impl<W: LayoutElement> ContainerTree<W> {
             .or(self.focused_key())
             .or_else(|| self.first_leaf_key());
         let Some(base_key) = base_key else {
+            return false;
+        };
+        let Some(parent_key) = self.parent_of(base_key) else {
+            return false;
+        };
+        self.select_node(parent_key);
+        true
+    }
+
+    /// The node a command aimed at one branch reads its position from.
+    ///
+    /// One seat holds one selection over the whole workspace, so a branch asking where it
+    /// stands has to say so: the seat may be pointing at the other side entirely.
+    pub(in crate::layout) fn branch_position(&self, branch_root: NodeKey) -> Option<NodeKey> {
+        self.selected_key()
+            .filter(|key| self.is_descendant(*key, branch_root))
+            .or_else(|| {
+                self.focused_key()
+                    .filter(|key| self.is_descendant(*key, branch_root))
+            })
+            .or_else(|| self.focus_inactive_view(branch_root))
+    }
+
+    /// `focus parent` inside one branch. Its root has no parent, so the walk stops there.
+    pub(in crate::layout) fn select_parent_in(&mut self, branch_root: NodeKey) -> bool {
+        let Some(base_key) = self.branch_position(branch_root) else {
             return false;
         };
         let Some(parent_key) = self.parent_of(base_key) else {
@@ -223,13 +237,33 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         }
 
-        if let Some(key) = self.focused_key() {
-            self.sync_container_focus_from_key(key);
-        }
-
         let Some(selected_key) = self.selected_node_key() else {
             return false;
         };
+        self.focus_in_direction_from(selected_key, direction, allow_wrap, descend)
+    }
+
+    /// The same, inside one branch: the walk stops at its root, so focus never leaves it.
+    pub(in crate::layout) fn focus_in_direction_in_branch(
+        &mut self,
+        branch_root: NodeKey,
+        direction: Direction,
+        allow_wrap: bool,
+    ) -> bool {
+        self.clear_focus_history();
+        let Some(start) = self.branch_position(branch_root) else {
+            return false;
+        };
+        self.focus_in_direction_from(start, direction, allow_wrap, true)
+    }
+
+    fn focus_in_direction_from(
+        &mut self,
+        selected_key: NodeKey,
+        direction: Direction,
+        allow_wrap: bool,
+        descend: bool,
+    ) -> bool {
         let mut wrap_candidate: Option<(NodeKey, usize)> = None;
 
         // Walk ancestors from the innermost container outwards, trying a direct sibling
@@ -313,15 +347,41 @@ impl<W: LayoutElement> ContainerTree<W> {
         if matches!(self.get_node(key), Some(NodeData::Leaf(_))) {
             return Some(key);
         }
-        self.seat
-            .order()
-            .iter()
-            .copied()
-            .find(|candidate| {
-                matches!(self.get_node(*candidate), Some(NodeData::Leaf(_)))
-                    && self.is_descendant(*candidate, key)
-            })
+        self.focus_inactive_view_from_order(key)
             .or_else(|| self.leaf_under_key(key))
+    }
+
+    fn focus_inactive_view_from_order(&self, key: NodeKey) -> Option<NodeKey> {
+        self.seat.order().iter().copied().find(|candidate| {
+            matches!(self.get_node(*candidate), Some(NodeData::Leaf(_)))
+                && self.is_descendant(*candidate, key)
+        })
+    }
+
+    /// Apply the focus-stack side effect of destroying a node that did not own seat focus.
+    ///
+    /// sway's destroy listener raw-focuses the nearest surviving inactive view, then restores
+    /// the workspace and the previous focus (`sway/input/seat.c:261-324`). Keyboard focus does
+    /// not move, but the promoted sibling becomes the answer inside its branch. Omitting this
+    /// is why a later wrapped `focus next sibling` descended to an older view.
+    pub(super) fn unregister_unfocused_node(&mut self, key: NodeKey, surviving_parent: NodeKey) {
+        let restore = self.seat.node();
+        let was_focused = restore.is_some_and(|focused| {
+            focused == key || (self.nodes.contains_key(focused) && self.is_descendant(focused, key))
+        });
+        self.seat.unregister(key);
+        if was_focused {
+            return;
+        }
+
+        let next = self.focus_inactive_view_from_order(surviving_parent);
+        if let Some(next) = next {
+            self.seat.raw_focus(next);
+            self.seat.raw_focus(self.root);
+            if let Some(restore) = restore.filter(|node| self.nodes.contains_key(*node)) {
+                self.seat.raw_focus(restore);
+            }
+        }
     }
 
     /// Focus window by its ID if present.
@@ -376,22 +436,26 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Where focus goes when what held it is gone.
     ///
-    /// sway hands it to `seat_get_focus_inactive(seat, &ws->node)` — the node in the
-    /// workspace that was focused most recently and is still there. Not the first one in tree
-    /// order, which is what `focus_first_leaf` answers and what this used to do: closing a
-    /// window would jump focus to the leftmost one instead of the one you were on before.
+    /// sway's node-destroy listener asks `seat_get_focus_inactive_view` of the removed node's
+    /// parent first, then each ancestor in turn (`sway/input/seat.c:261-298`). Only when none
+    /// of those can answer does it ask the last workspace. Going straight to the workspace
+    /// made closing one child of a nested split jump to a more recently focused window in a
+    /// different branch.
     ///
-    ///     struct sway_node *node =
-    ///         seat_get_focus_inactive(seat, ws ? &ws->node : &root->node);   // view.c:803
-    ///
-    /// The order can answer it now, so it does. `focus_first_leaf` stays as the last resort
-    /// for a tree the order knows nothing about, which is a tree nothing has been focused in.
-    pub(super) fn reconcile_focus_after_change(&mut self, focused_removed: bool) {
+    /// The ancestor keys are captured before the removal because `container_reap_empty` may
+    /// destroy one or more of them before tiri settles focus.
+    pub(super) fn reconcile_focus_after_change(
+        &mut self,
+        focused_removed: bool,
+        former_ancestors: &[NodeKey],
+    ) {
         // The node that left stops answering for anything, including for the container it
         // was in.
         self.prune_focus_order();
 
-        if self.is_empty() {
+        // Both sides: the seat belongs to the workspace, and a workspace with a floating
+        // window in it is not one where nothing is focused.
+        if self.dfs_leaf_keys().is_empty() {
             self.seat.clear();
             return;
         }
@@ -401,16 +465,36 @@ impl<W: LayoutElement> ContainerTree<W> {
                 .focused_key()
                 .is_none_or(|key| !self.nodes.contains_key(key));
         if !needs_new_focus {
-            if let Some(key) = self.focused_key() {
-                self.sync_container_focus_from_key(key);
-            }
             return;
         }
 
-        match self.focus_inactive_view(self.root) {
+        let nearest_surviving = former_ancestors
+            .iter()
+            .copied()
+            .filter(|ancestor| self.nodes.contains_key(*ancestor))
+            .find_map(|ancestor| self.focus_inactive_view(ancestor));
+
+        // The last-workspace fallback still covers both lists: a floating window that was
+        // focused more recently than anything tiled is what focus falls to once no surviving
+        // ancestor of the removed node can answer.
+        match nearest_surviving.or_else(|| self.focus_inactive_anywhere()) {
             Some(key) => self.focus_node_key(key),
             None => self.focus_first_leaf(),
         }
+    }
+
+    /// The most recently focused window anywhere in the workspace, either side.
+    pub(in crate::layout) fn focus_inactive_anywhere(&self) -> Option<NodeKey> {
+        let root = self.root;
+        self.seat
+            .order()
+            .iter()
+            .copied()
+            .find(|candidate| {
+                matches!(self.get_node(*candidate), Some(NodeData::Leaf(_)))
+                    && self.nodes.contains_key(*candidate)
+            })
+            .or_else(|| self.focus_inactive_view(root))
     }
 
     pub(super) fn focus_first_leaf(&mut self) {
@@ -434,9 +518,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Re-derive the per-container focus chain from the focused leaf, falling back to the
     /// first leaf when nothing is focused.
     pub(super) fn resync_focus(&mut self) {
-        if let Some(focused) = self.focused_key() {
-            self.sync_container_focus_from_key(focused);
-        } else {
+        if self.focused_key().is_none() {
             self.focus_first_leaf();
         }
     }
@@ -499,17 +581,6 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// sway's `seat_set_focus` walks up from the focused node adding each ancestor, so a
     /// container is ahead of its siblings exactly when something inside it was focused more
     /// recently than anything inside them.
-
-    /// Whether the focused leaf is `key` or sits somewhere under it.
-    ///
-    /// sway asks `seat_get_focus(seat) == &child->node`, which is the same question where it
-    /// asks it — the seat's focus is whatever node it last set, container or view alike.
-    pub(in crate::layout) fn focus_chain_passes_through(&self, key: NodeKey) -> bool {
-        let Some(focused) = self.focused_key().or(self.selected_key()) else {
-            return false;
-        };
-        self.is_descendant(focused, key)
-    }
 
     /// Drop nodes the tree no longer holds.
     pub(in crate::layout) fn prune_focus_order(&mut self) {

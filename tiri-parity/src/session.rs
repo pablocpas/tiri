@@ -159,6 +159,7 @@ impl Drop for ManagedChild {
 pub struct Sway {
     process: ManagedChild,
     socket: PathBuf,
+    stderr_log: PathBuf,
     _dir: TempDir,
     /// Which window each sway node is, numbered by the order the script opened them.
     order: sway::OpenOrder,
@@ -196,6 +197,9 @@ impl Sway {
         .map_err(|err| format!("cannot write the sway config: {err}"))?;
 
         let socket = dir.0.join("sway.sock");
+        let stderr_log = dir.0.join("sway.stderr");
+        let stderr = std::fs::File::create(&stderr_log)
+            .map_err(|err| format!("cannot create sway's error log: {err}"))?;
         let process = ManagedChild::spawn(
             Command::new(sway_binary())
                 .arg("-c")
@@ -204,7 +208,7 @@ impl Sway {
                 .env("WLR_LIBINPUT_NO_DEVICES", "1")
                 .env("SWAYSOCK", &socket)
                 .stdout(Stdio::null())
-                .stderr(Stdio::null()),
+                .stderr(Stdio::from(stderr)),
             "sway",
         )?;
 
@@ -219,6 +223,7 @@ impl Sway {
         let sway = Sway {
             process,
             socket,
+            stderr_log,
             _dir: dir,
             order: sway::OpenOrder::new(),
             opened: 0,
@@ -278,7 +283,19 @@ impl Sway {
             } else {
                 stderr.trim()
             };
-            return Err(format!("swaymsg {args:?} failed: {detail}"));
+            // A disconnected socket is often the only thing swaymsg can say after sway
+            // aborts. Keep the compositor's own last lines beside it; without them a pinned
+            // reference crash and a broken IPC harness are indistinguishable.
+            let compositor = std::fs::read_to_string(&self.stderr_log).unwrap_or_default();
+            let mut tail: Vec<_> = compositor.lines().rev().take(200).collect();
+            tail.reverse();
+            let compositor = tail.join("\n");
+            if compositor.is_empty() {
+                return Err(format!("swaymsg {args:?} failed: {detail}"));
+            }
+            return Err(format!(
+                "swaymsg {args:?} failed: {detail}\nsway stderr:\n{compositor}"
+            ));
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
@@ -401,7 +418,8 @@ impl Sway {
     pub fn observe(&self) -> Result<Workspace, String> {
         // Recorded raw: what counts as decoration is a rule in this crate, and baking it
         // into the files would mean every improvement to it needs a machine with sway.
-        normalize_tree(&self.tree()?, &self.order, "sway")
+        let tree = self.tree()?;
+        normalize_tree(&tree, &self.order, "sway")
     }
 }
 

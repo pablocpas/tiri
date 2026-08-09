@@ -65,6 +65,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// All window IDs in the tree, depth-first.
+    #[cfg(test)]
     pub(in crate::layout) fn all_window_ids(&self) -> Vec<W::Id> {
         self.window_ids_under(self.root)
     }
@@ -171,15 +172,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         keys
     }
 
-    /// All tiles mutably, in depth-first (visual) order.
-    pub(in crate::layout) fn all_tiles_mut(&mut self) -> Vec<&mut Tile<W>> {
-        let keys = self.dfs_leaf_keys();
-        self.tiles_mut_for_keys(&keys)
-            .into_iter()
-            .map(|(_, tile)| tile)
-            .collect()
-    }
-
     /// Mutable tiles for `keys`, each tagged with the index of its key in `keys` and sorted
     /// by that index. Keys that are not (or no longer) leaves of this tree are skipped.
     pub(in crate::layout) fn tiles_mut_for_keys(
@@ -216,16 +208,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         ))
     }
 
-    /// Layout, geometry and child count of the root, when the root is a container.
-    pub(in crate::layout) fn root_info(&self) -> Option<(Layout, Rectangle<f64, Logical>, usize)> {
-        self.container_info(self.root)
-    }
-
-    /// Whether the permanent workspace root is meaningful as a user-addressable parent.
-    pub(in crate::layout) fn root_is_meaningful_parent(&self) -> Option<bool> {
-        self.container_is_meaningful_parent(self.root)
-    }
-
     /// Whether the container at `key` is a container the user can address: it either holds
     /// several children or was created by an explicit split.
     pub(in crate::layout) fn container_is_meaningful_parent(&self, key: NodeKey) -> Option<bool> {
@@ -240,24 +222,14 @@ impl<W: LayoutElement> ContainerTree<W> {
         child_idx: usize,
     ) -> Option<Rectangle<f64, Logical>> {
         let container = self.get_container(container_key)?;
-        if child_idx >= container.child_count() {
-            return None;
-        }
-
         let child_key = container.child_key(child_idx)?;
-        let child_is_leaf = matches!(self.get_node(child_key), Some(NodeData::Leaf(_)));
-        let child_count = container.child_count();
-        let percents = self.get_normalized_child_percents(container_key, child_count);
-        let (rect, _) = self.preview_child_rect(
-            container.layout(),
-            container.geometry(),
-            child_count,
-            &percents,
-            child_idx,
-            child_is_leaf,
-        );
-
-        Some(rect)
+        // Resize reads each sibling's settled pending box, not a fresh projection from its
+        // fractions. Recomputing here normalizes once more than sway and can put a half-pixel
+        // remainder on the opposite sibling; `container_resize_tiled` then snaps that wrong
+        // pixel into the stored fractions.
+        //
+        // sway/commands/resize.c:117-163
+        self.node_geometry(child_key)
     }
 
     /// Rect of a node, resolved through its parent container.

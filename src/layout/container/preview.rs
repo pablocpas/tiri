@@ -19,8 +19,15 @@ impl<W: LayoutElement> ContainerTree<W> {
         // workspace's own orientation.
         if self.is_empty() {
             let layout = self.root_container_layout();
-            let (rect, tab_bar_offset) =
-                self.preview_child_rect(layout, root_rect, 1, &[1.0], 0, true);
+            let (rect, tab_bar_offset) = self.preview_child_rect(
+                layout,
+                root_rect,
+                1,
+                &[1.0],
+                0,
+                true,
+                self.gap_in(root_key),
+            );
             return Some(PreviewLeafGeometry {
                 rect,
                 tab_bar_offset,
@@ -57,6 +64,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             &percents,
             insert_idx,
             true,
+            self.gap_in(parent_key),
         );
 
         Some(PreviewLeafGeometry {
@@ -85,6 +93,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                 &percents,
                 idx,
                 child_is_leaf,
+                self.gap_in(node_key),
             );
             if child_is_leaf {
                 return None;
@@ -156,8 +165,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         percents: &[f64],
         child_idx: usize,
         child_is_leaf: bool,
+        gap: f64,
     ) -> (Rectangle<f64, Logical>, f64) {
-        let (child_rects, _) = self.child_rects_for_layout(layout, rect, child_count, percents);
+        let (child_rects, _) =
+            self.child_rects_for_layout(layout, rect, child_count, percents, gap);
         match layout {
             Layout::SplitH | Layout::SplitV => {
                 let Some(child_rect) = child_rects.get(child_idx).copied() else {

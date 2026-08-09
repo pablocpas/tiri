@@ -17,7 +17,18 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Helper: get node key at path
     pub(super) fn get_node_key_at_path(&self, path: &[usize]) -> Option<NodeKey> {
-        let mut current_key = self.root;
+        let root_key = self.root;
+        self.node_at_branch_path(root_key, path)
+    }
+
+    /// Resolve a path read from a branch's own root — the addressing sway's `get_tree`
+    /// publishes, where `nodes` and each entry of `floating_nodes` are separate trees.
+    pub(in crate::layout) fn node_at_branch_path(
+        &self,
+        branch_root: NodeKey,
+        path: &[usize],
+    ) -> Option<NodeKey> {
+        let mut current_key = branch_root;
 
         for &idx in path {
             match self.get_node(current_key)? {
@@ -29,16 +40,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         Some(current_key)
-    }
-
-    /// Put the seat's order back in step with where focus already is.
-    ///
-    /// Called after tree surgery, not by the focus commands: nothing has been focused anew,
-    /// so a selection made by `focus parent` survives it.
-    pub(super) fn sync_container_focus_from_key(&mut self, key: NodeKey) {
-        let chain = self.focus_chain(key);
-        let leaf = self.leaf_under_key(key);
-        self.seat.touch(&chain, leaf);
     }
 
     pub(super) fn leaf_under_key(&self, mut key: NodeKey) -> Option<NodeKey> {
@@ -60,6 +61,11 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.leaf_under_key(root_key)
     }
 
+    /// The first leaf of one branch.
+    pub(in crate::layout) fn first_leaf_in_branch(&self, branch_root: NodeKey) -> Option<NodeKey> {
+        self.leaf_under_key(branch_root)
+    }
+
     /// sway's `seat_set_focus`: focus this node, whatever kind it is.
     ///
     /// What is raised is what was focused. Focusing a container raises the container, and the
@@ -73,6 +79,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         };
         let chain = self.focus_chain(key);
         self.seat.focus(&chain, Some(leaf_key));
+        self.refresh_focus_visibility();
     }
 
     /// Move logical/seat focus without changing the active branch of any switcher container.

@@ -32,7 +32,16 @@ if [ ! -x "$TIRI_PARITY_SWAY" ]; then
     exit 1
 fi
 
-OUT=$(mktemp -d); trap 'rm -rf "$OUT"' EXIT
+OUT=$(mktemp -d)
+cleanup() {
+    status=$?
+    if [ "$status" -eq 0 ]; then
+        rm -rf "$OUT"
+    else
+        echo "campaign logs kept at $OUT"
+    fi
+}
+trap cleanup EXIT
 echo "$SEEDS seeds, ${SECONDS_PER_SEED}s each, $JOBS at a time"
 
 # Build once, so the workers do not race on the same target directory.
@@ -53,8 +62,8 @@ seq 1 "$SEEDS" | xargs -P "$JOBS" -I{} bash -c 'run_seed {}'
 clean=0; diverged=0; broke=0
 for seed in $(seq 1 "$SEEDS"); do
     f="$OUT/$seed"
-    if grep -q "scripts compared against" "$f"; then
-        printf "  seed %-4s clean   %s\n" "$seed" "$(grep -oE '^[0-9]+ scripts compared' "$f")"
+    if grep -qE "seed 0x[0-9a-f]+  clean, [0-9]+ scripts compared" "$f"; then
+        printf "  seed %-4s clean   %s\n" "$seed" "$(grep -oE '[0-9]+ scripts compared' "$f" | tail -1)"
         clean=$((clean + 1))
     elif grep -q "divergence after" "$f"; then
         printf "  seed %-4s DIVERGED  %s\n" "$seed" "$(grep -oE 'shrunk to [0-9]+ commands' "$f" | head -1)"

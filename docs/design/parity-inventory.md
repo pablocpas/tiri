@@ -15,8 +15,8 @@ not of the ground.
 | | |
 |---|---|
 | sway functions in the domain | 93 |
-| cited in tiri | 16 |
-| not yet cited | 77 |
+| cited in tiri | 23 |
+| not yet cited | 70 |
 
 Domain: `sway/tree/{container,workspace,arrange}.c` and the commands that reshape the
 tree — `move`, `split`, `layout`, `focus`, `resize`, `fullscreen`, `swap`. Excluded:
@@ -24,19 +24,26 @@ seat device configuration, marks, scratchpad, criteria, bars, output layout.
 
 ## Cited
 
+- `arrange_children`
 - `arrange_container`
+- `arrange_floating`
 - `arrange_workspace`
 - `container_create`
+- `container_detach`
 - `container_floating_resize_and_center`
 - `container_floating_set_default_size`
+- `container_insert_child`
+- `container_is_floating`
 - `container_move_in_direction`
 - `container_move_to_container_from_direction`
 - `container_parent_layout`
 - `container_reap_empty`
+- `container_replace`
 - `container_resize_tiled`
 - `container_set_floating`
 - `container_split`
 - `container_squash`
+- `workspace_add_floating`
 - `workspace_squash`
 - `workspace_switch`
 - `workspace_wrap_children`
@@ -46,14 +53,11 @@ seat device configuration, marks, scratchpad, criteria, bars, output layout.
 Not all of these need porting — some are sway plumbing with no tiri counterpart. Each
 one that does not is worth a line saying so, here or at its call site.
 
-- `arrange_children`
-- `arrange_floating`
 - `arrange_node`
 - `arrange_output`
 - `arrange_root`
 - `container_add_child`
 - `container_add_sibling`
-- `container_detach`
 - `container_end_mouse_operation`
 - `container_find_and_unmark`
 - `container_find_child`
@@ -72,10 +76,8 @@ one that does not is worth a line saying so, here or at its call site.
 - `container_has_ancestor`
 - `container_has_focused_child`
 - `container_has_urgent_child`
-- `container_insert_child`
 - `container_is_current_floating`
 - `container_is_current_parent_focused`
-- `container_is_floating`
 - `container_is_floating_or_child`
 - `container_is_focused`
 - `container_is_fullscreen_or_child`
@@ -91,7 +93,6 @@ one that does not is worth a line saying so, here or at its call site.
 - `container_move_to_workspace_from_direction`
 - `container_obstructing_fullscreen_container`
 - `container_raise_floating`
-- `container_replace`
 - `container_set_fullscreen`
 - `container_set_geometry_from_content`
 - `container_set_resizing`
@@ -102,7 +103,6 @@ one that does not is worth a line saying so, here or at its call site.
 - `container_toplevel_ancestor`
 - `container_update`
 - `container_update_itself_and_parents`
-- `workspace_add_floating`
 - `workspace_add_gaps`
 - `workspace_add_tiling`
 - `workspace_attach_tiling`

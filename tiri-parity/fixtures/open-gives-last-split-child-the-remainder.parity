@@ -1,0 +1,83 @@
+# Repeated opens expose sway's last-child remainder rule in a vertical split.
+# recorded from sway version 1.12-dev
+# client 400x285
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ move down
+workspace splitv focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ focus parent
+workspace splitv focus=@
+  window 1 0.000,0.000 1.000x1.000
+
+$ split h
+workspace splith focus=@0
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+
+$ move down
+workspace splitv focus=@0
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+
+$ layout toggle all
+workspace splitv focus=@0/0
+  stacked 0.000,0.000 1.000x1.000
+    splitv 0.000,0.064 1.000x0.936
+      window 1 0.000,0.032 1.000x0.968
+
+$ split v
+workspace splitv focus=@0/0/0
+  stacked 0.000,0.000 1.000x1.000
+    splitv 0.000,0.064 1.000x0.936
+      splitv 0.000,0.032 1.000x0.968
+        window 1 0.000,0.032 1.000x0.968
+
+$ focus child
+workspace splitv focus=1
+  stacked 0.000,0.000 1.000x1.000
+    splitv 0.000,0.064 1.000x0.936
+      splitv 0.000,0.032 1.000x0.968
+        window 1 0.000,0.032 1.000x0.968
+
+$ open
+workspace splitv focus=2
+  stacked 0.000,0.000 1.000x1.000
+    splitv 0.000,0.064 1.000x0.936
+      splitv 0.000,0.032 1.000x0.968
+        window 1 0.000,0.032 1.000x0.485
+        window 2 0.000,0.517 1.000x0.483
+
+$ open
+workspace splitv focus=3
+  stacked 0.000,0.000 1.000x1.000
+    splitv 0.000,0.064 1.000x0.936
+      splitv 0.000,0.032 1.000x0.968
+        window 1 0.000,0.032 1.000x0.322
+        window 2 0.000,0.354 1.000x0.322
+        window 3 0.000,0.676 1.000x0.324
+
+$ open
+workspace splitv focus=4
+  stacked 0.000,0.000 1.000x1.000
+    splitv 0.000,0.064 1.000x0.936
+      splitv 0.000,0.032 1.000x0.968
+        window 1 0.000,0.032 1.000x0.242
+        window 2 0.000,0.274 1.000x0.242
+        window 3 0.000,0.515 1.000x0.242
+        window 4 0.000,0.757 1.000x0.243
+
+$ open
+workspace splitv focus=5
+  stacked 0.000,0.000 1.000x1.000
+    splitv 0.000,0.064 1.000x0.936
+      splitv 0.000,0.032 1.000x0.968
+        window 1 0.000,0.032 1.000x0.193
+        window 2 0.000,0.225 1.000x0.193
+        window 3 0.000,0.418 1.000x0.193
+        window 4 0.000,0.611 1.000x0.193
+        window 5 0.000,0.804 1.000x0.196

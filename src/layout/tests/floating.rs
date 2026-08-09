@@ -1,6 +1,34 @@
 use super::*;
 
 #[test]
+fn floating_roundtrip_keeps_the_window_node_key() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+    ]);
+
+    let key = layout
+        .active_workspace()
+        .expect("active workspace")
+        .tiling()
+        .tree()
+        .window_key(&1)
+        .expect("mapped window");
+
+    check_ops_on_layout(&mut layout, [Op::ToggleWindowFloating { id: Some(1) }]);
+    let workspace = layout.active_workspace().expect("active workspace");
+    assert!(workspace.is_floating(&1));
+    assert_eq!(workspace.tiling().tree().window_key(&1), Some(key));
+
+    check_ops_on_layout(&mut layout, [Op::ToggleWindowFloating { id: Some(1) }]);
+    let workspace = layout.active_workspace().expect("active workspace");
+    assert!(!workspace.is_floating(&1));
+    assert_eq!(workspace.tiling().tree().window_key(&1), Some(key));
+}
+
+#[test]
 fn auto_add_window_does_not_inherit_floating_from_focused_window() {
     let layout = check_ops([
         Op::AddOutput(1),
@@ -1079,7 +1107,6 @@ fn floating_toggle_after_split_marks_container_as_grouped() {
         workspace.floating_container_allows_splits(&floating_id),
         "floating explicit split should be considered grouped for toggle back"
     );
-
     check_ops_on_layout(&mut layout, [Op::ToggleWindowFloating { id: None }]);
     let workspace = layout.active_workspace().expect("active workspace");
     let tree = workspace.tiling().debug_tree().replace(" *", "");

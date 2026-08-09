@@ -518,9 +518,10 @@ each is finite: this is a list that can be finished, not a tail.
    is paid for in `RootPolicy` and its forty-three uses, and in the one divergence left in the
    ledger.
 
-6. **Tiling and floating are two trees** — sway has one workspace holding two lists, and a
-   container moves between them without ceasing to be itself. Tiri takes the subtree apart and
-   rebuilds it in the other arena with new keys, so anything keyed by node identity is lost in
-   transit. Today that is the seat's order: a window comes back from floating as though nobody
-   had ever focused it. `i3_135_deep_floating_roundtrip_from_other_workspace_preserves_focus_chain`
-   is where that is visible.
+6. **Tiling and floating are two trees** — *fixed*. sway has one workspace holding two lists,
+   and a container moves between them without ceasing to be itself. Tiri now does the same:
+   `ContainerTree` owns the tiled root and the floating roots in one slotmap, while
+   `FloatingSpace` only owns the groups' stacking and geometry. Crossing calls
+   `float_subtree`/`unfloat_subtree`, so the leaf keeps its `NodeKey` and the seat's order keeps
+   referring to the same node. The detached-subtree round trip that rebuilt every key has been
+   removed from this path.

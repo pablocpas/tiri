@@ -16,8 +16,6 @@ use super::Direction;
 use super::LayoutElement;
 use super::NodeData;
 use super::NodeKey;
-#[cfg(test)]
-use super::RootPolicy;
 use super::TreeCommandTarget;
 
 /// What a reparent does to the shares of the node it moves.
@@ -45,10 +43,8 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Move the current command target in a direction.
     #[cfg(test)]
     pub(in crate::layout) fn move_in_direction(&mut self, direction: Direction) -> bool {
-        self.move_target_in_direction(
-            direction,
-            self.command_target(RootPolicy::MaterialContainer),
-        )
+        let root = self.root;
+        self.move_target_in_direction(direction, self.command_target_in(root))
     }
 
     /// Move an explicit command target in a direction.
@@ -61,9 +57,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         target: TreeCommandTarget,
     ) -> bool {
         self.clear_focus_history();
-        if self.is_empty() {
-            return false;
-        }
 
         let Some((node_key, preserve_selected_container)) = self.resolve_move_source(target) else {
             return false;
@@ -105,10 +98,10 @@ impl<W: LayoutElement> ContainerTree<W> {
             }
         };
 
-        self.sync_container_focus_from_key(move_key);
-
-        // The workspace has nowhere to go, and moving it is not one of these commands.
-        (move_key != self.root).then_some((move_key, preserve_selected_container))
+        // A branch's root has nowhere to go, and moving it is not one of these commands.
+        self.parent_of(move_key)
+            .is_some()
+            .then_some((move_key, preserve_selected_container))
     }
 
     /// sway's `container_move_in_direction`.
@@ -132,14 +125,14 @@ impl<W: LayoutElement> ContainerTree<W> {
             let child_count = parent.child_count();
 
             if !parent_layout.is_parallel_to(direction) {
-                if parent_key != self.root {
+                if self.parent_of(parent_key).is_some() {
                     // Keep looking for a parallel parent.
                     current = parent_key;
                     continue;
                 }
-                // Nothing anywhere faces the right way, so the workspace turns to face it.
+                // Nothing anywhere faces the right way, so the branch's root turns to face it.
                 let Some(wrapper_key) =
-                    self.wrap_workspace_children(parent_layout, direction.split_layout())
+                    self.wrap_branch_children(parent_key, parent_layout, direction.split_layout())
                 else {
                     return false;
                 };
@@ -171,8 +164,8 @@ impl<W: LayoutElement> ContainerTree<W> {
                 break (current, current_idx);
             }
 
-            if parent_key == self.root {
-                // The node is at workspace level with nothing beside it, which is where sway
+            if self.parent_of(parent_key).is_none() {
+                // The node is at branch level with nothing beside it, which is where sway
                 // hands it to the next output. There is one workspace here.
                 return false;
             }
@@ -188,7 +181,9 @@ impl<W: LayoutElement> ContainerTree<W> {
         // sway treats a lone child of the workspace as if it were at workspace level and
         // hands it to the next output, so the move stops here. Not when the workspace has
         // just been turned: that is a change in itself.
-        let node_parent_is_lone_top_level = self.parent_of(node_parent_key) == Some(self.root)
+        let node_parent_is_lone_top_level = self
+            .parent_of(node_parent_key)
+            .is_some_and(|grandparent| self.parent_of(grandparent).is_none())
             && self
                 .get_container(node_parent_key)
                 .is_some_and(|parent| parent.child_count() == 1);
@@ -212,8 +207,9 @@ impl<W: LayoutElement> ContainerTree<W> {
             ReparentFractions::PreserveAndUnset(ancestor_key),
         );
 
+        let branch_root = self.branch_root(ancestor_parent_key);
         self.reap_empty(node_parent_key);
-        self.squash_workspace();
+        self.squash_branch(branch_root);
         true
     }
 
@@ -269,13 +265,14 @@ impl<W: LayoutElement> ContainerTree<W> {
             // A cousin's neighbour. The node arrives from the far side, so moving left lands
             // it to the cousin's right and moving right to its left.
             let insert_at = destination_idx + usize::from(direction.is_leading());
+            let branch_root = self.branch_root(destination_parent_key);
             self.reparent(
                 node_key,
                 destination_parent_key,
                 insert_at,
                 ReparentFractions::Unset,
             );
-            self.squash_workspace();
+            self.squash_branch(branch_root);
             return;
         }
 
@@ -292,13 +289,14 @@ impl<W: LayoutElement> ContainerTree<W> {
             } else {
                 0
             };
+            let branch_root = self.branch_root(destination_key);
             self.reparent(
                 node_key,
                 destination_key,
                 insert_at,
                 ReparentFractions::Unset,
             );
-            self.squash_workspace();
+            self.squash_branch(branch_root);
             return;
         }
 
@@ -372,12 +370,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(super) fn detach_child(&mut self, node_key: NodeKey) -> Option<(NodeKey, usize)> {
         let parent_key = self.parent_of(node_key)?;
         let idx = self.child_index(parent_key, node_key)?;
-        // The mirror of `insert_child_unset`: `container_detach` takes the node out of the
-        // list and leaves the siblings' fractions untouched. Renormalizing here is usually
-        // algebraically invisible, and stops being invisible the moment a squash replaces one
-        // of those siblings with grandchildren carrying fractions from another parent.
-        self.get_container_mut(parent_key)?
-            .remove_child_preserving_percents(idx);
+        self.get_container_mut(parent_key)?.remove_child(idx);
         self.set_parent(node_key, None);
         Some((parent_key, idx))
     }

@@ -6,7 +6,6 @@ use super::Layout;
 use super::LayoutElement;
 use super::NodeData;
 use super::NodeKey;
-use super::RootPolicy;
 use super::TreeCommandTarget;
 
 impl<W: LayoutElement> ContainerTree<W> {
@@ -14,65 +13,68 @@ impl<W: LayoutElement> ContainerTree<W> {
         &mut self,
         container_key: NodeKey,
         layout: Layout,
-        root_policy: RootPolicy,
     ) -> bool {
         if !matches!(self.get_node(container_key), Some(NodeData::Container(_))) {
             return false;
         }
 
-        if container_key == self.root {
-            if root_policy == RootPolicy::MaterialContainer {
+        if self.parent_of(container_key).is_none() {
+            if self.branch_is_addressable(container_key) {
                 return false;
             }
             // The workspace itself is selected, so it is what takes the layout.
-            return self.set_root_container_layout(layout);
+            return self.set_branch_root_layout(container_key, layout);
         }
 
-        self.set_layout_of_parent_of(container_key, layout, root_policy)
+        self.set_layout_of_parent_of(container_key, layout)
+    }
+
+    /// Hand a branch's root container a layout.
+    ///
+    /// The workspace carries its own orientation and so does a floating group's root; neither
+    /// gets the user-created bit for it, because being addressable is not what that bit means.
+    pub(in crate::layout) fn set_branch_root_layout(
+        &mut self,
+        branch_root: NodeKey,
+        layout: Layout,
+    ) -> bool {
+        let Some(root) = self.get_container_mut(branch_root) else {
+            return false;
+        };
+        root.set_layout(layout);
+        true
     }
 
     pub(in crate::layout) fn set_root_container_layout(&mut self, layout: Layout) -> bool {
         let root_key = self.root;
-        let Some(root) = self.get_container_mut(root_key) else {
-            return false;
-        };
-        // Not `set_layout_explicit`: the workspace does not need a user-created bit to be
-        // addressable, and setting it would make it read as an ordinary container to the
-        // rules that ask.
-        root.set_layout(layout);
-        true
+        self.set_branch_root_layout(root_key, layout)
     }
 
     pub(in crate::layout) fn set_layout_for_target(
         &mut self,
         layout: Layout,
         target: TreeCommandTarget,
-        root_policy: RootPolicy,
     ) -> bool {
-        self.flatten_layout_parent_once(target, root_policy);
-        self.set_layout_for_prepared_target(layout, target, root_policy)
+        self.flatten_layout_parent_once(target);
+        self.set_layout_for_prepared_target(layout, target)
     }
 
     fn set_layout_for_prepared_target(
         &mut self,
         layout: Layout,
         target: TreeCommandTarget,
-        root_policy: RootPolicy,
     ) -> bool {
         match target {
             // The workspace itself is selected, so it takes the layout. No container is
             // built: the workspace is the container, and it remembers the split it was on
             // the way out like any other.
             TreeCommandTarget::Workspace => self.set_root_container_layout(layout),
-            TreeCommandTarget::Container(key) => {
-                self.set_layout_for_container_target(key, layout, root_policy)
-            }
+            TreeCommandTarget::Container(key) => self.set_layout_for_container_target(key, layout),
             TreeCommandTarget::Leaf(key) => {
                 if !matches!(self.get_node(key), Some(NodeData::Leaf(_))) {
                     return false;
                 }
-                self.focus_node_key(key);
-                self.set_focused_layout_with_policy(layout, root_policy)
+                self.set_layout_of_parent_of(key, layout)
             }
         }
     }
@@ -83,8 +85,8 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// container, and itself has only one child, remove the inner level. The command then
     /// lands on its parent. This is deliberately one operation, not tree normalization:
     /// deeper single-child chains remain, just as they do in i3 and sway.
-    fn flatten_layout_parent_once(&mut self, target: TreeCommandTarget, root_policy: RootPolicy) {
-        let Some(container_key) = self.layout_container_key_for_target(target, root_policy) else {
+    fn flatten_layout_parent_once(&mut self, target: TreeCommandTarget) {
+        let Some(container_key) = self.layout_container_key_for_target(target) else {
             return;
         };
         let Some(child_key) = self
@@ -100,8 +102,9 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         // Tiri represents the workspace with a root ContainerData. Sway's workspace is a
         // different type and is not the `pending.parent` tested by cmd_layout, so it must
-        // not satisfy the outer-container half of this rule.
-        if root_policy == RootPolicy::ImplicitWorkspace && parent_key == self.root {
+        // not satisfy the outer-container half of this rule. A floating group's root is an
+        // ordinary container and does satisfy it.
+        if self.parent_of(parent_key).is_none() && !self.branch_is_addressable(parent_key) {
             return;
         }
         let Some(_) = self
@@ -110,8 +113,16 @@ impl<W: LayoutElement> ContainerTree<W> {
         else {
             return;
         };
+        // `container_replace` leaves the replacement's pending box alone. A leaf directly
+        // under tabbed/stacked also has a decorated content rectangle; after reparenting,
+        // that rectangle becomes the pending node box without an arrange in between.
+        //
+        // sway/tree/container.c:1534-1554
         if !self.replace_child_node(parent_key, container_key, child_key) {
             return;
+        }
+        if matches!(self.get_node(child_key), Some(NodeData::Leaf(_))) {
+            self.preserve_leaf_node_geometry(child_key);
         }
         if self.selected_key() == Some(container_key) {
             self.seat.keep_selected(child_key);
@@ -121,12 +132,12 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
         self.nodes.remove(container_key);
         self.parents.remove(container_key);
+        self.readdress_leaf_layouts();
     }
 
     pub(super) fn layout_container_key_for_target(
         &self,
         target: TreeCommandTarget,
-        root_policy: RootPolicy,
     ) -> Option<NodeKey> {
         match target {
             TreeCommandTarget::Workspace => None,
@@ -134,21 +145,20 @@ impl<W: LayoutElement> ContainerTree<W> {
                 if !matches!(self.get_node(key), Some(NodeData::Container(_))) {
                     return None;
                 }
-                if key == self.root && root_policy == RootPolicy::MaterialContainer {
-                    return None;
-                }
-                if key == self.root {
-                    Some(key)
-                } else {
-                    self.parent_of(key)
+                match self.parent_of(key) {
+                    // A floating group's root has no container above it to take the layout.
+                    None if self.branch_is_addressable(key) => None,
+                    // The workspace is its own layout target.
+                    None => Some(key),
+                    Some(parent) => Some(parent),
                 }
             }
             TreeCommandTarget::Leaf(key) => {
                 if !matches!(self.get_node(key), Some(NodeData::Leaf(_))) {
                     return None;
                 }
-                // A root leaf has no owning container, so the root itself is the target.
-                self.parent_of(key).or(Some(self.root))
+                // A branch-root leaf has no owning container, so it is its own target.
+                self.parent_of(key).or(Some(key))
             }
         }
     }
@@ -189,12 +199,13 @@ impl<W: LayoutElement> ContainerTree<W> {
     ///
     /// Returns the wrapper it built, for the callers that need to say something about it —
     /// `split` leaves it selected, the others only care that it worked.
-    pub(in crate::layout) fn wrap_workspace_children(
+    pub(in crate::layout) fn wrap_branch_children(
         &mut self,
+        branch_root: NodeKey,
         wrapper_layout: Layout,
         root_layout: Layout,
     ) -> Option<NodeKey> {
-        let root_key = self.root;
+        let root_key = branch_root;
 
         let (old_children, old_fractions) = {
             let root = self.get_container_mut(root_key)?;
@@ -230,27 +241,32 @@ impl<W: LayoutElement> ContainerTree<W> {
         root.insert_child(0, wrapper_key);
         self.set_parent(wrapper_key, Some(root_key));
 
-        if let Some(focused_key) = self.focused_key() {
-            self.sync_container_focus_from_key(focused_key);
-        }
-
         Some(wrapper_key)
+    }
+
+    pub(in crate::layout) fn wrap_workspace_children(
+        &mut self,
+        wrapper_layout: Layout,
+        root_layout: Layout,
+    ) -> Option<NodeKey> {
+        let root_key = self.root;
+        self.wrap_branch_children(root_key, wrapper_layout, root_layout)
     }
 
     pub(super) fn split_selected_container(
         &mut self,
         selected_key: NodeKey,
         layout: Layout,
-        root_policy: RootPolicy,
     ) -> bool {
         if !matches!(self.get_node(selected_key), Some(NodeData::Container(_))) {
             return false;
         }
 
-        if selected_key == self.root {
-            return match root_policy {
-                RootPolicy::ImplicitWorkspace => self.split_workspace_container(layout),
-                RootPolicy::MaterialContainer => self.split_root_container(layout),
+        if self.parent_of(selected_key).is_none() {
+            return if self.branch_is_addressable(selected_key) {
+                self.split_branch_root(selected_key, layout)
+            } else {
+                self.split_workspace_container(layout)
             };
         }
 
@@ -285,11 +301,10 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         // Keep command context on the originally selected container.
         self.seat.keep_selected(selected_key);
-        if let Some(focused_key) = self.focused_key() {
-            self.sync_container_focus_from_key(focused_key);
-        } else if let Some(leaf_key) = self.leaf_under_key(selected_key) {
-            self.seat.redirect_focused_leaf(Some(leaf_key));
-            self.sync_container_focus_from_key(leaf_key);
+        if self.focused_key().is_none() {
+            if let Some(leaf_key) = self.leaf_under_key(selected_key) {
+                self.seat.redirect_focused_leaf(Some(leaf_key));
+            }
         }
 
         true
@@ -309,7 +324,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let previous = self.root_container_layout();
         match self.wrap_workspace_children(previous, layout) {
             Some(wrapper_key) => {
-                self.seat.keep_selected(wrapper_key);
+                self.select_container(wrapper_key);
                 true
             }
             None => self.set_root_container_layout(layout),
@@ -321,61 +336,29 @@ impl<W: LayoutElement> ContainerTree<W> {
         &mut self,
         layout: Layout,
         target: TreeCommandTarget,
-        root_policy: RootPolicy,
     ) -> bool {
         self.clear_focus_history();
 
         match target {
-            TreeCommandTarget::Workspace => match root_policy {
-                RootPolicy::ImplicitWorkspace => self.split_workspace_container(layout),
-                RootPolicy::MaterialContainer => false,
-            },
-            TreeCommandTarget::Container(key) => {
-                self.split_selected_container(key, layout, root_policy)
-            }
-            TreeCommandTarget::Leaf(key) => {
-                debug_assert!(matches!(self.get_node(key), Some(NodeData::Leaf(_))));
-                self.split_focused_with_policy(layout, root_policy)
-            }
+            TreeCommandTarget::Workspace => self.split_workspace_container(layout),
+            TreeCommandTarget::Container(key) => self.split_selected_container(key, layout),
+            TreeCommandTarget::Leaf(key) => self.split_leaf(key, layout),
         }
     }
 
-    /// Split the focused node using the root behavior of the owning space.
-    pub(super) fn split_focused_with_policy(
+    /// Split a branch's root container, keeping the command context on it.
+    pub(in crate::layout) fn split_branch_root(
         &mut self,
+        branch_root: NodeKey,
         layout: Layout,
-        root_policy: RootPolicy,
     ) -> bool {
         self.clear_focus_history();
 
-        if self.is_empty() {
-            return match root_policy {
-                RootPolicy::ImplicitWorkspace => self.set_root_container_layout(layout),
-                RootPolicy::MaterialContainer => false,
-            };
-        }
-
-        if root_policy == RootPolicy::MaterialContainer && self.focus_is_root() {
-            return self.split_root_container(layout);
-        }
-
-        self.split_focused(layout)
-    }
-
-    /// Split a material root container, preserving selected command context on
-    /// the original root node.
-    pub(in crate::layout) fn split_root_container(&mut self, layout: Layout) -> bool {
-        self.clear_focus_history();
-        let root_key = self.root;
-
-        let Some(container) = self.get_container_mut(root_key) else {
+        let Some(container) = self.get_container_mut(branch_root) else {
             return false;
         };
         container.set_layout_explicit(layout);
-        self.seat.keep_selected(root_key);
-        if let Some(focused_key) = self.focused_key() {
-            self.sync_container_focus_from_key(focused_key);
-        }
+        self.seat.keep_selected(branch_root);
         true
     }
 
@@ -393,9 +376,22 @@ impl<W: LayoutElement> ContainerTree<W> {
         let Some(focused_key) = self.effective_focused_key() else {
             return false;
         };
+        self.split_leaf(focused_key, layout)
+    }
 
-        let Some(parent_key) = self.parent_of(focused_key) else {
-            return false;
+    /// i3's `tree_split` on one node.
+    ///
+    /// A window alone in a split has nothing to be separated from, so the command only
+    /// (re)states that container's orientation; with siblings present, or a parent that is
+    /// tabbed or stacked, it builds a container. Measured, including when the parent already
+    /// has the requested orientation and regardless of how it got it — tiri used to treat a
+    /// parent whose layout had been set explicitly as already-split and do nothing, which the
+    /// differential fuzz caught on its first script.
+    pub(super) fn split_leaf(&mut self, key: NodeKey, layout: Layout) -> bool {
+        let Some(parent_key) = self.parent_of(key) else {
+            // A branch whose root is the node itself: there is nothing above it to split
+            // against, so the node's own orientation is all the command can state.
+            return self.split_branch_root(key, layout);
         };
         let Some(parent) = self.get_container(parent_key) else {
             return false;
@@ -404,13 +400,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         let parent_layout = parent.layout();
         let is_lone_child = parent.child_count() == 1;
 
-        // i3's `tree_split`, and the workspace goes through it like any other parent. A
-        // window alone in a split has nothing to be separated from, so the command only
-        // (re)states that container's orientation; with siblings present, or a parent that
-        // is tabbed or stacked, it builds a container. Measured, including when the parent
-        // already has the requested orientation and regardless of how it got it — tiri used
-        // to treat a parent whose layout had been set explicitly as already-split and do
-        // nothing, which the differential fuzz caught on its first script.
         if matches!(parent_layout, Layout::SplitH | Layout::SplitV) && is_lone_child {
             if let Some(container) = self.get_container_mut(parent_key) {
                 container.set_layout_explicit(layout);
@@ -422,22 +411,18 @@ impl<W: LayoutElement> ContainerTree<W> {
         let mut wrapper = ContainerData::new(layout);
         wrapper.mark_user_created();
         if self
-            .wrap_child_in_new_container(parent_key, focused_key, wrapper)
+            .wrap_child_in_new_container(parent_key, key, wrapper)
             .is_none()
         {
             return false;
         }
 
-        self.focus_node_key(focused_key);
         true
     }
 
     /// Change the layout of the container holding the focused leaf.
-    pub(in crate::layout) fn set_focused_layout_with_policy(
-        &mut self,
-        layout: Layout,
-        root_policy: RootPolicy,
-    ) -> bool {
+    #[cfg(test)]
+    pub(in crate::layout) fn set_focused_layout(&mut self, layout: Layout) -> bool {
         if self.is_empty() {
             return self.set_root_container_layout(layout);
         }
@@ -446,7 +431,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         };
 
-        self.set_layout_of_parent_of(focused_key, layout, root_policy)
+        self.set_layout_of_parent_of(focused_key, layout)
     }
 
     /// Give `key`'s parent the layout `layout`.
@@ -459,17 +444,11 @@ impl<W: LayoutElement> ContainerTree<W> {
     ///
     /// Restating the layout the workspace already has is the exception, and does nothing:
     /// there is no orientation to express that is not already expressed.
-    fn set_layout_of_parent_of(
-        &mut self,
-        key: NodeKey,
-        layout: Layout,
-        root_policy: RootPolicy,
-    ) -> bool {
+    fn set_layout_of_parent_of(&mut self, key: NodeKey, layout: Layout) -> bool {
         let parent_key = self.parent_of(key);
+        let lands_on_branch_root = parent_key.is_none_or(|parent| self.parent_of(parent).is_none());
 
-        if root_policy == RootPolicy::ImplicitWorkspace
-            && parent_key.is_none_or(|parent| parent == self.root)
-        {
+        if lands_on_branch_root && !self.branch_is_addressable(key) {
             let root_layout = self.root_container_layout();
             if root_layout == layout {
                 return false;
@@ -477,15 +456,23 @@ impl<W: LayoutElement> ContainerTree<W> {
             return self.wrap_workspace_children(layout, root_layout).is_some();
         }
 
-        // The root is a leaf under a policy that wants a material container: wrap it so
-        // there is a container to carry the layout.
+        // The branch root is a leaf: it has no container to carry the layout, so its own
+        // layout is what the command can state.
         let Some(parent_key) = parent_key else {
-            return self.set_root_container_layout(layout);
+            return self.set_branch_root_layout(key, layout);
         };
 
         if let Some(container) = self.get_container_mut(parent_key) {
+            let changed = container.layout() != layout;
             container.set_layout_explicit(layout);
-            return true;
+
+            // `cmd_layout` performs its one-level flatten before comparing layouts, but
+            // arranges only inside `new_layout != old_layout`. A flatten followed by
+            // restating the surviving parent's layout therefore changes the tree without
+            // replacing the boxes its nodes were already holding.
+            //
+            // sway/commands/layout.c:134-196
+            return changed;
         }
 
         false
@@ -494,42 +481,38 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Toggle between horizontal and vertical split for the focused container.
     #[cfg(test)]
     pub(in crate::layout) fn toggle_split_layout(&mut self) -> bool {
-        let target = self.command_target(RootPolicy::MaterialContainer);
-        self.toggle_split_for_target(target, RootPolicy::MaterialContainer)
+        let root = self.root;
+        let target = self.command_target_in(root);
+        self.toggle_split_for_target(target)
     }
 
-    pub(in crate::layout) fn toggle_split_for_target(
-        &mut self,
-        target: TreeCommandTarget,
-        root_policy: RootPolicy,
-    ) -> bool {
-        self.flatten_layout_parent_once(target, root_policy);
-        let Some((source_key, current)) = self.toggle_source(target, root_policy) else {
+    pub(in crate::layout) fn toggle_split_for_target(&mut self, target: TreeCommandTarget) -> bool {
+        self.flatten_layout_parent_once(target);
+        let Some((source_key, current)) = self.toggle_source(target) else {
             return false;
         };
 
         let next = self.toggled_split_layout(current, source_key);
-        self.apply_toggled_layout(next, source_key, target, root_policy)
+        self.apply_toggled_layout(next, source_key, target)
     }
 
     pub(in crate::layout) fn toggle_layout_all_for_target(
         &mut self,
         target: TreeCommandTarget,
-        root_policy: RootPolicy,
     ) -> bool {
-        self.flatten_layout_parent_once(target, root_policy);
-        let Some((source_key, current)) = self.toggle_source(target, root_policy) else {
+        self.flatten_layout_parent_once(target);
+        let Some((source_key, current)) = self.toggle_source(target) else {
             return false;
         };
 
-        self.apply_toggled_layout(current.next_in_cycle(), source_key, target, root_policy)
+        self.apply_toggled_layout(current.next_in_cycle(), source_key, target)
     }
 
     /// Write back the layout a toggle arrived at.
     ///
     /// The container it read from is the container the command is about, so an ordinary one
-    /// just changes type. The workspace is the exception, and not because it is special: a
-    /// toggle that reads from it has either the workspace itself selected, which changes its
+    /// just changes type. A branch root is the exception, and not because it is special: a
+    /// toggle that reads from it has either the root itself selected, which changes its
     /// orientation, or a window sitting on it, which gets the container sway builds instead.
     /// Telling those two apart is `set_layout_for_target`'s job, so they go there.
     fn apply_toggled_layout(
@@ -537,14 +520,13 @@ impl<W: LayoutElement> ContainerTree<W> {
         layout: Layout,
         source_key: Option<NodeKey>,
         target: TreeCommandTarget,
-        root_policy: RootPolicy,
     ) -> bool {
         match source_key {
-            Some(key) if key != self.root => self
+            Some(key) if self.parent_of(key).is_some() => self
                 .get_container_mut(key)
                 .map(|container| container.set_layout_explicit(layout))
                 .is_some(),
-            _ => self.set_layout_for_prepared_target(layout, target, root_policy),
+            _ => self.set_layout_for_prepared_target(layout, target),
         }
     }
 
@@ -581,35 +563,35 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// A leaf sitting directly on the workspace has no container between it and the
     /// workspace, so the toggle reads the workspace's own orientation — and its memory of
     /// the split it used to be, which is the same field on the same node as anywhere else.
-    fn toggle_source(
-        &self,
-        target: TreeCommandTarget,
-        root_policy: RootPolicy,
-    ) -> Option<(Option<NodeKey>, Layout)> {
-        let key = self.layout_container_key_for_target(target, root_policy);
+    fn toggle_source(&self, target: TreeCommandTarget) -> Option<(Option<NodeKey>, Layout)> {
+        let key = self.layout_container_key_for_target(target);
         match key.and_then(|key| self.get_container(key)) {
             Some(container) => Some((key, container.layout())),
-            None if root_policy == RootPolicy::ImplicitWorkspace => {
+            None => {
+                let branch_root = self.target_branch_root(target);
+                if self.branch_is_addressable(branch_root) {
+                    return None;
+                }
                 Some((Some(self.root), self.root_container_layout()))
             }
-            None => None,
         }
+    }
+
+    /// Layout of the container that owns `key` — or `key`'s own, when it is a branch root.
+    pub(in crate::layout) fn layout_owning(&self, key: NodeKey) -> Option<Layout> {
+        let container_key = self.parent_of(key).unwrap_or(key);
+        self.get_container(container_key).map(|c| c.layout())
     }
 
     /// Layout of the container that currently owns the focused leaf (if any).
     pub(in crate::layout) fn focused_layout(&self) -> Option<Layout> {
         let focused_key = self.effective_focused_key()?;
-        // A root leaf has no owning container, so the root's own layout is what applies.
-        let container_key = self.parent_of(focused_key).unwrap_or(self.root);
-        self.get_container(container_key).map(|c| c.layout())
+        self.layout_owning(focused_key)
     }
 
-    /// Whether the focused container should accept new splits.
-    pub(in crate::layout) fn focused_container_allows_splits(&self) -> bool {
-        let Some(focused_key) = self.effective_focused_key() else {
-            return false;
-        };
-        let Some(container_key) = self.parent_of(focused_key) else {
+    /// Whether the container holding `key` should accept new splits.
+    pub(in crate::layout) fn container_of_allows_splits(&self, key: NodeKey) -> bool {
+        let Some(container_key) = self.parent_of(key) else {
             return false;
         };
 
@@ -617,5 +599,13 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         };
         container.child_count() > 1 || container.is_user_container()
+    }
+
+    /// Whether the focused container should accept new splits.
+    pub(in crate::layout) fn focused_container_allows_splits(&self) -> bool {
+        let Some(focused_key) = self.effective_focused_key() else {
+            return false;
+        };
+        self.container_of_allows_splits(focused_key)
     }
 }

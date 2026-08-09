@@ -48,6 +48,36 @@ impl SeatFocus {
         &self.order
     }
 
+    /// The node sway's seat is focused on: a selected container, or the keyboard-focus leaf.
+    pub(super) fn node(&self) -> Option<NodeKey> {
+        self.selected.or(self.leaf)
+    }
+
+    /// sway's new-node listener appends every node to the focus stack. A node that has never
+    /// been focused still has a defined place behind every node the seat already knew.
+    pub(super) fn register(&mut self, key: NodeKey) {
+        if !self.order.contains(&key) {
+            self.order.push(key);
+        }
+    }
+
+    pub(super) fn unregister(&mut self, key: NodeKey) {
+        self.order.retain(|entry| *entry != key);
+        if self.leaf == Some(key) {
+            self.leaf = None;
+        }
+        if self.selected == Some(key) {
+            self.selected = None;
+        }
+    }
+
+    /// sway's `seat_set_raw_focus`: raise one node and no ancestors, without changing which
+    /// node owns keyboard focus (`sway/input/seat.c:1115-1126`).
+    pub(super) fn raw_focus(&mut self, key: NodeKey) {
+        self.order.retain(|entry| *entry != key);
+        self.order.insert(0, key);
+    }
+
     /// sway's `seat_set_focus`: the node becomes the most recent, and its ancestry with it.
     ///
     /// `chain` is the node first and its ancestors after, which is the order sway adds them
@@ -68,18 +98,6 @@ impl SeatFocus {
         self.raise(chain);
         self.leaf = leaf;
         self.selected = Some(container);
-    }
-
-    /// Record that focus is here, without saying anything about the selection.
-    ///
-    /// The difference from [`Self::focus`] is what a command means. `focus <somewhere>` is a
-    /// new focus and drops the selection `focus parent` had made. Rebuilding the order after
-    /// tree surgery is not a new focus — the same node still holds it, and the container the
-    /// user had selected is still selected. Collapsing the two dropped the selection every
-    /// time a `layout` command reshaped the tree under it.
-    pub(super) fn touch(&mut self, chain: &[NodeKey], leaf: Option<NodeKey>) {
-        self.raise(chain);
-        self.leaf = leaf;
     }
 
     /// Keyboard focus moves; the order does not.
@@ -123,19 +141,6 @@ impl SeatFocus {
         self.leaf = leaf;
     }
 
-    /// A node took another's place in the tree, and takes its place in the order too.
-    pub(super) fn replace(&mut self, old: NodeKey, new: NodeKey) {
-        if let Some(slot) = self.order.iter_mut().find(|key| **key == old) {
-            *slot = new;
-        }
-        if self.leaf == Some(old) {
-            self.leaf = Some(new);
-        }
-        if self.selected == Some(old) {
-            self.selected = Some(new);
-        }
-    }
-
     /// Take in nodes arriving from outside the tree, keeping the sequence they carried.
     ///
     /// Nothing is raised: arriving is not being focused. Nor is anything restored — a subtree
@@ -147,9 +152,8 @@ impl SeatFocus {
     pub(super) fn restore_at(&mut self, rank: usize, keys: impl IntoIterator<Item = NodeKey>) {
         let mut at = rank.min(self.order.len());
         for key in keys {
-            if self.order.contains(&key) {
-                continue;
-            }
+            self.order.retain(|entry| *entry != key);
+            at = at.min(self.order.len());
             self.order.insert(at, key);
             at = (at + 1).min(self.order.len());
         }

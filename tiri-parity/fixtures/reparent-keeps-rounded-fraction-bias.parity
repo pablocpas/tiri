@@ -1,0 +1,158 @@
+# Rounded fractions survive the move that reparents this split branch.
+# recorded from sway version 1.12-dev
+# client 400x285
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splith focus=2
+  window 1 0.000,0.000 0.500x1.000
+  window 2 0.500,0.000 0.500x1.000
+
+$ focus parent
+workspace splith focus=@
+  window 1 0.000,0.000 0.500x1.000
+  window 2 0.500,0.000 0.500x1.000
+
+$ layout splitv
+workspace splitv focus=@
+  window 1 0.000,0.000 1.000x0.500
+  window 2 0.000,0.500 1.000x0.500
+
+$ open
+workspace splitv focus=3
+  window 1 0.000,0.000 1.000x0.333
+  window 2 0.000,0.333 1.000x0.333
+  window 3 0.000,0.667 1.000x0.333
+
+$ open
+workspace splitv focus=4
+  window 1 0.000,0.000 1.000x0.250
+  window 2 0.000,0.250 1.000x0.250
+  window 3 0.000,0.500 1.000x0.250
+  window 4 0.000,0.750 1.000x0.250
+
+$ open
+workspace splitv focus=5
+  window 1 0.000,0.000 1.000x0.200
+  window 2 0.000,0.200 1.000x0.200
+  window 3 0.000,0.400 1.000x0.200
+  window 4 0.000,0.600 1.000x0.200
+  window 5 0.000,0.800 1.000x0.200
+
+$ layout toggle split
+workspace splitv focus=5
+  splith 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 0.200x1.000
+    window 2 0.200,0.000 0.200x1.000
+    window 3 0.400,0.000 0.200x1.000
+    window 4 0.600,0.000 0.200x1.000
+    window 5 0.800,0.000 0.200x1.000
+
+$ split h
+workspace splitv focus=5
+  splith 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 0.200x1.000
+    window 2 0.200,0.000 0.200x1.000
+    window 3 0.400,0.000 0.200x1.000
+    window 4 0.600,0.000 0.200x1.000
+    splith 0.800,0.000 0.200x1.000
+      window 5 0.800,0.000 0.200x1.000
+
+$ focus prev
+workspace splitv focus=4
+  splith 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 0.200x1.000
+    window 2 0.200,0.000 0.200x1.000
+    window 3 0.400,0.000 0.200x1.000
+    window 4 0.600,0.000 0.200x1.000
+    splith 0.800,0.000 0.200x1.000
+      window 5 0.800,0.000 0.200x1.000
+
+$ layout tabbed
+workspace splitv focus=4
+  tabbed 0.000,0.000 1.000x1.000
+    window 1 0.000,0.032 1.000x0.968 hidden
+    window 2 0.000,0.032 1.000x0.968 hidden
+    window 3 0.000,0.032 1.000x0.968 hidden
+    window 4 0.000,0.032 1.000x0.968
+    splith 0.000,0.064 1.000x0.936
+      window 5 0.000,0.032 1.000x0.968 hidden
+
+$ layout toggle all
+workspace splitv focus=4
+  splith 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 0.200x1.000
+    window 2 0.200,0.000 0.200x1.000
+    window 3 0.400,0.000 0.200x1.000
+    window 4 0.600,0.000 0.200x1.000
+    splith 0.800,0.000 0.200x1.000
+      window 5 0.800,0.000 0.200x1.000
+
+$ open
+workspace splitv focus=6
+  splith 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 0.166x1.000
+    window 2 0.166,0.000 0.166x1.000
+    window 3 0.333,0.000 0.166x1.000
+    window 4 0.499,0.000 0.166x1.000
+    window 6 0.666,0.000 0.166x1.000
+    splith 0.832,0.000 0.168x1.000
+      window 5 0.832,0.000 0.168x1.000
+
+$ focus left
+workspace splitv focus=4
+  splith 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 0.166x1.000
+    window 2 0.166,0.000 0.166x1.000
+    window 3 0.333,0.000 0.166x1.000
+    window 4 0.499,0.000 0.166x1.000
+    window 6 0.666,0.000 0.166x1.000
+    splith 0.832,0.000 0.168x1.000
+      window 5 0.832,0.000 0.168x1.000
+
+$ focus right
+workspace splitv focus=6
+  splith 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 0.166x1.000
+    window 2 0.166,0.000 0.166x1.000
+    window 3 0.333,0.000 0.166x1.000
+    window 4 0.499,0.000 0.166x1.000
+    window 6 0.666,0.000 0.166x1.000
+    splith 0.832,0.000 0.168x1.000
+      window 5 0.832,0.000 0.168x1.000
+
+$ resize grow width 100 px
+workspace splitv focus=6
+  splith 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 0.151x1.000
+    window 2 0.151,0.000 0.151x1.000
+    window 3 0.302,0.000 0.151x1.000
+    window 4 0.452,0.000 0.151x1.000
+    window 6 0.603,0.000 0.245x1.000
+    splith 0.848,0.000 0.152x1.000
+      window 5 0.848,0.000 0.152x1.000
+
+$ layout splith
+workspace splitv focus=6
+  splith 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 0.151x1.000
+    window 2 0.151,0.000 0.151x1.000
+    window 3 0.302,0.000 0.151x1.000
+    window 4 0.452,0.000 0.151x1.000
+    window 6 0.603,0.000 0.245x1.000
+    splith 0.848,0.000 0.152x1.000
+      window 5 0.848,0.000 0.152x1.000
+
+$ move up
+workspace splitv focus=6
+  window 6 0.000,0.000 1.000x0.500
+  splith 0.000,0.500 1.000x0.500
+    window 1 0.000,0.500 0.199x0.500
+    window 2 0.199,0.500 0.199x0.500
+    window 3 0.398,0.500 0.199x0.500
+    window 4 0.598,0.500 0.199x0.500
+    splith 0.797,0.500 0.203x0.500
+      window 5 0.797,0.500 0.203x0.500

@@ -96,16 +96,28 @@ impl<W: LayoutElement> ContainerTree<W> {
     where
         W::Id: std::fmt::Display,
     {
-        let mut out = String::new();
         let root_key = self.root;
-        if self.is_empty() {
+        self.debug_branch(root_key)
+    }
+
+    /// One branch's shape, addressed from its own root.
+    #[cfg(test)]
+    pub(crate) fn debug_branch(&self, branch_root: NodeKey) -> String
+    where
+        W::Id: std::fmt::Display,
+    {
+        let mut out = String::new();
+        if self.branch_is_empty(branch_root) {
             out.push_str("(empty)\n");
             return out;
         }
 
         let mut path = Vec::new();
-        let focused_path = self.focus_path();
-        self.debug_tree_node(root_key, &mut path, &mut out, &focused_path);
+        let focused_path = self
+            .effective_focused_key()
+            .and_then(|key| self.branch_relative_path(key))
+            .unwrap_or_default();
+        self.debug_tree_node(branch_root, &mut path, &mut out, &focused_path);
         out
     }
 

@@ -41,7 +41,8 @@ grep -hoE '^[a-z_ ]*\**\b(container|workspace|arrange|view|seat)_[a-z_]+\(' \
   | grep -vE '^workspace_(by_name|by_number|config|find_config|name_from|next_name|output_|get_initial|get_number|valid_on|auto_back)' \
   | sort -u > "$work/domain.txt"
 
-grep -rhoE '\b(container|workspace|arrange|view|seat|cmd)_[a-z_]+\b' src/ docs/design/ 2>/dev/null \
+grep -rhoE --exclude='parity-inventory.md' \
+  '\b(container|workspace|arrange|view|seat|cmd)_[a-z_]+\b' src/ docs/design/ 2>/dev/null \
   | sort -u > "$work/cited.txt"
 
 comm -12 "$work/domain.txt" "$work/cited.txt" > "$work/ported.txt"

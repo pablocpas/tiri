@@ -1,4 +1,4 @@
-use smithay::utils::{Logical, Point, Rectangle};
+use smithay::utils::{Logical, Rectangle};
 
 use super::{ContainerTree, Layout, NodeData, NodeKey};
 use crate::layout::LayoutElement;
@@ -8,59 +8,35 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn layout_tree(&self) -> Option<LayoutTreeNode> {
         let root_key = self.root_node_key()?;
         let focused_key = self.selected_node_key();
-        Some(self.build_layout_tree_node(
-            root_key,
-            focused_key,
-            &mut Vec::new(),
-            0,
-            None,
-            Point::default(),
-            false,
-        ))
+        Some(self.build_layout_tree_node(root_key, focused_key, &mut Vec::new(), None, false))
     }
 
     pub(in crate::layout) fn layout_tree_unfocused(&self) -> Option<LayoutTreeNode> {
         let root_key = self.root_node_key()?;
-        Some(self.build_layout_tree_node(
-            root_key,
-            None,
-            &mut Vec::new(),
-            0,
-            None,
-            Point::default(),
-            false,
-        ))
+        Some(self.build_layout_tree_node(root_key, None, &mut Vec::new(), None, false))
     }
 
-    pub(in crate::layout) fn layout_tree_with_context(
+    /// One branch as an IPC subtree, addressed from its own root.
+    ///
+    /// The rectangles are already the workspace's: one arrange pass lays both sides out in
+    /// absolute coordinates, so a floating group needs no offset applied on the way out.
+    pub(in crate::layout) fn layout_tree_for_branch(
         &self,
+        branch_root: NodeKey,
         focused_key: Option<NodeKey>,
         path: &mut Vec<usize>,
-        path_prefix_len: usize,
-        offset: Point<f64, Logical>,
         is_floating: bool,
     ) -> Option<LayoutTreeNode> {
-        let root_key = self.root_node_key()?;
-        Some(self.build_layout_tree_node(
-            root_key,
-            focused_key,
-            path,
-            path_prefix_len,
-            None,
-            offset,
-            is_floating,
-        ))
+        self.get_node(branch_root)?;
+        Some(self.build_layout_tree_node(branch_root, focused_key, path, None, is_floating))
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn build_layout_tree_node(
         &self,
         node_key: NodeKey,
         focused_key: Option<NodeKey>,
         path: &mut Vec<usize>,
-        path_prefix_len: usize,
         percent: Option<f64>,
-        offset: Point<f64, Logical>,
         is_floating: bool,
     ) -> LayoutTreeNode {
         match self.get_node(node_key) {
@@ -85,7 +61,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     is_sticky: tile.is_sticky(),
                     is_scratchpad: tile.is_scratchpad(),
                     marks: tile.marks().to_vec(),
-                    rect: self.node_rect(node_key, offset),
+                    rect: self.node_rect(node_key),
                     percent,
                     children: Vec::new(),
                 }
@@ -101,9 +77,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                         *child_key,
                         focused_key,
                         path,
-                        path_prefix_len,
                         percents.get(idx).copied(),
-                        offset,
                         is_floating,
                     ));
                     path.pop();
@@ -123,7 +97,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     is_sticky: children.iter().any(|child| child.is_sticky),
                     is_scratchpad: children.iter().any(|child| child.is_scratchpad),
                     marks: Vec::new(),
-                    rect: self.node_rect(node_key, offset),
+                    rect: self.node_rect(node_key),
                     percent,
                     children,
                 }
@@ -149,7 +123,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    fn node_rect(&self, node_key: NodeKey, offset: Point<f64, Logical>) -> Option<LayoutTreeRect> {
+    fn node_rect(&self, node_key: NodeKey) -> Option<LayoutTreeRect> {
         // Both kinds answer with the box they are holding, and a node that has never been
         // arranged is holding none. sway's `container_create` zeroes `pending` and only
         // `arrange` ever fills it in, so a container built while a fullscreen is up — or a
@@ -166,7 +140,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             NodeData::Container(container) => container.geometry(),
         };
 
-        Some(rect_to_ipc(rect, offset))
+        Some(rect_to_ipc(rect))
     }
 }
 
@@ -179,8 +153,8 @@ fn layout_to_ipc(layout: Layout) -> LayoutTreeLayout {
     }
 }
 
-fn rect_to_ipc(rect: Rectangle<f64, Logical>, offset: Point<f64, Logical>) -> LayoutTreeRect {
-    let loc = rect.loc + offset;
+fn rect_to_ipc(rect: Rectangle<f64, Logical>) -> LayoutTreeRect {
+    let loc = rect.loc;
     LayoutTreeRect {
         x: loc.x,
         y: loc.y,

@@ -128,7 +128,10 @@ impl<W: LayoutElement> ContainerTree<W> {
             }
             NodeData::Container(container) => {
                 let child_count = container.child_count();
-                assert!(child_count > 0, "container nodes must not be empty");
+                assert!(
+                    child_count > 0 || key == self.root,
+                    "container nodes other than the workspace must not be empty"
+                );
                 assert_eq!(
                     container.fractions.horizontal.len(),
                     child_count,
@@ -163,7 +166,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                         );
                     }
                 }
-                if matches!(container.layout, Layout::SplitH | Layout::SplitV) {
+                if child_count > 0 && matches!(container.layout, Layout::SplitH | Layout::SplitV) {
                     let percent_sum: f64 = container.child_percents_slice().iter().sum();
                     assert!(
                         (percent_sum - 1.0).abs() <= 0.000_001,

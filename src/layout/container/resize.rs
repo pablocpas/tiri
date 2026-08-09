@@ -238,7 +238,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             Layout::Tabbed | Layout::Stacked => return None,
         };
 
-        let gap = self.options.layout.gaps;
+        let gap = self.gap_in(target.parent);
         let available = (total - gap * (child_count as f64 - 1.0)).max(0.0);
         (available > 0.0).then_some(available)
     }

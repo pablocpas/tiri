@@ -20,10 +20,21 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Insert a window into the tree, optionally focusing it afterwards.
     pub(in crate::layout) fn insert_window_with_focus(&mut self, tile: Tile<W>, focus: bool) {
+        let root = self.root;
+        self.insert_window_into_branch(root, tile, focus);
+    }
+
+    /// The same, into one branch: the tiled side, or one floating group.
+    pub(in crate::layout) fn insert_window_into_branch(
+        &mut self,
+        branch_root: NodeKey,
+        tile: Tile<W>,
+        focus: bool,
+    ) {
         self.clear_focus_history();
 
         let tile_key = self.insert_node(NodeData::Leaf(tile));
-        self.insert_key_as_focus_sibling(tile_key, focus);
+        self.insert_key_as_focus_sibling(branch_root, tile_key, focus);
     }
 
     /// Insert a detached subtree into the tree, optionally focusing it afterwards.
@@ -35,39 +46,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.clear_focus_history();
 
         let node_key = self.insert_subtree(subtree);
-        self.insert_key_as_focus_sibling(node_key, focus);
-    }
-
-    /// Make `subtree` the whole tree, replacing whatever root is there.
-    ///
-    /// For a floating container, where the tree's root *is* the container the user sees: a
-    /// grouped subtree arriving is that container, not something to put inside one. Inserting
-    /// it under the root instead would add a level the floating side has to see through, and
-    /// `focus parent` counts levels.
-    pub(in crate::layout) fn adopt_subtree_as_root(
-        &mut self,
-        subtree: DetachedNode<W>,
-        focus: bool,
-    ) {
-        self.clear_focus_history();
-
-        let old_root = self.root;
-        let node_key = self.insert_subtree(subtree);
-        if matches!(self.get_node(node_key), Some(NodeData::Container(_))) {
-            self.remove_node_recursive(old_root);
-            self.set_parent(node_key, None);
-            self.root = node_key;
-            self.seat.clear();
-            self.focus_first_leaf();
-            if !focus {
-                let first = self.first_leaf_key();
-                self.seat.redirect_focused_leaf(first);
-            }
-            return;
-        }
-
-        // A lone window still needs the container to live in.
-        self.insert_key_as_focus_sibling(node_key, focus);
+        let root = self.root;
+        self.insert_key_as_focus_sibling(root, node_key, focus);
     }
 
     /// Put a new node where sway puts a new window: next to whatever was most recently
@@ -78,14 +58,22 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// The workspace is the one node that is never its own answer, because it is not under
     /// itself: selecting it hands the question down to its focused child, and a window
     /// opened there lands beside that child rather than at the end of the row.
-    pub(super) fn insert_key_as_focus_sibling(&mut self, node_key: NodeKey, focus: bool) {
+    pub(super) fn insert_key_as_focus_sibling(
+        &mut self,
+        branch_root: NodeKey,
+        node_key: NodeKey,
+        focus: bool,
+    ) {
         let sibling_key = match self
             .selected_key()
-            .filter(|key| self.get_node(*key).is_some())
+            .filter(|key| self.get_node(*key).is_some() && self.is_descendant(*key, branch_root))
         {
-            Some(key) if key != self.root => Some(key),
-            Some(_) => self.active_child(self.root),
-            None => self.effective_focused_key(),
+            Some(key) if key != branch_root => Some(key),
+            Some(_) => self.active_child(branch_root),
+            None => self
+                .effective_focused_key()
+                .filter(|key| self.is_descendant(*key, branch_root))
+                .or_else(|| self.focus_inactive_view(branch_root)),
         };
 
         let insert_target = sibling_key
@@ -93,8 +81,8 @@ impl<W: LayoutElement> ContainerTree<W> {
                 let parent_key = self.parent_of(key)?;
                 Some((parent_key, self.child_index(parent_key, key)? + 1))
             })
-            // An empty workspace has nothing to sit beside.
-            .or_else(|| Some((self.root, self.get_container(self.root)?.child_count())));
+            // An empty branch has nothing to sit beside.
+            .or_else(|| Some((branch_root, self.get_container(branch_root)?.child_count())));
 
         let Some((parent_key, insert_idx)) = insert_target else {
             return;
@@ -205,15 +193,30 @@ impl<W: LayoutElement> ContainerTree<W> {
         true
     }
 
+    /// Where a window sits, addressed within its own branch, so it can be put back there.
     pub(in crate::layout) fn insert_parent_info_for_window(
         &self,
         window_id: &W::Id,
     ) -> Option<InsertParentInfo> {
-        let path = self.find_window(window_id)?;
-        self.insert_parent_info_for_path(&path)
+        let key = self.window_key(window_id)?;
+        self.insert_parent_info_for_node(key)
     }
 
-    pub(super) fn insert_parent_info_for_path(&self, path: &[usize]) -> Option<InsertParentInfo> {
+    /// Where a node sits in the tiled branch before `container_set_floating` detaches it.
+    pub(in crate::layout) fn insert_parent_info_for_node(
+        &self,
+        key: NodeKey,
+    ) -> Option<InsertParentInfo> {
+        let branch_root = self.branch_root(key);
+        let path = self.branch_relative_path(key)?;
+        self.insert_parent_info_for_path(branch_root, &path)
+    }
+
+    pub(super) fn insert_parent_info_for_path(
+        &self,
+        branch_root: NodeKey,
+        path: &[usize],
+    ) -> Option<InsertParentInfo> {
         if path.is_empty() {
             return None;
         }
@@ -221,9 +224,9 @@ impl<W: LayoutElement> ContainerTree<W> {
         let mut parent_path = path.to_vec();
         let insert_idx = parent_path.pop().unwrap();
         let parent_key = if parent_path.is_empty() {
-            self.root
+            branch_root
         } else {
-            self.get_node_key_at_path(&parent_path)?
+            self.node_at_branch_path(branch_root, &parent_path)?
         };
         let parent = self.get_container(parent_key)?;
         Some(InsertParentInfo {
@@ -253,14 +256,16 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     pub(in crate::layout) fn insert_leaf_with_parent_info(
         &mut self,
+        branch_root: NodeKey,
         info: &InsertParentInfo,
         tile: Tile<W>,
         focus: bool,
     ) -> bool {
         let tile_key = self.insert_node(NodeData::Leaf(tile));
-        self.insert_key_with_parent_info(info, tile_key, focus)
+        self.insert_key_with_parent_info(branch_root, info, tile_key, focus)
     }
 
+    #[cfg(test)]
     pub(in crate::layout) fn insert_subtree_with_parent_info(
         &mut self,
         info: &InsertParentInfo,
@@ -268,24 +273,28 @@ impl<W: LayoutElement> ContainerTree<W> {
         focus: bool,
     ) -> bool {
         let node_key = self.insert_subtree(subtree);
-        self.insert_key_with_parent_info(info, node_key, focus)
+        let root = self.root;
+        self.insert_key_with_parent_info(root, info, node_key, focus)
     }
 
     /// Insert an already-materialized node at the container described by `info`,
     /// restoring the recorded child percents when they still apply.
     fn insert_key_with_parent_info(
         &mut self,
+        branch_root: NodeKey,
         info: &InsertParentInfo,
         node_key: NodeKey,
         focus: bool,
     ) -> bool {
-        let container_key = match self.ensure_container_at_path(&info.parent_path, info.layout) {
-            Some(key) => key,
-            None => {
-                self.insert_key_at_root(self.root_children_len(), node_key, focus);
-                return true;
-            }
-        };
+        let container_key =
+            match self.ensure_container_at_path(branch_root, &info.parent_path, info.layout) {
+                Some(key) => key,
+                None => {
+                    let end = self.branch_children_len(branch_root);
+                    self.insert_key_into_branch(branch_root, end, node_key, focus);
+                    return true;
+                }
+            };
 
         if let Some(container) = self.get_container_mut(container_key) {
             container.insert_child(info.insert_idx, node_key);

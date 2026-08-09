@@ -9,7 +9,6 @@
 //! Uses slotmap for efficient memory management and O(1) access to nodes.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use slotmap::{new_key_type, SecondaryMap, SlotMap};
@@ -44,7 +43,6 @@ mod state;
 mod tab_bar_model;
 mod tree_store;
 
-pub(super) use command::RootPolicy;
 pub(super) use command::TreeCommandTarget;
 use geometry::PendingLayout;
 pub(super) use resize::ResizeTarget;
@@ -99,15 +97,14 @@ pub(in crate::layout) struct ResizeSpace {
     pub child_spans: Vec<f64>,
 }
 
-/// One tiled resize delta in both coordinate systems used by sway.
+/// One tiled resize delta in sway's input coordinate system.
 ///
-/// Fractions are the persistent tree state, while the minimum-size preflight is performed
-/// in pixels. Keeping the original pixel delta avoids converting a fixed request to a
-/// fraction and back, where a value such as 150 px can become 150.00000000000003 and make
-/// `ceil` reject a resize that lands exactly on the minimum.
+/// Fractions are derived inside `resize_child` from the settled pixel spans. Keeping the
+/// original pixel delta also avoids converting a fixed request to a fraction and back, where
+/// a value such as 150 px can become 150.00000000000003 and make `ceil` reject a resize that
+/// lands exactly on the minimum.
 #[derive(Debug, Clone, Copy)]
 pub(in crate::layout) struct ResizeDelta {
-    pub fraction: f64,
     pub pixels: f64,
 }
 
@@ -181,13 +178,6 @@ impl AxisFractions {
         match layout {
             Layout::SplitV => &mut self.vertical,
             Layout::SplitH | Layout::Tabbed | Layout::Stacked => &mut self.horizontal,
-        }
-    }
-
-    fn other_for_layout_mut(&mut self, layout: Layout) -> &mut Vec<f64> {
-        match layout {
-            Layout::SplitV => &mut self.horizontal,
-            Layout::SplitH | Layout::Tabbed | Layout::Stacked => &mut self.vertical,
         }
     }
 
@@ -318,8 +308,19 @@ pub struct ContainerData {
 #[derive(Debug, Clone)]
 pub struct LeafLayoutInfo {
     pub key: NodeKey,
+    /// The root of the branch this leaf lives in — the workspace, or a floating group.
+    ///
+    /// Beside the path because it is half of the address: a path is read from a branch's own
+    /// root, which is what sway's `get_tree` publishes as `nodes` and `floating_nodes`.
+    pub branch: NodeKey,
     pub path: Vec<usize>,
+    /// The box used to place and render the tile after layout decoration is applied.
     pub rect: Rectangle<f64, Logical>,
+    /// The pending box belonging to the node itself.
+    ///
+    /// sway keeps this separate from the rectangle IPC derives after adding a tab or stack
+    /// title bar. Tree surgery can change the latter without arranging or changing this one.
+    pub node_rect: Rectangle<f64, Logical>,
     pub visible: bool,
 }
 
@@ -330,13 +331,6 @@ pub(super) struct InsertParentInfo {
     pub layout: Layout,
     pub fractions: Option<AxisFractions>,
 }
-
-/// Subtree detached from a tree along with its origin info and geometry.
-pub(super) type TakenSubtree<W> = (
-    DetachedNode<W>,
-    Option<InsertParentInfo>,
-    Rectangle<f64, Logical>,
-);
 
 /// Container key, child index, available span, child count and rect of a window's container.
 pub(super) type ContainerMetrics = (NodeKey, usize, f64, usize, Rectangle<f64, Logical>);
@@ -465,24 +459,6 @@ fn normalize_percentages_for(percents: &mut Vec<f64>, child_count: usize) {
     }
 }
 
-fn insert_percent_at(percents: &mut Vec<f64>, idx: usize, old_len: usize) {
-    normalize_percentages_for(percents, old_len);
-    let new_share = 1.0 / (old_len as f64 + 1.0);
-    for percent in percents.iter_mut() {
-        *percent *= 1.0 - new_share;
-    }
-    percents.insert(idx, new_share);
-    normalize_percentages_for(percents, old_len + 1);
-}
-
-fn remove_percent_at(percents: &mut Vec<f64>, idx: usize, old_len: usize) {
-    normalize_percentages_for(percents, old_len);
-    if idx < percents.len() {
-        percents.remove(idx);
-    }
-    normalize_percentages_for(percents, old_len.saturating_sub(1));
-}
-
 impl ContainerData {
     /// Create a new container with given layout
     pub(super) fn new(layout: Layout) -> Self {
@@ -556,44 +532,20 @@ impl ContainerData {
         self.insert_child(idx, node_key);
     }
 
-    /// Remove a child at index, returns the removed node key
-    pub(super) fn remove_child(&mut self, idx: usize) -> Option<NodeKey> {
-        self.remove_child_with_percent_policy(idx, true)
-    }
-
-    /// Remove a child without renormalizing the shares that remain.
+    /// Remove a child the way sway's `container_detach` removes one from its siblings.
     ///
-    /// During a directional move Sway keeps every sibling's raw fraction until the complete
-    /// move and workspace squash have finished. Normalizing at detach time is usually
-    /// algebraically invisible, but becomes observable if squash subsequently replaces one
-    /// of those siblings with grandchildren carrying fractions from another parent.
-    pub(super) fn remove_child_preserving_percents(&mut self, idx: usize) -> Option<NodeKey> {
-        self.remove_child_with_percent_policy(idx, false)
-    }
-
-    fn remove_child_with_percent_policy(
-        &mut self,
-        idx: usize,
-        normalize_active: bool,
-    ) -> Option<NodeKey> {
+    /// The surviving fractions stay raw. The following arrange normalizes them, and doing it
+    /// any earlier loses the settled-pixel bias left by resize once one child disappears.
+    ///
+    /// sway/tree/container.c:1503-1521
+    pub(super) fn remove_child(&mut self, idx: usize) -> Option<NodeKey> {
         if idx >= self.children.len() {
             return None;
         }
 
         let key = self.children.remove(idx);
         let old_len = self.children.len() + 1;
-        if normalize_active && matches!(self.layout, Layout::SplitH | Layout::SplitV) {
-            let layout = self.layout;
-            remove_percent_at(self.fractions.for_layout_mut(layout), idx, old_len);
-            let other = self.fractions.other_for_layout_mut(layout);
-            if other.len() == old_len {
-                other.remove(idx);
-            } else {
-                other.resize(self.children.len(), 0.0);
-            }
-        } else {
-            self.fractions.remove_raw(idx, old_len);
-        }
+        self.fractions.remove_raw(idx, old_len);
 
         if self.children.is_empty() {
             self.fractions.clear();
@@ -609,27 +561,17 @@ impl ContainerData {
     pub(super) fn insert_child(&mut self, idx: usize, node_key: NodeKey) {
         let idx = idx.min(self.children.len());
         let old_len = self.children.len();
-
-        if old_len == 0 {
-            self.children.insert(idx, node_key);
-            self.fractions.clear();
-            self.fractions.resize_unset(1);
-            self.fractions.for_layout_mut(self.layout)[0] = 1.0;
-            return;
-        }
-
         self.children.insert(idx, node_key);
-        if matches!(self.layout, Layout::SplitH | Layout::SplitV) {
-            let layout = self.layout;
-            insert_percent_at(self.fractions.for_layout_mut(layout), idx, old_len);
-            let other = self.fractions.other_for_layout_mut(layout);
-            if other.len() != old_len {
-                other.resize(old_len, 0.0);
-            }
-            other.insert(idx, 0.0);
-        } else {
-            self.fractions.insert_unset(idx, old_len);
-        }
+        // `container_create` gives a new child zero fractions and
+        // `container_add_sibling` only inserts it in the list. The next
+        // `apply_horiz_layout`/`apply_vert_layout` derives its share from the fractions the
+        // existing siblings still carry. Precomputing `1 / n` here is mathematically close,
+        // but it erases the exact floating-point remainder that sway preserves across later
+        // moves, resizes and removals.
+        //
+        // sway/tree/container.c:422-477,1473-1487
+        // sway/tree/arrange.c:15-55,100-140
+        self.fractions.insert_unset(idx, old_len);
     }
 
     /// Insert a child with both shares unset, preserving all existing sibling fractions.
@@ -802,6 +744,11 @@ impl ContainerData {
             return false;
         }
 
+        let child_total: f64 = space.child_spans.iter().sum();
+        if child_total <= 0.0 {
+            return false;
+        }
+
         let mut payers = Vec::with_capacity(len.saturating_sub(1));
         match reach {
             ResizeReach::Siblings => payers.extend((0..len).filter(|candidate| *candidate != idx)),
@@ -809,7 +756,8 @@ impl ContainerData {
             ResizeReach::After if idx + 1 < len => payers.push(idx + 1),
             ResizeReach::Before | ResizeReach::After => {}
         }
-        let Some(each) = (!payers.is_empty()).then(|| delta.fraction / payers.len() as f64) else {
+        let amount_fraction = delta.pixels / child_total;
+        let Some(each) = (!payers.is_empty()).then(|| amount_fraction / payers.len() as f64) else {
             return false;
         };
 
@@ -828,7 +776,17 @@ impl ContainerData {
             return false;
         }
 
-        child_percents[idx] += delta.fraction;
+        // `container_resize_tiled` snaps every sibling fraction to its settled pending size
+        // before applying the resize. This preserves the one-pixel bias produced by
+        // `apply_horiz_layout`/`apply_vert_layout`, including the remainder held by the last
+        // child, when the branch is later reparented or changes layout.
+        //
+        // sway/commands/resize.c:117-163
+        for (percent, span) in child_percents.iter_mut().zip(&space.child_spans) {
+            *percent = *span / child_total;
+        }
+
+        child_percents[idx] += amount_fraction;
         for payer in payers {
             child_percents[payer] -= each;
         }
@@ -925,41 +883,12 @@ impl<W: LayoutElement> DetachedNode<W> {
         tiles
     }
 
-    /// Drop a single implicit split wrapper at subtree root.
-    ///
-    /// Floating containers are internally represented as root split containers even for
-    /// a single window. When moving such a subtree back to tiling we must not materialize
-    /// that implicit wrapper, otherwise tiling gains an extra one-child split unlike i3/sway.
-    pub(super) fn collapse_implicit_single_child_split_root(self) -> Self {
-        match self {
-            DetachedNode::Container(mut container)
-                if !container.user_created
-                    && container.children.len() == 1
-                    && matches!(container.layout, Layout::SplitH | Layout::SplitV) =>
-            {
-                container.children.remove(0)
-            }
-            other => other,
-        }
-    }
-
     fn collect_tiles_owned(self, tiles: &mut Vec<Tile<W>>) {
         match self {
             DetachedNode::Leaf(tile) => tiles.push(tile),
             DetachedNode::Container(container) => {
                 for child in container.children {
                     child.collect_tiles_owned(tiles);
-                }
-            }
-        }
-    }
-
-    pub(super) fn for_each_tile_mut(&mut self, f: &mut impl FnMut(&mut Tile<W>)) {
-        match self {
-            DetachedNode::Leaf(tile) => f(tile),
-            DetachedNode::Container(container) => {
-                for child in &mut container.children {
-                    child.for_each_tile_mut(f);
                 }
             }
         }
@@ -1010,12 +939,14 @@ impl<W: LayoutElement> ContainerTree<W> {
         let mut parents = SecondaryMap::new();
         let root = nodes.insert(NodeData::Container(ContainerData::new(Layout::SplitH)));
         parents.insert(root, None);
+        let mut seat = seat::SeatFocus::default();
+        seat.register(root);
 
         Self {
             nodes,
             parents,
             root,
-            seat: seat::SeatFocus::default(),
+            seat,
             floating_roots: Vec::new(),
             fullscreen_key: None,
             leaf_layouts: Vec::new(),
@@ -1082,19 +1013,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         container.set_child_percent(child_idx, percent);
         true
     }
-}
-
-fn reconcile_leaf_layouts(
-    layouts: &mut Vec<LeafLayoutInfo>,
-    current_paths: &HashMap<NodeKey, Vec<usize>>,
-) {
-    layouts.retain_mut(|info| {
-        let Some(path) = current_paths.get(&info.key) else {
-            return false;
-        };
-        info.path.clone_from(path);
-        true
-    });
 }
 
 // ============================================================================

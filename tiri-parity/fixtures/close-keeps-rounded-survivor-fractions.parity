@@ -1,0 +1,92 @@
+# Closing a resized child preserves the settled pixel bias among the survivors.
+# recorded from sway version 1.12-dev
+# client 400x285
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ layout toggle all
+workspace splith focus=1
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splith focus=2
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.500
+    window 2 0.000,0.500 1.000x0.500
+
+$ split vertical
+workspace splith focus=2
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.500
+    splitv 0.000,0.500 1.000x0.500
+      window 2 0.000,0.500 1.000x0.500
+
+$ focus down
+workspace splith focus=1
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.500
+    splitv 0.000,0.500 1.000x0.500
+      window 2 0.000,0.500 1.000x0.500
+
+$ open
+workspace splith focus=3
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.333
+    window 3 0.000,0.333 1.000x0.333
+    splitv 0.000,0.667 1.000x0.333
+      window 2 0.000,0.667 1.000x0.333
+
+$ resize grow height 100 px
+workspace splith focus=3
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.264
+    window 3 0.000,0.264 1.000x0.472
+    splitv 0.000,0.736 1.000x0.264
+      window 2 0.000,0.736 1.000x0.264
+
+$ open
+workspace splith focus=4
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.199
+    window 3 0.000,0.199 1.000x0.354
+    window 4 0.000,0.553 1.000x0.250
+    splitv 0.000,0.803 1.000x0.197
+      window 2 0.000,0.803 1.000x0.197
+
+$ move up
+workspace splith focus=4
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.197
+    window 4 0.000,0.197 1.000x0.250
+    window 3 0.000,0.447 1.000x0.354
+    splitv 0.000,0.801 1.000x0.199
+      window 2 0.000,0.801 1.000x0.199
+
+$ focus down
+workspace splith focus=3
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.197
+    window 4 0.000,0.197 1.000x0.250
+    window 3 0.000,0.447 1.000x0.354
+    splitv 0.000,0.801 1.000x0.199
+      window 2 0.000,0.801 1.000x0.199
+
+$ resize grow height 100 px
+workspace splith focus=3
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.151
+    window 4 0.000,0.151 1.000x0.204
+    window 3 0.000,0.356 1.000x0.493
+    splitv 0.000,0.849 1.000x0.151
+      window 2 0.000,0.849 1.000x0.151
+
+$ close
+workspace splith focus=4
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.297
+    window 4 0.000,0.297 1.000x0.401
+    splitv 0.000,0.699 1.000x0.301
+      window 2 0.000,0.699 1.000x0.301

@@ -1,0 +1,52 @@
+# A fixed resize uses the target's pending height and the resize ancestor's child total.
+# recorded from sway version 1.12-dev
+# client 400x285
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ focus parent
+workspace splith focus=@
+  window 1 0.000,0.000 1.000x1.000
+
+$ split vertical
+workspace splitv focus=@0
+  splith 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splitv focus=2
+  splith 0.000,0.000 1.000x0.500
+    window 1 0.000,0.000 1.000x0.500
+  window 2 0.000,0.500 1.000x0.500
+
+$ split v
+workspace splitv focus=2
+  splith 0.000,0.000 1.000x0.500
+    window 1 0.000,0.000 1.000x0.500
+  splitv 0.000,0.500 1.000x0.500
+    window 2 0.000,0.500 1.000x0.500
+
+$ layout toggle all
+workspace splitv focus=2
+  splith 0.000,0.000 1.000x0.500
+    window 1 0.000,0.000 1.000x0.500
+  stacked 0.000,0.500 1.000x0.500
+    window 2 0.000,0.532 1.000x0.468
+
+$ open
+workspace splitv focus=3
+  splith 0.000,0.000 1.000x0.500
+    window 1 0.000,0.000 1.000x0.500
+  stacked 0.000,0.500 1.000x0.500
+    window 2 0.000,0.564 1.000x0.436 hidden
+    window 3 0.000,0.564 1.000x0.436
+
+$ resize set height 400 px
+workspace splitv focus=3
+  splith 0.000,0.000 1.000x0.444
+    window 1 0.000,0.000 1.000x0.444
+  stacked 0.000,0.444 1.000x0.556
+    window 2 0.000,0.508 1.000x0.492 hidden
+    window 3 0.000,0.508 1.000x0.492

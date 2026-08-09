@@ -114,15 +114,19 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         };
 
-        let snapshot: HashSet<NodeKey> = pending
+        let snapshot: HashSet<(NodeKey, NodeKey)> = pending
             .data
             .leaf_layouts
             .iter()
-            .map(|info| info.key)
+            .map(|info| (info.key, info.branch))
             .collect();
         // Only leaves reachable from the root count: the slotmap can still hold nodes that
         // were detached but not yet dropped.
-        let current: HashSet<NodeKey> = self.dfs_leaf_keys().into_iter().collect();
+        let current: HashSet<(NodeKey, NodeKey)> = self
+            .dfs_leaf_keys()
+            .into_iter()
+            .map(|key| (key, self.branch_root(key)))
+            .collect();
 
         snapshot != current
     }
@@ -137,9 +141,14 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     fn layout_atomic(&mut self, animate_resize: bool) {
-        self.resolve_percents(self.root);
-
         if self.pending_layouts.is_some() && !self.apply_pending_layouts_if_ready() {
+            // This call only records that another layout is wanted. It is not one of sway's
+            // `arrange_workspace` passes, so it must not resolve fractions yet. Doing that
+            // here normalized the same list again while a client configure was outstanding;
+            // a later sibling swap then rounded the opposite half-pixel and made that pixel
+            // survive the next resize and close.
+            //
+            // sway/tree/arrange.c:15-55,100-140
             self.pending_relayout = true;
             self.readdress_leaf_layouts();
             self.debug_layout_state("layout_atomic_pending");
@@ -147,6 +156,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
         self.pending_relayout = false;
 
+        self.resolve_percents(self.root);
         for key in self.floating_roots().collect::<Vec<_>>() {
             self.resolve_percents(key);
         }
@@ -241,21 +251,122 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// transaction is what pulls the two apart: the leaves are the same, their rectangles
     /// are the same, and they are somewhere else.
     pub(in crate::layout) fn readdress_leaf_layouts(&mut self) {
-        let addresses: Vec<Option<Vec<usize>>> = self
-            .leaf_layouts
-            .iter()
-            .map(|info| self.branch_relative_path(info.key))
+        let addresses: HashMap<NodeKey, (Vec<usize>, NodeKey)> = self
+            .nodes
+            .keys()
+            .filter_map(|key| {
+                matches!(self.get_node(key), Some(NodeData::Leaf(_))).then(|| {
+                    Some((
+                        key,
+                        (self.branch_relative_path(key)?, self.branch_root(key)),
+                    ))
+                })?
+            })
             .collect();
-        let mut addresses = addresses.into_iter();
-        self.leaf_layouts.retain_mut(|info| match addresses.next() {
-            Some(Some(path)) => {
-                info.path = path;
-                true
-            }
-            // The leaf left the tree while the transaction was open; nothing on screen can
-            // belong to it any more.
-            _ => false,
+        self.leaf_layouts.retain_mut(|info| {
+            let Some((path, branch)) = addresses.get(&info.key) else {
+                // The leaf left the tree while the transaction was open; nothing on screen
+                // can belong to it any more.
+                return false;
+            };
+            info.path.clone_from(path);
+            info.branch = *branch;
+            true
         });
+        if let Some(pending) = &mut self.pending_layouts {
+            pending.data.leaf_layouts.retain_mut(|info| {
+                let Some((path, branch)) = addresses.get(&info.key) else {
+                    return false;
+                };
+                // A path is an address in one branch and follows structural changes there.
+                // The branch beside a pending rectangle is provenance: changing it would
+                // make a floating configure look valid after the node moved to tiling (or
+                // vice versa), and the state pass would flush bounds for the wrong side.
+                if info.branch == *branch {
+                    info.path.clone_from(path);
+                }
+                true
+            });
+        }
+    }
+
+    /// Keep a leaf's node box when tree surgery changes how its parent decorates it.
+    ///
+    /// A leaf directly under tabs is the awkward representation boundary in tiri: the
+    /// cached rectangle is its content box, while [`ContainerTree::node_geometry`] answers
+    /// with the whole pending box sway keeps on the container. If `cmd_layout` flattens that
+    /// parent and then finds that the surviving layout already has the requested value, it
+    /// does not arrange. sway's box nevertheless stays whole; only the tab decoration that
+    /// IPC derives from the old parent disappears. Preserve that box in both snapshots so a
+    /// later transaction cannot put the removed decoration back.
+    ///
+    /// sway/commands/layout.c:134-196
+    /// sway/tree/container.c:1534-1554
+    pub(super) fn preserve_leaf_node_geometry(&mut self, key: NodeKey) {
+        let preserve = |layouts: &mut Vec<LeafLayoutInfo>| {
+            if let Some(info) = layouts.iter_mut().find(|info| info.key == key) {
+                info.rect = info.node_rect;
+            }
+        };
+        preserve(&mut self.leaf_layouts);
+        if let Some(pending) = &mut self.pending_layouts {
+            preserve(&mut pending.data.leaf_layouts);
+        }
+    }
+
+    /// Update which already-arranged leaves are visible after seat focus changes.
+    ///
+    /// `cmd_focus` does not call `arrange_workspace`; focus changes the active child of a
+    /// tabbed or stacked container without renormalizing any split fractions. Re-running the
+    /// full layout here used to add a division that sway never performs, enough to move an
+    /// exact half-pixel to the other end of a split. Rectangles stay as arranged; only the
+    /// switcher visibility derived from the seat's focus order changes.
+    ///
+    /// sway/commands/focus.c:270-321
+    /// sway/input/seat.c:1192-1270
+    pub(in crate::layout) fn refresh_focus_visibility(&mut self) {
+        let visibility: HashMap<NodeKey, bool> = self
+            .nodes
+            .keys()
+            .filter(|key| matches!(self.get_node(*key), Some(NodeData::Leaf(_))))
+            .map(|key| (key, self.focus_makes_leaf_visible(key)))
+            .collect();
+        let refresh = |layouts: &mut Vec<LeafLayoutInfo>| {
+            for info in layouts {
+                if let Some(visible) = visibility.get(&info.key) {
+                    info.visible = *visible;
+                }
+            }
+        };
+        refresh(&mut self.leaf_layouts);
+        if let Some(pending) = &mut self.pending_layouts {
+            refresh(&mut pending.data.leaf_layouts);
+        }
+    }
+
+    fn focus_makes_leaf_visible(&self, key: NodeKey) -> bool {
+        if self
+            .fullscreen_key
+            .is_some_and(|fullscreen| !self.is_descendant(key, fullscreen))
+        {
+            return false;
+        }
+
+        let branch = self.branch_root(key);
+        let mut child = key;
+        while child != branch {
+            let Some(parent) = self.parent_of(child) else {
+                return false;
+            };
+            if self.get_container(parent).is_some_and(|container| {
+                matches!(container.layout(), Layout::Tabbed | Layout::Stacked)
+            }) && self.active_child(parent) != Some(child)
+            {
+                return false;
+            }
+            child = parent;
+        }
+        true
     }
 
     pub(in crate::layout) fn apply_pending_layouts_if_ready(&mut self) -> bool {
@@ -273,6 +384,19 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     pub(in crate::layout) fn has_pending_layouts(&self) -> bool {
         self.pending_layouts.is_some()
+    }
+
+    /// Drop a size transaction superseded by a branch transfer.
+    ///
+    /// Floating a node immediately issues its restored size, so a configure for its old tiled
+    /// box cannot govern the new branch. Maximizing a floating node is the same kind of
+    /// superseding transition in the other direction: `container_set_floating` moves it first
+    /// (`sway/tree/container.c:1004`) and the maximized arrange decides its next size. An ordinary
+    /// floating-to-tiling move still waits for its outstanding configure.
+    pub(in crate::layout) fn discard_layout_superseded_by_transfer(&mut self) {
+        self.pending_layouts = None;
+        self.pending_transaction = None;
+        self.pending_relayout = false;
     }
 
     fn layout_request_for(
@@ -310,15 +434,32 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         let mut path = Vec::new();
         let area = self.layout_area();
+        let gap = self.gap_in(root_key);
         self.collect_layout_node(
             root_key,
+            area,
             area,
             &mut path,
             true,
             LeafLayoutContext::default(),
+            gap,
+            root_key,
             &mut data,
         );
         data
+    }
+
+    /// The gap between a branch's children.
+    ///
+    /// `gaps inner` is a tiling setting: sway's `container_add_gaps` returns without doing
+    /// anything for a floating container, so a group of windows floated together sits flush
+    /// however the workspace is configured.
+    pub(super) fn gap_in(&self, key: NodeKey) -> f64 {
+        if self.is_floating(key) {
+            0.0
+        } else {
+            self.options.layout.gaps
+        }
     }
 
     /// Lay out only the fullscreen node's subtree, against the output.
@@ -383,9 +524,12 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.collect_layout_node(
             branch_root,
             area,
+            area,
             &mut path,
             true,
             LeafLayoutContext::default(),
+            self.gap_in(branch_root),
+            self.branch_root(branch_root),
             &mut data,
         );
 
@@ -420,12 +564,12 @@ impl<W: LayoutElement> ContainerTree<W> {
         rect: Rectangle<f64, Logical>,
         child_count: usize,
         percents: &[f64],
+        gap: f64,
     ) -> (Vec<Rectangle<f64, Logical>>, f64) {
         if child_count == 0 {
             return (Vec::new(), 0.0);
         }
 
-        let gap = self.options.layout.gaps;
         match layout {
             Layout::SplitH | Layout::SplitV => {
                 let horizontal = layout == Layout::SplitH;
@@ -486,12 +630,15 @@ impl<W: LayoutElement> ContainerTree<W> {
         &self,
         node_key: NodeKey,
         rect: Rectangle<f64, Logical>,
+        node_rect: Rectangle<f64, Logical>,
         path: &mut Vec<usize>,
         visible: bool,
         ctx: LeafLayoutContext,
+        gap: f64,
+        branch: NodeKey,
         data: &mut LayoutData,
     ) {
-        let (layout, child_count, focused_idx) = match self.get_node(node_key) {
+        let (layout, child_count, focused_idx, percents) = match self.get_node(node_key) {
             Some(NodeData::Leaf(tile)) => {
                 let (offset, show_titlebar) = if tile.window().pending_sizing_mode().is_fullscreen()
                 {
@@ -505,8 +652,10 @@ impl<W: LayoutElement> ContainerTree<W> {
                     .insert(node_key, ctx.in_tabbed_context);
                 data.leaf_layouts.push(LeafLayoutInfo {
                     key: node_key,
+                    branch,
                     path: path.clone(),
                     rect,
+                    node_rect,
                     visible,
                 });
                 return;
@@ -517,6 +666,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     container.layout(),
                     container.child_count(),
                     self.active_child_index(node_key),
+                    container.child_percents_slice().to_vec(),
                 )
             }
             None => return,
@@ -526,8 +676,8 @@ impl<W: LayoutElement> ContainerTree<W> {
             return;
         }
 
-        let percents = self.get_normalized_child_percents(node_key, child_count);
-        let (child_rects, _) = self.child_rects_for_layout(layout, rect, child_count, &percents);
+        let (child_rects, _) =
+            self.child_rects_for_layout(layout, rect, child_count, &percents, gap);
 
         match layout {
             Layout::SplitH | Layout::SplitV => {
@@ -546,7 +696,10 @@ impl<W: LayoutElement> ContainerTree<W> {
                         draw_titlebar: child_titlebar,
                         in_tabbed_context: ctx.in_tabbed_context,
                     };
-                    self.collect_layout_node(child_key, child_rect, path, visible, child_ctx, data);
+                    self.collect_layout_node(
+                        child_key, child_rect, child_rect, path, visible, child_ctx, gap, branch,
+                        data,
+                    );
                     path.pop();
                 }
             }
@@ -564,12 +717,25 @@ impl<W: LayoutElement> ContainerTree<W> {
                         draw_titlebar: false,
                         in_tabbed_context: true,
                     };
+                    // A view gets the switcher's whole parent box and IPC adds its title bar
+                    // afterwards. A child container is itself placed below that bar.
+                    //
+                    // sway/tree/arrange.c:185-211
+                    let child_node_rect =
+                        if matches!(self.get_node(child_key), Some(NodeData::Leaf(_))) {
+                            rect
+                        } else {
+                            child_rect
+                        };
                     self.collect_layout_node(
                         child_key,
                         child_rect,
+                        child_node_rect,
                         path,
                         child_visible,
                         child_ctx,
+                        gap,
+                        branch,
                         data,
                     );
                     path.pop();
@@ -718,33 +884,27 @@ impl<W: LayoutElement> ContainerTree<W> {
             .map(|idx| percents.get(idx).copied().unwrap_or(default).max(0.0))
             .collect();
         let sum: f64 = weights.iter().sum();
-        if sum > f64::EPSILON {
-            for w in &mut weights {
-                *w /= sum;
-            }
-        } else {
+        if sum <= f64::EPSILON {
             weights.fill(default);
         }
 
-        let mut lengths_int = vec![0i32; child_count];
-        let mut fractions = Vec::with_capacity(child_count);
+        // `apply_horiz_layout`/`apply_vert_layout` round every child's fraction in list
+        // order immediately after normalizing it in place, then overwrite the last child's
+        // size with the parent's remaining extent (`sway/tree/arrange.c:15-96,100-181`). Do
+        // not normalize a copy here: a second division can move an exact half-pixel across
+        // the rounding boundary. It is deliberately not a largest-remainder distribution:
+        // seven equal children can therefore be six equal rounded spans and a wider last
+        // one. That asymmetry survives later reparenting and is observable.
+        let mut lengths_int = Vec::with_capacity(child_count);
         let mut used = 0i32;
         for (idx, weight) in weights.iter().copied().enumerate() {
-            let raw = available_phys as f64 * weight;
-            let base = raw.floor() as i32;
-            lengths_int[idx] = base;
-            used += base;
-            fractions.push((idx, raw - base as f64));
-        }
-
-        let mut remainder = (available_phys - used).max(0);
-        fractions.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        let mut i = 0usize;
-        while remainder > 0 && !fractions.is_empty() {
-            let idx = fractions[i % fractions.len()].0;
-            lengths_int[idx] += 1;
-            remainder -= 1;
-            i += 1;
+            let length = if idx + 1 == child_count {
+                (available_phys - used).max(0)
+            } else {
+                (available_phys as f64 * weight).round().max(0.0) as i32
+            };
+            lengths_int.push(length);
+            used = used.saturating_add(length);
         }
 
         lengths_int

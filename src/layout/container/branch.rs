@@ -8,22 +8,54 @@
 //! is wherever you started. Tiri's grew up around a single root and read it from `self`, so
 //! the root has to be handed to them instead — which is what this does, and nothing more.
 
-use smithay::utils::{Logical, Rectangle};
-
-use super::{ContainerTree, Layout, LayoutElement, NodeKey};
+#[cfg(test)]
+use super::Layout;
+use super::{ContainerData, ContainerTree, LayoutElement, NodeKey, TabBarInfo};
 use crate::layout::tile::Tile;
 
 impl<W: LayoutElement> ContainerTree<W> {
-    /// Lay out one branch in its own box, and apply the result.
+    /// The workspace's own root — the tiled branch.
+    pub(in crate::layout) fn workspace_root(&self) -> NodeKey {
+        self.root
+    }
+
+    /// Whether a branch holds no windows.
+    pub(in crate::layout) fn branch_is_empty(&self, branch_root: NodeKey) -> bool {
+        self.first_leaf_in_branch(branch_root).is_none()
+    }
+
+    /// The container a branch's root is, when it is one.
+    pub(in crate::layout) fn branch_container(
+        &self,
+        branch_root: NodeKey,
+    ) -> Option<&ContainerData> {
+        self.get_container(branch_root)
+    }
+
+    /// The tab bars inside one branch, addressed from its own root.
+    pub(in crate::layout) fn tab_bar_layouts_in_branch(
+        &self,
+        branch_root: NodeKey,
+    ) -> Vec<TabBarInfo> {
+        let mut out = Vec::new();
+        let mut path = Vec::new();
+        self.collect_tab_bar_layouts(branch_root, &mut path, &mut out, true);
+        out
+    }
+
+    /// Lay out after changing one branch.
     ///
-    /// `arrange_floating` for one group. The tiled side goes through the ordinary pass, which
-    /// already walks every branch; this is for a caller holding one group and nothing else.
+    /// The arena has one transaction and one committed geometry cache, so a branch cannot be
+    /// applied independently without bypassing size requests and overwriting an in-flight
+    /// transaction. `arrange_workspace` still visits `arrange_children` and every
+    /// `arrange_floating` branch separately inside the pass; unchanged leaves do not receive a
+    /// request. The branch argument makes the caller's ownership explicit and rejects a stale
+    /// root, while the shared pass keeps the commit atomic.
     pub(in crate::layout) fn layout_branch(&mut self, branch_root: NodeKey) {
-        let Some(area) = self.floating_area(branch_root) else {
+        if self.floating_area(branch_root).is_none() {
             return;
-        };
-        let data = self.collect_branch_layout_data(branch_root, area);
-        self.apply_layout_data(data);
+        }
+        self.layout();
     }
 
     /// How many windows a branch holds.
@@ -50,15 +82,8 @@ impl<W: LayoutElement> ContainerTree<W> {
             .collect()
     }
 
-    /// The window ids of a branch, in tree order.
-    pub(in crate::layout) fn window_ids_in_branch(&self, branch_root: NodeKey) -> Vec<W::Id> {
-        self.leaf_keys_in_branch(branch_root)
-            .into_iter()
-            .filter_map(|key| Some(self.get_tile(key)?.window().id().clone()))
-            .collect()
-    }
-
     /// The layout of a branch's root container.
+    #[cfg(test)]
     pub(in crate::layout) fn branch_layout(&self, branch_root: NodeKey) -> Option<Layout> {
         self.get_container(branch_root).map(|c| c.layout())
     }
@@ -67,11 +92,5 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn branch_children_len(&self, branch_root: NodeKey) -> usize {
         self.get_container(branch_root)
             .map_or(0, |c| c.child_count())
-    }
-
-    /// The box a branch occupies, whichever side it is on.
-    pub(in crate::layout) fn branch_area(&self, branch_root: NodeKey) -> Rectangle<f64, Logical> {
-        self.floating_area(branch_root)
-            .unwrap_or_else(|| self.layout_area())
     }
 }

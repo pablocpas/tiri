@@ -62,7 +62,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             .position(|&key| key == child_key)
     }
 
-    /// Replace a child without changing its slot's fractions or focus position.
+    /// Replace a child without changing its slot's fractions.
     pub(super) fn replace_child_node(
         &mut self,
         parent_key: NodeKey,
@@ -77,9 +77,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         };
         parent.children[idx] = new_key;
         self.set_parent(new_key, Some(parent_key));
-        // The replacement takes the old node's place in the seat's order too, so a switcher
-        // showing what was there goes on showing what replaced it.
-        self.seat.replace(old_key, new_key);
         true
     }
 
@@ -98,6 +95,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         if wrapper.child_count() != 0 {
             return None;
         }
+        let raw_focus_returns_to_child = self.seat.node() == Some(child_key);
         let child_idx = self.child_index(parent_key, child_key)?;
         let fractions = self.get_container(parent_key)?.child_fractions(child_idx);
         wrapper.set_geometry(self.node_geometry(child_key)?);
@@ -126,10 +124,9 @@ impl<W: LayoutElement> ContainerTree<W> {
         // It reads like bookkeeping and it is the opposite: a container the seat has never
         // heard of answers for nothing, so without this the wrapper is invisible to
         // `seat_get_active_tiling_child` and its parent goes on showing a sibling.
-        if self.focus_chain_passes_through(child_key) {
-            let chain = self.focus_chain(child_key);
-            let leaf = self.leaf_under_key(child_key);
-            self.seat.focus(&chain, leaf);
+        if raw_focus_returns_to_child {
+            self.seat.raw_focus(wrapper_key);
+            self.seat.raw_focus(child_key);
         }
         Some(wrapper_key)
     }
@@ -138,11 +135,16 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn node_geometry(&self, key: NodeKey) -> Option<Rectangle<f64, Logical>> {
         match self.get_node(key)? {
             NodeData::Container(container) => Some(container.geometry()),
+            // A view directly under tabs keeps the parent's whole pending box. The rendered
+            // rectangle beside it has already had the title bar applied, so it cannot answer
+            // resize or survive a reparent faithfully.
+            //
+            // sway/tree/arrange.c:185-211
             NodeData::Leaf(_) => Some(
                 self.leaf_layouts
                     .iter()
                     .find(|info| info.key == key)
-                    .map(|info| info.rect)
+                    .map(|info| info.node_rect)
                     .unwrap_or_default(),
             ),
         }
@@ -178,6 +180,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(super) fn insert_node(&mut self, node: NodeData<W>) -> NodeKey {
         let key = self.nodes.insert(node);
         self.parents.insert(key, None);
+        self.seat.register(key);
         key
     }
 

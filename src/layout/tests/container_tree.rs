@@ -1,7 +1,7 @@
 use insta::assert_snapshot;
 use proptest::prelude::*;
 
-use super::super::container::{ContainerTree, Direction, Layout as ContainerLayout, RootPolicy};
+use super::super::container::{ContainerTree, Direction, Layout as ContainerLayout};
 use super::super::tile::Tile;
 use super::*;
 
@@ -158,16 +158,10 @@ fn apply_tree_random_op_inner(
             harness.tree.split_focused(ContainerLayout::SplitV);
         }
         TreeRandomOp::SetTabbed => {
-            harness.tree.set_focused_layout_with_policy(
-                ContainerLayout::Tabbed,
-                RootPolicy::ImplicitWorkspace,
-            );
+            harness.tree.set_focused_layout(ContainerLayout::Tabbed);
         }
         TreeRandomOp::SetStacked => {
-            harness.tree.set_focused_layout_with_policy(
-                ContainerLayout::Stacked,
-                RootPolicy::ImplicitWorkspace,
-            );
+            harness.tree.set_focused_layout(ContainerLayout::Stacked);
         }
         TreeRandomOp::ToggleSplit => {
             harness.tree.toggle_split_layout();
@@ -481,9 +475,7 @@ fn keep_stacked_container_on_cleanup_with_split_parent() {
     let mut harness = TreeHarness::new();
     harness.add_window(1);
     harness.add_window(2);
-    assert!(harness
-        .tree
-        .set_focused_layout_with_policy(ContainerLayout::SplitV, RootPolicy::ImplicitWorkspace));
+    assert!(harness.tree.set_focused_layout(ContainerLayout::SplitV));
     assert!(harness.tree.focus_window_by_id(&2));
     harness.tree.split_focused(ContainerLayout::Stacked);
     harness.add_window(3);
@@ -869,9 +861,7 @@ fn direct_tabbed_tiles_use_content_rect_without_tile_tab_offset() {
     let mut harness = TreeHarness::new();
     harness.add_window(1);
     harness.add_window(2);
-    assert!(harness
-        .tree
-        .set_focused_layout_with_policy(ContainerLayout::Tabbed, RootPolicy::ImplicitWorkspace));
+    assert!(harness.tree.set_focused_layout(ContainerLayout::Tabbed));
     harness.tree.layout();
 
     let tiles = harness.tree.all_tiles();
@@ -898,9 +888,7 @@ fn tabbed_container_marks_urgent_tab() {
     urgent.is_urgent = true;
     harness.add_window_with_params(urgent);
     harness.add_window(2);
-    assert!(harness
-        .tree
-        .set_focused_layout_with_policy(ContainerLayout::Tabbed, RootPolicy::ImplicitWorkspace));
+    assert!(harness.tree.set_focused_layout(ContainerLayout::Tabbed));
     harness.tree.layout();
 
     let tab_bar = harness
@@ -923,9 +911,7 @@ fn tabbed_context_propagates_to_nested_split_tiles() {
     let mut harness = TreeHarness::new();
     harness.add_window(1);
     harness.add_window(2);
-    assert!(harness
-        .tree
-        .set_focused_layout_with_policy(ContainerLayout::Tabbed, RootPolicy::ImplicitWorkspace));
+    assert!(harness.tree.set_focused_layout(ContainerLayout::Tabbed));
     assert!(harness.tree.focus_window_by_id(&1));
     assert!(harness.tree.split_focused(ContainerLayout::SplitV));
     harness.add_window(3);
@@ -1067,6 +1053,10 @@ fn detached_snapshot_does_not_relabel_fractions_after_parent_axis_change() {
     assert!(harness
         .tree
         .insert_subtree_with_parent_info(&info, subtree, true));
+    // New children carry an unset fraction until arrange, just as a newly inserted sway
+    // container does. The assertion is about the resolved vertical shares, not the
+    // half-finished mutation.
+    harness.tree.layout();
 
     for idx in 0..3 {
         assert!(
@@ -1203,9 +1193,7 @@ fn move_up_escapes_tabbed_layout() {
     let mut harness = TreeHarness::new();
     harness.add_window(1);
     harness.add_window(2);
-    assert!(harness
-        .tree
-        .set_focused_layout_with_policy(ContainerLayout::SplitV, RootPolicy::ImplicitWorkspace));
+    assert!(harness.tree.set_focused_layout(ContainerLayout::SplitV));
     harness.tree.split_focused(ContainerLayout::Tabbed);
     harness.add_window(3);
     assert!(harness.tree.focus_window_by_id(&2));

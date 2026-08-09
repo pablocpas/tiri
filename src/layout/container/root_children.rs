@@ -182,13 +182,36 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     pub(in crate::layout) fn insert_leaf_at(&mut self, index: usize, tile: Tile<W>, focus: bool) {
+        let root = self.root;
+        self.insert_leaf_into_branch(root, index, tile, focus);
+    }
+
+    /// Insert a leaf as a direct child of one branch's root.
+    pub(in crate::layout) fn insert_leaf_into_branch(
+        &mut self,
+        branch_root: NodeKey,
+        index: usize,
+        tile: Tile<W>,
+        focus: bool,
+    ) {
         let tile_key = self.insert_node(NodeData::Leaf(tile));
-        self.insert_key_at_root(index, tile_key, focus);
+        self.insert_key_into_branch(branch_root, index, tile_key, focus);
     }
 
     pub(super) fn insert_key_at_root(&mut self, index: usize, node_key: NodeKey, focus: bool) {
+        let root = self.root;
+        self.insert_key_into_branch(root, index, node_key, focus);
+    }
+
+    pub(super) fn insert_key_into_branch(
+        &mut self,
+        branch_root: NodeKey,
+        index: usize,
+        node_key: NodeKey,
+        focus: bool,
+    ) {
         let insert_idx = {
-            let container_key = self.root;
+            let container_key = branch_root;
             let container = self.get_container(container_key).unwrap();
             let idx = index.min(container.children.len());
 
@@ -200,7 +223,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                 idx
             }
         };
-        let container_key = self.root;
+        let container_key = branch_root;
         if let Some(container) = self.get_container(container_key) {
             if container.child_key(insert_idx) == Some(node_key) {
                 self.set_parent(node_key, Some(container_key));

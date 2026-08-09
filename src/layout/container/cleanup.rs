@@ -20,12 +20,14 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Only emptiness — this is not the place where redundant nesting goes, which is why a
     /// `close` leaves the container it emptied down to one child standing.
     ///
-    /// The workspace is where the walk stops. It has no parent to be detached from, and an
-    /// empty one is an empty workspace rather than a container to be got rid of.
+    /// A branch's root is where the walk stops. It has no parent to be detached from, and an
+    /// empty workspace is an empty workspace rather than a container to be got rid of. An
+    /// emptied floating root is not reaped either: the floating side owns that list, and it
+    /// drops the group when the last window leaves it.
     pub(super) fn reap_empty(&mut self, key: NodeKey) {
         let mut current = Some(key);
         while let Some(container_key) = current {
-            if container_key == self.root {
+            if self.parent_of(container_key).is_none() {
                 return;
             }
             let Some(container) = self.get_container(container_key) else {
@@ -36,12 +38,18 @@ impl<W: LayoutElement> ContainerTree<W> {
             }
 
             let parent_key = self.parent_of(container_key);
+            let was_selected = self.selected_key() == Some(container_key);
+            if let Some(parent_key) = parent_key {
+                if was_selected {
+                    self.seat.redirect_selection(Some(parent_key));
+                    self.seat.unregister(container_key);
+                } else {
+                    self.unregister_unfocused_node(container_key, parent_key);
+                }
+            }
             self.detach_child(container_key);
             self.nodes.remove(container_key);
             self.parents.remove(container_key);
-            if self.selected_key() == Some(container_key) {
-                self.seat.redirect_selection(parent_key);
-            }
             current = parent_key;
         }
     }
@@ -53,8 +61,8 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// alone, and the difference is measurable: a `split` builds a container holding one
     /// window and it stays, a `close` down to one child keeps both levels, and the same
     /// shape reached by a `move` collapses.
-    pub(super) fn squash_workspace(&mut self) {
-        self.squash_children(self.root);
+    pub(super) fn squash_branch(&mut self, branch_root: NodeKey) {
+        self.squash_children(branch_root);
     }
 
     /// Squash every child of `key`, walking the list as it changes underneath: a squashed
@@ -142,10 +150,12 @@ impl<W: LayoutElement> ContainerTree<W> {
         // Whatever pointed at either level now points at the grandchild that was focused
         // inside them, which is where the focus was all along — and the seat's order already
         // says which one that is, without the pair having to be asked.
-        let inherits = taken
+        let inherits = self
+            .seat
+            .order()
             .iter()
             .copied()
-            .find(|key| self.seat.order().contains(key))
+            .find(|key| taken.contains(key))
             .or_else(|| taken.first().copied());
         if matches!(self.selected_key(), Some(k) if k == con_key || k == child_key) {
             self.seat.redirect_selection(inherits);
@@ -155,6 +165,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         for key in [child_key, con_key] {
+            self.unregister_unfocused_node(key, parent_key);
             self.nodes.remove(key);
             self.parents.remove(key);
         }
@@ -189,23 +200,24 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     pub(super) fn ensure_container_at_path(
         &mut self,
+        branch_root: NodeKey,
         path: &[usize],
         layout: Layout,
     ) -> Option<NodeKey> {
         if path.is_empty() {
-            return Some(self.root);
+            return Some(branch_root);
         }
 
-        let key = self.get_node_key_at_path(path)?;
+        let key = self.node_at_branch_path(branch_root, path)?;
         if matches!(self.get_node(key), Some(NodeData::Container(_))) {
             return Some(key);
         }
 
         let parent_path = &path[..path.len() - 1];
         let parent_key = if parent_path.is_empty() {
-            self.root
+            branch_root
         } else {
-            self.get_node_key_at_path(parent_path)?
+            self.node_at_branch_path(branch_root, parent_path)?
         };
 
         let mut container = ContainerData::new(layout);

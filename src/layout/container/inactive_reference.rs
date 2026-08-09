@@ -38,7 +38,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         key: NodeKey,
         path_hint: &[usize],
     ) -> Option<NodeKey> {
-        if self.get_node(key).is_some() {
+        if self.get_node(key).is_some() && !self.is_floating(key) {
             Some(key)
         } else if path_hint.is_empty() {
             Some(self.root)
@@ -79,6 +79,9 @@ impl<W: LayoutElement> ContainerTree<W> {
         match reference {
             InactiveTilingReference::Container { key, .. } => {
                 self.get_container(*key)?;
+                if self.is_floating(*key) {
+                    return None;
+                }
                 if self.is_synthetic_root_container_key(*key) {
                     return None;
                 }
@@ -87,6 +90,9 @@ impl<W: LayoutElement> ContainerTree<W> {
             }
             InactiveTilingReference::Leaf { key, .. } => {
                 if !matches!(self.get_node(*key), Some(NodeData::Leaf(_))) {
+                    return None;
+                }
+                if self.is_floating(*key) {
                     return None;
                 }
                 let path = self.find_node_path(*key)?;
@@ -101,10 +107,15 @@ impl<W: LayoutElement> ContainerTree<W> {
         let mut chain = Vec::new();
         // When a container is selected by focus-parent, that selected node is
         // the active reference source.
+        let root = self.root;
         let Some(mut key) = self
-            .selected_node_key()
-            .or(self.focused_key())
-            .or_else(|| self.first_leaf_key())
+            .selected_key()
+            .filter(|key| self.is_descendant(*key, root))
+            .or_else(|| {
+                self.focused_key()
+                    .filter(|key| self.is_descendant(*key, root))
+            })
+            .or_else(|| self.focus_inactive_view(root))
         else {
             return chain;
         };
@@ -126,10 +137,15 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn inactive_tiling_reference_for_selected_or_focused(
         &self,
     ) -> Option<InactiveTilingReference> {
+        let root = self.root;
         let key = self
-            .selected_node_key()
-            .or(self.focused_key())
-            .or_else(|| self.first_leaf_key())?;
+            .selected_key()
+            .filter(|key| self.is_descendant(*key, root))
+            .or_else(|| {
+                self.focused_key()
+                    .filter(|key| self.is_descendant(*key, root))
+            })
+            .or_else(|| self.focus_inactive_view(root))?;
         self.inactive_tiling_reference_for_node_key(key)
     }
 
@@ -137,7 +153,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         &self,
     ) -> Vec<InactiveTilingReference> {
         let mut chain = Vec::new();
-        let Some(mut key) = self.focused_key().or_else(|| self.first_leaf_key()) else {
+        let Some(mut key) = self.focus_inactive_view(self.root) else {
             return chain;
         };
 
@@ -158,7 +174,9 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn inactive_tiling_reference_for_parent_of_selected_reference(
         &self,
     ) -> Option<InactiveTilingReference> {
-        let key = self.selected_node_key()?;
+        let key = self
+            .selected_key()
+            .filter(|key| self.is_descendant(*key, self.root))?;
         let parent_key = self.parent_of(key)?;
         self.inactive_tiling_container_reference_for_key(parent_key)
     }
