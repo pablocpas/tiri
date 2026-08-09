@@ -20,6 +20,7 @@ use super::{LayoutElement, Options};
 use crate::utils::transaction::Transaction;
 use tiri_config::BlockOutFrom;
 
+mod branch;
 mod cleanup;
 mod command;
 mod debug;

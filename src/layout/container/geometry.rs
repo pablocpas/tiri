@@ -645,7 +645,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    fn apply_layout_data(&mut self, data: LayoutData) {
+    pub(super) fn apply_layout_data(&mut self, data: LayoutData) {
         for (key, rect) in data.container_geometries {
             if let Some(NodeData::Container(container)) = self.get_node_mut(key) {
                 container.set_geometry(rect);
