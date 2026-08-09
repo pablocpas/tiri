@@ -46,7 +46,7 @@ use smithay::output::{self, Output};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size, Transform};
 use tile::{Tile, TileRenderElement};
-use tiling::RootTilingSubtree;
+use tree_space::RootTilingSubtree;
 use tiri_config::utils::MergeWith as _;
 use tiri_config::{
     Config, CornerRadius, LayoutPart, PresetSize, Workspace as WorkspaceConfig, WorkspaceReference,
@@ -92,8 +92,7 @@ pub mod shadow;
 pub mod tab_bar;
 pub mod tab_indicator;
 pub mod tile;
-pub mod tiling;
-mod tree_space;
+pub mod tree_space;
 mod viewport;
 pub mod workspace;
 

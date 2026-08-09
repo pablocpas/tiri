@@ -15,8 +15,8 @@ not of the ground.
 | | |
 |---|---|
 | sway functions in the domain | 93 |
-| cited in tiri | 23 |
-| not yet cited | 70 |
+| cited in tiri | 24 |
+| not yet cited | 69 |
 
 Domain: `sway/tree/{container,workspace,arrange}.c` and the commands that reshape the
 tree — `move`, `split`, `layout`, `focus`, `resize`, `fullscreen`, `swap`. Excluded:
@@ -32,10 +32,10 @@ seat device configuration, marks, scratchpad, criteria, bars, output layout.
 - `container_detach`
 - `container_floating_resize_and_center`
 - `container_floating_set_default_size`
-- `container_insert_child`
 - `container_is_floating`
 - `container_move_in_direction`
 - `container_move_to_container_from_direction`
+- `container_move_to_workspace`
 - `container_parent_layout`
 - `container_reap_empty`
 - `container_replace`
@@ -44,6 +44,7 @@ seat device configuration, marks, scratchpad, criteria, bars, output layout.
 - `container_split`
 - `container_squash`
 - `workspace_add_floating`
+- `workspace_add_tiling`
 - `workspace_squash`
 - `workspace_switch`
 - `workspace_wrap_children`
@@ -76,6 +77,7 @@ one that does not is worth a line saying so, here or at its call site.
 - `container_has_ancestor`
 - `container_has_focused_child`
 - `container_has_urgent_child`
+- `container_insert_child`
 - `container_is_current_floating`
 - `container_is_current_parent_focused`
 - `container_is_floating_or_child`
@@ -89,7 +91,6 @@ one that does not is worth a line saying so, here or at its call site.
 - `container_is_transient_for`
 - `container_move_to_container`
 - `container_move_to_next_output`
-- `container_move_to_workspace`
 - `container_move_to_workspace_from_direction`
 - `container_obstructing_fullscreen_container`
 - `container_raise_floating`
@@ -104,7 +105,6 @@ one that does not is worth a line saying so, here or at its call site.
 - `container_update`
 - `container_update_itself_and_parents`
 - `workspace_add_gaps`
-- `workspace_add_tiling`
 - `workspace_attach_tiling`
 - `workspace_create`
 - `workspace_detach`

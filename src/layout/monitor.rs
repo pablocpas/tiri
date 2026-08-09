@@ -15,7 +15,7 @@ use super::floating::{FloatingResizeResult, FloatingSpace};
 use super::insert_hint_element::{InsertHintElement, InsertHintRenderElement};
 use super::legacy_column::{Column, ColumnWidth};
 use super::tile::Tile;
-use super::tiling::RootTilingSubtree;
+use super::tree_space::RootTilingSubtree;
 use super::workspace::{
     compute_working_area, OutputId, Workspace, WorkspaceAddWindowTarget, WorkspaceId,
     WorkspaceIdentity, WorkspaceLifetime, WorkspaceRenderElement,
