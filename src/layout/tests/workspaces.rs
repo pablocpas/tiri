@@ -98,9 +98,9 @@ fn moving_a_container_between_workspaces_keeps_all_node_identities() {
         let tree = workspace.tiling().tree();
         let first = tree.window_key(&1).expect("first source leaf");
         let second = tree.window_key(&2).expect("second source leaf");
-        let container = tree.parent_of_node(first).expect("source container");
+        let container = tree.parent_of(first).expect("source container");
         assert_ne!(container, tree.workspace_root());
-        assert_eq!(tree.parent_of_node(second), Some(container));
+        assert_eq!(tree.parent_of(second), Some(container));
         (first, second, container)
     };
 
@@ -113,8 +113,8 @@ fn moving_a_container_between_workspaces_keeps_all_node_identities() {
     let tree = workspace.tiling().tree();
     assert_eq!(tree.window_key(&1), Some(first));
     assert_eq!(tree.window_key(&2), Some(second));
-    assert_eq!(tree.parent_of_node(first), Some(container));
-    assert_eq!(tree.parent_of_node(second), Some(container));
+    assert_eq!(tree.parent_of(first), Some(container));
+    assert_eq!(tree.parent_of(second), Some(container));
 }
 
 #[test]

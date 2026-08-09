@@ -12,9 +12,7 @@ use tiri_config::{PresetSize, RelativeTo};
 use tiri_ipc::{ColumnDisplay, LayoutTreeNode, PositionChange, SizeChange, WindowLayout};
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
-use super::container::{
-    ContainerMetrics, Direction, InsertParentInfo, Layout, LeafLayoutInfo, NodeKey, TabBarInfo,
-};
+use super::container::{Direction, InsertParentInfo, Layout, LeafLayoutInfo, NodeKey, TabBarInfo};
 use super::focus_ring::{
     render_container_selection, ContainerSelectionStyle, FocusRingEdges, FocusRingRenderElement,
 };
@@ -329,10 +327,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
         super::tree_space::branch_display_layouts(space.tree(), root)
     }
 
-    fn container_gap(&self) -> f64 {
-        0.0
-    }
-
     pub fn new() -> Self {
         Self {
             containers: Vec::new(),
@@ -486,8 +480,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
 
         let scale = Scale::from(space.scale());
-        let gap = self.container_gap();
         for container in &self.containers {
+            let gap = space.branch_gap(container.root);
             let tab_bar_infos = tree.tab_bar_layouts_in_branch(container.root);
             for info in Self::display_layouts(space, container.root).filter(|info| info.visible) {
                 let Some(tile) = tree.get_tile(info.key) else {
@@ -619,9 +613,9 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
 
         let cache = self.tab_bar_cache.borrow();
-        let gap = self.container_gap();
 
         for container in &self.containers {
+            let gap = space.branch_gap(container.root);
             for mut info in tree.tab_bar_layouts_in_branch(container.root) {
                 if gap > 0.0 && info.path.is_empty() {
                     info.rect.loc.x -= gap;
@@ -776,9 +770,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     }
 
     fn selected_is_container_in(&self, space: &TreeSpace<W>, idx: usize) -> bool {
-        let tree = space.tree();
-        tree.selected_container_key()
-            .is_some_and(|key| tree.is_descendant(key, self.containers[idx].root))
+        space.selected_container_in(self.containers[idx].root)
     }
 
     /// The node a command targets inside container `idx`: its root when the whole floating
@@ -915,20 +907,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
     }
 
     pub(super) fn close_window_ids_for_active_selection(&self, space: &TreeSpace<W>) -> Vec<W::Id> {
-        let tree = space.tree();
         let Some(idx) = self.active_container_idx(space) else {
             return Vec::new();
         };
-        if let Some(key) = tree.selected_container_key() {
-            if tree.is_descendant(key, self.containers[idx].root) {
-                return tree.window_ids_under(key);
-            }
-        }
-
-        self.active_window_id
-            .as_ref()
-            .map(|id| vec![id.clone()])
-            .unwrap_or_default()
+        space.close_window_ids_in_branch(self.containers[idx].root)
     }
 
     pub(super) fn select_wrapper_for_window(&self, space: &mut TreeSpace<W>, id: &W::Id) -> bool {
@@ -1730,36 +1712,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
         self.interactive_resize_end(Some(&id));
     }
 
-    fn container_metrics(
-        &self,
-        space: &TreeSpace<W>,
-        key: NodeKey,
-        layout: Layout,
-    ) -> Option<ContainerMetrics> {
-        let tree = space.tree();
-        let (parent_key, child_idx) = tree.find_parent_with_layout(key, layout)?;
-        let (container_layout, rect, child_count) = tree.container_info(parent_key)?;
-        if container_layout != layout || child_count == 0 {
-            return None;
-        }
-
-        let available = match layout {
-            Layout::SplitH => self.available_span(rect.size.w, child_count),
-            Layout::SplitV => self.available_span(rect.size.h, child_count),
-            Layout::Tabbed | Layout::Stacked => return None,
-        };
-
-        if available <= 0.0 {
-            return None;
-        }
-
-        Some((parent_key, child_idx, available, child_count, rect))
-    }
-
-    fn available_span(&self, total: f64, child_count: usize) -> f64 {
-        super::tree_space::available_span(self.container_gap(), total, child_count)
-    }
-
     fn percent_from_size_change(current_percent: f64, available: f64, change: SizeChange) -> f64 {
         if available <= 0.0 {
             return current_percent;
@@ -1879,7 +1831,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
 
         let Some((parent_path, child_idx, available, child_count, _)) =
-            self.container_metrics(space, key, Layout::SplitH)
+            space.container_metrics_for(key, Layout::SplitH)
         else {
             self.resize_container_dimension(space, idx, change, true, animate);
             return;
@@ -1988,7 +1940,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
 
         let Some((parent_path, child_idx, available, child_count, _)) =
-            self.container_metrics(space, key, Layout::SplitV)
+            space.container_metrics_for(key, Layout::SplitV)
         else {
             self.resize_container_dimension(space, idx, change, false, animate);
             return;
@@ -2164,12 +2116,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
         self.containers.len() > 1
             && self
                 .active_container_idx(space)
-                .is_some_and(|idx| self.has_implicit_single_leaf_root(space, idx))
+                .is_some_and(|idx| space.branch_root_is_implicit(self.containers[idx].root))
             && self
                 .containers
                 .iter()
-                .enumerate()
-                .all(|(idx, _)| self.has_implicit_single_leaf_root(space, idx))
+                .all(|container| space.branch_root_is_implicit(container.root))
     }
 
     pub fn focus_left(&mut self, space: &mut TreeSpace<W>) -> bool {
@@ -2348,42 +2299,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
             && space.tree_mut().select_child()
     }
 
-    fn active_selection_layout(&self, space: &TreeSpace<W>, idx: usize) -> Option<Layout> {
-        let tree = space.tree();
-        if let Some(key) = tree.selected_container_key() {
-            if tree.is_descendant(key, self.containers[idx].root) {
-                return tree.container_info(key).map(|(layout, _, _)| layout);
-            }
-        }
-
-        let key = tree.branch_position(self.containers[idx].root)?;
-        tree.parent_of_node(key)
-            .and_then(|parent| tree.container_info(parent).map(|(layout, _, _)| layout))
-    }
-
-    fn has_implicit_single_leaf_root(&self, space: &TreeSpace<W>, idx: usize) -> bool {
-        let tree = space.tree();
-        let root = self.containers[idx].root;
-        if self.selected_is_container_in(space, idx) {
-            return false;
-        }
-
-        let Some(key) = tree.branch_position(root) else {
-            return false;
-        };
-        if tree.branch_relative_path(key).as_deref() != Some(&[0]) {
-            return false;
-        }
-
-        let Some(root) = tree.branch_container(root) else {
-            return false;
-        };
-
-        root.child_count() == 1
-            && !root.is_user_container()
-            && matches!(root.layout(), Layout::SplitH | Layout::SplitV)
-    }
-
     fn consume_or_expel_window(
         &mut self,
         space: &mut TreeSpace<W>,
@@ -2404,9 +2319,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return;
         }
 
-        if self.split_for_active_selection(space, idx, Layout::SplitV) {
-            space.tree_mut().layout_branch(self.containers[idx].root);
-        }
+        space.split_in_branch(self.containers[idx].root, Layout::SplitV);
     }
 
     pub fn consume_or_expel_window_left(
@@ -2429,18 +2342,14 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let Some(idx) = self.active_container_idx(space) else {
             return;
         };
-        if self.split_for_active_selection(space, idx, Layout::SplitV) {
-            space.tree_mut().layout_branch(self.containers[idx].root);
-        }
+        space.split_in_branch(self.containers[idx].root, Layout::SplitV);
     }
 
     pub fn expel_from_column(&mut self, space: &mut TreeSpace<W>) {
         let Some(idx) = self.active_container_idx(space) else {
             return;
         };
-        if self.split_for_active_selection(space, idx, Layout::SplitH) {
-            space.tree_mut().layout_branch(self.containers[idx].root);
-        }
+        space.split_in_branch(self.containers[idx].root, Layout::SplitH);
     }
 
     pub fn swap_window_in_direction(&mut self, space: &mut TreeSpace<W>, direction: Direction) {
@@ -2476,129 +2385,53 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let Some(idx) = self.active_container_idx(space) else {
             return;
         };
-        if self.set_layout_for_active_selection(space, idx, target_layout) {
-            space.tree_mut().layout_branch(self.containers[idx].root);
-        }
+        space.set_layout_in_branch(self.containers[idx].root, target_layout);
     }
 
     pub fn toggle_column_tabbed_display(&mut self, space: &mut TreeSpace<W>) {
         let Some(idx) = self.active_container_idx(space) else {
             return;
         };
-        let target = match self.active_selection_layout(space, idx) {
+        let target = match space.selection_layout_in(self.containers[idx].root) {
             Some(Layout::Tabbed) => Layout::SplitV,
             _ => Layout::Tabbed,
         };
-        if self.set_layout_for_active_selection(space, idx, target) {
-            space.tree_mut().layout_branch(self.containers[idx].root);
-        }
-    }
-
-    fn split_for_active_selection(
-        &mut self,
-        space: &mut TreeSpace<W>,
-        idx: usize,
-        layout: Layout,
-    ) -> bool {
-        let tree = space.tree_mut();
-        let target = tree.command_target_in(self.containers[idx].root);
-        tree.split_target(layout, target)
-    }
-
-    fn set_layout_for_active_selection(
-        &mut self,
-        space: &mut TreeSpace<W>,
-        idx: usize,
-        layout: Layout,
-    ) -> bool {
-        // Model rule: layout commands on a standalone floating leaf are no-op.
-        if self.active_selection_layout(space, idx).is_none()
-            || self.has_implicit_single_leaf_root(space, idx)
-        {
-            return false;
-        }
-
-        let target = space
-            .tree_mut()
-            .command_target_in(self.containers[idx].root);
-        space.tree_mut().set_layout_for_target(layout, target)
-    }
-
-    fn toggle_split_for_active_selection(&mut self, space: &mut TreeSpace<W>, idx: usize) -> bool {
-        // Model rule: layout commands on a standalone floating leaf are no-op.
-        if self.active_selection_layout(space, idx).is_none()
-            || self.has_implicit_single_leaf_root(space, idx)
-        {
-            return false;
-        }
-
-        let target = space
-            .tree_mut()
-            .command_target_in(self.containers[idx].root);
-        space.tree_mut().toggle_split_for_target(target)
-    }
-
-    fn toggle_layout_all_for_active_selection(
-        &mut self,
-        space: &mut TreeSpace<W>,
-        idx: usize,
-    ) -> bool {
-        // Model rule: layout commands on a standalone floating leaf are no-op.
-        if self.active_selection_layout(space, idx).is_none()
-            || self.has_implicit_single_leaf_root(space, idx)
-        {
-            return false;
-        }
-
-        let target = space
-            .tree_mut()
-            .command_target_in(self.containers[idx].root);
-        space.tree_mut().toggle_layout_all_for_target(target)
+        space.set_layout_in_branch(self.containers[idx].root, target);
     }
 
     pub fn split_horizontal(&mut self, space: &mut TreeSpace<W>) {
         let Some(idx) = self.active_container_idx(space) else {
             return;
         };
-        if self.split_for_active_selection(space, idx, Layout::SplitH) {
-            space.tree_mut().layout_branch(self.containers[idx].root);
-        }
+        space.split_in_branch(self.containers[idx].root, Layout::SplitH);
     }
 
     pub fn split_vertical(&mut self, space: &mut TreeSpace<W>) {
         let Some(idx) = self.active_container_idx(space) else {
             return;
         };
-        if self.split_for_active_selection(space, idx, Layout::SplitV) {
-            space.tree_mut().layout_branch(self.containers[idx].root);
-        }
+        space.split_in_branch(self.containers[idx].root, Layout::SplitV);
     }
 
     pub fn set_layout_mode(&mut self, space: &mut TreeSpace<W>, layout: Layout) {
         let Some(idx) = self.active_container_idx(space) else {
             return;
         };
-        if self.set_layout_for_active_selection(space, idx, layout) {
-            space.tree_mut().layout_branch(self.containers[idx].root);
-        }
+        space.set_layout_in_branch(self.containers[idx].root, layout);
     }
 
     pub fn toggle_split_layout(&mut self, space: &mut TreeSpace<W>) {
         let Some(idx) = self.active_container_idx(space) else {
             return;
         };
-        if self.toggle_split_for_active_selection(space, idx) {
-            space.tree_mut().layout_branch(self.containers[idx].root);
-        }
+        space.toggle_split_in_branch(self.containers[idx].root);
     }
 
     pub fn toggle_layout_all(&mut self, space: &mut TreeSpace<W>) {
         let Some(idx) = self.active_container_idx(space) else {
             return;
         };
-        if self.toggle_layout_all_for_active_selection(space, idx) {
-            space.tree_mut().layout_branch(self.containers[idx].root);
-        }
+        space.toggle_layout_all_in_branch(self.containers[idx].root);
     }
 
     fn move_container_to(
@@ -2846,10 +2679,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
             let gles = ctx.renderer.as_gles_renderer();
             let tab_bar_config = space.options().layout.tab_bar.clone();
             let is_active_workspace = space.is_active();
-            let gap = self.container_gap();
             let target = ctx.target;
 
             for container in &self.containers {
+                let gap = space.branch_gap(container.root);
                 for info in tree.tab_bar_layouts_in_branch(container.root) {
                     let mut info = info.clone();
                     if gap > 0.0 && info.path.is_empty() {

@@ -51,7 +51,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    pub(super) fn parent_of(&self, key: NodeKey) -> Option<NodeKey> {
+    pub(in crate::layout) fn parent_of(&self, key: NodeKey) -> Option<NodeKey> {
         self.parents.get(key).and_then(|parent| *parent)
     }
 
@@ -228,11 +228,6 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     pub(in crate::layout) fn root_is_synthetic_workspace_container(&self) -> bool {
         true
-    }
-
-    /// Parent of a node, or None for the root.
-    pub(in crate::layout) fn parent_of_node(&self, key: NodeKey) -> Option<NodeKey> {
-        self.parent_of(key)
     }
 
     /// Whether `key` is `ancestor` or sits somewhere below it.

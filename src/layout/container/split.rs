@@ -578,11 +578,6 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Layout of the container that currently owns the focused leaf (if any).
-    pub(in crate::layout) fn focused_layout(&self) -> Option<Layout> {
-        let focused_key = self.effective_focused_key()?;
-        self.layout_owning(focused_key)
-    }
-
     /// Whether the container holding `key` should accept new splits.
     pub(in crate::layout) fn container_of_allows_splits(&self, key: NodeKey) -> bool {
         let Some(container_key) = self.parent_of(key) else {

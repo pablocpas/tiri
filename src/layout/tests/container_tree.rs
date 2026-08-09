@@ -196,7 +196,7 @@ fn moving_a_subtree_between_workspace_stores_keeps_every_identity() {
     target.tree.insert_subtree_at_root(0, subtree, true);
 
     assert_eq!(target.tree.window_key(&1), Some(first));
-    assert_eq!(target.tree.parent_of_node(first), Some(container));
+    assert_eq!(target.tree.parent_of(first), Some(container));
 }
 
 #[test]
@@ -229,7 +229,7 @@ fn replacing_a_container_hands_its_parent_share_to_the_replacement() {
     assert!(!harness
         .tree
         .set_layout_for_target(ContainerLayout::SplitH, TreeCommandTarget::Leaf(leaf),));
-    assert_eq!(harness.tree.parent_of_node(leaf), Some(outer));
+    assert_eq!(harness.tree.parent_of(leaf), Some(outer));
     let leaf_share = harness.tree.debug_node_sizing(leaf).unwrap();
     assert_eq!(
         (leaf_share.0, leaf_share.1),

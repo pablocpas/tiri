@@ -233,6 +233,23 @@ impl<W: LayoutElement> TreeSpace<W> {
         available_span(self.options.layout.gaps, total, child_count)
     }
 
+    /// The gap between a branch's children.
+    ///
+    /// `gaps` is a workspace setting, and a floating group is not laid out in the workspace's
+    /// box: it is laid out in its own, which is exactly the size the user dragged it to. A gap
+    /// inside that box would come out of the window rather than out of the workspace.
+    pub(super) fn branch_gap(&self, branch: NodeKey) -> f64 {
+        if branch == self.tiled_branch() {
+            self.options.layout.gaps
+        } else {
+            0.0
+        }
+    }
+
+    fn available_span_in(&self, branch: NodeKey, total: f64, child_count: usize) -> f64 {
+        available_span(self.branch_gap(branch), total, child_count)
+    }
+
     fn percent_from_size_change(current_percent: f64, available: f64, change: SizeChange) -> f64 {
         if available <= 0.0 {
             return current_percent;
@@ -335,6 +352,10 @@ impl<W: LayoutElement> TreeSpace<W> {
         self.container_metrics(parent_key, child_idx, layout)
     }
 
+    /// The container a resize would act on, and the span its children share.
+    ///
+    /// Answered for whichever branch `parent_key` is in, because the two differ only in the
+    /// gap between children.
     fn container_metrics(
         &self,
         parent_key: NodeKey,
@@ -346,9 +367,10 @@ impl<W: LayoutElement> TreeSpace<W> {
             return None;
         }
 
+        let branch = self.tree.branch_root(parent_key);
         let available = match layout {
-            Layout::SplitH => self.available_span(rect.size.w, child_count),
-            Layout::SplitV => self.available_span(rect.size.h, child_count),
+            Layout::SplitH => self.available_span_in(branch, rect.size.w, child_count),
+            Layout::SplitV => self.available_span_in(branch, rect.size.h, child_count),
             Layout::Tabbed | Layout::Stacked => return None,
         };
 
@@ -357,6 +379,16 @@ impl<W: LayoutElement> TreeSpace<W> {
         }
 
         Some((parent_key, child_idx, available, child_count, rect))
+    }
+
+    /// The same, reached from a node rather than from its container.
+    pub(super) fn container_metrics_for(
+        &self,
+        key: NodeKey,
+        layout: Layout,
+    ) -> Option<ContainerMetrics> {
+        let (parent_key, child_idx) = self.tree.find_parent_with_layout(key, layout)?;
+        self.container_metrics(parent_key, child_idx, layout)
     }
 
     fn selected_geometry(&self) -> Option<Rectangle<f64, Logical>> {
@@ -397,9 +429,128 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     pub fn selected_is_container(&self) -> bool {
+        self.selected_container_in(self.tree.workspace_root())
+    }
+
+    // ── Commands, asked of a branch ──────────────────────────────────────────────────
+    //
+    // sway's commands take a container and walk from it, so there is exactly one of each.
+    // Tiri's took the tree and started at its root, and once the floating groups became
+    // branches of the same tree that meant a second copy of every one of them, differing in
+    // which root it started from and in nothing else. These take the root.
+    //
+    // Each arranges when it changed something. One arrange pass covers both sides of the
+    // workspace, so which branch was touched does not change what has to be recomputed —
+    // only whether anything does.
+
+    /// Whether the selection is a container in this branch.
+    pub(super) fn selected_container_in(&self, branch: NodeKey) -> bool {
         self.tree
             .selected_container_key()
-            .is_some_and(|key| self.tree.branch_root(key) == self.tree.workspace_root())
+            .is_some_and(|key| self.tree.is_descendant(key, branch))
+    }
+
+    /// The layout a command in this branch would be read against: the selected container's
+    /// when there is one, otherwise the layout of whatever holds the branch's focus.
+    pub(super) fn selection_layout_in(&self, branch: NodeKey) -> Option<Layout> {
+        let key = self.tree.branch_position(branch)?;
+        if self.selected_container_in(branch) {
+            if let Some(info) = self.tree.container_info(key) {
+                return Some(info.0);
+            }
+        }
+        self.tree.layout_owning(key)
+    }
+
+    /// Whether this branch's root is a container tiri added rather than one the model has.
+    ///
+    /// A workspace is a container sway really has, so a command aimed at it has something to
+    /// act on however few children it holds. A floating group's root is not: sway's
+    /// `ws->floating` holds whatever was floated, a view included, while tiri always wraps,
+    /// and a layout command aimed at that wrapper would be acting on a container sway would
+    /// say does not exist. This is the open entry in the parity ledger, seen from the side
+    /// that has to work around it.
+    pub(super) fn branch_root_is_implicit(&self, branch: NodeKey) -> bool {
+        if branch == self.tree.workspace_root() || self.selected_container_in(branch) {
+            return false;
+        }
+
+        let Some(key) = self.tree.branch_position(branch) else {
+            return false;
+        };
+        if self.tree.branch_relative_path(key).as_deref() != Some(&[0]) {
+            return false;
+        }
+        let Some(root) = self.tree.branch_container(branch) else {
+            return false;
+        };
+        root.child_count() == 1
+            && !root.is_user_container()
+            && matches!(root.layout(), Layout::SplitH | Layout::SplitV)
+    }
+
+    /// A layout command needs a container to act on. Vacuous on the tiled side, where the
+    /// branch root is the workspace.
+    fn branch_has_layout_target(&self, branch: NodeKey) -> bool {
+        self.selection_layout_in(branch).is_some() && !self.branch_root_is_implicit(branch)
+    }
+
+    pub(super) fn split_in_branch(&mut self, branch: NodeKey, layout: Layout) -> bool {
+        let target = self.tree.command_target_in(branch);
+        let changed = self.tree.split_target(layout, target);
+        if changed {
+            self.tree.layout();
+        }
+        changed
+    }
+
+    pub(super) fn set_layout_in_branch(&mut self, branch: NodeKey, layout: Layout) -> bool {
+        if !self.branch_has_layout_target(branch) {
+            return false;
+        }
+        let target = self.tree.command_target_in(branch);
+        let changed = self.tree.set_layout_for_target(layout, target);
+        if changed {
+            self.tree.layout();
+        }
+        changed
+    }
+
+    pub(super) fn toggle_split_in_branch(&mut self, branch: NodeKey) -> bool {
+        if !self.branch_has_layout_target(branch) {
+            return false;
+        }
+        let target = self.tree.command_target_in(branch);
+        let changed = self.tree.toggle_split_for_target(target);
+        if changed {
+            self.tree.layout();
+        }
+        changed
+    }
+
+    pub(super) fn toggle_layout_all_in_branch(&mut self, branch: NodeKey) -> bool {
+        if !self.branch_has_layout_target(branch) {
+            return false;
+        }
+        let target = self.tree.command_target_in(branch);
+        let changed = self.tree.toggle_layout_all_for_target(target);
+        if changed {
+            self.tree.layout();
+        }
+        changed
+    }
+
+    /// What `close` would close, aimed at this branch.
+    pub(super) fn close_window_ids_in_branch(&self, branch: NodeKey) -> Vec<W::Id> {
+        if self.selected_container_in(branch) {
+            if let Some(key) = self.tree.selected_container_key() {
+                return self.tree.window_ids_under(key);
+            }
+        }
+        self.tree
+            .focused_window_in_branch(branch)
+            .map(|window| vec![window.id().clone()])
+            .unwrap_or_default()
     }
 
     pub(super) fn close_window_ids_for_active_selection(&self) -> Vec<W::Id> {
@@ -1551,32 +1702,9 @@ impl<W: LayoutElement> TreeSpace<W> {
             .window_for_inactive_tiling_reference(reference, strict)
     }
 
-    fn active_selection_layout(&self) -> Option<Layout> {
-        if self.selected_is_container() {
-            let key = self.tree.selected_container_key()?;
-            return self.tree.container_info(key).map(|(layout, _, _)| layout);
-        }
-        self.tree.focused_layout()
-    }
-
-    fn split_for_active_selection(&mut self, layout: Layout) -> bool {
-        let target = self.tree.command_target_in(self.tree.workspace_root());
-        self.tree.split_target(layout, target)
-    }
-
-    fn set_layout_for_active_selection(&mut self, layout: Layout) -> bool {
-        let target = self.tree.command_target_in(self.tree.workspace_root());
-        self.tree.set_layout_for_target(layout, target)
-    }
-
-    fn toggle_split_for_active_selection(&mut self) -> bool {
-        let target = self.tree.command_target_in(self.tree.workspace_root());
-        self.tree.toggle_split_for_target(target)
-    }
-
-    fn toggle_layout_all_for_active_selection(&mut self) -> bool {
-        let target = self.tree.command_target_in(self.tree.workspace_root());
-        self.tree.toggle_layout_all_for_target(target)
+    /// The branch the tiled commands act on: sway's `ws->tiling`.
+    fn tiled_branch(&self) -> NodeKey {
+        self.tree.workspace_root()
     }
 
     fn move_command_target(&mut self, direction: Direction) -> bool {
@@ -1623,30 +1751,22 @@ impl<W: LayoutElement> TreeSpace<W> {
     // Container operations (replacing column operations)
     pub fn consume_into_column(&mut self) {
         // In i3 model: create vertical split
-        if self.split_for_active_selection(Layout::SplitV) {
-            self.tree.layout();
-        }
+        self.split_in_branch(self.tiled_branch(), Layout::SplitV);
     }
 
     pub fn expel_from_column(&mut self) {
         // In i3 model: create horizontal split
-        if self.split_for_active_selection(Layout::SplitH) {
-            self.tree.layout();
-        }
+        self.split_in_branch(self.tiled_branch(), Layout::SplitH);
     }
 
     /// Split focused window horizontally (i3-style)
     pub fn split_horizontal(&mut self) {
-        if self.split_for_active_selection(Layout::SplitH) {
-            self.tree.layout();
-        }
+        self.split_in_branch(self.tiled_branch(), Layout::SplitH);
     }
 
     /// Split focused window vertically (i3-style)
     pub fn split_vertical(&mut self) {
-        if self.split_for_active_selection(Layout::SplitV) {
-            self.tree.layout();
-        }
+        self.split_in_branch(self.tiled_branch(), Layout::SplitV);
     }
 
     /// Split workspace root like workspace root split.
@@ -1667,9 +1787,7 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     /// Set layout mode for focused container
     pub fn set_layout_mode(&mut self, layout: Layout) {
-        if self.set_layout_for_active_selection(layout) {
-            self.tree.layout();
-        }
+        self.set_layout_in_branch(self.tiled_branch(), layout);
     }
 
     /// `layout` with the workspace itself selected.
@@ -1697,9 +1815,7 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     /// Toggle between horizontal and vertical split for the focused container.
     pub fn toggle_split_layout(&mut self) {
-        if self.toggle_split_for_active_selection() {
-            self.tree.layout();
-        }
+        self.toggle_split_in_branch(self.tiled_branch());
     }
 
     pub fn toggle_workspace_split_layout(&mut self) {
@@ -1711,9 +1827,7 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     /// Cycle focused container layout in sway-style order.
     pub fn toggle_layout_all(&mut self) {
-        if self.toggle_layout_all_for_active_selection() {
-            self.tree.layout();
-        }
+        self.toggle_layout_all_in_branch(self.tiled_branch());
     }
 
     pub fn toggle_workspace_layout_all(&mut self) {
@@ -2213,22 +2327,18 @@ impl<W: LayoutElement> TreeSpace<W> {
             ColumnDisplay::Tabbed => Layout::Tabbed,
         };
 
-        if self.set_layout_for_active_selection(layout) {
-            self.tree.layout();
-        }
+        self.set_layout_in_branch(self.tiled_branch(), layout);
     }
 
     /// Toggle between tabbed and normal (split) layout for focused container
     pub fn toggle_column_tabbed_display(&mut self) {
-        let current = self.active_selection_layout();
+        let current = self.selection_layout_in(self.tiled_branch());
         let target = match current {
             Some(Layout::Tabbed) => Layout::SplitV,
             _ => Layout::Tabbed,
         };
 
-        if self.set_layout_for_active_selection(target) {
-            self.tree.layout();
-        }
+        self.set_layout_in_branch(self.tiled_branch(), target);
     }
 
     // Additional methods needed by workspace.rs
