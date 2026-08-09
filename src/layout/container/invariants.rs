@@ -20,7 +20,9 @@ impl<W: LayoutElement> ContainerTree<W> {
             "root parent must be None"
         );
 
-        if self.is_empty() {
+        self.verify_floating_region();
+
+        if self.is_empty() && self.floating_roots().is_empty() {
             // The workspace itself stays: an empty workspace is a container with no
             // children, holding the orientation the next window will be laid out by.
             assert_eq!(
@@ -46,11 +48,17 @@ impl<W: LayoutElement> ContainerTree<W> {
         let mut visited = HashSet::new();
         let mut leaves = HashSet::new();
         self.verify_node(root_key, None, &mut visited, &mut leaves);
+        // The floating groups are roots of their own, the way sway's `ws->floating` holds
+        // containers that hang off the workspace's list rather than off its tiling tree.
+        // Reachability is from any root, not from the tiled one.
+        for floating_root in self.floating_roots() {
+            self.verify_node(*floating_root, None, &mut visited, &mut leaves);
+        }
 
         assert_eq!(
             visited.len(),
             self.nodes.len(),
-            "all nodes must be reachable from root"
+            "every node must be reachable from the workspace root or from a floating root"
         );
 
         for key in self.nodes.keys() {
@@ -196,6 +204,37 @@ impl<W: LayoutElement> ContainerTree<W> {
             assert!(
                 info.rect.size.w >= 0.0 && info.rect.size.h >= 0.0,
                 "{label} rectangles must not have negative size"
+            );
+        }
+    }
+}
+
+impl<W: LayoutElement> ContainerTree<W> {
+    /// The floating side is in the same arena, and has to look like it.
+    ///
+    /// Every floating root is a live node with no parent, listed once. The whole point of
+    /// holding both sides here is that a node keeps its key when it crosses, so a stale entry
+    /// would be worse than the two-tree model it replaces: a key that still resolves, still
+    /// answers, and belongs to a branch nobody can reach.
+    fn verify_floating_region(&self) {
+        let mut seen = HashSet::with_capacity(self.floating_roots().len());
+        for key in self.floating_roots() {
+            assert!(
+                self.nodes.contains_key(*key),
+                "a floating root must point to an existing node"
+            );
+            assert_eq!(
+                self.parents.get(*key).copied().flatten(),
+                None,
+                "a floating root must have no parent — that is what makes it a root"
+            );
+            assert_ne!(
+                *key, self.root,
+                "the workspace cannot be one of its own floating groups"
+            );
+            assert!(
+                seen.insert(*key),
+                "a node must not be listed as a floating root twice"
             );
         }
     }

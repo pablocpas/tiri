@@ -1704,3 +1704,53 @@ fn focus_parent_traverses_hierarchy() {
     // We should be able to go up at least once (from window to container)
     assert!(levels >= 1);
 }
+
+/// Crossing to the floating side is a move, so the node keeps its key.
+///
+/// The property the two-tree model could not have. Everything anyone holds about a node —
+/// its place in the seat's focus order above all — is keyed by that, so a crossing that
+/// rebuilds the node loses it and a crossing that moves it does not. sway gets this free:
+/// `container_set_floating` detaches from one of the workspace's lists and attaches to the
+/// other, and the container is the same container throughout.
+#[test]
+fn floating_a_subtree_keeps_its_identity() {
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+    harness.add_window(2);
+
+    let key = harness
+        .tree
+        .window_key(&1)
+        .expect("the window should be in the tree");
+
+    assert!(!harness.tree.is_floating(key));
+    assert!(harness.tree.float_subtree(key));
+    // Arranged before asking: a detach leaves the siblings' fractions raw on purpose, and the
+    // arrange pass is what resolves them. Checking in between asks the tree to be settled
+    // halfway through a command.
+    harness.tree.layout();
+    harness.tree.verify_invariants();
+
+    assert!(
+        harness.tree.is_floating(key),
+        "the node should now be on the floating side",
+    );
+    assert_eq!(
+        harness.tree.window_key(&1),
+        Some(key),
+        "the same key, because the node was moved and not rebuilt",
+    );
+    assert_eq!(harness.tree.floating_roots(), [key]);
+
+    let root = harness.tree.root_node_key().expect("a workspace root");
+    assert!(harness.tree.unfloat_subtree(key, root, 0));
+    assert_eq!(
+        harness.tree.window_key(&1),
+        Some(key),
+        "and the same key on the way back",
+    );
+    assert!(!harness.tree.is_floating(key));
+    assert!(harness.tree.floating_roots().is_empty());
+    harness.tree.layout();
+    harness.tree.verify_invariants();
+}

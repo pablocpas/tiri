@@ -24,6 +24,7 @@ mod cleanup;
 mod command;
 mod debug;
 mod detach;
+mod floating_region;
 mod focus;
 mod geometry;
 mod inactive_reference;
@@ -380,6 +381,12 @@ pub struct ContainerTree<W: LayoutElement> {
     /// — which tab a switcher shows, which window a descent lands on — was therefore right
     /// for the commands whose authors remembered and wrong for the rest.
     seat: seat::SeatFocus,
+    /// Roots of the floating groups — sway's `ws->floating`, in this arena.
+    ///
+    /// The tiled side hangs off `root`; these hang off nothing. A container moves between the
+    /// two by changing which list holds it, never by being rebuilt, so its key — and anything
+    /// keyed by it — survives the crossing the way it does in sway.
+    floating_roots: Vec<NodeKey>,
     fullscreen_key: Option<NodeKey>,
     /// Cached layout info for leaves
     leaf_layouts: Vec<LeafLayoutInfo>,
@@ -996,6 +1003,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             parents,
             root,
             seat: seat::SeatFocus::default(),
+            floating_roots: Vec::new(),
             fullscreen_key: None,
             leaf_layouts: Vec::new(),
             pending_layouts: None,
