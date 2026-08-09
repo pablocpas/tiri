@@ -1754,3 +1754,35 @@ fn floating_a_subtree_keeps_its_identity() {
     harness.tree.layout();
     harness.tree.verify_invariants();
 }
+
+/// A floating group is laid out in its own rectangle, not the workspace's.
+///
+/// The capability the second half needs: sway arranges the two sides separately —
+/// `arrange_children` for the tiling, `arrange_floating` for the rest — and neither knows
+/// about the other. Here that is one pass told which branch and which box.
+#[test]
+fn a_floating_branch_is_arranged_in_its_own_rectangle() {
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+    harness.add_window(2);
+
+    let key = harness
+        .tree
+        .window_key(&1)
+        .expect("window 1 is in the tree");
+    assert!(harness.tree.float_subtree(key));
+    harness.tree.layout();
+
+    let box_of_its_own = Rectangle::new(Point::from((100.0, 50.0)), Size::from((300.0, 200.0)));
+    let data = harness.tree.collect_branch_layout_data(key, box_of_its_own);
+
+    let laid_out = data
+        .leaf_layouts
+        .iter()
+        .find(|info| info.key == key)
+        .expect("the floating leaf should have been arranged");
+    assert_eq!(
+        laid_out.rect, box_of_its_own,
+        "a floating group takes the box it was given, not the workspace's",
+    );
+}

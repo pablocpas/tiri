@@ -298,6 +298,24 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// view rather than from its slot, so feeding the output box in twice only makes the
     /// unfullscreen look like a resize it is not.
     fn collect_fullscreen_layout_data(&self, fullscreen_key: NodeKey) -> LayoutData {
+        self.collect_branch_layout_data(fullscreen_key, self.layout_area())
+    }
+
+    /// Arrange one branch inside one rectangle, holding everything outside it.
+    ///
+    /// The tiled tree is one branch of many now: the workspace's, plus a root per floating
+    /// group, each of which is laid out in its own rectangle rather than in the workspace's.
+    /// sway arranges them separately for the same reason — `arrange_workspace` calls
+    /// `arrange_children` for the tiling and `arrange_floating` for the rest, and neither
+    /// knows about the other.
+    ///
+    /// It arrived as the fullscreen branch, which is the same operation with one caller: give
+    /// this node the box and do not descend anything else.
+    pub(in crate::layout) fn collect_branch_layout_data(
+        &self,
+        branch_root: NodeKey,
+        area: Rectangle<f64, Logical>,
+    ) -> LayoutData {
         let mut data = LayoutData {
             leaf_layouts: Vec::new(),
             container_geometries: HashMap::new(),
@@ -308,12 +326,20 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         // Seeded with where the node actually is, so the addresses beside the geometry stay
         // absolute — they are read as paths from the workspace, not from here.
-        let Some(mut path) = self.find_node_path(fullscreen_key) else {
-            return self.collect_layout_data(self.root);
+        //
+        // A floating root has no path from the workspace, because it hangs off the workspace's
+        // other list rather than off its tiling tree. Its branch is addressed from itself, the
+        // way each floating group is its own top-level entry to everything that reads one.
+        // Which is the addressing question the second half of this has to answer: paths are
+        // relative to a root, and there is now more than one.
+        let mut path = match self.find_node_path(branch_root) {
+            Some(path) => path,
+            None if self.floating_roots().contains(&branch_root) => Vec::new(),
+            None => return self.collect_layout_data(self.root),
         };
         self.collect_layout_node(
-            fullscreen_key,
-            self.layout_area(),
+            branch_root,
+            area,
             &mut path,
             true,
             LeafLayoutContext::default(),
