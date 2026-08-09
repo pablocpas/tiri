@@ -149,9 +149,9 @@ impl<W: LayoutElement> ContainerTree<W> {
                 }
                 DetachedNode::Container(DetachedContainer {
                     key,
+                    sizing: container.sizing,
                     layout: container.layout,
                     children,
-                    fractions: container.fractions,
                     focus_stack,
                     user_created: container.user_created,
                     prev_split_layout: container.prev_split_layout,
@@ -180,13 +180,9 @@ impl<W: LayoutElement> ContainerTree<W> {
 
                 if let Some(node) = self.get_container_mut(container_key) {
                     node.children = child_keys;
-                    node.fractions = container.fractions;
+                    node.sizing = container.sizing;
                     node.user_created = container.user_created;
                     node.prev_split_layout = container.prev_split_layout;
-                    if !node.fractions.is_compatible_with(node.children.len()) {
-                        node.fractions.resize_unset(node.children.len());
-                        node.recalculate_percentages();
-                    }
                 }
 
                 // Back into the seat's order, keeping the sequence the subtree carried.

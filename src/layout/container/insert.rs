@@ -233,7 +233,6 @@ impl<W: LayoutElement> ContainerTree<W> {
             parent_path,
             insert_idx,
             layout: parent.layout(),
-            fractions: Some(parent.fractions.clone()),
         })
     }
 
@@ -277,8 +276,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.insert_key_with_parent_info(root, info, node_key, focus)
     }
 
-    /// Insert an already-materialized node at the container described by `info`,
-    /// restoring the recorded child percents when they still apply.
+    /// Insert an already-materialized node at the container described by `info`.
     fn insert_key_with_parent_info(
         &mut self,
         branch_root: NodeKey,
@@ -298,15 +296,6 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         if let Some(container) = self.get_container_mut(container_key) {
             container.insert_child(info.insert_idx, node_key);
-            if let Some(fractions) = info.fractions.as_ref().filter(|fractions| {
-                container.layout() == info.layout
-                    && fractions.is_compatible_with(container.child_count())
-            }) {
-                // This is an exact snapshot, including any fractions Sway has deliberately
-                // left unset under a tabbed/stacked layout. Resolution belongs to arrange,
-                // not restoration.
-                container.fractions = fractions.clone();
-            }
         }
         self.set_parent(node_key, Some(container_key));
 

@@ -207,23 +207,17 @@ impl<W: LayoutElement> ContainerTree<W> {
     ) -> Option<NodeKey> {
         let root_key = branch_root;
 
-        let (old_children, old_fractions) = {
+        let old_children = {
             let root = self.get_container_mut(root_key)?;
             if root.children.is_empty() {
                 return None;
             }
-
-            (
-                std::mem::take(&mut root.children),
-                std::mem::take(&mut root.fractions),
-            )
+            std::mem::take(&mut root.children)
         };
 
         let mut wrapper = ContainerData::new(wrapper_layout);
         wrapper.children = old_children;
-        wrapper.fractions = old_fractions;
         wrapper.set_layout(wrapper_layout);
-        wrapper.resolve_child_percents();
         // No box. `workspace_wrap_children` builds the wrapper with `container_create`, which
         // zeroes `pending`, and hands it nothing but the workspace's layout — the box arrives
         // when the workspace is next arranged. Copying the workspace's in advance was

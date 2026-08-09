@@ -108,7 +108,6 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         let node_key = container.children.remove(from);
         container.children.insert(to, node_key);
-        container.fractions.move_child(from, to);
 
         self.resync_focus();
         true

@@ -1422,9 +1422,10 @@ impl<W: LayoutElement> Monitor<W> {
         let new_id = self.workspaces[new_idx].id();
 
         let workspace = &mut self.workspaces[source_workspace_idx];
-        let Some(removed) = workspace.remove_active_tile(Transaction::new()) else {
+        let Some(mut removed) = workspace.remove_active_tile(Transaction::new()) else {
             return;
         };
+        removed.prepare_for_workspace_move();
 
         let activate = if focus {
             ActivateWindow::Yes
@@ -1456,9 +1457,10 @@ impl<W: LayoutElement> Monitor<W> {
         let new_id = self.workspaces[new_idx].id();
 
         let workspace = &mut self.workspaces[source_workspace_idx];
-        let Some(removed) = workspace.remove_active_tile(Transaction::new()) else {
+        let Some(mut removed) = workspace.remove_active_tile(Transaction::new()) else {
             return;
         };
+        removed.prepare_for_workspace_move();
 
         let activate = if focus {
             ActivateWindow::Yes
@@ -1561,13 +1563,14 @@ impl<W: LayoutElement> Monitor<W> {
 
         let workspace = &mut self.workspaces[source_workspace_idx];
         let transaction = Transaction::new();
-        let removed = if let Some(window) = window {
+        let mut removed = if let Some(window) = window {
             workspace.remove_tile(window, transaction)
         } else if let Some(removed) = workspace.remove_active_tile(transaction) {
             removed
         } else {
             return;
         };
+        removed.prepare_for_workspace_move();
 
         self.add_tile(
             removed.tile,
@@ -1605,9 +1608,10 @@ impl<W: LayoutElement> Monitor<W> {
             return;
         }
 
-        let Some(subtree) = workspace.remove_active_root_tiling_subtree() else {
+        let Some(mut subtree) = workspace.remove_active_root_tiling_subtree() else {
             return;
         };
+        subtree.prepare_for_workspace_move();
 
         self.add_root_tiling_subtree(new_idx, subtree, activate);
     }
@@ -1626,9 +1630,10 @@ impl<W: LayoutElement> Monitor<W> {
             return;
         }
 
-        let Some(subtree) = workspace.remove_active_root_tiling_subtree() else {
+        let Some(mut subtree) = workspace.remove_active_root_tiling_subtree() else {
             return;
         };
+        subtree.prepare_for_workspace_move();
 
         self.add_root_tiling_subtree(new_idx, subtree, activate);
     }
@@ -1652,9 +1657,10 @@ impl<W: LayoutElement> Monitor<W> {
             return;
         }
 
-        let Some(subtree) = workspace.remove_active_root_tiling_subtree() else {
+        let Some(mut subtree) = workspace.remove_active_root_tiling_subtree() else {
             return;
         };
+        subtree.prepare_for_workspace_move();
 
         self.add_root_tiling_subtree(new_idx, subtree, activate);
     }

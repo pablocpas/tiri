@@ -10,7 +10,7 @@ use tiri_config::utils::MergeWith as _;
 use tiri_config::{Color, CornerRadius, GradientInterpolation, TabBar};
 use tiri_ipc::WindowLayout;
 
-use super::container::{InsertParentInfo, Layout, NodeKey, TabBarTab};
+use super::container::{InsertParentInfo, Layout, NodeKey, NodeSizing, TabBarTab};
 use super::focus_ring::{
     FocusRing, FocusRingEdges, FocusRingIndicatorEdge, FocusRingRenderElement, FocusRingState,
 };
@@ -54,6 +54,9 @@ pub struct Tile<W: LayoutElement> {
     ///
     /// sway/commands/move.c:198-239
     node_key: NodeKey,
+
+    /// Fractions and resize reference spans of this node.
+    node_sizing: NodeSizing,
 
     /// The toplevel window itself.
     window: W,
@@ -331,6 +334,7 @@ impl<W: LayoutElement> Tile<W> {
 
         Self {
             node_key: NodeKey::next(),
+            node_sizing: NodeSizing::default(),
             window,
             border: FocusRing::new(border_config.into()),
             focus_ring: FocusRing::new(focus_ring_config),
@@ -370,6 +374,18 @@ impl<W: LayoutElement> Tile<W> {
 
     pub(super) fn node_key(&self) -> NodeKey {
         self.node_key
+    }
+
+    pub(super) fn node_sizing(&self) -> &NodeSizing {
+        &self.node_sizing
+    }
+
+    pub(super) fn node_sizing_mut(&mut self) -> &mut NodeSizing {
+        &mut self.node_sizing
+    }
+
+    pub(super) fn unset_node_fractions(&mut self) {
+        self.node_sizing.unset_fractions();
     }
 
     pub fn update_config(

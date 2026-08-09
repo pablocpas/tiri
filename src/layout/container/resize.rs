@@ -245,11 +245,8 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Current size share of the target's child within its container.
     pub(in crate::layout) fn resize_current_percent(&self, target: &ResizeTarget) -> f64 {
-        self.get_container(target.parent)
-            .and_then(|container| {
-                let idx = self.child_index(target.parent, target.child)?;
-                (idx < container.child_count()).then(|| container.child_percent(idx))
-            })
+        self.child_index(target.parent, target.child)
+            .and_then(|idx| self.child_percent(target.parent, idx))
             .unwrap_or(1.0)
     }
 
@@ -268,13 +265,13 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         };
 
-        let Some(container) = self.get_container_mut(target.parent) else {
+        let Some(container) = self.get_container(target.parent) else {
             return false;
         };
         if container.layout() != layout {
             return false;
         }
-        container.set_child_percent_pair(child_idx, neighbor_idx, percent)
+        self.set_child_percent_pair(target.parent, child_idx, neighbor_idx, percent)
     }
 
     /// Which edges of `leaf_key` are being dragged, given the active resize targets. A leaf

@@ -122,9 +122,15 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.floating_roots.remove(position);
         if let Some(container) = self.get_container_mut(parent) {
             let index = index.min(container.child_count());
-            container.insert_child_unset(index, key);
+            container.insert_child(index, key);
         }
         self.set_parent(key, Some(parent));
+        // Enabling floating leaves the old fractions on the container. Disabling it clears
+        // them after the container has rejoined `ws->tiling`, because its former share in the
+        // floating list says nothing about the new siblings.
+        //
+        // sway/tree/container.c:1004-1074
+        self.unset_node_fractions(key);
         true
     }
 
@@ -219,9 +225,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
         if let Some(container) = self.get_container_mut(parent) {
             let index = index.min(container.child_count());
-            container.insert_child_unset(index, child);
+            container.insert_child(index, child);
         }
         self.set_parent(child, Some(parent));
+        self.unset_node_fractions(child);
         self.prune_focus_order();
         Some(child)
     }
@@ -272,18 +279,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             })
             .unwrap_or_else(|| (workspace, self.branch_children_len(workspace)));
         self.insert_key_into_branch(parent, index, key, focus);
-
-        if let Some(info) = info {
-            let fractions = info.fractions.clone();
-            if let Some(container) = self.get_container_mut(parent) {
-                if let Some(fractions) = fractions.filter(|fractions| {
-                    container.layout() == info.layout
-                        && fractions.is_compatible_with(container.child_count())
-                }) {
-                    container.fractions = fractions;
-                }
-            }
-        }
+        self.unset_node_fractions(key);
         Some(group_empty)
     }
 
@@ -319,7 +315,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let root = self.root;
         match self.ensure_container_at_path(root, &info.parent_path, info.layout) {
             Some(container_key) => {
-                self.place_unfloated(group, container_key, info.insert_idx, focus, Some(info))
+                self.place_unfloated(group, container_key, info.insert_idx, focus)
             }
             None => self.unfloat_into_workspace(group, focus),
         }
@@ -333,7 +329,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     ) -> bool {
         let root = self.root;
         let end = self.branch_children_len(root);
-        self.place_unfloated(group, root, end, focus, None)
+        self.place_unfloated(group, root, end, focus)
     }
 
     /// Put back a group that *was* the workspace: its contents become the workspace's again.
@@ -360,22 +356,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         parent: NodeKey,
         index: usize,
         focus: bool,
-        info: Option<&InsertParentInfo>,
     ) -> bool {
         let Some(landed) = self.unfloat_group(group, parent, index) else {
             return false;
         };
-        if let Some(info) = info {
-            let fractions = info.fractions.clone();
-            if let Some(container) = self.get_container_mut(parent) {
-                if let Some(fractions) = fractions.filter(|fractions| {
-                    container.layout() == info.layout
-                        && fractions.is_compatible_with(container.child_count())
-                }) {
-                    container.fractions = fractions;
-                }
-            }
-        }
         self.settle_focus_after_insert(landed, focus);
         true
     }
@@ -403,13 +387,11 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         let layout = container.layout();
         let children = container.children().to_vec();
-        let fractions = container.fractions.clone();
         let prev_split_layout = container.prev_split_layout();
 
         if let Some(root) = self.get_container_mut(branch_root) {
             root.set_layout(layout);
             root.children = children.clone();
-            root.fractions = fractions;
             root.prev_split_layout = prev_split_layout;
         }
         for grandchild in children {

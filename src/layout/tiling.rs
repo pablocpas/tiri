@@ -1730,11 +1730,13 @@ impl<W: LayoutElement> TilingSpace<W> {
             return;
         };
 
-        if let Some(container) = self.tree.container_mut(parent_path) {
-            if container.layout() == Layout::SplitV {
-                container.recalculate_percentages();
-                self.tree.layout();
-            }
+        if self
+            .tree
+            .container_info(parent_path)
+            .is_some_and(|(layout, _, _)| layout == Layout::SplitV)
+        {
+            self.tree.recalculate_child_percents(parent_path);
+            self.tree.layout();
         }
     }
 
@@ -3434,6 +3436,14 @@ impl<W: LayoutElement> TilingSpace<W> {
 }
 
 impl<W: LayoutElement> RootTilingSubtree<W> {
+    /// A tiled container moved to another workspace gets a new share there while every sizing
+    /// value below it remains attached to its descendant node.
+    ///
+    /// sway/commands/move.c:198-239
+    pub(super) fn prepare_for_workspace_move(&mut self) {
+        self.subtree.unset_root_fractions();
+    }
+
     pub fn new(tile: Tile<W>) -> Self {
         Self {
             subtree: DetachedNode::Leaf(tile),

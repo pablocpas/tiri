@@ -117,30 +117,19 @@ impl<W: LayoutElement> ContainerTree<W> {
         };
 
         let taken = child.children.clone();
-        let child_fractions = child.fractions.clone();
         if taken.is_empty() {
             return 0;
         }
 
         if let Some(parent) = self.get_container_mut(parent_key) {
-            let old_len = parent.children.len();
             parent
                 .children
                 .splice(idx..=idx, taken.iter().rev().copied());
-
-            let fractions_were_consistent =
-                parent
-                    .fractions
-                    .splice_child(idx, old_len, &child_fractions);
 
             // No focus order to splice. The grandchildren are already in the seat's order
             // wherever they belong in it, and destroying the two levels above them changes
             // who their parent is and nothing else — which is the whole of what the order is
             // read for.
-            if !fractions_were_consistent {
-                parent.fractions.resize_unset(parent.children.len());
-                parent.recalculate_percentages();
-            }
         }
 
         for grandchild in &taken {

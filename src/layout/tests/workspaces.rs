@@ -12,6 +12,17 @@ fn workspace_node_key(
         .expect("window in a workspace tree")
 }
 
+fn window_node_sizing(layout: &Layout<TestWindow>, window: usize) -> (f64, f64, f64, f64) {
+    layout
+        .workspaces()
+        .find_map(|(_, _, workspace)| {
+            let tree = workspace.tiling().tree();
+            let key = tree.window_key(&window)?;
+            tree.debug_node_sizing(key)
+        })
+        .expect("window size state in a workspace tree")
+}
+
 #[test]
 fn moving_a_window_between_workspaces_keeps_its_node_identity() {
     let mut layout = check_ops([
@@ -25,6 +36,45 @@ fn moving_a_window_between_workspaces_keeps_its_node_identity() {
     layout.move_to_workspace_down(true);
 
     assert_eq!(workspace_node_key(&layout, 1), key);
+}
+
+#[test]
+fn moving_a_tiled_window_to_another_workspace_derives_a_new_share() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::ResizeWindowEdge {
+            id: Some(1),
+            amount: 160,
+            direction: Direction::Right,
+        },
+        Op::FocusWorkspaceDown,
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::FocusWorkspaceUp,
+    ]);
+
+    let before = window_node_sizing(&layout, 1).0;
+    assert!(
+        (before - 0.5).abs() > 0.05,
+        "the source share must be distinctive"
+    );
+    let key = workspace_node_key(&layout, 1);
+
+    layout.move_to_workspace(Some(&1), 1, ActivateWindow::Yes);
+
+    assert_eq!(workspace_node_key(&layout, 1), key);
+    let after = window_node_sizing(&layout, 1).0;
+    assert!(
+        (after - 0.5).abs() < f64::EPSILON,
+        "sway clears a tiled container's old fraction before attaching it to its new workspace"
+    );
 }
 
 #[test]

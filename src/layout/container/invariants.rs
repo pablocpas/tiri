@@ -122,6 +122,29 @@ impl<W: LayoutElement> ContainerTree<W> {
             "node parent pointer must match parent child list"
         );
 
+        let sizing = match self.get_node(key).expect("visited node must exist") {
+            NodeData::Container(container) => &container.sizing,
+            NodeData::Leaf(tile) => tile.node_sizing(),
+        };
+        for (axis, percent) in [
+            ("horizontal", sizing.fractions.width),
+            ("vertical", sizing.fractions.height),
+        ] {
+            assert!(
+                percent.is_finite() && percent >= 0.0,
+                "{axis} fraction must be finite and non-negative"
+            );
+        }
+        for (axis, total) in [
+            ("horizontal", sizing.child_total_width),
+            ("vertical", sizing.child_total_height),
+        ] {
+            assert!(
+                total.is_finite() && total >= 0.0,
+                "{axis} child total must be finite and non-negative"
+            );
+        }
+
         match self.get_node(key).expect("visited node must exist") {
             NodeData::Leaf(_) => {
                 leaves.insert(key);
@@ -132,17 +155,6 @@ impl<W: LayoutElement> ContainerTree<W> {
                     child_count > 0 || key == self.root,
                     "container nodes other than the workspace must not be empty"
                 );
-                assert_eq!(
-                    container.fractions.horizontal.len(),
-                    child_count,
-                    "horizontal fractions length must match child count"
-                );
-                assert_eq!(
-                    container.fractions.vertical.len(),
-                    child_count,
-                    "vertical fractions length must match child count"
-                );
-
                 let mut child_set = HashSet::with_capacity(child_count);
                 for child in container.children() {
                     assert!(
@@ -155,24 +167,14 @@ impl<W: LayoutElement> ContainerTree<W> {
                     );
                 }
 
-                for (axis, fractions) in [
-                    ("horizontal", &container.fractions.horizontal),
-                    ("vertical", &container.fractions.vertical),
-                ] {
-                    for percent in fractions {
-                        assert!(
-                            percent.is_finite() && *percent >= 0.0,
-                            "{axis} fractions must be finite and non-negative"
-                        );
-                    }
-                }
                 if child_count > 0 && matches!(container.layout, Layout::SplitH | Layout::SplitV) {
-                    let percent_sum: f64 = container.child_percents_slice().iter().sum();
+                    let percents = self.child_percents(key);
+                    let percent_sum: f64 = percents.iter().sum();
                     assert!(
                         (percent_sum - 1.0).abs() <= 0.000_001,
                         "active split child percents must be normalized: layout={:?} fractions={:?}",
                         container.layout,
-                        container.child_percents_slice(),
+                        percents,
                     );
                 }
 

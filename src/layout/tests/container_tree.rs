@@ -1,7 +1,9 @@
 use insta::assert_snapshot;
 use proptest::prelude::*;
 
-use super::super::container::{ContainerData, ContainerTree, Direction, Layout as ContainerLayout};
+use super::super::container::{
+    ContainerData, ContainerTree, Direction, Layout as ContainerLayout, TreeCommandTarget,
+};
 use super::super::tile::Tile;
 use super::*;
 
@@ -123,6 +125,54 @@ fn moving_a_leaf_between_workspace_stores_keeps_its_identity() {
 }
 
 #[test]
+fn moving_a_leaf_between_workspace_stores_carries_its_size_state() {
+    let mut source = TreeHarness::new();
+    let mut target = TreeHarness::new();
+    for id in 1..=3 {
+        source.add_window(id);
+        target.add_window(id + 10);
+    }
+
+    let source_root = source.tree.root_node_key().expect("source workspace");
+    assert!(source
+        .tree
+        .set_child_percent(source_root, 1, ContainerLayout::SplitH, 0.6));
+    source.tree.layout();
+
+    let key = source.tree.window_key(&2).expect("source leaf");
+    let before = source
+        .tree
+        .debug_node_sizing(key)
+        .expect("size state on source leaf");
+    assert!(
+        before.0 > 0.5,
+        "the test needs a distinctive width fraction"
+    );
+    assert!(before.2 > 0.0, "arrange must record the resize denominator");
+
+    let tile = source.tree.remove_window(&2).expect("detached leaf");
+    target.tree.append_leaf(tile, true);
+
+    assert_eq!(target.tree.window_key(&2), Some(key));
+    assert_eq!(
+        target.tree.debug_node_sizing(key),
+        Some(before),
+        "identity, both fractions and both child totals travel as one node"
+    );
+
+    let target_size = Size::from((1000.0, 700.0));
+    target
+        .tree
+        .set_view_size(target_size, Rectangle::from_size(target_size));
+    target.tree.layout();
+    let after_arrange = target.tree.debug_node_sizing(key).unwrap();
+    assert_ne!(
+        after_arrange.2, before.2,
+        "the destination arrange replaces the carried denominator with its own span"
+    );
+}
+
+#[test]
 fn moving_a_subtree_between_workspace_stores_keeps_every_identity() {
     let mut source = TreeHarness::new();
     let mut target = TreeHarness::new();
@@ -147,6 +197,44 @@ fn moving_a_subtree_between_workspace_stores_keeps_every_identity() {
 
     assert_eq!(target.tree.window_key(&1), Some(first));
     assert_eq!(target.tree.parent_of_node(first), Some(container));
+}
+
+#[test]
+fn replacing_a_container_hands_its_parent_share_to_the_replacement() {
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+    harness.add_window(2);
+
+    let root = harness.tree.workspace_root();
+    let leaf = harness.tree.window_key(&1).expect("first leaf");
+    let inner = harness
+        .tree
+        .wrap_child_in_new_container(root, leaf, ContainerData::new(ContainerLayout::SplitV))
+        .expect("inner wrapper");
+    let outer = harness
+        .tree
+        .wrap_child_in_new_container(root, inner, ContainerData::new(ContainerLayout::SplitH))
+        .expect("outer wrapper");
+    assert!(harness
+        .tree
+        .set_child_percent(outer, 0, ContainerLayout::SplitH, 1.0));
+
+    let replacement_share = harness.tree.debug_node_sizing(inner).unwrap();
+    let old_leaf_share = harness.tree.debug_node_sizing(leaf).unwrap();
+    assert_ne!(replacement_share.0, old_leaf_share.0);
+
+    // `cmd_layout` flattens the inner wrapper with `container_replace` before discovering
+    // that the surviving outer wrapper already has the requested layout. There is therefore
+    // no arrange pass to hide a missing fraction transfer.
+    assert!(!harness
+        .tree
+        .set_layout_for_target(ContainerLayout::SplitH, TreeCommandTarget::Leaf(leaf),));
+    assert_eq!(harness.tree.parent_of_node(leaf), Some(outer));
+    let leaf_share = harness.tree.debug_node_sizing(leaf).unwrap();
+    assert_eq!(
+        (leaf_share.0, leaf_share.1),
+        (replacement_share.0, replacement_share.1),
+    );
 }
 #[derive(Debug, Clone, Copy)]
 enum TreeRandomOp {

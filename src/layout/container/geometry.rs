@@ -191,6 +191,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             let branch = self.collect_branch_layout_data(root.key, root.area);
             data.absorb(branch);
         }
+        self.record_child_totals(&data);
         let changed = self.changed_layout_keys(&data);
         if changed.is_empty() {
             self.pending_layouts = None;
@@ -230,11 +231,44 @@ impl<W: LayoutElement> ContainerTree<W> {
         let Some(children) = self.get_container(key).map(|c| c.children().to_vec()) else {
             return;
         };
-        if let Some(container) = self.get_container_mut(key) {
-            container.resolve_child_percents();
-        }
+        self.resolve_child_percents(key);
         for child in children {
             self.resolve_percents(child);
+        }
+    }
+
+    /// Remember the exact gap-adjusted span each split used as its denominator.
+    ///
+    /// `apply_horiz_layout` and `apply_vert_layout` write this value onto every child before
+    /// rounding that child's pending size. A later resize divides the rounded size by the
+    /// stored value; recomputing it from a possibly changed sibling list loses that history.
+    ///
+    /// sway/tree/arrange.c:72-83,157-169
+    fn record_child_totals(&mut self, data: &LayoutData) {
+        let arranged: Vec<(NodeKey, Rectangle<f64, Logical>)> = data
+            .container_geometries
+            .iter()
+            .map(|(key, rect)| (*key, *rect))
+            .collect();
+        for (parent, rect) in arranged {
+            let Some(container) = self.get_container(parent) else {
+                continue;
+            };
+            let layout = container.layout();
+            if !matches!(layout, Layout::SplitH | Layout::SplitV) {
+                continue;
+            }
+            let children = container.children().to_vec();
+            let span = match layout {
+                Layout::SplitH => rect.size.w,
+                Layout::SplitV => rect.size.h,
+                Layout::Tabbed | Layout::Stacked => unreachable!(),
+            };
+            let gaps = self.gap_in(parent) * children.len().saturating_sub(1) as f64;
+            let total = (span - gaps).max(0.0);
+            for child in children {
+                self.set_node_child_total(child, layout, total);
+            }
         }
     }
 
@@ -666,7 +700,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     container.layout(),
                     container.child_count(),
                     self.active_child_index(node_key),
-                    container.child_percents_slice().to_vec(),
+                    self.child_percents(node_key),
                 )
             }
             None => return,
@@ -861,10 +895,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         container_key: NodeKey,
         child_count: usize,
     ) -> Vec<f64> {
-        let Some(NodeData::Container(container)) = self.get_node(container_key) else {
+        let Some(NodeData::Container(_)) = self.get_node(container_key) else {
             return vec![1.0 / child_count.max(1) as f64; child_count];
         };
-        super::resolved_percents(container.child_percents_slice(), child_count)
+        super::resolved_percents(&self.child_percents(container_key), child_count)
     }
 
     pub(in crate::layout) fn distribute_split_lengths(

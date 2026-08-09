@@ -52,11 +52,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         let parent = self.get_container(parent_key)?;
         let child_count = parent.child_count();
         let insert_idx = insert_idx.unwrap_or(child_count).min(child_count);
-        let percents = self.preview_inserted_child_percents(
-            parent.child_percents_slice(),
-            child_count,
-            insert_idx,
-        );
+        let current = self.child_percents(parent_key);
+        let percents = self.preview_inserted_child_percents(&current, child_count, insert_idx);
         let (rect, tab_bar_offset) = self.preview_child_rect(
             parent.layout(),
             parent_rect,

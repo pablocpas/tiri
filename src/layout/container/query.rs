@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use smithay::utils::Logical;
 use smithay::utils::Rectangle;
 
-use super::ContainerData;
 use super::ContainerTree;
 use super::Layout;
 use super::LayoutElement;
@@ -291,11 +290,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         None
-    }
-
-    /// Mutable access to the container at `key`.
-    pub(in crate::layout) fn container_mut(&mut self, key: NodeKey) -> Option<&mut ContainerData> {
-        self.get_container_mut(key)
     }
 
     /// Collect leaf paths under a given prefix path.

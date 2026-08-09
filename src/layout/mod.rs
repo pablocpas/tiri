@@ -676,6 +676,21 @@ pub struct RemovedTile<W: LayoutElement> {
     is_floating: bool,
 }
 
+impl<W: LayoutElement> RemovedTile<W> {
+    /// Apply the sizing part of sway's cross-workspace move without replacing the node.
+    ///
+    /// Floating containers keep their fractions when they change workspace. Tiled containers
+    /// are attached with both fractions unset, so the destination arrange derives their new
+    /// share from their new siblings.
+    ///
+    /// sway/commands/move.c:198-239
+    fn prepare_for_workspace_move(&mut self) {
+        if !self.is_floating {
+            self.tile.unset_node_fractions();
+        }
+    }
+}
+
 /// Whether to activate a newly added window.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ActivateWindow {
@@ -5135,6 +5150,7 @@ impl<W: LayoutElement> Layout<W> {
                 return;
             };
 
+            removed.prepare_for_workspace_move();
             removed.tile.stop_move_animations();
 
             let mon = &mut monitors[new_idx];
@@ -5187,9 +5203,10 @@ impl<W: LayoutElement> Layout<W> {
                 return;
             }
 
-            let Some(subtree) = ws.remove_active_root_tiling_subtree() else {
+            let Some(mut subtree) = ws.remove_active_root_tiling_subtree() else {
                 return;
             };
+            subtree.prepare_for_workspace_move();
 
             let workspace_idx = target_ws_idx
                 .unwrap_or(monitors[new_idx].active_workspace_idx)

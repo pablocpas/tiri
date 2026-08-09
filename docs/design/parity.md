@@ -499,16 +499,17 @@ each is finite: this is a list that can be finished, not a tail.
    list behind a type with private fields, because the bug was never the rule — it was thirty
    places able to change focus and one of them remembering to update the order.
 
-2. **Fractions live in the parent** — sway stores `width_fraction`/`height_fraction` on the
-   child, so a reparent carries them without anyone deciding to. Tiri stores them in the
-   parent indexed by position, which is why `ReparentFractions`, `insert_child_unset`,
-   `remove_child_preserving_percents` and `swap_child_slots` exist at all.
+2. **Fractions live in the parent** — *fixed*. Every leaf and container now carries its own
+   `width_fraction` and `height_fraction`. Child lists contain only identities, so detaching,
+   swapping and moving across workspace stores cannot separate a node from its shares. The
+   parent-indexed `AxisFractions` and the surgery needed to keep it parallel with `children`
+   are gone.
 
-3. **`child_total_width`/`child_total_height` are missing** — sway records on each child the
-   span its fraction was computed against, and `container_resize_tiled` re-derives the
-   fraction from the *rounded* pixel width against it. That round trip is the whole of the
-   `0.199/0.199/0.199/0.203` against tiri's even `0.200`: not a rounding slip, an absent
-   field.
+3. **`child_total_width`/`child_total_height` are missing** — *fixed*. Arrange records the
+   gap-adjusted denominator on every child, beside its fractions, and tiled resize snaps each
+   raw fraction from the rounded pending span against that stored denominator before applying
+   the delta. The `0.199/0.199/0.199/0.203` history therefore survives rather than being
+   replaced with an even `0.200` reconstructed from the current sibling list.
 
 4. **`user_created`** — a flag tiri has and sway does not, consulted in twenty-two places.
    Extra state means states sway cannot reach, and every one of them is a question sway never

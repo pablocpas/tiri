@@ -10,7 +10,6 @@
 //! workspace's children by hand at the top level. Each disagreed with sway somewhere, and
 //! the disagreements did not share a cause, which is what made them look like eight bugs.
 
-use super::ChildFractions;
 use super::ContainerTree;
 use super::Direction;
 use super::LayoutElement;
@@ -213,27 +212,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         true
     }
 
-    /// The shares a node holds in its current parent, whichever axis they were set on.
-    fn node_fractions(&self, node_key: NodeKey) -> Option<ChildFractions> {
-        let parent_key = self.parent_of(node_key)?;
-        let idx = self.child_index(parent_key, node_key)?;
-        Some(self.get_container(parent_key)?.child_fractions(idx))
-    }
-
-    /// Wipe a node's shares where it stands — sway zeroing `width_fraction`/`height_fraction`
-    /// on a container it is not moving.
-    fn unset_node_fractions(&mut self, node_key: NodeKey) {
-        let Some(parent_key) = self.parent_of(node_key) else {
-            return;
-        };
-        let Some(idx) = self.child_index(parent_key, node_key) else {
-            return;
-        };
-        if let Some(parent) = self.get_container_mut(parent_key) {
-            parent.unset_child_fractions(idx);
-        }
-    }
-
     /// sway's `container_move_to_container_from_direction`: put `node_key` where entering
     /// `destination_key` from `direction` says it belongs.
     fn move_into_from_direction(
@@ -317,10 +295,8 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// what it should be here is not decided until the command ends and the whole list is
     /// resolved.
     ///
-    /// sway has one exception, and it is not reproduced: promoting a node to sit beside an
-    /// ancestor invalidates *the ancestor's* fraction and keeps the moved node's, which is
-    /// the two the wrong way round — i3 does what this does, and
-    /// `nested-same-orientation-after-a-move` is the recording of the difference.
+    /// sway has one exception: promoting a node to sit beside an ancestor keeps the moved
+    /// node's share and invalidates the ancestor's instead.
     fn reparent(
         &mut self,
         node_key: NodeKey,
@@ -328,22 +304,9 @@ impl<W: LayoutElement> ContainerTree<W> {
         insert_at: usize,
         fractions: ReparentFractions,
     ) {
-        let carried = match fractions {
-            ReparentFractions::Unset => None,
-            ReparentFractions::PreserveAndUnset(_) => self.node_fractions(node_key),
-        };
         self.detach_child(node_key);
         if let Some(parent) = self.get_container_mut(parent_key) {
-            // `insert_child_unset`, never `insert_child`: sway's `container_insert_child`
-            // puts the node in the list and leaves every sibling's fraction exactly as it
-            // was. Redistributing here rewrites raw values the end-of-command resolve is
-            // about to read, and the answer comes out of the wrong numbers.
-            parent.insert_child_unset(insert_at, node_key);
-            let idx = parent
-                .children()
-                .iter()
-                .position(|key| *key == node_key)
-                .unwrap_or(insert_at);
+            parent.insert_child(insert_at, node_key);
             // The moved node becomes the most recently focused of its new siblings, and of
             // nobody else's. sway has no per-container order to update — it has one focus
             // stack per seat, and `seat_get_active_tiling_child` reads which tab a switcher
@@ -355,14 +318,15 @@ impl<W: LayoutElement> ContainerTree<W> {
             // Which is why the switcher it left goes back to showing something else without
             // being told, and why the switchers *above* the destination do not move at all:
             // the node was never their direct child and still is not.
-            match carried {
-                Some(carried) => parent.set_child_fractions(idx, carried),
-                None => parent.unset_child_fractions(idx),
-            }
         }
         self.set_parent(node_key, Some(parent_key));
-        if let ReparentFractions::PreserveAndUnset(ancestor_key) = fractions {
-            self.unset_node_fractions(ancestor_key);
+        match fractions {
+            ReparentFractions::Unset => {
+                self.unset_node_fractions(node_key);
+            }
+            ReparentFractions::PreserveAndUnset(ancestor_key) => {
+                self.unset_node_fractions(ancestor_key);
+            }
         }
     }
 

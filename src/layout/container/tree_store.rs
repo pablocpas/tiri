@@ -1,4 +1,4 @@
-//! Slotmap-backed node storage primitives: raw node access and parent links.
+//! Workspace-local node storage primitives: raw node access and parent links.
 
 use smithay::utils::{Logical, Rectangle};
 
@@ -62,13 +62,23 @@ impl<W: LayoutElement> ContainerTree<W> {
             .position(|&key| key == child_key)
     }
 
-    /// Replace a child without changing its slot's fractions.
+    /// Replace a child, handing its parent share to the replacement.
+    ///
+    /// `container_replace` inserts the replacement beside the old node, detaches the old one,
+    /// then copies both fractions across. The resize totals do not move: they describe the
+    /// rounded pending size of a particular node, while the fractions describe the slot the
+    /// replacement has just taken.
+    ///
+    /// sway/tree/container.c:1534-1554
     pub(super) fn replace_child_node(
         &mut self,
         parent_key: NodeKey,
         old_key: NodeKey,
         new_key: NodeKey,
     ) -> bool {
+        let Some(fractions) = self.node_fractions(old_key) else {
+            return false;
+        };
         let Some(parent) = self.get_container_mut(parent_key) else {
             return false;
         };
@@ -76,6 +86,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         };
         parent.children[idx] = new_key;
+        self.set_node_fractions(new_key, fractions);
         self.set_parent(new_key, Some(parent_key));
         true
     }
@@ -96,8 +107,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             return None;
         }
         let raw_focus_returns_to_child = self.seat.node() == Some(child_key);
-        let child_idx = self.child_index(parent_key, child_key)?;
-        let fractions = self.get_container(parent_key)?.child_fractions(child_idx);
+        self.child_index(parent_key, child_key)?;
         wrapper.set_geometry(self.node_geometry(child_key)?);
 
         let wrapper_key = self.insert_node(NodeData::Container(wrapper));
@@ -109,8 +119,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let wrapper = self
             .get_container_mut(wrapper_key)
             .expect("new wrapper container missing");
-        wrapper.insert_child_with_fractions(0, child_key, fractions);
-        wrapper.resolve_child_percents();
+        wrapper.insert_child(0, child_key);
         self.set_parent(child_key, Some(wrapper_key));
 
         // `container_split` ends by putting the focus back, onto the wrapper and then onto the
