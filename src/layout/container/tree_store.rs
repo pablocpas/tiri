@@ -86,7 +86,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// `container_split` copying `pending.x/y/width/height` off the child before replacing it.
     /// It is the same box either way once the next arrange runs; it is the answer in between,
     /// and while a fullscreen is up there is no next arrange to correct it.
-    pub(super) fn wrap_child_in_new_container(
+    pub(in crate::layout) fn wrap_child_in_new_container(
         &mut self,
         parent_key: NodeKey,
         child_key: NodeKey,
@@ -176,15 +176,24 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    /// Insert a new node into the slotmap
+    /// Insert a node that has not belonged to a tree before.
     pub(super) fn insert_node(&mut self, node: NodeData<W>) -> NodeKey {
-        let key = self.nodes.insert(node);
-        self.parents.insert(key, None);
-        self.seat.register(key);
+        let key = match &node {
+            NodeData::Container(_) => NodeKey::next(),
+            NodeData::Leaf(tile) => tile.node_key(),
+        };
+        self.insert_node_with_key(key, node);
         key
     }
 
-    /// Remove a node from the slotmap (and recursively all its children)
+    /// Put an existing node back into this workspace without changing its identity.
+    pub(super) fn insert_node_with_key(&mut self, key: NodeKey, node: NodeData<W>) {
+        self.nodes.insert(key, node);
+        self.parents.insert(key, None);
+        self.seat.register(key);
+    }
+
+    /// Remove a node from this workspace store (and recursively all its children).
     pub(super) fn remove_node_recursive(&mut self, key: NodeKey) -> Option<NodeData<W>> {
         let node = self.nodes.remove(key)?;
         self.parents.remove(key);

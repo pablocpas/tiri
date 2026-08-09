@@ -1,4 +1,4 @@
-//! i3-style container tree implementation using SlotMap
+//! i3-style container tree implementation
 //!
 //! This module implements the hierarchical container system used by i3wm.
 //! Containers form a tree where:
@@ -6,16 +6,24 @@
 //! - Internal nodes contain child containers with a specific layout
 //! - Each container can have layouts: SplitH, SplitV, Tabbed, or Stacked
 //!
-//! Uses slotmap for efficient memory management and O(1) access to nodes.
+//! Nodes use process-wide keys so moving a node between workspace stores does not change its
+//! identity. Each workspace still owns its topology and geometry caches. This is the Rust
+//! ownership form of sway moving the same `sway_container` through `container_detach` and
+//! `workspace_add_tiling`/`workspace_add_floating`.
+//!
+//! sway/tree/workspace.c:797-852
 
 use std::cell::RefCell;
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
+use std::num::NonZeroU64;
 use std::rc::Rc;
 
-use slotmap::{new_key_type, SecondaryMap, SlotMap};
 use smithay::utils::{Logical, Rectangle, Size};
 
 use super::tile::Tile;
 use super::{LayoutElement, Options};
+use crate::utils::id::IdCounter;
 use crate::utils::transaction::Transaction;
 use tiri_config::BlockOutFrom;
 
@@ -48,12 +56,19 @@ use geometry::PendingLayout;
 pub(super) use resize::ResizeTarget;
 
 // ============================================================================
-// SlotMap Key Types
+// Node identity
 // ============================================================================
 
-new_key_type! {
-    /// Key to reference a node in the container tree
-    pub struct NodeKey;
+static NODE_ID_COUNTER: IdCounter = IdCounter::new();
+
+/// Stable identity of a node, including while it moves between workspace stores.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct NodeKey(NonZeroU64);
+
+impl NodeKey {
+    pub(super) fn next() -> Self {
+        Self(NonZeroU64::new(NODE_ID_COUNTER.next()).expect("node key space exhausted"))
+    }
 }
 
 // ============================================================================
@@ -263,7 +278,7 @@ impl AxisFractions {
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum NodeData<W: LayoutElement> {
-    /// Container node with children (stored as keys)
+    /// Container node with children (stored as identities)
     Container(ContainerData),
     /// Leaf node containing a tile
     Leaf(Tile<W>),
@@ -279,6 +294,7 @@ pub enum DetachedNode<W: LayoutElement> {
 
 #[derive(Debug)]
 pub struct DetachedContainer<W: LayoutElement> {
+    key: NodeKey,
     layout: Layout,
     children: Vec<DetachedNode<W>>,
     fractions: AxisFractions,
@@ -287,12 +303,12 @@ pub struct DetachedContainer<W: LayoutElement> {
     prev_split_layout: Option<Layout>,
 }
 
-/// Container data stored in slotmap
+/// Container data stored under a stable node identity.
 #[derive(Debug)]
 pub struct ContainerData {
     /// Layout mode for this container
     layout: Layout,
-    /// Child node keys (indices into the tree's SlotMap)
+    /// Child node identities.
     children: Vec<NodeKey>,
     /// Preserve container even if it has a single child (explicit split).
     user_created: bool,
@@ -357,13 +373,89 @@ enum ResolvedInactiveTilingReference {
     Container { key: NodeKey, path: Vec<usize> },
 }
 
+/// Workspace-local ownership of globally identified nodes.
+#[derive(Debug)]
+struct NodeStore<W: LayoutElement>(HashMap<NodeKey, NodeData<W>>);
+
+impl<W: LayoutElement> NodeStore<W> {
+    fn new() -> Self {
+        Self(HashMap::new())
+    }
+
+    fn insert(&mut self, key: NodeKey, node: NodeData<W>) {
+        match self.0.entry(key) {
+            Entry::Vacant(entry) => {
+                entry.insert(node);
+            }
+            Entry::Occupied(_) => panic!("a node key cannot belong to the same workspace twice"),
+        }
+    }
+
+    fn get(&self, key: NodeKey) -> Option<&NodeData<W>> {
+        self.0.get(&key)
+    }
+
+    fn get_mut(&mut self, key: NodeKey) -> Option<&mut NodeData<W>> {
+        self.0.get_mut(&key)
+    }
+
+    fn remove(&mut self, key: NodeKey) -> Option<NodeData<W>> {
+        self.0.remove(&key)
+    }
+
+    fn contains_key(&self, key: NodeKey) -> bool {
+        self.0.contains_key(&key)
+    }
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn keys(&self) -> impl Iterator<Item = NodeKey> + '_ {
+        self.0.keys().copied()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (NodeKey, &NodeData<W>)> + '_ {
+        self.0.iter().map(|(key, node)| (*key, node))
+    }
+
+    fn iter_mut(&mut self) -> impl Iterator<Item = (NodeKey, &mut NodeData<W>)> + '_ {
+        self.0.iter_mut().map(|(key, node)| (*key, node))
+    }
+}
+
+#[derive(Debug)]
+struct ParentStore(HashMap<NodeKey, Option<NodeKey>>);
+
+impl ParentStore {
+    fn new() -> Self {
+        Self(HashMap::new())
+    }
+
+    fn insert(&mut self, key: NodeKey, parent: Option<NodeKey>) {
+        self.0.insert(key, parent);
+    }
+
+    fn get(&self, key: NodeKey) -> Option<&Option<NodeKey>> {
+        self.0.get(&key)
+    }
+
+    fn get_mut(&mut self, key: NodeKey) -> Option<&mut Option<NodeKey>> {
+        self.0.get_mut(&key)
+    }
+
+    fn remove(&mut self, key: NodeKey) -> Option<Option<NodeKey>> {
+        self.0.remove(&key)
+    }
+}
+
 /// Root container tree for a workspace
 #[derive(Debug)]
 pub struct ContainerTree<W: LayoutElement> {
-    /// SlotMap storing all nodes in the tree
-    nodes: SlotMap<NodeKey, NodeData<W>>,
+    /// Nodes currently belonging to this workspace.
+    nodes: NodeStore<W>,
     /// Parent pointer for each node (None for root)
-    parents: SecondaryMap<NodeKey, Option<NodeKey>>,
+    parents: ParentStore,
     /// The workspace.
     ///
     /// Always present and always a container, empty tree included.
@@ -899,6 +991,7 @@ impl<W: LayoutElement> DetachedContainer<W> {
     pub(super) fn new(layout: Layout, children: Vec<DetachedNode<W>>) -> Self {
         let focus_stack = (0..children.len()).collect();
         let mut container = Self {
+            key: NodeKey::next(),
             layout,
             children,
             fractions: AxisFractions::default(),
@@ -935,9 +1028,13 @@ impl<W: LayoutElement> ContainerTree<W> {
         scale: f64,
         options: Rc<Options>,
     ) -> Self {
-        let mut nodes = SlotMap::with_key();
-        let mut parents = SecondaryMap::new();
-        let root = nodes.insert(NodeData::Container(ContainerData::new(Layout::SplitH)));
+        let mut nodes = NodeStore::new();
+        let mut parents = ParentStore::new();
+        let root = NodeKey::next();
+        nodes.insert(
+            root,
+            NodeData::Container(ContainerData::new(Layout::SplitH)),
+        );
         parents.insert(root, None);
         let mut seat = seat::SeatFocus::default();
         seat.register(root);

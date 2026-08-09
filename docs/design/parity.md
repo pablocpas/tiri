@@ -520,8 +520,12 @@ each is finite: this is a list that can be finished, not a tail.
 
 6. **Tiling and floating are two trees** — *fixed*. sway has one workspace holding two lists,
    and a container moves between them without ceasing to be itself. Tiri now does the same:
-   `ContainerTree` owns the tiled root and the floating roots in one slotmap, while
+   `ContainerTree` owns the tiled root and the floating roots in one node store, while
    `FloatingSpace` only owns the groups' stacking and geometry. Crossing calls
    `float_subtree`/`unfloat_subtree`, so the leaf keeps its `NodeKey` and the seat's order keeps
    referring to the same node. The detached-subtree round trip that rebuilt every key has been
-   removed from this path.
+   removed from this path. `NodeKey` allocation is also independent of the workspace store:
+   the key lives with a tile while sticky, scratchpad and interactive move hold it outside a
+   tree, and detached containers carry their original key. Moving a window or whole subtree
+   to another workspace or output therefore inserts the same identities, matching sway's
+   `container_move_to_workspace` detaching and attaching the same `sway_container`.

@@ -120,7 +120,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             .iter()
             .map(|info| (info.key, info.branch))
             .collect();
-        // Only leaves reachable from the root count: the slotmap can still hold nodes that
+        // Only leaves reachable from the root count: the store can still hold nodes that
         // were detached but not yet dropped.
         let current: HashSet<(NodeKey, NodeKey)> = self
             .dfs_leaf_keys()

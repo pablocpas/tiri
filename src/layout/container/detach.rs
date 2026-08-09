@@ -33,7 +33,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
         self.set_parent(node_key, None);
 
-        // Now remove from slotmap (only the leaf, not recursive)
+        // Now remove from this workspace store (only the leaf, not recursive).
         let node_data = self.nodes.remove(node_key)?;
         self.parents.remove(node_key);
         let tile = match node_data {
@@ -119,7 +119,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.parents.remove(key);
 
         match node_data {
-            NodeData::Leaf(tile) => DetachedNode::Leaf(tile),
+            NodeData::Leaf(tile) => {
+                debug_assert_eq!(tile.node_key(), key);
+                DetachedNode::Leaf(tile)
+            }
             NodeData::Container(container) => {
                 let child_keys = container.children.clone();
                 let mut children = Vec::new();
@@ -130,9 +133,9 @@ impl<W: LayoutElement> ContainerTree<W> {
                 for (idx, key) in child_keys.iter().enumerate() {
                     index_by_key.insert(*key, idx);
                 }
-                // The order has to travel as positions: the keys do not survive leaving the
-                // tree, and a subtree that comes back has new ones. Which child a switcher
-                // shows is behaviour, so it cannot be dropped and re-derived on arrival.
+                // The order travels as positions because the receiving workspace has its own
+                // seat order. Which child a switcher shows is behaviour, so it cannot be
+                // dropped and re-derived on arrival.
                 let mut focus_stack: Vec<usize> = self
                     .seat
                     .order()
@@ -145,6 +148,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     }
                 }
                 DetachedNode::Container(DetachedContainer {
+                    key,
                     layout: container.layout,
                     children,
                     fractions: container.fractions,
@@ -161,8 +165,11 @@ impl<W: LayoutElement> ContainerTree<W> {
         match subtree {
             DetachedNode::Leaf(tile) => self.insert_node(NodeData::Leaf(tile)),
             DetachedNode::Container(container) => {
-                let container_key =
-                    self.insert_node(NodeData::Container(ContainerData::new(container.layout)));
+                let container_key = container.key;
+                self.insert_node_with_key(
+                    container_key,
+                    NodeData::Container(ContainerData::new(container.layout)),
+                );
 
                 let mut child_keys = Vec::new();
                 for child in container.children {
@@ -195,10 +202,9 @@ impl<W: LayoutElement> ContainerTree<W> {
                             .copied()
                     })
                     .collect();
-                // Appended, not placed: a subtree arriving from another tree has no standing
-                // to restore. It left one arena and came back to another, so the keys it had
-                // are gone and with them its place in the order. See `docs/design/parity.md`
-                // on the two trees.
+                // Appended, not placed: the receiving workspace has its own inactive order.
+                // Layout's seat history decides whether the arriving view should be focused;
+                // the order inside this subtree only decides which child a descent reaches.
                 self.seat.restore_at(usize::MAX, restored);
 
                 container_key

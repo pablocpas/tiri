@@ -2,6 +2,173 @@ use insta::assert_snapshot;
 
 use super::*;
 
+fn workspace_node_key(
+    layout: &Layout<TestWindow>,
+    window: usize,
+) -> super::super::container::NodeKey {
+    layout
+        .workspaces()
+        .find_map(|(_, _, workspace)| workspace.tiling().tree().window_key(&window))
+        .expect("window in a workspace tree")
+}
+
+#[test]
+fn moving_a_window_between_workspaces_keeps_its_node_identity() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+    ]);
+    let key = workspace_node_key(&layout, 1);
+
+    layout.move_to_workspace_down(true);
+
+    assert_eq!(workspace_node_key(&layout, 1), key);
+}
+
+#[test]
+fn moving_a_container_between_workspaces_keeps_all_node_identities() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::SetLayoutTabbed,
+    ]);
+
+    let (first, second, container) = {
+        let workspace = layout
+            .workspaces()
+            .find_map(|(_, _, workspace)| workspace.has_window(&1).then_some(workspace))
+            .expect("source workspace");
+        let tree = workspace.tiling().tree();
+        let first = tree.window_key(&1).expect("first source leaf");
+        let second = tree.window_key(&2).expect("second source leaf");
+        let container = tree.parent_of_node(first).expect("source container");
+        assert_ne!(container, tree.workspace_root());
+        assert_eq!(tree.parent_of_node(second), Some(container));
+        (first, second, container)
+    };
+
+    layout.move_column_to_workspace_down(true);
+
+    let workspace = layout
+        .workspaces()
+        .find_map(|(_, _, workspace)| workspace.has_window(&1).then_some(workspace))
+        .expect("target workspace");
+    let tree = workspace.tiling().tree();
+    assert_eq!(tree.window_key(&1), Some(first));
+    assert_eq!(tree.window_key(&2), Some(second));
+    assert_eq!(tree.parent_of_node(first), Some(container));
+    assert_eq!(tree.parent_of_node(second), Some(container));
+}
+
+#[test]
+fn moving_a_window_between_outputs_keeps_its_node_identity() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddOutput(2),
+    ]);
+    let key = workspace_node_key(&layout, 1);
+    let output = layout
+        .outputs()
+        .find(|output| output.name() == "output2")
+        .cloned()
+        .expect("second output");
+
+    layout.move_to_output(Some(&1), &output, None, ActivateWindow::Yes);
+
+    assert_eq!(workspace_node_key(&layout, 1), key);
+    assert_eq!(
+        layout
+            .workspaces()
+            .find(|(_, _, workspace)| workspace.has_window(&1))
+            .and_then(|(_, _, workspace)| workspace.current_output())
+            .map(Output::name),
+        Some("output2".to_owned()),
+    );
+}
+
+#[test]
+fn an_interactive_move_between_outputs_keeps_node_identity_while_detached() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+    ]);
+    let key = workspace_node_key(&layout, 1);
+
+    check_ops_on_layout(
+        &mut layout,
+        [
+            Op::InteractiveMoveBegin {
+                window: 1,
+                output_idx: 1,
+                px: 0.,
+                py: 0.,
+            },
+            Op::AddOutput(2),
+            Op::InteractiveMoveUpdate {
+                window: 1,
+                dx: 1000.,
+                dy: 0.,
+                output_idx: 2,
+                px: 0.,
+                py: 0.,
+            },
+        ],
+    );
+
+    let InteractiveMoveState::Moving(move_) = layout
+        .interactive_move
+        .as_ref()
+        .expect("detached interactive move")
+    else {
+        panic!("window should have crossed the interactive-move threshold");
+    };
+    assert_eq!(move_.tile.node_key(), key);
+
+    check_ops_on_layout(&mut layout, [Op::InteractiveMoveEnd { window: 1 }]);
+    assert_eq!(workspace_node_key(&layout, 1), key);
+}
+
+#[test]
+fn sticky_and_scratchpad_roundtrips_keep_node_identity() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams {
+                is_floating: true,
+                ..TestWindowParams::new(1)
+            },
+        },
+    ]);
+    let key = workspace_node_key(&layout, 1);
+
+    layout.toggle_window_sticky(Some(&1));
+    let sticky_key = layout
+        .monitors()
+        .find_map(|monitor| monitor.sticky_tree.window_key(&1))
+        .expect("sticky node");
+    assert_eq!(sticky_key, key);
+
+    layout.toggle_window_sticky(Some(&1));
+    assert_eq!(workspace_node_key(&layout, 1), key);
+
+    layout.move_window_to_scratchpad(Some(&1));
+    assert_eq!(layout.scratchpad.front().map(Tile::node_key), Some(key));
+    layout.scratchpad_show();
+    assert_eq!(workspace_node_key(&layout, 1), key);
+}
+
 #[test]
 fn empty_workspace_layout_commands_do_not_wrap_next_open() {
     let mut layout = check_ops([

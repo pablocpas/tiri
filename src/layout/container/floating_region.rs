@@ -7,11 +7,13 @@
 //! its place in the seat's focus order, its marks, its identity all survive because they were
 //! never attached to which list it was in.
 //!
-//! Tiri kept the two sides in separate trees, each with its own slotmap. Crossing meant
-//! taking a subtree apart and building it again from the other side's arena, with new keys —
-//! so anything keyed by node identity was lost in transit, most visibly the focus order. This
-//! module is the tiling tree learning to hold the floating side too, which is the first half
-//! of making the crossing a move instead of a reconstruction.
+//! Tiri used to keep the two sides in separate trees, each with its own slotmap. Crossing
+//! meant taking a subtree apart and building it again from the other side's arena, with new
+//! keys — so anything keyed by node identity was lost in transit, most visibly the focus
+//! order. This module made the two branches one workspace store; stable node identities make
+//! the same guarantee continue through workspace and output moves.
+//!
+//! sway/commands/move.c:198-239
 
 use smithay::utils::{Logical, Rectangle};
 

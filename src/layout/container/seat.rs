@@ -11,9 +11,7 @@
 //! `seat_set_focus` is a function, the stack is behind it, and there is nothing else to
 //! assign. This is that shape.
 
-use slotmap::SlotMap;
-
-use super::{LayoutElement, NodeData, NodeKey};
+use super::{LayoutElement, NodeKey, NodeStore};
 
 /// The seat's focus, as sway keeps it.
 #[derive(Debug, Default)]
@@ -160,7 +158,7 @@ impl SeatFocus {
     }
 
     /// Drop everything the tree no longer holds.
-    pub(super) fn prune<W: LayoutElement>(&mut self, nodes: &SlotMap<NodeKey, NodeData<W>>) {
+    pub(super) fn prune<W: LayoutElement>(&mut self, nodes: &NodeStore<W>) {
         self.order.retain(|key| nodes.contains_key(*key));
         if self.leaf.is_some_and(|key| !nodes.contains_key(key)) {
             self.leaf = None;

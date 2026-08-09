@@ -10,7 +10,7 @@ use tiri_config::utils::MergeWith as _;
 use tiri_config::{Color, CornerRadius, GradientInterpolation, TabBar};
 use tiri_ipc::WindowLayout;
 
-use super::container::{InsertParentInfo, Layout, TabBarTab};
+use super::container::{InsertParentInfo, Layout, NodeKey, TabBarTab};
 use super::focus_ring::{
     FocusRing, FocusRingEdges, FocusRingIndicatorEdge, FocusRingRenderElement, FocusRingState,
 };
@@ -46,6 +46,15 @@ use crate::utils::{
 /// Toplevel window with decorations.
 #[derive(Debug)]
 pub struct Tile<W: LayoutElement> {
+    /// Identity of the corresponding sway container.
+    ///
+    /// It belongs to the tile rather than to a workspace store because scratchpad and
+    /// interactive moves temporarily hold the window outside every tree. Reattaching the tile
+    /// must put the same node back, not allocate a replacement.
+    ///
+    /// sway/commands/move.c:198-239
+    node_key: NodeKey,
+
     /// The toplevel window itself.
     window: W,
 
@@ -321,6 +330,7 @@ impl<W: LayoutElement> Tile<W> {
         let sizing_mode = window.sizing_mode();
 
         Self {
+            node_key: NodeKey::next(),
             window,
             border: FocusRing::new(border_config.into()),
             focus_ring: FocusRing::new(focus_ring_config),
@@ -356,6 +366,10 @@ impl<W: LayoutElement> Tile<W> {
             clock,
             options,
         }
+    }
+
+    pub(super) fn node_key(&self) -> NodeKey {
+        self.node_key
     }
 
     pub fn update_config(

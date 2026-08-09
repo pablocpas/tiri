@@ -6,7 +6,7 @@
 //! - Leaf nodes contain individual windows wrapped in Tiles
 //! - Navigation and movement follow the tree hierarchy
 //!
-//! The implementation uses SlotMap for efficient O(1) node access and safe reference handling.
+//! Node access is O(1), and node keys remain stable when a subtree changes workspace or output.
 
 use std::cell::RefCell;
 use std::collections::HashMap;

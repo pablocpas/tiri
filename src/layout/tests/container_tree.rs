@@ -1,7 +1,7 @@
 use insta::assert_snapshot;
 use proptest::prelude::*;
 
-use super::super::container::{ContainerTree, Direction, Layout as ContainerLayout};
+use super::super::container::{ContainerData, ContainerTree, Direction, Layout as ContainerLayout};
 use super::super::tile::Tile;
 use super::*;
 
@@ -106,6 +106,47 @@ impl Drop for TreeHarness {
             self.verify();
         }
     }
+}
+
+#[test]
+fn moving_a_leaf_between_workspace_stores_keeps_its_identity() {
+    let mut source = TreeHarness::new();
+    let mut target = TreeHarness::new();
+    source.add_window(1);
+
+    let key = source.tree.window_key(&1).expect("source leaf");
+    let tile = source.tree.remove_window(&1).expect("detached leaf");
+    assert_eq!(tile.node_key(), key);
+
+    target.tree.append_leaf(tile, true);
+    assert_eq!(target.tree.window_key(&1), Some(key));
+}
+
+#[test]
+fn moving_a_subtree_between_workspace_stores_keeps_every_identity() {
+    let mut source = TreeHarness::new();
+    let mut target = TreeHarness::new();
+    source.add_window(1);
+
+    let first = source.tree.window_key(&1).expect("first leaf");
+    let container = source
+        .tree
+        .wrap_child_in_new_container(
+            source.tree.workspace_root(),
+            first,
+            ContainerData::new(ContainerLayout::SplitV),
+        )
+        .expect("moved container");
+
+    let idx = source.tree.focused_root_index().expect("root child");
+    let subtree = source
+        .tree
+        .take_root_child_subtree(idx)
+        .expect("detached subtree");
+    target.tree.insert_subtree_at_root(0, subtree, true);
+
+    assert_eq!(target.tree.window_key(&1), Some(first));
+    assert_eq!(target.tree.parent_of_node(first), Some(container));
 }
 #[derive(Debug, Clone, Copy)]
 enum TreeRandomOp {

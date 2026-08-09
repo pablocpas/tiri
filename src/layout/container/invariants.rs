@@ -64,7 +64,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         for key in self.nodes.keys() {
             assert!(
                 visited.contains(&key),
-                "node {key:?} exists in slotmap but is unreachable"
+                "node {key:?} exists in the workspace store but is unreachable"
             );
         }
 
