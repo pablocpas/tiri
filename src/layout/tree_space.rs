@@ -94,9 +94,9 @@ pub struct TreeSpace<W: LayoutElement> {
     /// Layout options
     options: Rc<Options>,
     /// Cached tab bar textures keyed by container path.
-    tab_bar_cache: RefCell<HashMap<Vec<usize>, TabBarCacheEntry>>,
+    tab_bar_cache: RefCell<HashMap<NodeKey, TabBarCacheEntry>>,
     /// Alternate tab bar cache for swap (avoids allocation).
-    tab_bar_cache_alt: RefCell<HashMap<Vec<usize>, TabBarCacheEntry>>,
+    tab_bar_cache_alt: RefCell<HashMap<NodeKey, TabBarCacheEntry>>,
     /// Whether this workspace is active (for tab bar styling).
     is_active: bool,
     /// Currently fullscreen window (if any)
@@ -1012,7 +1012,7 @@ impl<W: LayoutElement> TreeSpace<W> {
                     self.scale,
                     target,
                 );
-                let (buffer, tab_widths_px) = match cache.get(&info.path) {
+                let (buffer, tab_widths_px) = match cache.get(&info.key) {
                     Some(entry) if entry.state == state => {
                         (entry.buffer.clone(), entry.tab_widths_px.clone())
                     }
@@ -1053,7 +1053,7 @@ impl<W: LayoutElement> TreeSpace<W> {
                 ));
 
                 next_cache.insert(
-                    info.path,
+                    info.key,
                     TabBarCacheEntry {
                         state,
                         buffer,
@@ -2219,7 +2219,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         let cache = self.tab_bar_cache.borrow();
         for info in self.tree.tab_bar_layouts() {
             let cached_widths = cache
-                .get(&info.path)
+                .get(&info.key)
                 .map(|entry| entry.tab_widths_px.as_slice());
             let Some(tab_idx) = tab_bar_hit_index(&info, pos, self.scale, cached_widths, 0) else {
                 continue;

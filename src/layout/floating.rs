@@ -79,10 +79,10 @@ pub struct FloatingSpace<W: LayoutElement> {
     fullscreen_window: Option<W::Id>,
 
     /// Cached tab bar textures keyed by container id and path.
-    tab_bar_cache: RefCell<HashMap<(u64, Vec<usize>), TabBarCacheEntry>>,
+    tab_bar_cache: RefCell<HashMap<NodeKey, TabBarCacheEntry>>,
 
     /// Alternate tab bar cache for swap (avoids allocation).
-    tab_bar_cache_alt: RefCell<HashMap<(u64, Vec<usize>), TabBarCacheEntry>>,
+    tab_bar_cache_alt: RefCell<HashMap<NodeKey, TabBarCacheEntry>>,
 }
 
 niri_render_elements! {
@@ -622,8 +622,9 @@ impl<W: LayoutElement> FloatingSpace<W> {
                     info.rect.loc.y -= gap;
                     info.rect.size.w = (info.rect.size.w + gap * 2.0).max(0.0);
                 }
-                let key = (container.id, info.path.clone());
-                let cached_widths = cache.get(&key).map(|entry| entry.tab_widths_px.as_slice());
+                let cached_widths = cache
+                    .get(&info.key)
+                    .map(|entry| entry.tab_widths_px.as_slice());
                 // A 1px pad makes the floating bar's edges forgiving to hit.
                 let Some(tab_idx) = tab_bar_hit_index(&info, pos, space.scale(), cached_widths, 1)
                 else {
@@ -2690,7 +2691,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
                         info.rect.loc.y -= gap;
                         info.rect.size.w = (info.rect.size.w + gap * 2.0).max(0.0);
                     }
-                    let key = (container.id, info.path.clone());
                     let state = tab_bar_state_from_info(
                         &info,
                         &tab_bar_config,
@@ -2698,7 +2698,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                         space.scale(),
                         target,
                     );
-                    let (buffer, tab_widths_px) = match cache.get(&key) {
+                    let (buffer, tab_widths_px) = match cache.get(&info.key) {
                         Some(entry) if entry.state == state => {
                             (entry.buffer.clone(), entry.tab_widths_px.clone())
                         }
@@ -2739,7 +2739,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                     ));
 
                     next_cache.insert(
-                        key,
+                        info.key,
                         TabBarCacheEntry {
                             state,
                             buffer,
