@@ -403,9 +403,7 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     fn selected_geometry(&self) -> Option<Rectangle<f64, Logical>> {
-        if self.display_layouts().next().is_none() {
-            return None;
-        }
+        self.display_layouts().next()?;
         let key = self.tree.selected_node_key()?;
 
         if self.tree.is_leaf(key) {
@@ -1509,11 +1507,7 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     // Focus operations using ContainerTree
     pub fn activate_window(&mut self, window: &W::Id) -> bool {
-        if self.tree.focus_window_by_id(window) {
-            true
-        } else {
-            false
-        }
+        self.tree.focus_window_by_id(window)
     }
 
     fn focus_in_direction_with_fullscreen_scope(
@@ -1596,8 +1590,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         if self.fullscreen_window.is_some() {
             return false;
         }
-        let moved = self.tree.focus_along_parent(forward, descend);
-        moved
+        self.tree.focus_along_parent(forward, descend)
     }
 
     pub fn focus_parent(&mut self) -> bool {
@@ -1605,8 +1598,7 @@ impl<W: LayoutElement> TreeSpace<W> {
             return false;
         }
 
-        let selected = self.tree.select_parent();
-        selected
+        self.tree.select_parent()
     }
 
     pub fn focus_child(&mut self) -> bool {

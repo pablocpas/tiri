@@ -685,7 +685,7 @@ fn run_seed(reference_name: &str, domain: Domain, budget: Duration, seed: u64) -
     let known = known::signatures();
 
     let mut rng = Rng(seed);
-    let mut reference = Reference::start(&reference_name)
+    let mut reference = Reference::start(reference_name)
         .unwrap_or_else(|err| panic!("cannot start {reference_name}: {err}"));
     let started = Instant::now();
     let mut scripts = 0usize;
@@ -708,10 +708,10 @@ fn run_seed(reference_name: &str, domain: Domain, budget: Duration, seed: u64) -
                 found = Some((script, divergence.signature));
             }
             Err(err) => {
-                let script = shrink_reference_failure(&reference_name, script, &err);
-                if is_known_reference_failure(&reference_name, &script, &err) {
+                let script = shrink_reference_failure(reference_name, script, &err);
+                if is_known_reference_failure(reference_name, &script, &err) {
                     reference_failures += 1;
-                    reference = Reference::start(&reference_name).unwrap_or_else(|restart| {
+                    reference = Reference::start(reference_name).unwrap_or_else(|restart| {
                         panic!("cannot restart {reference_name} after its known crash: {restart}")
                     });
                     continue;
@@ -794,9 +794,7 @@ fn run_seed(reference_name: &str, domain: Domain, budget: Duration, seed: u64) -
 /// is the step that repeats on every single find, so it is the one worth not doing by hand —
 /// and the one where a mistyped header cost a recording session already.
 fn promote_to_fixture(seed: u64, listing: &str) -> Option<String> {
-    if std::env::var_os("PARITY_FUZZ_PROMOTE").is_none() {
-        return None;
-    }
+    std::env::var_os("PARITY_FUZZ_PROMOTE")?;
     let path = format!("tiri-parity/fixtures/found-seed-{seed:x}.parity");
     // `$ ` per command: what the fuzz prints is a listing for a human, what the reader wants
     // is a script, and the difference is one prefix. Writing the listing straight out produced

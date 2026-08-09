@@ -1622,10 +1622,8 @@ impl<W: LayoutElement> Workspace<W> {
                 self.workspace_focus = WorkspaceFocus::OnContent;
             }
         }
-        if self.floating.is_empty() {
-            if self.floating_is_active.get() {
-                self.workspace_focus = WorkspaceFocus::OnContent;
-            }
+        if self.floating.is_empty() && self.floating_is_active.get() {
+            self.workspace_focus = WorkspaceFocus::OnContent;
         }
 
         if removed_from_floating {
@@ -2767,19 +2765,18 @@ impl<W: LayoutElement> Workspace<W> {
         if self.floating.has_window(&self.space, &id) {
             // Single window floating → tiling
             let restore_info = tiling_restore_target.clone();
-            if self.floating.unfloat_window(
+            let unfloated = self.floating.unfloat_window(
                 &mut self.space,
                 &id,
                 restore_info.as_ref(),
                 target_is_active,
-            ) {
-                if target_is_active {
-                    self.floating_is_active = FloatingActive::No;
-                    if preserve_workspace_context_on_unfloat && !self.space.is_empty() {
-                        self.workspace_focus = WorkspaceFocus::OnWorkspace;
-                    } else {
-                        self.sync_tiling_focus_context_from_tiling();
-                    }
+            );
+            if unfloated && target_is_active {
+                self.floating_is_active = FloatingActive::No;
+                if preserve_workspace_context_on_unfloat && !self.space.is_empty() {
+                    self.workspace_focus = WorkspaceFocus::OnWorkspace;
+                } else {
+                    self.sync_tiling_focus_context_from_tiling();
                 }
             }
         } else {

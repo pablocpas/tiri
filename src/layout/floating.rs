@@ -2220,27 +2220,28 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return false;
         }
 
-        loop {
-            if !space.tree_mut().select_parent_in(root) {
-                return false;
-            }
-
-            let Some(key) = space.tree_mut().selected_container_key() else {
-                return false;
-            };
-            let meaningful = space
-                .tree_mut()
-                .container_is_meaningful_parent(key)
-                .unwrap_or(false);
-            if key != root || meaningful {
-                return true;
-            }
-
-            // The root around a lone floating view exists only because tiri needs a node for
-            // the entry in ws->floating. sway does not expose an extra focus-parent stop for it.
-            space.tree_mut().clear_selection();
+        // One step, not a walk: `select_parent_in` stops at the branch root, so there is
+        // never a second ancestor to consider. This was written as a loop that every path
+        // left on its first pass.
+        if !space.tree_mut().select_parent_in(root) {
             return false;
         }
+
+        let Some(key) = space.tree_mut().selected_container_key() else {
+            return false;
+        };
+        let meaningful = space
+            .tree_mut()
+            .container_is_meaningful_parent(key)
+            .unwrap_or(false);
+        if key != root || meaningful {
+            return true;
+        }
+
+        // The root around a lone floating view exists only because tiri needs a node for the
+        // entry in ws->floating. sway does not expose an extra focus-parent stop for it.
+        space.tree_mut().clear_selection();
+        false
     }
 
     pub fn focus_child(&mut self, space: &mut TreeSpace<W>) -> bool {
@@ -3202,7 +3203,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             container.data.verify_invariants();
 
             for tile in tree.tiles_in_branch(container.root) {
-                assert!(Rc::ptr_eq(&space.options(), &tile.options));
+                assert!(Rc::ptr_eq(space.options(), &tile.options));
                 assert_eq!(space.view_size(), tile.view_size());
                 assert_eq!(*space.clock(), tile.clock);
                 assert_eq!(space.scale(), tile.scale());

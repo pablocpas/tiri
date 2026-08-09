@@ -10,6 +10,16 @@ use super::NodeData;
 use super::NodeKey;
 use super::PreviewLeafGeometry;
 
+/// The container a preview is being taken inside: everything `child_rects_for_layout` needs
+/// to lay its children out, which is what the preview is asking about.
+pub(super) struct PreviewContainer<'a> {
+    pub(super) layout: Layout,
+    pub(super) rect: Rectangle<f64, Logical>,
+    pub(super) child_count: usize,
+    pub(super) percents: &'a [f64],
+    pub(super) gap: f64,
+}
+
 impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn preview_new_leaf_geometry(&self) -> Option<PreviewLeafGeometry> {
         let root_rect = self.layout_area();
@@ -20,13 +30,15 @@ impl<W: LayoutElement> ContainerTree<W> {
         if self.is_empty() {
             let layout = self.root_container_layout();
             let (rect, tab_bar_offset) = self.preview_child_rect(
-                layout,
-                root_rect,
-                1,
-                &[1.0],
+                PreviewContainer {
+                    layout,
+                    rect: root_rect,
+                    child_count: 1,
+                    percents: &[1.0],
+                    gap: self.gap_in(root_key),
+                },
                 0,
                 true,
-                self.gap_in(root_key),
             );
             return Some(PreviewLeafGeometry {
                 rect,
@@ -55,13 +67,15 @@ impl<W: LayoutElement> ContainerTree<W> {
         let current = self.child_percents(parent_key);
         let percents = self.preview_inserted_child_percents(&current, child_count, insert_idx);
         let (rect, tab_bar_offset) = self.preview_child_rect(
-            parent.layout(),
-            parent_rect,
-            child_count + 1,
-            &percents,
+            PreviewContainer {
+                layout: parent.layout(),
+                rect: parent_rect,
+                child_count: child_count + 1,
+                percents: &percents,
+                gap: self.gap_in(parent_key),
+            },
             insert_idx,
             true,
-            self.gap_in(parent_key),
         );
 
         Some(PreviewLeafGeometry {
@@ -84,13 +98,15 @@ impl<W: LayoutElement> ContainerTree<W> {
             let child_is_leaf = matches!(self.get_node(child_key), Some(NodeData::Leaf(_)));
             let percents = self.get_normalized_child_percents(node_key, container.child_count());
             let (child_rect, _) = self.preview_child_rect(
-                container.layout(),
-                rect,
-                container.child_count(),
-                &percents,
+                PreviewContainer {
+                    layout: container.layout(),
+                    rect,
+                    child_count: container.child_count(),
+                    percents: &percents,
+                    gap: self.gap_in(node_key),
+                },
                 idx,
                 child_is_leaf,
-                self.gap_in(node_key),
             );
             if child_is_leaf {
                 return None;
@@ -156,14 +172,17 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     pub(super) fn preview_child_rect(
         &self,
-        layout: Layout,
-        rect: Rectangle<f64, Logical>,
-        child_count: usize,
-        percents: &[f64],
+        container: PreviewContainer<'_>,
         child_idx: usize,
         child_is_leaf: bool,
-        gap: f64,
     ) -> (Rectangle<f64, Logical>, f64) {
+        let PreviewContainer {
+            layout,
+            rect,
+            child_count,
+            percents,
+            gap,
+        } = container;
         let (child_rects, _) =
             self.child_rects_for_layout(layout, rect, child_count, percents, gap);
         match layout {

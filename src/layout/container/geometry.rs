@@ -45,6 +45,18 @@ struct LeafLayoutContext {
     in_tabbed_context: bool,
 }
 
+/// What an arrange pass carries from its root all the way down.
+///
+/// The two invariants — which branch is being arranged and the gap between its children —
+/// and the two accumulators. They were nine loose parameters threaded through a recursion,
+/// where the only ones that actually change on the way down are the node and its box.
+struct LayoutWalk<'a> {
+    branch: NodeKey,
+    gap: f64,
+    path: Vec<usize>,
+    data: &'a mut LayoutData,
+}
+
 #[derive(Debug)]
 pub(super) struct PendingLayout {
     pub(in crate::layout) data: LayoutData,
@@ -466,19 +478,22 @@ impl<W: LayoutElement> ContainerTree<W> {
             tabbed_context_flags: HashMap::new(),
         };
 
-        let mut path = Vec::new();
+        let path = Vec::new();
         let area = self.layout_area();
         let gap = self.gap_in(root_key);
+        let mut walk = LayoutWalk {
+            branch: root_key,
+            gap,
+            path,
+            data: &mut data,
+        };
         self.collect_layout_node(
             root_key,
             area,
             area,
-            &mut path,
             true,
             LeafLayoutContext::default(),
-            gap,
-            root_key,
-            &mut data,
+            &mut walk,
         );
         data
     }
@@ -550,21 +565,24 @@ impl<W: LayoutElement> ContainerTree<W> {
         // plus a path within itself. `LayoutTree` has the same shape: `root` for the tiled
         // side and `floating` for the groups, each node's path being "within its tree". The
         // several roots were always there in what tiri publishes; only the arena was split.
-        let mut path = match self.find_node_path(branch_root) {
+        let path = match self.find_node_path(branch_root) {
             Some(path) => path,
             None if self.floating_roots().any(|root| root == branch_root) => Vec::new(),
             None => return self.collect_layout_data(self.root),
+        };
+        let mut walk = LayoutWalk {
+            branch: self.branch_root(branch_root),
+            gap: self.gap_in(branch_root),
+            path,
+            data: &mut data,
         };
         self.collect_layout_node(
             branch_root,
             area,
             area,
-            &mut path,
             true,
             LeafLayoutContext::default(),
-            self.gap_in(branch_root),
-            self.branch_root(branch_root),
-            &mut data,
+            &mut walk,
         );
 
         // The held entries keep their rectangle — that is the box sway is not revisiting — but
@@ -665,12 +683,9 @@ impl<W: LayoutElement> ContainerTree<W> {
         node_key: NodeKey,
         rect: Rectangle<f64, Logical>,
         node_rect: Rectangle<f64, Logical>,
-        path: &mut Vec<usize>,
         visible: bool,
         ctx: LeafLayoutContext,
-        gap: f64,
-        branch: NodeKey,
-        data: &mut LayoutData,
+        walk: &mut LayoutWalk<'_>,
     ) {
         let (layout, child_count, focused_idx, percents) = match self.get_node(node_key) {
             Some(NodeData::Leaf(tile)) => {
@@ -680,14 +695,15 @@ impl<W: LayoutElement> ContainerTree<W> {
                 } else {
                     (ctx.tab_bar_offset, ctx.draw_titlebar)
                 };
-                data.tab_bar_offsets.insert(node_key, offset);
-                data.titlebar_flags.insert(node_key, show_titlebar);
-                data.tabbed_context_flags
+                walk.data.tab_bar_offsets.insert(node_key, offset);
+                walk.data.titlebar_flags.insert(node_key, show_titlebar);
+                walk.data
+                    .tabbed_context_flags
                     .insert(node_key, ctx.in_tabbed_context);
-                data.leaf_layouts.push(LeafLayoutInfo {
+                walk.data.leaf_layouts.push(LeafLayoutInfo {
                     key: node_key,
-                    branch,
-                    path: path.clone(),
+                    branch: walk.branch,
+                    path: walk.path.clone(),
                     rect,
                     node_rect,
                     visible,
@@ -695,7 +711,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                 return;
             }
             Some(NodeData::Container(container)) => {
-                data.container_geometries.insert(node_key, rect);
+                walk.data.container_geometries.insert(node_key, rect);
                 (
                     container.layout(),
                     container.child_count(),
@@ -711,7 +727,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         let (child_rects, _) =
-            self.child_rects_for_layout(layout, rect, child_count, &percents, gap);
+            self.child_rects_for_layout(layout, rect, child_count, &percents, walk.gap);
 
         match layout {
             Layout::SplitH | Layout::SplitV => {
@@ -722,7 +738,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                         continue;
                     };
 
-                    path.push(idx);
+                    walk.path.push(idx);
                     let (child_offset, child_titlebar) =
                         self.split_child_titlebar(child_key, split_bar_height);
                     let child_ctx = LeafLayoutContext {
@@ -731,10 +747,9 @@ impl<W: LayoutElement> ContainerTree<W> {
                         in_tabbed_context: ctx.in_tabbed_context,
                     };
                     self.collect_layout_node(
-                        child_key, child_rect, child_rect, path, visible, child_ctx, gap, branch,
-                        data,
+                        child_key, child_rect, child_rect, visible, child_ctx, walk,
                     );
-                    path.pop();
+                    walk.path.pop();
                 }
             }
             Layout::Tabbed | Layout::Stacked => {
@@ -744,7 +759,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     let Some(child_key) = self.get_container_child_at(node_key, idx) else {
                         continue;
                     };
-                    path.push(idx);
+                    walk.path.push(idx);
                     let child_visible = visible && idx == focused_idx;
                     let child_ctx = LeafLayoutContext {
                         tab_bar_offset: 0.0,
@@ -765,14 +780,11 @@ impl<W: LayoutElement> ContainerTree<W> {
                         child_key,
                         child_rect,
                         child_node_rect,
-                        path,
                         child_visible,
                         child_ctx,
-                        gap,
-                        branch,
-                        data,
+                        walk,
                     );
-                    path.pop();
+                    walk.path.pop();
                 }
             }
         }

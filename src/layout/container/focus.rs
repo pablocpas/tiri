@@ -581,7 +581,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// sway's `seat_set_focus` walks up from the focused node adding each ancestor, so a
     /// container is ahead of its siblings exactly when something inside it was focused more
     /// recently than anything inside them.
-
+    ///
     /// Drop nodes the tree no longer holds.
     pub(in crate::layout) fn prune_focus_order(&mut self) {
         self.seat.prune(&self.nodes);
