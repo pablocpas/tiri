@@ -602,6 +602,18 @@ impl<W: LayoutElement> TreeSpace<W> {
         self.working_area
     }
 
+    pub(super) fn working_area(&self) -> Rectangle<f64, Logical> {
+        self.working_area
+    }
+
+    pub(super) fn scale(&self) -> f64 {
+        self.scale
+    }
+
+    pub(super) fn is_active(&self) -> bool {
+        self.is_active
+    }
+
     pub fn clock(&self) -> &Clock {
         &self.clock
     }
@@ -1005,6 +1017,23 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     pub fn are_animations_ongoing(&self) -> bool {
         self.tiles().any(|tile| tile.are_animations_ongoing()) || !self.closing_windows.is_empty()
+    }
+
+    /// What a tile needs to know about the space it is in.
+    ///
+    /// Taken as a value so a caller can read it before borrowing the arena: a tile is reached
+    /// through the tree, and asking the space about itself while holding one is the borrow
+    /// checker's way of pointing out that these are two different questions.
+    pub(super) fn tile_config(&self) -> TileConfig {
+        TileConfig {
+            view_size: self.view_size,
+            scale: self.scale,
+            options: self.options.clone(),
+        }
+    }
+
+    pub(super) fn set_is_active(&mut self, is_active: bool) {
+        self.is_active = is_active;
     }
 
     pub fn update_render_elements(&mut self, is_active: bool) {
@@ -3620,6 +3649,14 @@ pub(super) fn available_span(gap: f64, total: f64, child_count: usize) -> f64 {
         return 0.0;
     }
     (total - gap * (child_count as f64 - 1.0)).max(0.0)
+}
+
+/// What a tile needs to know about the space it is in: see [`TreeSpace::tile_config`].
+#[derive(Debug, Clone)]
+pub(super) struct TileConfig {
+    pub(super) view_size: Size<f64, Logical>,
+    pub(super) scale: f64,
+    pub(super) options: Rc<Options>,
 }
 
 /// A tree mutation's report of whether it changed anything.

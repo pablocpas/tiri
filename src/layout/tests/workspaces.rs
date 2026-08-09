@@ -206,7 +206,7 @@ fn sticky_and_scratchpad_roundtrips_keep_node_identity() {
     layout.toggle_window_sticky(Some(&1));
     let sticky_key = layout
         .monitors()
-        .find_map(|monitor| monitor.sticky_tree.window_key(&1))
+        .find_map(|monitor| monitor.sticky_space.tree().window_key(&1))
         .expect("sticky node");
     assert_eq!(sticky_key, key);
 

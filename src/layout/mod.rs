@@ -46,12 +46,12 @@ use smithay::output::{self, Output};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size, Transform};
 use tile::{Tile, TileRenderElement};
-use tree_space::RootTilingSubtree;
 use tiri_config::utils::MergeWith as _;
 use tiri_config::{
     Config, CornerRadius, LayoutPart, PresetSize, Workspace as WorkspaceConfig, WorkspaceReference,
 };
 use tiri_ipc::{ColumnDisplay, LayoutTree, PositionChange, SizeChange, WindowLayout};
+use tree_space::RootTilingSubtree;
 use workspace::{WorkspaceAddWindowTarget, WorkspaceId, WorkspaceLifetime};
 
 use self::container::InsertParentInfo;
@@ -1886,7 +1886,7 @@ impl<W: LayoutElement> Layout<W> {
                     // and sticky_floating are separate fields.
                     if let Some(tile) = mon
                         .sticky_floating
-                        .tiles_mut(&mut mon.sticky_tree)
+                        .tiles_mut(&mut mon.sticky_space)
                         .find(|tile| tile.window().is_wl_surface(wl_surface))
                     {
                         return Some((tile.window_mut(), Some(&mon.output)));
