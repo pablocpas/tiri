@@ -1836,3 +1836,38 @@ fn one_pass_arranges_the_tiled_side_and_the_floating_side() {
          its way",
     );
 }
+
+/// Asking for "all" has to say all of what, now that there are two sides.
+#[test]
+fn a_branch_answers_for_itself_and_the_leaf_sweep_answers_for_both() {
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+    harness.add_window(2);
+    harness.add_window(3);
+
+    let floated = harness
+        .tree
+        .window_key(&1)
+        .expect("window 1 is in the tree");
+    let area = Rectangle::new(Point::from((0.0, 0.0)), Size::from((200.0, 200.0)));
+    assert!(harness.tree.float_subtree(floated, area));
+    harness.tree.layout();
+
+    let workspace = harness.tree.root_node_key().expect("a workspace root");
+    assert_eq!(
+        harness.tree.windows_in_branch(workspace).len(),
+        2,
+        "the tiled side kept the two that stayed",
+    );
+    assert_eq!(
+        harness.tree.windows_in_branch(floated).len(),
+        1,
+        "and the floating group answers for itself",
+    );
+    assert_eq!(
+        harness.tree.dfs_leaf_keys().len(),
+        3,
+        "while the leaf sweep sees both sides — a floating window it cannot see is a window \
+         whose configure gets computed from a tree without it",
+    );
+}

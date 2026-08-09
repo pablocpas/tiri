@@ -22,6 +22,31 @@ impl<W: LayoutElement> ContainerTree<W> {
         windows
     }
 
+    /// The windows of one branch — the tiled side, or one floating group.
+    ///
+    /// The unqualified `all_windows` means the tiled side, because that is what every caller
+    /// meant when there was only one side to mean. Now that the floating groups are branches
+    /// of the same tree, asking for "all" has to say all of what.
+    pub(in crate::layout) fn windows_in_branch(&self, branch_root: NodeKey) -> Vec<&W> {
+        let mut windows = Vec::new();
+        self.collect_windows_from_node(branch_root, &mut windows);
+        windows
+    }
+
+    /// The tiles of one branch.
+    pub(in crate::layout) fn tiles_in_branch(&self, branch_root: NodeKey) -> Vec<&Tile<W>> {
+        let mut tiles = Vec::new();
+        self.collect_tiles_from_node(branch_root, &mut tiles);
+        tiles
+    }
+
+    /// The leaves of one branch.
+    pub(in crate::layout) fn leaf_keys_in_branch(&self, branch_root: NodeKey) -> Vec<NodeKey> {
+        let mut keys = Vec::new();
+        self.collect_leaf_keys(branch_root, &mut keys);
+        keys
+    }
+
     /// Helper: collect all windows from a node
     pub(super) fn collect_windows_from_node<'a>(
         &'a self,
@@ -89,9 +114,17 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Collect raw pointers to tiles (immutable) in depth-first order.
     /// Leaf node keys in depth-first (visual) order.
-    pub(super) fn dfs_leaf_keys(&self) -> Vec<NodeKey> {
+    /// Every leaf the tree holds, on both sides.
+    ///
+    /// Both, deliberately. This is what the transaction machinery compares its snapshot
+    /// against, and a floating window that the comparison cannot see is a window whose
+    /// configure gets computed from a tree that does not contain it.
+    pub(in crate::layout) fn dfs_leaf_keys(&self) -> Vec<NodeKey> {
         let mut keys = Vec::new();
         self.collect_leaf_keys(self.root, &mut keys);
+        for floating_root in self.floating_roots().collect::<Vec<_>>() {
+            self.collect_leaf_keys(floating_root, &mut keys);
+        }
         keys
     }
 
