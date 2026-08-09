@@ -51,9 +51,29 @@ impl<W: LayoutElement> ContainerTree<W> {
         match self.floating_roots.iter_mut().find(|root| root.key == key) {
             Some(root) => {
                 root.area = area;
+                self.give_floating_root_its_box(key, area);
                 true
             }
             None => false,
+        }
+    }
+
+    /// Put the box on the group's root as well as in the list.
+    ///
+    /// A group's root is a container tiri creates, and a fresh container's box is zero until
+    /// an arrange fills it in. The next arrange is not always the next thing that happens:
+    /// it can be deferred behind a client that has not acked its configure yet, and until
+    /// then everything asking the tree where the group is gets the zero — an invisible
+    /// window on the workspace, and a workspace whose layout looks frozen because what is on
+    /// screen is the answer from before.
+    ///
+    /// The same reason `container_split` copies `pending.x/y/width/height` off the child
+    /// before replacing it: the arrange will agree, and this is the answer in between.
+    ///
+    /// sway/tree/container.c:1571-1626
+    fn give_floating_root_its_box(&mut self, key: NodeKey, area: Rectangle<f64, Logical>) {
+        if let Some(container) = self.get_container_mut(key) {
+            container.set_geometry(area);
         }
     }
 
@@ -99,6 +119,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.detach_child(key);
         self.set_parent(key, None);
         self.floating_roots.push(FloatingRoot { key, area });
+        self.give_floating_root_its_box(key, area);
         if let Some(old_parent) = old_parent {
             self.reap_empty(old_parent);
         }
@@ -174,9 +195,16 @@ impl<W: LayoutElement> ContainerTree<W> {
         tile: Tile<W>,
         area: Rectangle<f64, Logical>,
     ) -> (NodeKey, NodeKey) {
+        // A configure outstanding for this tile's old tiled box cannot govern the branch it
+        // is about to become the whole of, the same reason `float_subtree` drops one. Without
+        // this the arrange that would give the new group its leaves' boxes is deferred behind
+        // a transaction that describes a layout the tile has already left, and the group sits
+        // on the workspace, focused, with nothing on screen.
+        self.discard_layout_superseded_by_transfer();
         let group = self.insert_node(NodeData::Container(ContainerData::new(Layout::SplitH)));
         self.set_parent(group, None);
         self.floating_roots.push(FloatingRoot { key: group, area });
+        self.give_floating_root_its_box(group, area);
         let leaf = self.insert_node(NodeData::Leaf(tile));
         if let Some(container) = self.get_container_mut(group) {
             container.insert_child(0, leaf);

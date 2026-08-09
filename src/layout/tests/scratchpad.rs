@@ -548,3 +548,169 @@ fn scratchpad_fullscreen_to_scratchpad() {
     assert!(workspace.has_window(&id));
     assert!(workspace.is_floating(&id));
 }
+
+/// Sending a tiled window to the scratchpad leaves the workspace with one fewer window, and
+/// the survivors have to be given the space it left. Reported as "the tiling breaks, they
+/// don't resize".
+#[test]
+fn moving_a_tiled_window_to_the_scratchpad_resizes_the_survivors() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+    ]);
+    layout.update_render_elements(None);
+
+    let before = tiled_window_rects(&layout);
+    assert_eq!(before.len(), 3, "three tiled windows to start with");
+
+    check_ops_on_layout(&mut layout, [Op::MoveWindowToScratchpad { id: Some(3) }]);
+    layout.update_render_elements(None);
+
+    let after = tiled_window_rects(&layout);
+    assert_eq!(after.len(), 2, "the third window left for the scratchpad");
+
+    // The survivors must have grown into the space the third one left: with three windows
+    // each was a third of the workspace, with two each is a half.
+    let widths: Vec<f64> = after.iter().map(|rect| rect.size.w).collect();
+    let before_widths: Vec<f64> = before.iter().map(|rect| rect.size.w).collect();
+    assert!(
+        widths.iter().all(|w| *w > before_widths[0] * 1.4),
+        "each survivor must be about half the workspace, not still a third: \
+         before {before_widths:?}, after {widths:?}"
+    );
+    assert!(
+        (widths[0] - widths[1]).abs() < 2.0,
+        "and the two halves must match: {widths:?}"
+    );
+}
+
+fn space_root(layout: &Layout<TestWindow>) -> crate::layout::container::NodeKey {
+    layout
+        .active_workspace()
+        .expect("active workspace")
+        .tiling()
+        .tree()
+        .workspace_root()
+}
+
+fn tiled_window_rects(
+    layout: &Layout<TestWindow>,
+) -> Vec<smithay::utils::Rectangle<f64, smithay::utils::Logical>> {
+    layout
+        .active_workspace()
+        .expect("active workspace")
+        .tiling()
+        .tree()
+        .leaf_layouts()
+        .iter()
+        .filter(|info| info.branch == space_root(layout))
+        .map(|info| info.rect)
+        .collect()
+}
+
+/// The whole scratchpad round trip: a tiled window leaves, comes back as a floating
+/// scratchpad window, and goes away again. The tiled side has to be laid out correctly at
+/// every step, and the scratchpad window has to get a box of its own rather than whatever
+/// it had as a tile.
+#[test]
+fn a_scratchpad_round_trip_leaves_the_tiling_laid_out() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+    ]);
+    layout.update_render_elements(None);
+    let three_up = tiled_window_rects(&layout);
+
+    check_ops_on_layout(&mut layout, [Op::MoveWindowToScratchpad { id: Some(3) }]);
+    layout.update_render_elements(None);
+    let hidden = tiled_window_rects(&layout);
+    assert_eq!(
+        hidden.len(),
+        2,
+        "the scratchpad window is not on the workspace"
+    );
+    assert!(
+        hidden[0].size.w > three_up[0].size.w,
+        "the survivors grew: {three_up:?} -> {hidden:?}"
+    );
+
+    check_ops_on_layout(&mut layout, [Op::ScratchpadShow]);
+    layout.update_render_elements(None);
+    let shown = tiled_window_rects(&layout);
+    assert_eq!(
+        shown.len(),
+        2,
+        "showing the scratchpad window does not put it back in the tiling: {shown:?}"
+    );
+    assert_eq!(
+        shown, hidden,
+        "and it does not disturb the tiled windows either"
+    );
+
+    let workspace = layout.active_workspace().expect("active workspace");
+    assert!(
+        workspace.is_floating(&3),
+        "a shown scratchpad window floats"
+    );
+
+    check_ops_on_layout(&mut layout, [Op::ScratchpadShow]);
+    layout.update_render_elements(None);
+    assert_eq!(
+        tiled_window_rects(&layout),
+        hidden,
+        "hiding it again leaves the tiling where it was"
+    );
+}
+
+/// A shown scratchpad window has to be given a box. It arrives as a tile that was in the
+/// tiling, so its floating group's rectangle is the one thing nothing else can supply — and
+/// when it comes out as 0x0 the window is on the workspace, focused, and invisible.
+#[test]
+fn a_shown_scratchpad_window_has_a_size() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::MoveWindowToScratchpad { id: Some(3) },
+        Op::ScratchpadShow,
+    ]);
+    layout.update_render_elements(None);
+
+    let workspace = layout.active_workspace().expect("active workspace");
+    let tree = workspace.tiling().tree();
+    let key = tree
+        .window_key(&3)
+        .expect("the scratchpad window is mapped");
+    let root = tree.branch_root(key);
+    let area = tree
+        .floating_area(root)
+        .expect("a shown scratchpad window is a floating group");
+
+    assert!(
+        area.size.w > 0.0 && area.size.h > 0.0,
+        "the scratchpad window's group must have a box: {area:?}"
+    );
+}
