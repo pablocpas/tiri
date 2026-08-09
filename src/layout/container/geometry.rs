@@ -328,10 +328,14 @@ impl<W: LayoutElement> ContainerTree<W> {
         // absolute — they are read as paths from the workspace, not from here.
         //
         // A floating root has no path from the workspace, because it hangs off the workspace's
-        // other list rather than off its tiling tree. Its branch is addressed from itself, the
-        // way each floating group is its own top-level entry to everything that reads one.
-        // Which is the addressing question the second half of this has to answer: paths are
-        // relative to a root, and there is now more than one.
+        // other list rather than off its tiling tree, so its branch is addressed from itself.
+        //
+        // That is not a decision taken here — it is the one sway's IPC already took, and the
+        // one tiri already follows. `get_tree` gives a workspace two arrays, `nodes` and
+        // `floating_nodes`, and a floating container is addressed as its index in the second
+        // plus a path within itself. `LayoutTree` has the same shape: `root` for the tiled
+        // side and `floating` for the groups, each node's path being "within its tree". The
+        // several roots were always there in what tiri publishes; only the arena was split.
         let mut path = match self.find_node_path(branch_root) {
             Some(path) => path,
             None if self.floating_roots().contains(&branch_root) => Vec::new(),
