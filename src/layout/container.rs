@@ -113,6 +113,13 @@ pub(in crate::layout) struct ResizeDelta {
 /// Sway stores both fractions on the child node, independently of its current parent axis.
 /// Tiri stores them in the parent, so tree surgery carries this axis-neutral form across a
 /// reparenting boundary.
+/// A floating group: a branch of the tree, and the box it occupies.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct FloatingRoot {
+    pub(super) key: NodeKey,
+    pub(super) area: Rectangle<f64, Logical>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ChildFractions {
     width: f64,
@@ -386,7 +393,12 @@ pub struct ContainerTree<W: LayoutElement> {
     /// The tiled side hangs off `root`; these hang off nothing. A container moves between the
     /// two by changing which list holds it, never by being rebuilt, so its key — and anything
     /// keyed by it — survives the crossing the way it does in sway.
-    floating_roots: Vec<NodeKey>,
+    ///
+    /// Each carries the box it is laid out in, because a floating group is not laid out in
+    /// the workspace's. `arrange_workspace` makes the same distinction with two calls —
+    /// `arrange_children` for the tiling list against the workspace box, `arrange_floating`
+    /// for these against their own.
+    floating_roots: Vec<FloatingRoot>,
     fullscreen_key: Option<NodeKey>,
     /// Cached layout info for leaves
     leaf_layouts: Vec<LeafLayoutInfo>,

@@ -8,6 +8,27 @@ use crate::layout::tab_bar::tab_bar_row_height;
 use crate::layout::tile::Tile;
 use crate::utils::transaction::{Transaction, TransactionBlocker};
 
+impl LayoutData {
+    /// Take another branch's results in.
+    ///
+    /// A branch that was arranged separately says nothing about the leaves outside it, so its
+    /// held entries — the ones it carried over unchanged — are dropped rather than allowed to
+    /// overwrite what the other branches just worked out.
+    fn absorb(&mut self, other: LayoutData) {
+        let mine: HashSet<NodeKey> = self.leaf_layouts.iter().map(|info| info.key).collect();
+        self.leaf_layouts.extend(
+            other
+                .leaf_layouts
+                .into_iter()
+                .filter(|info| !mine.contains(&info.key)),
+        );
+        self.container_geometries.extend(other.container_geometries);
+        self.tab_bar_offsets.extend(other.tab_bar_offsets);
+        self.titlebar_flags.extend(other.titlebar_flags);
+        self.tabbed_context_flags.extend(other.tabbed_context_flags);
+    }
+}
+
 #[derive(Debug)]
 pub(in crate::layout) struct LayoutData {
     pub(in crate::layout) leaf_layouts: Vec<LeafLayoutInfo>,
@@ -126,8 +147,12 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
         self.pending_relayout = false;
 
+        for key in self.floating_roots().collect::<Vec<_>>() {
+            self.resolve_percents(key);
+        }
+
         let root_key = self.root;
-        if self.is_empty() {
+        if self.is_empty() && self.floating_roots().next().is_none() {
             self.leaf_layouts.clear();
             self.pending_layouts = None;
             self.pending_transaction = None;
@@ -140,13 +165,22 @@ impl<W: LayoutElement> ContainerTree<W> {
         // fullscreen container? If there is, it gives that container the output's box, arranges
         // it, and returns — the tiled tree underneath is never descended, so every node outside
         // the fullscreen keeps whatever box it last had.
-        let data = match self
+        let mut data = match self
             .fullscreen_key
             .filter(|key| self.nodes.contains_key(*key))
         {
             Some(fullscreen_key) => self.collect_fullscreen_layout_data(fullscreen_key),
             None => self.collect_layout_data(root_key),
         };
+        // `arrange_workspace` lays out the two sides with two calls — `arrange_children` for
+        // the tiling list against the workspace's box, `arrange_floating` for the groups
+        // against their own — and neither knows about the other. The fullscreen branch above
+        // returns before either of them, which is why a fullscreen hides the floating windows
+        // as well as the tiled ones.
+        for root in self.floating_roots_with_areas() {
+            let branch = self.collect_branch_layout_data(root.key, root.area);
+            data.absorb(branch);
+        }
         let changed = self.changed_layout_keys(&data);
         if changed.is_empty() {
             self.pending_layouts = None;
@@ -194,6 +228,11 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
+    /// Every floating group with the box it is laid out in.
+    fn floating_roots_with_areas(&self) -> Vec<super::FloatingRoot> {
+        self.floating_roots_snapshot()
+    }
+
     /// Point the cached layout at where its leaves are *now*.
     ///
     /// While a resize is in flight the cached geometry is deliberately the old one — it is
@@ -205,7 +244,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let addresses: Vec<Option<Vec<usize>>> = self
             .leaf_layouts
             .iter()
-            .map(|info| self.find_node_path(info.key))
+            .map(|info| self.branch_relative_path(info.key))
             .collect();
         let mut addresses = addresses.into_iter();
         self.leaf_layouts.retain_mut(|info| match addresses.next() {
@@ -338,7 +377,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         // several roots were always there in what tiri publishes; only the arena was split.
         let mut path = match self.find_node_path(branch_root) {
             Some(path) => path,
-            None if self.floating_roots().contains(&branch_root) => Vec::new(),
+            None if self.floating_roots().any(|root| root == branch_root) => Vec::new(),
             None => return self.collect_layout_data(self.root),
         };
         self.collect_layout_node(
@@ -360,7 +399,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             .filter(|info| !arranged.contains(&info.key))
             .filter_map(|info| {
                 Some(LeafLayoutInfo {
-                    path: self.find_node_path(info.key)?,
+                    path: self.branch_relative_path(info.key)?,
                     ..info.clone()
                 })
             })

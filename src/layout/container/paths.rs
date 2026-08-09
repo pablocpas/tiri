@@ -86,6 +86,32 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
+    /// A node's path within its own branch.
+    ///
+    /// Addresses are relative to a root, and there is more than one root: the workspace's, and
+    /// one per floating group. That is not a convention invented here — sway's `get_tree`
+    /// gives a workspace `nodes` and `floating_nodes` as separate arrays, and `LayoutTree` has
+    /// had the same two sides all along. This is the one lookup that knows both.
+    pub(in crate::layout) fn branch_relative_path(
+        &self,
+        target_key: NodeKey,
+    ) -> Option<Vec<usize>> {
+        let branch_root = self.branch_root(target_key);
+        if target_key == branch_root {
+            return self.nodes.contains_key(target_key).then(Vec::new);
+        }
+
+        let mut path_rev = Vec::new();
+        let mut current = target_key;
+        while current != branch_root {
+            let parent = self.parent_of(current)?;
+            path_rev.push(self.child_index(parent, current)?);
+            current = parent;
+        }
+        path_rev.reverse();
+        Some(path_rev)
+    }
+
     /// Find a node by key and return path to it.
     pub(super) fn find_node_path(&self, target_key: NodeKey) -> Option<Vec<usize>> {
         let root_key = self.root;

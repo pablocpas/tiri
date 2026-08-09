@@ -22,7 +22,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         self.verify_floating_region();
 
-        if self.is_empty() && self.floating_roots().is_empty() {
+        if self.is_empty() && self.floating_roots().next().is_none() {
             // The workspace itself stays: an empty workspace is a container with no
             // children, holding the orientation the next window will be laid out by.
             assert_eq!(
@@ -51,8 +51,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         // The floating groups are roots of their own, the way sway's `ws->floating` holds
         // containers that hang off the workspace's list rather than off its tiling tree.
         // Reachability is from any root, not from the tiled one.
-        for floating_root in self.floating_roots() {
-            self.verify_node(*floating_root, None, &mut visited, &mut leaves);
+        for floating_root in self.floating_roots().collect::<Vec<_>>() {
+            self.verify_node(floating_root, None, &mut visited, &mut leaves);
         }
 
         assert_eq!(
@@ -197,7 +197,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                 "{label} must not contain duplicate leaf keys"
             );
             assert_eq!(
-                self.find_node_path(info.key).as_deref(),
+                self.branch_relative_path(info.key).as_deref(),
                 Some(info.path.as_slice()),
                 "{label} path must match the current tree"
             );
@@ -217,23 +217,23 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// would be worse than the two-tree model it replaces: a key that still resolves, still
     /// answers, and belongs to a branch nobody can reach.
     fn verify_floating_region(&self) {
-        let mut seen = HashSet::with_capacity(self.floating_roots().len());
+        let mut seen = HashSet::new();
         for key in self.floating_roots() {
             assert!(
-                self.nodes.contains_key(*key),
+                self.nodes.contains_key(key),
                 "a floating root must point to an existing node"
             );
             assert_eq!(
-                self.parents.get(*key).copied().flatten(),
+                self.parents.get(key).copied().flatten(),
                 None,
                 "a floating root must have no parent — that is what makes it a root"
             );
             assert_ne!(
-                *key, self.root,
+                key, self.root,
                 "the workspace cannot be one of its own floating groups"
             );
             assert!(
-                seen.insert(*key),
+                seen.insert(key),
                 "a node must not be listed as a floating root twice"
             );
         }

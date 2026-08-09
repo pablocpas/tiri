@@ -13,12 +13,42 @@
 //! module is the tiling tree learning to hold the floating side too, which is the first half
 //! of making the crossing a move instead of a reconstruction.
 
-use super::{ContainerTree, LayoutElement, NodeData, NodeKey};
+use smithay::utils::{Logical, Rectangle};
+
+use super::{ContainerTree, FloatingRoot, LayoutElement, NodeData, NodeKey};
 
 impl<W: LayoutElement> ContainerTree<W> {
     /// The roots of the floating groups — sway's `ws->floating`.
-    pub(in crate::layout) fn floating_roots(&self) -> &[NodeKey] {
-        &self.floating_roots
+    pub(in crate::layout) fn floating_roots(&self) -> impl Iterator<Item = NodeKey> + '_ {
+        self.floating_roots.iter().map(|root| root.key)
+    }
+
+    /// Every floating group with its box, for the arrange pass.
+    pub(super) fn floating_roots_snapshot(&self) -> Vec<FloatingRoot> {
+        self.floating_roots.clone()
+    }
+
+    /// The box a floating group is laid out in.
+    pub(in crate::layout) fn floating_area(&self, key: NodeKey) -> Option<Rectangle<f64, Logical>> {
+        self.floating_roots
+            .iter()
+            .find(|root| root.key == key)
+            .map(|root| root.area)
+    }
+
+    /// Move a floating group, or resize it.
+    pub(in crate::layout) fn set_floating_area(
+        &mut self,
+        key: NodeKey,
+        area: Rectangle<f64, Logical>,
+    ) -> bool {
+        match self.floating_roots.iter_mut().find(|root| root.key == key) {
+            Some(root) => {
+                root.area = area;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Whether a node is floating, which in sway is a question about ancestry.
@@ -27,7 +57,8 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// the topmost ancestor is in. Same here: a node is floating when the root of its branch
     /// is one of the floating ones.
     pub(in crate::layout) fn is_floating(&self, key: NodeKey) -> bool {
-        self.floating_roots.contains(&self.branch_root(key))
+        let branch = self.branch_root(key);
+        self.floating_roots.iter().any(|root| root.key == branch)
     }
 
     /// The topmost ancestor of a node — the workspace root, or a floating root.
@@ -48,14 +79,18 @@ impl<W: LayoutElement> ContainerTree<W> {
     ///
     /// Returns false when there is nothing to float: the workspace root itself, or a key the
     /// tree does not hold.
-    pub(in crate::layout) fn float_subtree(&mut self, key: NodeKey) -> bool {
+    pub(in crate::layout) fn float_subtree(
+        &mut self,
+        key: NodeKey,
+        area: Rectangle<f64, Logical>,
+    ) -> bool {
         if key == self.root || !self.nodes.contains_key(key) || self.is_floating(key) {
             return false;
         }
         let old_parent = self.parent_of(key);
         self.detach_child(key);
         self.set_parent(key, None);
-        self.floating_roots.push(key);
+        self.floating_roots.push(FloatingRoot { key, area });
         if let Some(old_parent) = old_parent {
             self.reap_empty(old_parent);
         }
@@ -69,7 +104,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         parent: NodeKey,
         index: usize,
     ) -> bool {
-        let Some(position) = self.floating_roots.iter().position(|root| *root == key) else {
+        let Some(position) = self.floating_roots.iter().position(|root| root.key == key) else {
             return false;
         };
         if !matches!(self.get_node(parent), Some(NodeData::Container(_))) {
@@ -86,6 +121,6 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Drop a floating root that is going away.
     pub(in crate::layout) fn forget_floating_root(&mut self, key: NodeKey) {
-        self.floating_roots.retain(|root| *root != key);
+        self.floating_roots.retain(|root| root.key != key);
     }
 }

@@ -1724,7 +1724,8 @@ fn floating_a_subtree_keeps_its_identity() {
         .expect("the window should be in the tree");
 
     assert!(!harness.tree.is_floating(key));
-    assert!(harness.tree.float_subtree(key));
+    let box_of_its_own = Rectangle::new(Point::from((100.0, 50.0)), Size::from((300.0, 200.0)));
+    assert!(harness.tree.float_subtree(key, box_of_its_own));
     // Arranged before asking: a detach leaves the siblings' fractions raw on purpose, and the
     // arrange pass is what resolves them. Checking in between asks the tree to be settled
     // halfway through a command.
@@ -1740,7 +1741,8 @@ fn floating_a_subtree_keeps_its_identity() {
         Some(key),
         "the same key, because the node was moved and not rebuilt",
     );
-    assert_eq!(harness.tree.floating_roots(), [key]);
+    assert_eq!(harness.tree.floating_roots().collect::<Vec<_>>(), [key]);
+    assert_eq!(harness.tree.floating_area(key), Some(box_of_its_own));
 
     let root = harness.tree.root_node_key().expect("a workspace root");
     assert!(harness.tree.unfloat_subtree(key, root, 0));
@@ -1750,7 +1752,7 @@ fn floating_a_subtree_keeps_its_identity() {
         "and the same key on the way back",
     );
     assert!(!harness.tree.is_floating(key));
-    assert!(harness.tree.floating_roots().is_empty());
+    assert!(harness.tree.floating_roots().next().is_none());
     harness.tree.layout();
     harness.tree.verify_invariants();
 }
@@ -1770,10 +1772,10 @@ fn a_floating_branch_is_arranged_in_its_own_rectangle() {
         .tree
         .window_key(&1)
         .expect("window 1 is in the tree");
-    assert!(harness.tree.float_subtree(key));
+    let box_of_its_own = Rectangle::new(Point::from((100.0, 50.0)), Size::from((300.0, 200.0)));
+    assert!(harness.tree.float_subtree(key, box_of_its_own));
     harness.tree.layout();
 
-    let box_of_its_own = Rectangle::new(Point::from((100.0, 50.0)), Size::from((300.0, 200.0)));
     let data = harness.tree.collect_branch_layout_data(key, box_of_its_own);
 
     let laid_out = data
@@ -1784,5 +1786,53 @@ fn a_floating_branch_is_arranged_in_its_own_rectangle() {
     assert_eq!(
         laid_out.rect, box_of_its_own,
         "a floating group takes the box it was given, not the workspace's",
+    );
+}
+
+/// The arrange pass lays out both sides, each in its own box.
+///
+/// `arrange_workspace` does it with two calls that know nothing about each other:
+/// `arrange_children` for the tiling list against the workspace's box, `arrange_floating` for
+/// the groups against theirs. One pass here, one tree, two rectangles.
+#[test]
+fn one_pass_arranges_the_tiled_side_and_the_floating_side() {
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+    harness.add_window(2);
+
+    let floated = harness
+        .tree
+        .window_key(&1)
+        .expect("window 1 is in the tree");
+    let box_of_its_own = Rectangle::new(Point::from((120.0, 60.0)), Size::from((240.0, 180.0)));
+    assert!(harness.tree.float_subtree(floated, box_of_its_own));
+    harness.tree.layout();
+    harness.tree.verify_invariants();
+
+    let rect_of = |key| {
+        harness
+            .tree
+            .leaf_layouts()
+            .iter()
+            .find(|info| info.key == key)
+            .map(|info| info.rect)
+    };
+
+    assert_eq!(
+        rect_of(floated),
+        Some(box_of_its_own),
+        "the floating group takes its own box",
+    );
+
+    let tiled = harness
+        .tree
+        .window_key(&2)
+        .expect("window 2 is in the tree");
+    let tiled_rect = rect_of(tiled).expect("the tiled window should have been arranged too");
+    assert_eq!(
+        tiled_rect.size,
+        harness.tree.layout_area().size,
+        "and the window left behind takes the whole workspace, the floating one not being in \
+         its way",
     );
 }
