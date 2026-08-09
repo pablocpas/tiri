@@ -13,7 +13,7 @@
 //! its scale, its options, its fullscreen, its closing animations. The floating side's own
 //! state — where each group sits, what order they stack in — is in [`super::floating`].
 
-use std::cell::RefCell;
+use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
@@ -93,12 +93,23 @@ pub struct TreeSpace<W: LayoutElement> {
     interactive_resize: Option<InteractiveResizeState<W>>,
     /// Layout options
     options: Rc<Options>,
-    /// Cached tab bar textures keyed by container path.
+    /// Tab bars already drawn, for both sides of the workspace.
+    ///
+    /// One cache, because a node key is unique across the arena; two would have to agree on
+    /// which side a container is on, and a container changes sides. Entries are dropped when
+    /// their container leaves the tree, rather than when a frame does not redraw them: a
+    /// fullscreen draws no bars at all and is not a reason to forget every one of them.
     tab_bar_cache: RefCell<HashMap<NodeKey, TabBarCacheEntry>>,
-    /// Alternate tab bar cache for swap (avoids allocation).
-    tab_bar_cache_alt: RefCell<HashMap<NodeKey, TabBarCacheEntry>>,
-    /// Whether this workspace is active (for tab bar styling).
+    /// Whether this workspace is the active one.
     is_active: bool,
+    /// Which of the workspace's two sides holds the focus.
+    ///
+    /// "Active" is not one value for the workspace: a tab bar is drawn focused when the side
+    /// it is on is the side with focus, and only one side can be. Keeping the workspace's own
+    /// activeness beside which side has it lets both sides ask the same question and get
+    /// their own answer — which is what two `is_active` fields were for before they were
+    /// merged into one that could only be right for whichever side wrote it last.
+    floating_has_focus: bool,
     /// Currently fullscreen window (if any)
     fullscreen_window: Option<W::Id>,
     /// Windows in the closing animation.
@@ -711,8 +722,8 @@ impl<W: LayoutElement> TreeSpace<W> {
             interactive_resize: None,
             options,
             tab_bar_cache: RefCell::new(HashMap::new()),
-            tab_bar_cache_alt: RefCell::new(HashMap::new()),
             is_active: false,
+            floating_has_focus: false,
             fullscreen_window: None,
             closing_windows: Vec::new(),
             overview_offscreen: OffscreenBuffer::default(),
@@ -761,8 +772,18 @@ impl<W: LayoutElement> TreeSpace<W> {
         self.scale
     }
 
-    pub(super) fn is_active(&self) -> bool {
-        self.is_active
+    /// Whether one of the workspace's two sides is the focused one.
+    pub(in crate::layout) fn side_is_active(&self, floating: bool) -> bool {
+        self.is_active && self.floating_has_focus == floating
+    }
+
+    /// Whose the focus is: the workspace's, and then which of its two sides has it.
+    ///
+    /// The owner says, because only the owner knows — a side asked about itself would only
+    /// ever answer yes.
+    pub(super) fn set_active(&mut self, is_active: bool, floating_has_focus: bool) {
+        self.is_active = is_active;
+        self.floating_has_focus = floating_has_focus;
     }
 
     pub fn clock(&self) -> &Clock {
@@ -924,7 +945,7 @@ impl<W: LayoutElement> TreeSpace<W> {
 
         // Render container selection before regular tiling elements so it ends up
         // visually on top after the global reverse-order composition pass.
-        if selection_is_container && (tiling_focus_ring || self.is_active) {
+        if selection_is_container && (tiling_focus_ring || self.side_is_active(false)) {
             if let Some(rect) = self.selected_geometry() {
                 let mut selection_border = self.options.layout.border;
                 if let Some(focus_info) = self
@@ -942,7 +963,7 @@ impl<W: LayoutElement> TreeSpace<W> {
                     rect,
                     view_rect,
                     self.scale,
-                    self.is_active,
+                    self.side_is_active(false),
                     self.options.layout.focus_ring,
                     selection_border,
                     ContainerSelectionStyle::Tiling,
@@ -978,8 +999,9 @@ impl<W: LayoutElement> TreeSpace<W> {
                     pos = Point::from((0.0, 0.0));
                 }
 
-                let is_focused =
-                    self.is_active && Some(info.key) == focused_key && !selection_is_container;
+                let is_focused = self.side_is_active(false)
+                    && Some(info.key) == focused_key
+                    && !selection_is_container;
                 let draw_focus = tiling_focus_ring && is_focused;
                 let target_elements = if Some(info.key) == focused_key {
                     &mut active_elements
@@ -998,11 +1020,9 @@ impl<W: LayoutElement> TreeSpace<W> {
         if !has_fullscreen_like && !self.options.layout.tab_bar.off {
             let tab_bar_infos = self.tree.tab_bar_layouts();
             let mut cache = self.tab_bar_cache.borrow_mut();
-            let mut next_cache = self.tab_bar_cache_alt.borrow_mut();
-            next_cache.clear();
             let gles = ctx.renderer.as_gles_renderer();
             let tab_bar_config = self.effective_tab_bar_config();
-            let is_active_workspace = self.is_active;
+            let is_active_workspace = self.side_is_active(false);
             let target = ctx.target;
             for info in tab_bar_infos {
                 let state = tab_bar_state_from_info(
@@ -1052,7 +1072,7 @@ impl<W: LayoutElement> TreeSpace<W> {
                     PrimaryGpuTextureRenderElement(elem),
                 ));
 
-                next_cache.insert(
+                cache.insert(
                     info.key,
                     TabBarCacheEntry {
                         state,
@@ -1061,10 +1081,6 @@ impl<W: LayoutElement> TreeSpace<W> {
                     },
                 );
             }
-            // Swap caches: next becomes current, current will be cleared on next frame
-            std::mem::swap(&mut *cache, &mut *next_cache);
-        } else {
-            self.tab_bar_cache.borrow_mut().clear();
         }
 
         elements
@@ -1183,12 +1199,17 @@ impl<W: LayoutElement> TreeSpace<W> {
         }
     }
 
-    pub(super) fn set_is_active(&mut self, is_active: bool) {
-        self.is_active = is_active;
+    pub(super) fn tab_bar_cache_mut(&self) -> RefMut<'_, HashMap<NodeKey, TabBarCacheEntry>> {
+        self.tab_bar_cache.borrow_mut()
     }
 
-    pub fn update_render_elements(&mut self, is_active: bool) {
-        self.is_active = is_active;
+    pub fn update_render_elements(&mut self) {
+        let is_active = self.side_is_active(false);
+        // Once a frame, and for both sides: a container that has left the tree will not be
+        // asked for again, and its texture is the largest thing an entry holds.
+        self.tab_bar_cache
+            .borrow_mut()
+            .retain(|key, _| self.tree.holds_node(*key));
         let applied = self.tree.apply_pending_layouts_if_ready();
         if applied && self.tree.take_pending_relayout() {
             self.tree.layout();
@@ -1708,14 +1729,21 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     fn move_command_target(&mut self, direction: Direction) -> bool {
-        let target = self.tree.command_target_in(self.tree.workspace_root());
         // sway's `container_move_in_direction` opens by refusing to move a fullscreen
         // container within its workspace: one fullscreen on the workspace considers outputs
         // and nothing else, one fullscreen globally does not move at all. Neither of them
-        // ever looks at the tree, so nothing below applies.
+        // ever looks at the tree, so nothing below applies. The fullscreen is the tiled
+        // side's to know about, which is why this guard is here and not in `move_in_branch`.
+        let target = self.tree.command_target_in(self.tiled_branch());
         if self.target_is_fullscreen(target) {
             return false;
         }
+        self.move_in_branch(self.tiled_branch(), direction)
+    }
+
+    /// Move whatever a command in this branch is aimed at, and arrange if it moved.
+    pub(super) fn move_in_branch(&mut self, branch: NodeKey, direction: Direction) -> bool {
+        let target = self.tree.command_target_in(branch);
         self.mutate_tree(|tree| tree.move_target_in_direction(direction, target))
     }
 
@@ -2212,16 +2240,44 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     // Window queries
     fn tab_bar_hit(&self, pos: Point<f64, Logical>) -> Option<(&W, super::HitType)> {
-        if self.render_fullscreen_window().is_some() || self.options.layout.tab_bar.off {
+        if self.render_fullscreen_window().is_some() {
+            return None;
+        }
+        self.branch_tab_bar_hit(self.tiled_branch(), pos, 0)
+    }
+
+    /// Which window a click on one of this branch's tab bars lands on.
+    ///
+    /// `pad` widens every bar by that many physical pixels before testing. A floating group's
+    /// bar is the top edge of a window the user is going to drag, so its edges are forgiving;
+    /// the tiled side's are not, because next to them is another window.
+    ///
+    /// The cached tab widths are the ones the bar was last drawn with. Measuring the text
+    /// again here would answer a slightly different question than the one on screen.
+    pub(super) fn branch_tab_bar_hit(
+        &self,
+        branch: NodeKey,
+        pos: Point<f64, Logical>,
+        pad: i32,
+    ) -> Option<(&W, super::HitType)> {
+        if self.options.layout.tab_bar.off {
             return None;
         }
 
+        let gap = self.branch_gap(branch);
         let cache = self.tab_bar_cache.borrow();
-        for info in self.tree.tab_bar_layouts() {
+        for mut info in self.tree.tab_bar_layouts_in_branch(branch) {
+            // A branch's outermost bar sits on the branch's edge, and the gap is outside it.
+            if gap > 0.0 && info.path.is_empty() {
+                info.rect.loc.x -= gap;
+                info.rect.loc.y -= gap;
+                info.rect.size.w = (info.rect.size.w + gap * 2.0).max(0.0);
+            }
             let cached_widths = cache
                 .get(&info.key)
                 .map(|entry| entry.tab_widths_px.as_slice());
-            let Some(tab_idx) = tab_bar_hit_index(&info, pos, self.scale, cached_widths, 0) else {
+            let Some(tab_idx) = tab_bar_hit_index(&info, pos, self.scale, cached_widths, pad)
+            else {
                 continue;
             };
 

@@ -707,14 +707,12 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn update_render_elements(&mut self, is_active: bool) {
         self.space
-            .update_render_elements(is_active && !self.floating_is_active.get());
+            .set_active(is_active, self.floating_is_active.get());
+        self.space.update_render_elements();
 
         let view_rect = Rectangle::from_size(self.view_size);
-        self.floating.update_render_elements(
-            &mut self.space,
-            is_active && self.floating_is_active.get(),
-            view_rect,
-        );
+        self.floating
+            .update_render_elements(&mut self.space, is_active, view_rect);
 
         self.shadow.update_render_elements(
             self.view_size,

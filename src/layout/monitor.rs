@@ -1811,6 +1811,8 @@ impl<W: LayoutElement> Monitor<W> {
         }
 
         let sticky_active = is_active && self.sticky_is_active;
+        // The sticky space has no tiled side, so the floating one always holds its focus.
+        self.sticky_space.set_active(sticky_active, true);
         let sticky_view_rect = Rectangle::from_size(self.view_size);
         self.sticky_floating.update_render_elements(
             &mut self.sticky_space,

@@ -1,6 +1,4 @@
-use std::cell::RefCell;
 use std::cmp::max;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use log::warn;
@@ -26,8 +24,7 @@ use super::{
 };
 use crate::animation::Animation;
 use crate::layout::tab_bar::{
-    render_tab_bar, tab_bar_hit_index, tab_bar_state_from_info, TabBarCacheEntry,
-    TabBarRenderOutput,
+    render_tab_bar, tab_bar_state_from_info, TabBarCacheEntry, TabBarRenderOutput,
 };
 use crate::niri_render_elements;
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
@@ -77,12 +74,6 @@ pub struct FloatingSpace<W: LayoutElement> {
 
     /// Currently fullscreened floating window, if any.
     fullscreen_window: Option<W::Id>,
-
-    /// Cached tab bar textures keyed by container id and path.
-    tab_bar_cache: RefCell<HashMap<NodeKey, TabBarCacheEntry>>,
-
-    /// Alternate tab bar cache for swap (avoids allocation).
-    tab_bar_cache_alt: RefCell<HashMap<NodeKey, TabBarCacheEntry>>,
 }
 
 niri_render_elements! {
@@ -320,13 +311,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
         external & edges
     }
 
-    fn display_layouts(
-        space: &TreeSpace<W>,
-        root: NodeKey,
-    ) -> impl DoubleEndedIterator<Item = &LeafLayoutInfo> + '_ {
-        super::tree_space::branch_display_layouts(space.tree(), root)
-    }
-
     pub fn new() -> Self {
         Self {
             containers: Vec::new(),
@@ -334,8 +318,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
             active_window_id: None,
             interactive_resize: None,
             closing_windows: Vec::new(),
-            tab_bar_cache: RefCell::new(HashMap::new()),
-            tab_bar_cache_alt: RefCell::new(HashMap::new()),
             fullscreen_window: None,
         }
     }
@@ -392,7 +374,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
         is_active: bool,
         view_rect: Rectangle<f64, Logical>,
     ) {
-        space.set_is_active(is_active);
         let active = self.active_window_id.clone();
         let selection_is_container = self
             .active_container_idx(space)
@@ -403,9 +384,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
             space.tree_mut().layout();
         }
         for container in &mut self.containers {
-            let layouts: Vec<LeafLayoutInfo> = Self::display_layouts(space, container.root)
-                .cloned()
-                .collect();
+            let layouts: Vec<LeafLayoutInfo> =
+                super::tree_space::branch_display_layouts(space.tree(), container.root)
+                    .cloned()
+                    .collect();
             for info in layouts {
                 if let Some(tile) = space.tree_mut().get_tile_mut(info.key) {
                     let is_fullscreen_tile = self
@@ -460,7 +442,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let tree = space.tree();
         let mut tiles = Vec::new();
         for container in &self.containers {
-            for info in Self::display_layouts(space, container.root) {
+            for info in super::tree_space::branch_display_layouts(space.tree(), container.root) {
                 if let Some(tile) = tree.get_tile(info.key) {
                     tiles.push((tile, info.rect.loc));
                 }
@@ -483,7 +465,9 @@ impl<W: LayoutElement> FloatingSpace<W> {
         for container in &self.containers {
             let gap = space.branch_gap(container.root);
             let tab_bar_infos = tree.tab_bar_layouts_in_branch(container.root);
-            for info in Self::display_layouts(space, container.root).filter(|info| info.visible) {
+            for info in super::tree_space::branch_display_layouts(space.tree(), container.root)
+                .filter(|info| info.visible)
+            {
                 let Some(tile) = tree.get_tile(info.key) else {
                     continue;
                 };
@@ -560,7 +544,9 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let tree = space.tree();
         let mut tiles = Vec::new();
         for container in &self.containers {
-            for info in Self::display_layouts(space, container.root).filter(|info| info.visible) {
+            for info in super::tree_space::branch_display_layouts(space.tree(), container.root)
+                .filter(|info| info.visible)
+            {
                 if let Some(tile) = tree.get_tile(info.key) {
                     tiles.push((tile, info.rect.loc));
                 }
@@ -576,7 +562,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let mut keys = Vec::new();
         let mut locs = Vec::new();
         for container in &self.containers {
-            for info in Self::display_layouts(space, container.root) {
+            for info in super::tree_space::branch_display_layouts(space.tree(), container.root) {
                 keys.push(info.key);
                 locs.push(info.rect.loc);
             }
@@ -607,42 +593,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
         space: &'a TreeSpace<W>,
         pos: Point<f64, Logical>,
     ) -> Option<(&'a W, super::HitType)> {
-        let tree = space.tree();
-        if space.options().layout.tab_bar.off {
-            return None;
-        }
-
-        let cache = self.tab_bar_cache.borrow();
-
-        for container in &self.containers {
-            let gap = space.branch_gap(container.root);
-            for mut info in tree.tab_bar_layouts_in_branch(container.root) {
-                if gap > 0.0 && info.path.is_empty() {
-                    info.rect.loc.x -= gap;
-                    info.rect.loc.y -= gap;
-                    info.rect.size.w = (info.rect.size.w + gap * 2.0).max(0.0);
-                }
-                let cached_widths = cache
-                    .get(&info.key)
-                    .map(|entry| entry.tab_widths_px.as_slice());
-                // A 1px pad makes the floating bar's edges forgiving to hit.
-                let Some(tab_idx) = tab_bar_hit_index(&info, pos, space.scale(), cached_widths, 1)
-                else {
-                    continue;
-                };
-
-                if let Some(window) = tree.window_for_tab(info.key, tab_idx) {
-                    return Some((
-                        window,
-                        super::HitType::Activate {
-                            is_tab_indicator: true,
-                        },
-                    ));
-                }
-            }
-        }
-
-        None
+        // A 1px pad makes the floating bar's edges forgiving to hit: next to them is the
+        // desktop, not another window.
+        self.containers
+            .iter()
+            .find_map(|container| space.branch_tab_bar_hit(container.root, pos, 1))
     }
 
     pub fn window_under<'a>(
@@ -2367,14 +2322,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         idx: usize,
         direction: Direction,
     ) -> bool {
-        let tree = space.tree_mut();
-        let root = self.containers[idx].root;
-        let target = tree.command_target_in(root);
-        let moved = tree.move_target_in_direction(direction, target);
-        if moved {
-            tree.layout_branch(root);
-        }
-        moved
+        space.move_in_branch(self.containers[idx].root, direction)
     }
 
     pub fn set_column_display(&mut self, space: &mut TreeSpace<W>, display: ColumnDisplay) {
@@ -2646,7 +2594,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         // Like tiling, push container selection before the regular window
         // contents so it stays visually on top after the global reverse-order
         // composition pass in the renderer.
-        if (focus_ring || space.is_active())
+        if (focus_ring || space.side_is_active(true))
             && selection_is_container
             && self.fullscreen_window.is_none()
         {
@@ -2661,7 +2609,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                         rect,
                         view_rect,
                         space.scale(),
-                        space.is_active(),
+                        space.side_is_active(true),
                         space.options().layout.focus_ring,
                         space.options().layout.border,
                         ContainerSelectionStyle::Floating,
@@ -2674,12 +2622,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
 
         if !space.options().layout.tab_bar.off && self.fullscreen_window.is_none() {
-            let mut cache = self.tab_bar_cache.borrow_mut();
-            let mut next_cache = self.tab_bar_cache_alt.borrow_mut();
-            next_cache.clear();
+            let mut cache = space.tab_bar_cache_mut();
             let gles = ctx.renderer.as_gles_renderer();
             let tab_bar_config = space.options().layout.tab_bar.clone();
-            let is_active_workspace = space.is_active();
+            let is_active_workspace = space.side_is_active(true);
             let target = ctx.target;
 
             for container in &self.containers {
@@ -2738,7 +2684,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                         PrimaryGpuTextureRenderElement(elem),
                     ));
 
-                    next_cache.insert(
+                    cache.insert(
                         info.key,
                         TabBarCacheEntry {
                             state,
@@ -2748,16 +2694,12 @@ impl<W: LayoutElement> FloatingSpace<W> {
                     );
                 }
             }
-
-            std::mem::swap(&mut *cache, &mut *next_cache);
-        } else {
-            self.tab_bar_cache.borrow_mut().clear();
         }
 
         if let Some(fullscreen_id) = &self.fullscreen_window {
             // Only render the fullscreen tile at (0, 0).
             if let Some(tile) = self.tiles(space).find(|t| t.window().id() == fullscreen_id) {
-                let is_focused = space.is_active();
+                let is_focused = space.side_is_active(true);
                 let pos = Point::from((0.0, 0.0));
                 let tile_xray_pos = xray_pos.offset(pos);
                 tile.render(
@@ -2776,7 +2718,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                     continue;
                 }
 
-                let is_focused = space.is_active()
+                let is_focused = space.side_is_active(true)
                     && Some(tile.window().id()) == active.as_ref()
                     && !selection_is_container;
                 let draw_focus = focus_ring && is_focused;
@@ -2831,14 +2773,15 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let original_window_size = tile.window_size();
         let original_window_pos = container.data.logical_pos;
         let original_container_size = container.data.size;
-        let resize_container_edges = Self::display_layouts(space, container.root)
-            .find(|info| info.key == key)
-            .map(|info| {
-                let mut rect = info.rect;
-                rect.loc -= container.data.logical_pos;
-                Self::external_edges_for_rect(container.data.size, rect, edges)
-            })
-            .unwrap_or(ResizeEdge::empty());
+        let resize_container_edges =
+            super::tree_space::branch_display_layouts(space.tree(), container.root)
+                .find(|info| info.key == key)
+                .map(|info| {
+                    let mut rect = info.rect;
+                    rect.loc -= container.data.logical_pos;
+                    Self::external_edges_for_rect(container.data.size, rect, edges)
+                })
+                .unwrap_or(ResizeEdge::empty());
 
         let resize = InteractiveResize {
             window,

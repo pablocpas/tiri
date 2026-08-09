@@ -1962,3 +1962,42 @@ fn floating_workspace_context_layout_all_preserves_context_like_split_toggle() {
          selected floating container, matching layout toggle split",
     );
 }
+
+/// The two sides of a workspace each ask the space whether they are the focused one, and
+/// the answers have to differ. They used to be two fields, and merging them into one left
+/// the floating side writing the tiled side's answer after it: every tiled tab bar then
+/// drew with no focused tab, because as far as it could tell nothing on its side had focus.
+///
+/// Nothing rendered in the test suite, so this asks the space directly.
+#[test]
+fn the_two_sides_of_a_workspace_do_not_overwrite_each_other_s_focus() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+    ]);
+    layout.update_render_elements(None);
+
+    let workspace = layout.active_workspace().expect("active workspace");
+    let space = workspace.tiling();
+    assert!(
+        space.side_is_active(false),
+        "the tiled side holds the focus, so it must render as active"
+    );
+    assert!(
+        !space.side_is_active(true),
+        "and the floating side must not"
+    );
+
+    check_ops_on_layout(&mut layout, [Op::ToggleWindowFloating { id: Some(1) }]);
+    layout.update_render_elements(None);
+
+    let workspace = layout.active_workspace().expect("active workspace");
+    let space = workspace.tiling();
+    assert!(
+        space.side_is_active(true),
+        "the window floated, so the floating side holds the focus"
+    );
+    assert!(!space.side_is_active(false), "and the tiled side must not");
+}

@@ -17,6 +17,11 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.root == key
     }
 
+    /// Whether this arena still holds a node.
+    pub(in crate::layout) fn holds_node(&self, key: NodeKey) -> bool {
+        self.nodes.contains_key(key)
+    }
+
     /// Get node data by key
     pub(super) fn get_node(&self, key: NodeKey) -> Option<&NodeData<W>> {
         self.nodes.get(key)
