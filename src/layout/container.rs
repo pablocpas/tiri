@@ -434,8 +434,11 @@ pub struct ContainerTree<W: LayoutElement> {
     fullscreen_key: Option<NodeKey>,
     /// Cached layout info for leaves
     leaf_layouts: Vec<LeafLayoutInfo>,
-    /// Pending layouts waiting for transactions to complete.
-    pending_layouts: Option<PendingLayout>,
+    /// Branches whose arrange is waiting for the windows it asked to resize.
+    ///
+    /// One entry per branch, because a branch's windows share space with each other and with
+    /// nothing outside it. See [`PendingLayout`].
+    pending_layouts: Vec<PendingLayout>,
     /// Optional transaction to use for the next atomic layout.
     pending_transaction: Option<Transaction>,
     /// Whether a new layout is requested while a transaction is pending.
@@ -678,7 +681,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             floating_roots: Vec::new(),
             fullscreen_key: None,
             leaf_layouts: Vec::new(),
-            pending_layouts: None,
+            pending_layouts: Vec::new(),
             pending_transaction: None,
             pending_relayout: false,
             view_size,

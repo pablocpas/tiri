@@ -3776,17 +3776,6 @@ fn split_indicator_edge_for_tile<W: LayoutElement>(
     }
 }
 
-/// Leaf layouts to display: the committed layouts, falling back to pending ones while a
-/// resize transaction is still in flight.
-pub(super) fn display_layouts<W: LayoutElement>(tree: &ContainerTree<W>) -> &[LeafLayoutInfo] {
-    if tree.leaf_layouts().is_empty() {
-        tree.pending_leaf_layouts()
-            .unwrap_or_else(|| tree.leaf_layouts())
-    } else {
-        tree.leaf_layouts()
-    }
-}
-
 /// The leaf layouts of one branch — the tiled side, or one floating group.
 ///
 /// One tree holds both sides now, so a consumer that means "my leaves" has to say which
@@ -3796,9 +3785,17 @@ pub(super) fn branch_display_layouts<'a, W: LayoutElement>(
     tree: &'a ContainerTree<W>,
     branch: NodeKey,
 ) -> impl DoubleEndedIterator<Item = &'a LeafLayoutInfo> + 'a {
-    display_layouts(tree)
-        .iter()
-        .filter(move |info| info.branch == branch)
+    // The committed layouts are what is on screen, so they are the answer whenever this
+    // branch has any. It has none only before its first arrange has landed, and then the
+    // pending ones are the only answer there is — asking a neighbour's would be worse than
+    // saying nothing.
+    let committed = tree.leaf_layouts();
+    let source = if committed.iter().any(|info| info.branch == branch) {
+        committed
+    } else {
+        tree.pending_leaf_layouts_for(branch).unwrap_or(committed)
+    };
+    source.iter().filter(move |info| info.branch == branch)
 }
 
 /// Span available to a container's children after subtracting inter-child gaps.

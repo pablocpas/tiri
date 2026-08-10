@@ -8,27 +8,6 @@ use crate::layout::tab_bar::tab_bar_row_height;
 use crate::layout::tile::Tile;
 use crate::utils::transaction::{Transaction, TransactionBlocker};
 
-impl LayoutData {
-    /// Take another branch's results in.
-    ///
-    /// A branch that was arranged separately says nothing about the leaves outside it, so its
-    /// held entries — the ones it carried over unchanged — are dropped rather than allowed to
-    /// overwrite what the other branches just worked out.
-    fn absorb(&mut self, other: LayoutData) {
-        let mine: HashSet<NodeKey> = self.leaf_layouts.iter().map(|info| info.key).collect();
-        self.leaf_layouts.extend(
-            other
-                .leaf_layouts
-                .into_iter()
-                .filter(|info| !mine.contains(&info.key)),
-        );
-        self.container_geometries.extend(other.container_geometries);
-        self.tab_bar_offsets.extend(other.tab_bar_offsets);
-        self.titlebar_flags.extend(other.titlebar_flags);
-        self.tabbed_context_flags.extend(other.tabbed_context_flags);
-    }
-}
-
 #[derive(Debug)]
 pub(in crate::layout) struct LayoutData {
     pub(in crate::layout) leaf_layouts: Vec<LeafLayoutInfo>,
@@ -58,7 +37,23 @@ struct LayoutWalk<'a> {
 }
 
 #[derive(Debug)]
+/// One branch's arrange, held back until the windows it asked to resize have answered.
+///
+/// `arrange_workspace` lays the workspace out with two kinds of call — `arrange_children` for
+/// the tiling list against the workspace's box, `arrange_floating` for each group against its
+/// own — and neither knows about the other. A transaction is what makes one of those atomic
+/// on screen: the new boxes wait until every window that has to change has acked, so a
+/// workspace is never seen half-resized. That is a question about windows that share space,
+/// and windows in different branches share none.
+///
+/// So there is one of these per branch, not one per workspace. With one per workspace, a
+/// window that has been off the workspace and has no reason to answer a configure promptly —
+/// a scratchpad window being shown — held every other window's arrange behind it for the
+/// whole three-hundred-millisecond deadline, and before deadlines were armed at all, forever.
+///
+/// sway/tree/arrange.c:264-322
 pub(super) struct PendingLayout {
+    pub(super) branch: NodeKey,
     pub(in crate::layout) data: LayoutData,
     blocker: TransactionBlocker,
 }
@@ -122,25 +117,34 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// window state must not run over such a snapshot: flushing a configure from it sends
     /// the client bounds computed for a tree that no longer exists.
     pub(in crate::layout) fn pending_layout_is_stale(&self) -> bool {
-        let Some(pending) = &self.pending_layouts else {
+        if self.pending_layouts.is_empty() {
             return false;
-        };
+        }
 
-        let snapshot: HashSet<(NodeKey, NodeKey)> = pending
-            .data
-            .leaf_layouts
-            .iter()
-            .map(|info| (info.key, info.branch))
-            .collect();
-        // Only leaves reachable from the root count: the store can still hold nodes that
-        // were detached but not yet dropped.
+        // Only leaves reachable from a root count: the store can still hold nodes that were
+        // detached but not yet dropped.
         let current: HashSet<(NodeKey, NodeKey)> = self
             .dfs_leaf_keys()
             .into_iter()
             .map(|key| (key, self.branch_root(key)))
             .collect();
 
-        snapshot != current
+        // A branch is stale when the leaves it describes are no longer the leaves that branch
+        // has. The other branches' leaves are in `current` too and are none of its business.
+        self.pending_layouts.iter().any(|pending| {
+            let snapshot: HashSet<(NodeKey, NodeKey)> = pending
+                .data
+                .leaf_layouts
+                .iter()
+                .map(|info| (info.key, info.branch))
+                .collect();
+            let now: HashSet<(NodeKey, NodeKey)> = current
+                .iter()
+                .filter(|(_, branch)| *branch == pending.branch)
+                .copied()
+                .collect();
+            snapshot != now
+        })
     }
 
     /// Point `workspace->fullscreen` at a node, or at nothing.
@@ -153,82 +157,129 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     fn layout_atomic(&mut self, animate_resize: bool) {
-        if self.pending_layouts.is_some() && !self.apply_pending_layouts_if_ready() {
-            // This call only records that another layout is wanted. It is not one of sway's
-            // `arrange_workspace` passes, so it must not resolve fractions yet. Doing that
-            // here normalized the same list again while a client configure was outstanding;
-            // a later sibling swap then rounded the opposite half-pixel and made that pixel
-            // survive the next resize and close.
+        self.apply_pending_layouts_if_ready();
+        if !self.pending_layouts.is_empty() {
+            // A branch still waiting is not re-arranged: this call only records that another
+            // layout is wanted. It is not one of sway's `arrange_workspace` passes, so it must
+            // not resolve fractions yet. Doing that here normalized the same list again while
+            // a client configure was outstanding; a later sibling swap then rounded the
+            // opposite half-pixel and made that pixel survive the next resize and close.
             //
             // sway/tree/arrange.c:15-55,100-140
             self.pending_relayout = true;
             self.readdress_leaf_layouts();
             self.debug_layout_state("layout_atomic_pending");
-            return;
-        }
-        self.pending_relayout = false;
-
-        self.resolve_percents(self.root);
-        for key in self.floating_roots().collect::<Vec<_>>() {
-            self.resolve_percents(key);
+        } else {
+            self.pending_relayout = false;
         }
 
         let root_key = self.root;
         if self.is_empty() && self.floating_roots().next().is_none() {
             self.leaf_layouts.clear();
-            self.pending_layouts = None;
+            self.pending_layouts.clear();
             self.pending_transaction = None;
             self.pending_relayout = false;
             self.debug_layout_state("layout_atomic_empty");
             return;
         }
 
-        // sway's `arrange_workspace` asks one question before it lays anything out: is there a
-        // fullscreen container? If there is, it gives that container the output's box, arranges
-        // it, and returns — the tiled tree underneath is never descended, so every node outside
-        // the fullscreen keeps whatever box it last had.
-        let mut data = match self
+        // A branch that is still waiting is not touched at all — not arranged and, more
+        // importantly, not resolved. Resolving a branch's shares is a write: doing it while
+        // one of its configures is outstanding normalized the same list twice, and a later
+        // sibling swap then rounded the opposite half-pixel and made that pixel survive the
+        // next resize and close.
+        //
+        // sway/tree/arrange.c:15-55,100-140
+        let waiting: HashSet<NodeKey> = self
+            .pending_layouts
+            .iter()
+            .map(|pending| pending.branch)
+            .collect();
+        for branch in std::iter::once(root_key).chain(self.floating_roots().collect::<Vec<_>>()) {
+            if !waiting.contains(&branch) {
+                self.resolve_percents(branch);
+            }
+        }
+
+        let mut requested = false;
+        for (branch, data) in self.arrange_each_branch() {
+            if waiting.contains(&branch) {
+                // Still waiting on its own windows. Its neighbours are not.
+                self.pending_relayout = true;
+                continue;
+            }
+
+            self.record_child_totals(&data);
+            let changed = self.changed_layout_keys(&data);
+            if changed.is_empty() {
+                self.apply_layout_data(branch, data);
+                continue;
+            }
+
+            // The caller's transaction, when there is one, belongs to the tiled side: every
+            // caller that sets one is removing a tiled window, and its close animation has to
+            // stay in step with the windows that grow into the space.
+            let transaction = if branch == root_key {
+                self.pending_transaction.take()
+            } else {
+                None
+            }
+            .unwrap_or_else(Transaction::new);
+
+            self.request_sizes_for_layout(&data, &changed, &transaction, animate_resize);
+            let ready_now = transaction.is_last();
+            self.pending_layouts.push(PendingLayout {
+                branch,
+                data,
+                blocker: transaction.blocker(),
+            });
+            drop(transaction);
+            if ready_now {
+                self.apply_pending_layouts_if_ready();
+            } else {
+                requested = true;
+            }
+        }
+        self.pending_transaction = None;
+
+        if requested {
+            self.readdress_leaf_layouts();
+            self.debug_layout_state("layout_atomic_requested");
+        } else {
+            self.debug_layout_state("layout_atomic_apply");
+        }
+    }
+
+    /// Every branch of the workspace, each laid out in its own box.
+    ///
+    /// sway's `arrange_workspace` asks one question before it lays anything out: is there a
+    /// fullscreen container? If there is, it gives that container the output's box, arranges
+    /// it, and returns — the tiled tree underneath is never descended, so every node outside
+    /// the fullscreen keeps whatever box it last had, and the floating groups are never
+    /// reached either. That is why a fullscreen hides them as well as the tiled windows, and
+    /// it falls out rather than being arranged for.
+    ///
+    /// sway/tree/arrange.c:264-322
+    fn arrange_each_branch(&mut self) -> Vec<(NodeKey, LayoutData)> {
+        let root_key = self.root;
+        if let Some(fullscreen_key) = self
             .fullscreen_key
             .filter(|key| self.nodes.contains_key(*key))
         {
-            Some(fullscreen_key) => self.collect_fullscreen_layout_data(fullscreen_key),
-            None => self.collect_layout_data(root_key),
-        };
-        // `arrange_workspace` lays out the two sides with two calls — `arrange_children` for
-        // the tiling list against the workspace's box, `arrange_floating` for the groups
-        // against their own — and neither knows about the other. The fullscreen branch above
-        // returns before either of them, which is why a fullscreen hides the floating windows
-        // as well as the tiled ones.
-        for root in self.floating_roots_with_areas() {
-            let branch = self.collect_branch_layout_data(root.key, root.area);
-            data.absorb(branch);
-        }
-        self.record_child_totals(&data);
-        let changed = self.changed_layout_keys(&data);
-        if changed.is_empty() {
-            self.pending_layouts = None;
-            self.pending_transaction = None;
-            self.apply_layout_data(data);
-            self.debug_layout_state("layout_atomic_apply");
-            return;
+            return vec![(
+                root_key,
+                self.collect_fullscreen_layout_data(fullscreen_key),
+            )];
         }
 
-        let transaction = self
-            .pending_transaction
-            .take()
-            .unwrap_or_else(Transaction::new);
-        self.request_sizes_for_layout(&data, &changed, &transaction, animate_resize);
-        let should_apply_now = transaction.is_last();
-        self.pending_layouts = Some(PendingLayout {
-            data,
-            blocker: transaction.blocker(),
-        });
-        drop(transaction);
-        if should_apply_now && self.apply_pending_layouts_if_ready() {
-            return;
+        let mut out = vec![(root_key, self.collect_layout_data(root_key))];
+        for root in self.floating_roots_with_areas() {
+            out.push((
+                root.key,
+                self.collect_branch_layout_data(root.key, root.area),
+            ));
         }
-        self.readdress_leaf_layouts();
-        self.debug_layout_state("layout_atomic_requested");
+        out
     }
 
     /// Fill in every share left unset, from the workspace down.
@@ -319,7 +370,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             info.branch = *branch;
             true
         });
-        if let Some(pending) = &mut self.pending_layouts {
+        for pending in &mut self.pending_layouts {
             pending.data.leaf_layouts.retain_mut(|info| {
                 let Some((path, branch)) = addresses.get(&info.key) else {
                     return false;
@@ -355,7 +406,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             }
         };
         preserve(&mut self.leaf_layouts);
-        if let Some(pending) = &mut self.pending_layouts {
+        for pending in &mut self.pending_layouts {
             preserve(&mut pending.data.leaf_layouts);
         }
     }
@@ -385,7 +436,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             }
         };
         refresh(&mut self.leaf_layouts);
-        if let Some(pending) = &mut self.pending_layouts {
+        for pending in &mut self.pending_layouts {
             refresh(&mut pending.data.leaf_layouts);
         }
     }
@@ -415,21 +466,33 @@ impl<W: LayoutElement> ContainerTree<W> {
         true
     }
 
+    /// Commit every branch whose windows have answered. A branch still waiting keeps its
+    /// place in the queue and its neighbours do not wait with it.
     pub(in crate::layout) fn apply_pending_layouts_if_ready(&mut self) -> bool {
-        let Some(pending) = &self.pending_layouts else {
-            return false;
+        let ready: Vec<PendingLayout> = {
+            let mut ready = Vec::new();
+            let mut idx = 0;
+            while idx < self.pending_layouts.len() {
+                if self.pending_layouts[idx].blocker.state() == BlockerState::Released {
+                    ready.push(self.pending_layouts.remove(idx));
+                } else {
+                    idx += 1;
+                }
+            }
+            ready
         };
-        if pending.blocker.state() != BlockerState::Released {
+        if ready.is_empty() {
             return false;
         }
-        let pending = self.pending_layouts.take().unwrap();
-        self.apply_layout_data(pending.data);
+        for pending in ready {
+            self.apply_layout_data(pending.branch, pending.data);
+        }
         self.debug_layout_state("layout_atomic_apply_pending");
         true
     }
 
     pub(in crate::layout) fn has_pending_layouts(&self) -> bool {
-        self.pending_layouts.is_some()
+        !self.pending_layouts.is_empty()
     }
 
     /// Drop a size transaction superseded by a branch transfer.
@@ -440,7 +503,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// (`sway/tree/container.c:1004`) and the maximized arrange decides its next size. An ordinary
     /// floating-to-tiling move still waits for its outstanding configure.
     pub(in crate::layout) fn discard_layout_superseded_by_transfer(&mut self) {
-        self.pending_layouts = None;
+        self.pending_layouts.clear();
         self.pending_transaction = None;
         self.pending_relayout = false;
     }
@@ -585,14 +648,19 @@ impl<W: LayoutElement> ContainerTree<W> {
             &mut walk,
         );
 
-        // The held entries keep their rectangle — that is the box sway is not revisiting — but
-        // not their address: the tree can be reshaped while a fullscreen is up, and a path
-        // into a tree that has moved on is simply wrong. A leaf that is gone is dropped.
+        // A pass describes its own branch and no other: what it does not mention is committed
+        // separately, by whoever arranged it. Inside this branch, though, silence would be
+        // taken for absence — so leaves this pass did not revisit keep their rectangle, which
+        // is the box sway is not revisiting. Not their address: the tree can be reshaped while
+        // a fullscreen is up, and a path into a tree that has moved on is simply wrong. A leaf
+        // that is gone is dropped.
+        let branch = self.branch_root(branch_root);
         let arranged: HashSet<NodeKey> = data.leaf_layouts.iter().map(|info| info.key).collect();
         let held: Vec<LeafLayoutInfo> = self
             .leaf_layouts
             .iter()
             .filter(|info| !arranged.contains(&info.key))
+            .filter(|info| self.branch_root(info.key) == branch)
             .filter_map(|info| {
                 Some(LeafLayoutInfo {
                     path: self.branch_relative_path(info.key)?,
@@ -857,7 +925,14 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    pub(super) fn apply_layout_data(&mut self, data: LayoutData) {
+    /// Commit one branch's arrange.
+    ///
+    /// Only that branch's leaves are replaced: the others are either still on screen as they
+    /// were, or waiting for their own windows, and neither is this pass's to overwrite. They
+    /// are put back in a fixed order — the tiled side, then the floating groups in the order
+    /// the workspace holds them — so that what reads the cache back in order (hit-testing,
+    /// rendering) gets the same answer whichever branch was arranged last.
+    pub(super) fn apply_layout_data(&mut self, branch: NodeKey, data: LayoutData) {
         for (key, rect) in data.container_geometries {
             if let Some(NodeData::Container(container)) = self.get_node_mut(key) {
                 container.set_geometry(rect);
@@ -878,7 +953,34 @@ impl<W: LayoutElement> ContainerTree<W> {
                 tile.set_in_tabbed_context(in_tabbed_context);
             }
         }
-        self.leaf_layouts = data.leaf_layouts;
+        // Out go this branch's old entries, and any entry for a leaf this pass is about to
+        // describe: a leaf that crossed between branches is still one leaf, and its entry
+        // under the branch it left would otherwise sit there beside its new one.
+        let incoming: HashSet<NodeKey> = data.leaf_layouts.iter().map(|info| info.key).collect();
+        // And out go the leaves the tree no longer holds. A whole-workspace replace used to
+        // drop those by construction; keeping the other branches' entries means saying so.
+        let gone: HashSet<NodeKey> = self
+            .leaf_layouts
+            .iter()
+            .map(|info| info.key)
+            .filter(|key| !self.holds_node(*key))
+            .collect();
+        self.leaf_layouts.retain(|info| {
+            info.branch != branch && !incoming.contains(&info.key) && !gone.contains(&info.key)
+        });
+        self.leaf_layouts.extend(data.leaf_layouts);
+        self.sort_leaf_layouts_by_branch();
+    }
+
+    /// The tiled side first, then the floating groups in the workspace's order.
+    fn sort_leaf_layouts_by_branch(&mut self) {
+        let order: HashMap<NodeKey, usize> = std::iter::once(self.root)
+            .chain(self.floating_roots())
+            .enumerate()
+            .map(|(idx, key)| (key, idx))
+            .collect();
+        self.leaf_layouts
+            .sort_by_key(|info| order.get(&info.branch).copied().unwrap_or(usize::MAX));
     }
 
     pub(in crate::layout) fn tab_bar_row_height(&self) -> f64 {

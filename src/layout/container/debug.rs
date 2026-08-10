@@ -15,12 +15,12 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(super) fn debug_layout_state(&self, context: &'static str) {
         let window_count = self.window_count();
         let leaf_count = self.leaf_layouts.len();
-        let pending_leaf_count = self
+        let pending_leaf_count: usize = self
             .pending_layouts
-            .as_ref()
+            .iter()
             .map(|pending| pending.data.leaf_layouts.len())
-            .unwrap_or(0);
-        let has_pending = self.pending_layouts.is_some();
+            .sum();
+        let has_pending = !self.pending_layouts.is_empty();
 
         let orphan_pending = leaf_count == 0 && pending_leaf_count > 0;
         let window_leaf_mismatch = window_count != leaf_count;
@@ -77,7 +77,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                 "leaf layout"
             );
         }
-        if let Some(pending) = &self.pending_layouts {
+        for pending in &self.pending_layouts {
             for info in &pending.data.leaf_layouts {
                 debug!(
                     context = context,

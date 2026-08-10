@@ -91,7 +91,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         self.verify_leaf_layout_cache(self.leaf_layouts.as_slice(), &leaves, "leaf_layouts");
-        if let Some(pending) = &self.pending_layouts {
+        for pending in &self.pending_layouts {
             self.verify_leaf_layout_cache(
                 pending.data.leaf_layouts.as_slice(),
                 &leaves,

@@ -75,16 +75,31 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.leaf_layouts.clone()
     }
 
-    pub(in crate::layout) fn pending_leaf_layouts(&self) -> Option<&[LeafLayoutInfo]> {
+    /// The leaves one waiting branch describes.
+    pub(in crate::layout) fn pending_leaf_layouts_for(
+        &self,
+        branch: NodeKey,
+    ) -> Option<&[LeafLayoutInfo]> {
         self.pending_layouts
-            .as_ref()
+            .iter()
+            .find(|pending| pending.branch == branch)
             .map(|pending| pending.data.leaf_layouts.as_slice())
     }
 
+    /// The leaves every waiting branch describes, together.
+    ///
+    /// Read by the consumers that mean "what will be on screen once the outstanding
+    /// configures land", which does not care which branch each leaf came from.
     pub(in crate::layout) fn pending_leaf_layouts_cloned(&self) -> Option<Vec<LeafLayoutInfo>> {
-        self.pending_layouts
-            .as_ref()
-            .map(|pending| pending.data.leaf_layouts.clone())
+        if self.pending_layouts.is_empty() {
+            return None;
+        }
+        Some(
+            self.pending_layouts
+                .iter()
+                .flat_map(|pending| pending.data.leaf_layouts.iter().cloned())
+                .collect(),
+        )
     }
 
     pub(in crate::layout) fn set_pending_transaction(&mut self, transaction: Transaction) {
