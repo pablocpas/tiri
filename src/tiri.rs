@@ -2419,6 +2419,10 @@ impl Niri {
     ) -> Self {
         let _span = tracy_client::span!("Niri::new");
 
+        // Every transaction handed to a client arms its deadline from here on, so no creator
+        // has to remember to and none can be held open by a client that goes quiet.
+        crate::utils::transaction::set_deadline_registrar(event_loop.clone());
+
         let (executor, scheduler) = calloop::futures::executor().unwrap();
         event_loop.insert_source(executor, |_, _, _| ()).unwrap();
 

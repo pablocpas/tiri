@@ -298,12 +298,6 @@ impl CompositorHandler for State {
                     self.niri.layout.remove_window(&window, transaction.clone());
                     self.add_default_dmabuf_pre_commit_hook(surface);
 
-                    // If this is the only instance, then this transaction will complete
-                    // immediately, so no need to set the timer.
-                    if !transaction.is_last() {
-                        transaction.register_deadline_timer(&self.niri.event_loop);
-                    }
-
                     if was_active {
                         self.maybe_warp_cursor_to_focus();
                     }

@@ -17,6 +17,24 @@ use smithay::wayland::compositor::{Blocker, BlockerState};
 /// Serves to avoid hanging when a client fails to respond to a configure promptly.
 const TIME_LIMIT: Duration = Duration::from_millis(300);
 
+/// Arms a transaction's deadline on the event loop.
+type DeadlineRegistrar = Rc<dyn Fn(&Transaction)>;
+
+// Installed once, at startup, by whoever owns the loop; absent in tests, which drive
+// completion themselves.
+thread_local! {
+    static DEADLINE_REGISTRAR: RefCell<Option<DeadlineRegistrar>> = const { RefCell::new(None) };
+}
+
+/// Teach transactions how to arm their own deadline.
+///
+/// Call once with a handle to the loop everything runs on.
+pub fn set_deadline_registrar<T: 'static>(event_loop: LoopHandle<'static, T>) {
+    let register: DeadlineRegistrar =
+        Rc::new(move |transaction: &Transaction| transaction.register_deadline_timer(&event_loop));
+    DEADLINE_REGISTRAR.with_borrow_mut(|slot| *slot = Some(register));
+}
+
 /// Transaction between Wayland clients.
 ///
 /// How to use it:
@@ -24,15 +42,39 @@ const TIME_LIMIT: Duration = Duration::from_millis(300);
 /// 2. Clone it as many times as you need.
 /// 3. Before adding the transaction as a commit blocker, remember to call
 ///    [`Transaction::add_notification()`] to receive a notification when the transaction completes.
-/// 4. Before adding the transaction as a commit blocker, remember to call
-///    [`Transaction::register_deadline_timer()`] to make sure the transaction completes when
-///    reaching the deadline.
-/// 5. In your surface pre-commit handler, if the transaction corresponding to that commit isn't
+/// 4. In your surface pre-commit handler, if the transaction corresponding to that commit isn't
 ///    ready, get a blocker with [`Transaction::blocker()`] and add it to the surface.
-#[derive(Debug, Clone)]
+///
+/// A transaction always completes. It completes early when its last clone is dropped, and at
+/// its deadline otherwise — the deadline is armed by the first clone, which is the moment it
+/// stops being solely its creator's to complete. This used to be step 4 of the list above,
+/// something every creator had to remember, and the one that never did was the layout: it has
+/// no loop handle and no business holding one. A client that was sent a configure and never
+/// committed then held its clone for good, and the workspace it was in stopped laying out —
+/// not just for that window, for everything in it, until something else rebuilt the tree.
+#[derive(Debug)]
 pub struct Transaction {
     inner: Arc<Inner>,
     deadline: Rc<RefCell<Deadline>>,
+}
+
+impl Clone for Transaction {
+    fn clone(&self) -> Self {
+        // Handing out a clone is what makes someone else's silence able to hold this open, so
+        // it is also what the deadline is for. Arming it here rather than in `new` costs
+        // nothing for the transactions that never leave home.
+        if matches!(&*self.deadline.borrow(), Deadline::NotRegistered(_)) {
+            let registrar = DEADLINE_REGISTRAR.with_borrow(|slot| slot.clone());
+            if let Some(register) = registrar {
+                register(self);
+            }
+        }
+
+        Self {
+            inner: Arc::clone(&self.inner),
+            deadline: Rc::clone(&self.deadline),
+        }
+    }
 }
 
 /// Blocker for a [`Transaction`].
@@ -42,7 +84,12 @@ pub struct TransactionBlocker(Weak<Inner>);
 #[derive(Debug)]
 enum Deadline {
     NotRegistered(Instant),
-    Registered { remove: Ping },
+    Registered {
+        remove: Ping,
+    },
+    /// Armed by a stand-in registrar; only tests produce this.
+    #[cfg(test)]
+    Armed,
 }
 
 #[derive(Debug)]
@@ -83,7 +130,7 @@ impl Transaction {
     }
 
     /// Registers this transaction's deadline timer on an event loop.
-    pub fn register_deadline_timer<T: 'static>(&self, event_loop: &LoopHandle<'static, T>) {
+    fn register_deadline_timer<T: 'static>(&self, event_loop: &LoopHandle<'static, T>) {
         let mut cell = self.deadline.borrow_mut();
         if let Deadline::NotRegistered(deadline) = *cell {
             let timer = Timer::from_deadline(deadline);
@@ -189,5 +236,42 @@ impl Inner {
                 };
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A transaction that has been handed to someone else must arm its deadline, because from
+    /// that moment its completion is not solely its creator's to decide. Every creator used to
+    /// be asked to remember, and the layout — which has no loop handle — never did.
+    #[test]
+    fn handing_out_a_clone_arms_the_deadline() {
+        let armed = Rc::new(RefCell::new(0usize));
+        let counter = Rc::clone(&armed);
+        DEADLINE_REGISTRAR.with_borrow_mut(|slot| {
+            *slot = Some(Rc::new(move |transaction: &Transaction| {
+                *counter.borrow_mut() += 1;
+                // Stand in for the loop: mark it registered so it is not armed twice.
+                *transaction.deadline.borrow_mut() = Deadline::Armed;
+            }));
+        });
+
+        let transaction = Transaction::new();
+        assert_eq!(
+            *armed.borrow(),
+            0,
+            "a transaction nobody holds needs no timer"
+        );
+
+        let first = transaction.clone();
+        assert_eq!(*armed.borrow(), 1, "the first clone arms it");
+
+        let _second = transaction.clone();
+        let _third = first.clone();
+        assert_eq!(*armed.borrow(), 1, "and later ones do not arm it again");
+
+        DEADLINE_REGISTRAR.with_borrow_mut(|slot| *slot = None);
     }
 }
