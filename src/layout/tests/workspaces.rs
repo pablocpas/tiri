@@ -214,7 +214,10 @@ fn sticky_and_scratchpad_roundtrips_keep_node_identity() {
     assert_eq!(workspace_node_key(&layout, 1), key);
 
     layout.move_window_to_scratchpad(Some(&1));
-    assert_eq!(layout.scratchpad.front().map(Tile::node_key), Some(key));
+    assert_eq!(
+        layout.scratchpad.tiles().next().map(Tile::node_key),
+        Some(key)
+    );
     layout.scratchpad_show();
     assert_eq!(workspace_node_key(&layout, 1), key);
 }

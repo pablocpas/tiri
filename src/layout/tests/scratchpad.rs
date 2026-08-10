@@ -714,3 +714,41 @@ fn a_shown_scratchpad_window_has_a_size() {
         "the scratchpad window's group must have a box: {area:?}"
     );
 }
+
+/// A window in the scratchpad is a window on a workspace: laid out, with a box of its own.
+///
+/// It used to be a detached tile in a queue, arranged by nobody. That is why showing one cost
+/// a full resize handshake with a client that had been idle — the window had no box, so the
+/// arrange that gave it one waited for a configure the client was in no hurry to ack, and the
+/// wait was the whole transaction deadline.
+#[test]
+fn a_hidden_scratchpad_window_is_laid_out_while_it_is_hidden() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::MoveWindowToScratchpad { id: Some(2) },
+    ]);
+    layout.update_render_elements(None);
+
+    let scratchpad = layout.scratchpad_for_test();
+    assert!(
+        scratchpad.has_window(&2),
+        "the hidden window is on the scratchpad workspace"
+    );
+
+    let tree = scratchpad.tiling().tree();
+    let key = tree.window_key(&2).expect("hidden window is in the arena");
+    let root = tree.branch_root(key);
+    let area = tree
+        .floating_area(root)
+        .expect("a hidden scratchpad window floats, like sway's");
+    assert!(
+        area.size.w > 0.0 && area.size.h > 0.0,
+        "and it is laid out while hidden, so coming back is a move and not a negotiation: {area:?}"
+    );
+}

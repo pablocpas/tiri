@@ -31,7 +31,7 @@
 //! workspace just like any other. Then they come back, reconnect the second monitor, and now we
 //! don't want an unassuming workspace to end up on it.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::mem;
 use std::rc::Rc;
 use std::time::Duration;
@@ -474,8 +474,18 @@ pub struct Layout<W: LayoutElement> {
     overview_open: bool,
     /// The overview zoom progress.
     overview_progress: Option<OverviewProgress>,
-    /// Hidden scratchpad windows (round-robin queue).
-    scratchpad: VecDeque<Tile<W>>,
+    /// The scratchpad: a workspace that is never on an output.
+    ///
+    /// sway's scratchpad is `__i3_scratch`, an ordinary workspace on a hidden output, and a
+    /// window in it is a window on a workspace — laid out, configured, and in step with its
+    /// client like any other. Showing one is `move to workspace`, and there is no third state
+    /// for a window to be in.
+    ///
+    /// Tiri kept a queue of detached tiles instead. A detached tile is arranged by nobody, so
+    /// it had no box while hidden and needed a full resize handshake with an idle client on
+    /// the way back — which is what made showing one take the whole transaction deadline.
+    /// Everything that walks the layout also had to remember the queue was there.
+    scratchpad: Workspace<W>,
     /// Configurable properties of the layout.
     options: Rc<Options>,
 }
@@ -905,6 +915,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn with_options(clock: Clock, options: Options) -> Self {
+        let options = Rc::new(options);
         Self {
             monitor_set: MonitorSet::NoOutputs { workspaces: vec![] },
             is_active: true,
@@ -912,12 +923,12 @@ impl<W: LayoutElement> Layout<W> {
             seat_focus: SeatFocusStack::new(),
             interactive_move: None,
             dnd: None,
+            scratchpad: Workspace::new_scratchpad(clock.clone(), options.clone()),
             clock,
             update_render_elements_time: Duration::ZERO,
             overview_open: false,
             overview_progress: None,
-            scratchpad: VecDeque::new(),
-            options: Rc::new(options),
+            options,
         }
     }
 
@@ -939,11 +950,11 @@ impl<W: LayoutElement> Layout<W> {
             seat_focus: SeatFocusStack::new(),
             interactive_move: None,
             dnd: None,
+            scratchpad: Workspace::new_scratchpad(clock.clone(), opts.clone()),
             clock,
             update_render_elements_time: Duration::ZERO,
             overview_open: false,
             overview_progress: None,
-            scratchpad: VecDeque::new(),
             options: opts,
         }
     }
@@ -1383,15 +1394,11 @@ impl<W: LayoutElement> Layout<W> {
             }
         }
 
-        if let Some(idx) = self
-            .scratchpad
-            .iter()
-            .position(|tile| tile.window().id() == window)
-        {
+        if self.scratchpad.has_window(window) {
             let tile = self
                 .scratchpad
-                .remove(idx)
-                .expect("scratchpad index should be valid");
+                .take_tile_for_scratchpad(window)
+                .expect("the scratchpad said it had this window");
             return Some(RemovedTile {
                 width: ColumnWidth::Fixed(tile.tile_expected_or_current_size().w as i32),
                 tile,
@@ -1500,7 +1507,7 @@ impl<W: LayoutElement> Layout<W> {
 
         if let Some(tile) = self
             .scratchpad
-            .iter_mut()
+            .tiles_mut()
             .find(|tile| tile.window().id() == window)
         {
             if let Some(serial) = serial {
@@ -1802,7 +1809,7 @@ impl<W: LayoutElement> Layout<W> {
 
         if let Some(window) = self
             .scratchpad
-            .iter()
+            .tiles()
             .find(|tile| tile.window().is_wl_surface(wl_surface))
             .map(|tile| tile.window())
         {
@@ -1866,7 +1873,7 @@ impl<W: LayoutElement> Layout<W> {
         let location = if matches!(location, Location::NotFound) {
             if self
                 .scratchpad
-                .iter()
+                .tiles()
                 .any(|tile| tile.window().is_wl_surface(wl_surface))
             {
                 Location::Scratchpad
@@ -1915,7 +1922,7 @@ impl<W: LayoutElement> Layout<W> {
             Location::Scratchpad => {
                 if let Some(window) = self
                     .scratchpad
-                    .iter_mut()
+                    .tiles_mut()
                     .find(|tile| tile.window().is_wl_surface(wl_surface))
                     .map(|tile| tile.window_mut())
                 {
@@ -2235,7 +2242,7 @@ impl<W: LayoutElement> Layout<W> {
             f(move_.tile.window(), Some(&move_.output), None, layout);
         }
 
-        for tile in &self.scratchpad {
+        for tile in self.scratchpad.tiles() {
             let layout = tile.ipc_layout_template();
             f(tile.window(), None, None, layout);
         }
@@ -2270,7 +2277,7 @@ impl<W: LayoutElement> Layout<W> {
             f(move_.tile.window_mut(), Some(&move_.output));
         }
 
-        for tile in &mut self.scratchpad {
+        for tile in self.scratchpad.tiles_mut() {
             f(tile.window_mut(), None);
         }
 
@@ -4023,6 +4030,8 @@ impl<W: LayoutElement> Layout<W> {
                 }
             }
         }
+
+        self.scratchpad.advance_animations();
     }
 
     pub fn are_animations_ongoing(&self, output: Option<&Output>) -> bool {
@@ -4123,6 +4132,10 @@ impl<W: LayoutElement> Layout<W> {
                 mon.update_render_elements(is_active);
             }
         }
+
+        // Never active: nothing in the scratchpad is on screen. It still needs the pass, which
+        // is where a branch's arrange is committed once its windows have answered.
+        self.scratchpad.update_render_elements(false);
     }
 
     pub fn update_shaders(&mut self) {
@@ -4737,7 +4750,7 @@ impl<W: LayoutElement> Layout<W> {
 
         if self
             .scratchpad
-            .iter()
+            .tiles()
             .any(|tile| tile.window().id() == &target)
         {
             return;
@@ -4758,7 +4771,7 @@ impl<W: LayoutElement> Layout<W> {
                 let Some(tile) = tile else {
                     return;
                 };
-                self.scratchpad.push_back(tile);
+                self.scratchpad.hide_in_scratchpad(tile);
 
                 if monitor.workspace_switch.is_none() {
                     monitor.clean_up_workspaces();
@@ -4773,7 +4786,7 @@ impl<W: LayoutElement> Layout<W> {
                 let Some(tile) = tile else {
                     return;
                 };
-                self.scratchpad.push_back(tile);
+                self.scratchpad.hide_in_scratchpad(tile);
                 workspaces.retain(|ws| ws.has_windows_or_persistent_identity());
             }
         }
@@ -4801,17 +4814,17 @@ impl<W: LayoutElement> Layout<W> {
             })
         });
 
-        let mut scratchpad = mem::take(&mut self.scratchpad);
-
+        // Showing one that is already out puts it away again; showing one that is out on
+        // another workspace brings it here; otherwise the next one hidden comes out. Three
+        // moves between workspaces, which is all sway's scratchpad ever does.
         if let Some((ws_id, visible_id)) = visible_elsewhere {
             if ws_id == active_ws_id {
-                if let Some(workspace) = self.active_workspace_mut() {
-                    if let Some(tile) = workspace.take_tile_for_scratchpad(&visible_id) {
-                        scratchpad.push_back(tile);
-                    }
+                let tile = self
+                    .active_workspace_mut()
+                    .and_then(|workspace| workspace.take_tile_for_scratchpad(&visible_id));
+                if let Some(tile) = tile {
+                    self.scratchpad.hide_in_scratchpad(tile);
                 }
-
-                self.scratchpad = scratchpad;
                 return;
             }
 
@@ -4819,11 +4832,10 @@ impl<W: LayoutElement> Layout<W> {
                 .find_workspace_location_by_id(ws_id)
                 .map(|(idx, _)| idx);
 
-            let tile = {
-                self.workspaces_mut()
-                    .find(|ws| ws.id() == ws_id)
-                    .and_then(|ws| ws.take_tile_for_scratchpad(&visible_id))
-            };
+            let tile = self
+                .workspaces_mut()
+                .find(|ws| ws.id() == ws_id)
+                .and_then(|ws| ws.take_tile_for_scratchpad(&visible_id));
 
             if let (Some(monitor_idx), MonitorSet::Normal { monitors, .. }) =
                 (source_monitor_idx, &mut self.monitor_set)
@@ -4836,16 +4848,16 @@ impl<W: LayoutElement> Layout<W> {
             if let (Some(tile), Some(monitor)) = (tile, self.active_monitor()) {
                 monitor.add_scratchpad_tile(tile, true);
             }
-
-            self.scratchpad = scratchpad;
             return;
         }
 
-        let next = scratchpad.pop_front();
-        if let (Some(tile), Some(monitor)) = (next, self.active_monitor()) {
+        let Some(next) = self.scratchpad.next_scratchpad_window() else {
+            return;
+        };
+        let tile = self.scratchpad.take_tile_for_scratchpad(&next);
+        if let (Some(tile), Some(monitor)) = (tile, self.active_monitor()) {
             monitor.add_scratchpad_tile(tile, true);
         }
-        self.scratchpad = scratchpad;
     }
 
     pub fn mark_focused(&mut self, mark: String, mode: MarkMode) {
@@ -7199,6 +7211,11 @@ impl<W: LayoutElement> Layout<W> {
                 }
             }
         }
+
+        // The scratchpad is a workspace and is refreshed like one. This is what keeps a
+        // hidden window in step with its client: its configures go out and are acked while it
+        // is away, so bringing it back is a move rather than a negotiation.
+        self.scratchpad.refresh(false, false);
     }
 
     pub fn are_window_resize_animations_enabled(&self) -> bool {
@@ -7281,7 +7298,7 @@ impl<W: LayoutElement> Layout<W> {
             .monitors()
             .flat_map(|mon| mon.sticky_windows().map(move |win| (Some(mon), win)));
 
-        let scratchpad = self.scratchpad.iter().map(|tile| (None, tile.window()));
+        let scratchpad = self.scratchpad.tiles().map(|tile| (None, tile.window()));
 
         moving_window.chain(rest).chain(sticky).chain(scratchpad)
     }
@@ -7289,7 +7306,7 @@ impl<W: LayoutElement> Layout<W> {
     fn tile_has_mark(&self, id: &W::Id, mark: &str) -> bool {
         if self
             .scratchpad
-            .iter()
+            .tiles()
             .any(|tile| tile.window().id() == id && tile.has_mark(mark))
         {
             return true;
@@ -7316,7 +7333,7 @@ impl<W: LayoutElement> Layout<W> {
 
         if let Some(tile) = self
             .scratchpad
-            .iter_mut()
+            .tiles_mut()
             .find(|tile| tile.window().id() == id)
         {
             f.take().unwrap()(tile);
@@ -7353,7 +7370,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     fn remove_mark_everywhere(&mut self, mark: &str) {
-        for tile in &mut self.scratchpad {
+        for tile in self.scratchpad.tiles_mut() {
             tile.remove_mark(mark);
         }
 
@@ -7372,6 +7389,11 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn has_window(&self, window: &W::Id) -> bool {
         self.windows().any(|(_, win)| win.id() == window)
+    }
+
+    #[cfg(test)]
+    pub fn scratchpad_for_test(&self) -> &Workspace<W> {
+        &self.scratchpad
     }
 
     pub fn is_overview_open(&self) -> bool {

@@ -515,6 +515,17 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
+    /// The scratchpad: a workspace that is never on an output.
+    ///
+    /// sway's `__i3_scratch` is an ordinary workspace on a hidden output, which is what makes
+    /// a hidden window an ordinary window — arranged, configured, and in step with its client
+    /// rather than waiting to be told what it is on the way back out.
+    pub fn new_scratchpad(clock: Clock, options: Rc<Options>) -> Self {
+        let mut workspace = Self::new_with_config_no_outputs(None, clock, options);
+        workspace.identity = WorkspaceIdentity::Anonymous;
+        workspace
+    }
+
     pub fn new_with_config_no_outputs(
         mut config: Option<WorkspaceConfig>,
         clock: Clock,
@@ -2881,6 +2892,21 @@ impl<W: LayoutElement> Workspace<W> {
         }
 
         Some(tile)
+    }
+
+    /// Put a window away, at the back of the round-robin order.
+    ///
+    /// The order is the floating stack's: a hidden window goes on top, so the one hidden
+    /// longest ago is at the bottom, and that is the one [`Self::next_scratchpad_window`]
+    /// brings out. A queue, said with the ordering the workspace already has rather than with
+    /// one beside it.
+    pub fn hide_in_scratchpad(&mut self, tile: Tile<W>) {
+        self.add_scratchpad_tile(tile, false);
+    }
+
+    /// The window `scratchpad show` would bring out next: the one hidden longest ago.
+    pub fn next_scratchpad_window(&self) -> Option<W::Id> {
+        self.windows().last().map(|window| window.id().clone())
     }
 
     pub fn add_scratchpad_tile(&mut self, mut tile: Tile<W>, activate: bool) {
