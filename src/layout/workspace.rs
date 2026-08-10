@@ -592,39 +592,39 @@ impl<W: LayoutElement> Workspace<W> {
         Self::new_with_config_no_outputs(None, clock, options)
     }
 
-    fn assign_default_floating_size_if_missing(
-        &self,
-        tile: &mut Tile<W>,
-        animate: bool,
-    ) -> Option<Size<i32, Logical>> {
-        if tile.floating_window_size.is_some() {
-            return None;
-        }
+    /// The size a window gets when the scratchpad floats it.
+    ///
+    /// `container_floating_set_default_size`: half the workspace's width and three quarters of
+    /// its height, clamped by `floating_calculate_constraints`. It is a fraction of the
+    /// workspace, not the size the window asked for and not the size it had while tiled —
+    /// `floating enable` is the one that keeps a window's own idea of its size, and the
+    /// scratchpad is not that.
+    ///
+    /// The fraction is of the workspace box, which is the usable area; the constraints are of
+    /// the whole output layout, which is not. The two are different boxes in sway and are here
+    /// too. And it is the *content* size: sway assigns `content_width`/`content_height` and
+    /// lets `container_set_geometry_from_content` add the border and title bar.
+    ///
+    /// sway/tree/container.c:959-980,842-878
+    fn scratchpad_default_size(&self, tile: &Tile<W>) -> Size<i32, Logical> {
+        let workspace_box = self.space.working_area().size;
+        let mut size = Size::from((
+            (workspace_box.w * 0.5).floor() as i32,
+            (workspace_box.h * 0.75).floor() as i32,
+        ));
 
-        // sway's `floating_natural_resize`: the window gets the size it asked for when it
-        // mapped, not a fraction of anything. `container_floating_resize_and_center` then
-        // centres it, which is what the caller already does.
-        //
-        // The bounds are `floating_calculate_constraints` on its automatic settings: a floor
-        // of 75 by 50 whatever the client asked for, and as the ceiling the box of the whole
-        // output layout — `wlr_output_layout_get_box(root->output_layout, NULL, &box)`, which
-        // is the output itself here and *not* the working area, since gaps and layer-shell
-        // exclusive zones are not part of it. The floor is applied outside the ceiling, as
-        // sway applies it, so it wins on an output too small to hold it.
+        // `floating_calculate_constraints` on its automatic settings: a floor of 75 by 50, and
+        // as the ceiling the box of the whole output layout. The floor is applied outside the
+        // ceiling, as sway applies it, so it wins on an output too small to hold it.
         let view_size = self.space.view_size();
-        let mut size = tile.window().natural_size();
         size.w = size.w.min(view_size.w.floor() as i32).max(75);
         size.h = size.h.min(view_size.h.floor() as i32).max(50);
 
-        // Respect min/max size constraints from the window.
         let min_size = tile.window().min_size();
         let max_size = tile.window().max_size();
         size.w = ensure_min_max_size(size.w, min_size.w, max_size.w);
         size.h = ensure_min_max_size(size.h, min_size.h, max_size.h);
-
-        tile.floating_window_size = Some(size);
-        tile.window_mut().request_size_once(size, animate);
-        Some(size)
+        size
     }
 
     pub fn id(&self) -> WorkspaceId {
@@ -2862,33 +2862,38 @@ impl<W: LayoutElement> Workspace<W> {
         tile.set_scratchpad(true);
         tile.window_mut().set_floating(true);
 
+        // `root_scratchpad_add_container`: a window that was already floating is put away
+        // exactly as it is, size and position untouched. A tiled one is floated first, and
+        // floating it is what decides its size — sway does that with
+        // `container_floating_set_default_size` and `container_floating_move_to_center`, not
+        // with the natural size a `floating enable` would have given it.
+        //
+        // sway/tree/root.c:114-119
         if !removed.is_floating {
             tile.stop_move_animations();
             tile.clear_resize_animation();
             tile.pending_maximized = false;
-            // Always center scratchpad windows when first shown.
             tile.floating_pos = None;
 
-            if let Some(size) = self.assign_default_floating_size_if_missing(&mut tile, false) {
-                let working_size = self.space.working_area().size;
-                let size_f = Size::from((size.w as f64, size.h as f64));
-                let pos = center_preferring_top_left_in_area(self.space.working_area(), size_f);
-                tile.floating_pos = Some(
-                    self.floating
-                        .logical_to_size_frac(self.space.working_area(), pos),
-                );
+            let size = self.scratchpad_default_size(&tile);
+            tile.floating_window_size = Some(size);
+            tile.window_mut().request_size_once(size, false);
 
-                let border_config = self
-                    .options
-                    .layout
-                    .border
-                    .merged_with(&tile.window().rules().border);
-                let bounds = compute_toplevel_bounds(border_config, working_size);
-                let win = tile.window_mut();
-                win.set_bounds(bounds);
-                win.send_pending_configure();
-                win.refresh();
-            }
+            let working_area = self.space.working_area();
+            let size_f = Size::from((size.w as f64, size.h as f64));
+            let pos = center_preferring_top_left_in_area(working_area, size_f);
+            tile.floating_pos = Some(self.floating.logical_to_size_frac(working_area, pos));
+
+            let border_config = self
+                .options
+                .layout
+                .border
+                .merged_with(&tile.window().rules().border);
+            let bounds = compute_toplevel_bounds(border_config, working_area.size);
+            let win = tile.window_mut();
+            win.set_bounds(bounds);
+            win.send_pending_configure();
+            win.refresh();
         }
 
         Some(tile)

@@ -752,3 +752,86 @@ fn a_hidden_scratchpad_window_is_laid_out_while_it_is_hidden() {
         "and it is laid out while hidden, so coming back is a move and not a negotiation: {area:?}"
     );
 }
+
+/// The size the scratchpad gives a window it floats.
+///
+/// `root_scratchpad_add_container` floats a tiled window and calls
+/// `container_floating_set_default_size`, which is half the workspace's width and three
+/// quarters of its height — not the size the window asked for, and not the size it had while
+/// tiled. It is `floating enable` that keeps a window's own idea of its size.
+///
+/// sway/tree/root.c:114-119, sway/tree/container.c:959-980
+#[test]
+fn hiding_a_tiled_window_gives_it_half_the_width_and_three_quarters_of_the_height() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::MoveWindowToScratchpad { id: Some(2) },
+    ]);
+    layout.update_render_elements(None);
+
+    let scratchpad = layout.scratchpad_for_test();
+    let working_area = scratchpad.tiling().parent_area().size;
+    let tile = scratchpad
+        .tiles()
+        .find(|tile| tile.window().id() == &2)
+        .expect("the hidden window");
+    let size = tile
+        .window()
+        .expected_size()
+        .expect("the scratchpad asked it for a size");
+
+    assert_eq!(
+        (size.w, size.h),
+        (
+            (working_area.w * 0.5).floor() as i32,
+            (working_area.h * 0.75).floor() as i32
+        ),
+        "half the workspace's width and three quarters of its height"
+    );
+}
+
+/// The other half of the same rule: a window that was already floating is put away exactly as
+/// it is. sway only resizes when it has to float the window itself.
+#[test]
+fn hiding_a_floating_window_leaves_its_size_alone() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::SetWindowFloating {
+            id: Some(1),
+            floating: true,
+        },
+    ]);
+    layout.update_render_elements(None);
+
+    let before = layout
+        .active_workspace()
+        .expect("active workspace")
+        .tiles()
+        .find(|tile| tile.window().id() == &1)
+        .and_then(|tile| tile.window().expected_size())
+        .expect("a floating window has a size");
+
+    check_ops_on_layout(&mut layout, [Op::MoveWindowToScratchpad { id: Some(1) }]);
+    layout.update_render_elements(None);
+
+    let after = layout
+        .scratchpad_for_test()
+        .tiles()
+        .find(|tile| tile.window().id() == &1)
+        .and_then(|tile| tile.window().expected_size())
+        .expect("the hidden window");
+
+    assert_eq!(
+        before, after,
+        "an already-floating window is put away as it is"
+    );
+}
