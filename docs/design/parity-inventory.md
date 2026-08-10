@@ -15,8 +15,8 @@ not of the ground.
 | | |
 |---|---|
 | sway functions in the domain | 93 |
-| cited in tiri | 24 |
-| not yet cited | 69 |
+| cited in tiri | 26 |
+| not yet cited | 67 |
 
 Domain: `sway/tree/{container,workspace,arrange}.c` and the commands that reshape the
 tree — `move`, `split`, `layout`, `focus`, `resize`, `fullscreen`, `swap`. Excluded:
@@ -30,6 +30,7 @@ seat device configuration, marks, scratchpad, criteria, bars, output layout.
 - `arrange_workspace`
 - `container_create`
 - `container_detach`
+- `container_floating_move_to_center`
 - `container_floating_resize_and_center`
 - `container_floating_set_default_size`
 - `container_is_floating`
@@ -41,6 +42,7 @@ seat device configuration, marks, scratchpad, criteria, bars, output layout.
 - `container_replace`
 - `container_resize_tiled`
 - `container_set_floating`
+- `container_set_geometry_from_content`
 - `container_split`
 - `container_squash`
 - `workspace_add_floating`
@@ -66,7 +68,6 @@ one that does not is worth a line saying so, here or at its call site.
 - `container_flatten`
 - `container_floating_find_output`
 - `container_floating_move_to`
-- `container_floating_move_to_center`
 - `container_floating_translate`
 - `container_fullscreen_disable`
 - `container_fullscreen_global`
@@ -95,7 +96,6 @@ one that does not is worth a line saying so, here or at its call site.
 - `container_obstructing_fullscreen_container`
 - `container_raise_floating`
 - `container_set_fullscreen`
-- `container_set_geometry_from_content`
 - `container_set_resizing`
 - `container_sibling_index`
 - `container_squash_children`

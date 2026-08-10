@@ -2232,3 +2232,31 @@ fn insert_position_empty_workspace_returns_new_column() {
 
     assert!(matches!(insert_pos, InsertPosition::NewColumn(0)));
 }
+
+/// A workspace whose last tiled window leaves still has to have a focused leaf if a floating
+/// one stays behind.
+///
+/// `seat_get_focus_inactive` answers for any non-empty container in sway, and every descent
+/// into a workspace asks it. The fallback every path took when it lost its focused node
+/// walked from the workspace root, which is the tiled side alone — correct while the floating
+/// side was a tree of its own, because then an empty tiling tree really did mean an empty
+/// workspace. With one arena it left a workspace holding a window and answering "nothing".
+///
+/// Found by the ops fuzz.
+#[test]
+fn a_workspace_left_with_only_a_floating_window_still_has_a_focused_leaf() {
+    check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::SetWindowFloating {
+            id: Some(1),
+            floating: true,
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::MoveColumnToWorkspaceDown(false),
+    ]);
+}

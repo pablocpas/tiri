@@ -495,10 +495,31 @@ impl<W: LayoutElement> ContainerTree<W> {
                     && self.nodes.contains_key(*candidate)
             })
             .or_else(|| self.focus_inactive_view(root))
+            // The seat's order is emptied by an insert before the new window is placed, so
+            // when the workspace's only window is floating there is nothing in it to find and
+            // nothing under the tiled root either. A floating window is still a window this
+            // workspace can answer with.
+            .or_else(|| self.dfs_leaf_keys().first().copied())
     }
 
+    /// Focus what this workspace answers with when nothing has said otherwise.
+    ///
+    /// The tiled side first, because that is where a workspace's first window goes. Then any
+    /// leaf at all: a workspace whose only window is floating is not one where nothing is
+    /// focused, and `seat_get_focus_inactive` has to answer for it too. Only an empty
+    /// workspace clears the seat.
+    ///
+    /// The tiled-only version was right while the floating side was a tree of its own — an
+    /// empty tiling tree really did mean an empty workspace. It is the caller of last resort
+    /// for every path that loses its focused node, so it was the one place that had to learn
+    /// there are two sides.
+    ///
+    /// sway/input/seat.c:1415
     pub(super) fn focus_first_leaf(&mut self) {
-        if let Some(key) = self.first_leaf_key() {
+        let key = self
+            .first_leaf_key()
+            .or_else(|| self.dfs_leaf_keys().first().copied());
+        if let Some(key) = key {
             self.focus_node_key(key);
         } else {
             self.seat.clear();
@@ -516,10 +537,22 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Re-derive the per-container focus chain from the focused leaf, falling back to the
-    /// first leaf when nothing is focused.
+    /// most recently focused window in the workspace when nothing is focused.
+    ///
+    /// Both sides. `focus_first_leaf` walks from the workspace root, which is the tiled side
+    /// alone, and a workspace whose only window is floating would come out of an insert with
+    /// nothing focused — `seat_get_focus_inactive` has no answer for it, and every descent
+    /// into that workspace asks. It was correct while the floating side was a tree of its own
+    /// and an empty tiling tree really did mean an empty workspace. One arena, one answer.
+    ///
+    /// sway/input/seat.c:1415
     pub(super) fn resync_focus(&mut self) {
-        if self.focused_key().is_none() {
-            self.focus_first_leaf();
+        if self.focused_key().is_some() {
+            return;
+        }
+        match self.focus_inactive_anywhere() {
+            Some(key) => self.focus_node_key(key),
+            None => self.focus_first_leaf(),
         }
     }
 }

@@ -2658,10 +2658,55 @@ impl<W: LayoutElement> Layout<W> {
         }
     }
 
+    /// What the seat's MRU is allowed to be.
+    ///
+    /// Not that it is fresh: it is pruned opportunistically rather than on every mutation, so
+    /// entries whose workspace has gone are expected and the restore path drops them. What it
+    /// must be is coherent about the workspaces that are still here — an entry naming a live
+    /// workspace is one a restore will pick, and if what it says about that workspace is no
+    /// longer true the restore lands on a real window that is simply not the right one. That
+    /// is the one failure this cache can have that leaves nothing behind: no crash, no
+    /// assertion, and nothing on screen to tell you.
+    #[cfg(test)]
+    fn verify_seat_focus(&self) {
+        assert!(
+            self.seat_focus.len() <= self.seat_focus.max_len(),
+            "the seat's MRU is bounded: nothing prunes it on every mutation, so the bound is \
+             what stands between it and one entry per focus change for the life of the session"
+        );
+
+        // Compared by what each entry names, which is what a restore looks it up by. Window
+        // ids are only `PartialEq` here, so this is the quadratic form rather than a set;
+        // the stack is bounded and this runs under `debug_assertions`.
+        let stack = self.seat_focus.snapshot();
+        for (idx, node) in stack.iter().enumerate() {
+            assert!(
+                !stack[..idx].iter().any(|earlier| earlier == node),
+                "a focus target must appear once: with the same one twice, \
+                 \"most recently focused\" does not name anything"
+            );
+        }
+    }
+
     fn seat_focus_after_mutation(&mut self) {
         let mut snapshot = self.seat_focus.snapshot();
         snapshot.retain(|node| self.seat_focus_node_valid(node));
         self.seat_focus.replace_from_snapshot(snapshot);
+
+        // The one moment the MRU is meant to be wholly true, so the one place it can be said.
+        // Between these calls it is deliberately not: `seat_focus_node_valid` is stricter than
+        // what a restore accepts — it wants the node itself, while a restore will settle for
+        // whoever now stands where that node used to — and pruning on every mutation would
+        // throw away entries the restore could still have used. Which is why the global
+        // invariant checks the shape of this cache and not the truth of it.
+        debug_assert!(
+            self.seat_focus
+                .snapshot()
+                .iter()
+                .all(|node| self.seat_focus_node_valid(node)),
+            "pruning the seat's MRU must leave every entry valid"
+        );
+
         self.seat_focus_record_active_chain();
     }
 
@@ -3684,6 +3729,8 @@ impl<W: LayoutElement> Layout<W> {
         use std::collections::HashSet;
 
         use approx::assert_abs_diff_eq;
+
+        self.verify_seat_focus();
 
         let zoom = self.overview_zoom();
 

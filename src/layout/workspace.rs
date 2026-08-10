@@ -248,6 +248,12 @@ pub enum ResolvedSize {
     Window(f64),
 }
 
+/// How many tiling restore targets a workspace keeps.
+///
+/// The stack is never pruned when the tree changes under it, so this bound is the only thing
+/// standing between it and one entry per focus change for the life of the workspace.
+const INACTIVE_TILING_FOCUS_STACK_LEN: usize = 64;
+
 /// Where command focus sits, independent of which layer is active.
 ///
 /// The active *layer* (tiling vs floating) is always given by [`FloatingActive`]; this only
@@ -1344,9 +1350,8 @@ impl<W: LayoutElement> Workspace<W> {
         self.inactive_tiling_focus_stack
             .retain(|existing| existing.node_key() != key);
         self.inactive_tiling_focus_stack.insert(0, reference);
-        if self.inactive_tiling_focus_stack.len() > 64 {
-            self.inactive_tiling_focus_stack.truncate(64);
-        }
+        self.inactive_tiling_focus_stack
+            .truncate(INACTIVE_TILING_FOCUS_STACK_LEN);
     }
 
     fn inactive_tiling_restore_target(&mut self) -> Option<InsertParentInfo> {
@@ -1459,6 +1464,39 @@ impl<W: LayoutElement> Workspace<W> {
     fn sync_tiling_focus_context_from_tiling(&mut self) {
         self.workspace_focus = WorkspaceFocus::OnContent;
         self.remember_current_tiling_reference();
+    }
+
+    /// What the tiling restore stack is allowed to be.
+    ///
+    /// Not that it is fresh — it is a lazy cache and holding references the tree has moved on
+    /// from is the design, which is why the guarantee lives in the lookup rather than here.
+    /// What it must be is *coherent*: an entry whose node is still in the tree has to say true
+    /// things about that node, because those are the entries a lookup accepts. An entry that
+    /// resolves to the wrong thing is the one failure this cache can have that nothing else
+    /// catches — the restore lands on a real window, just not the right one, and there is no
+    /// crash and nothing on screen to tell you.
+    #[cfg(test)]
+    fn verify_inactive_tiling_focus_stack(&self) {
+        let tree = self.space.tree();
+
+        let mut seen = std::collections::HashSet::new();
+        for reference in &self.inactive_tiling_focus_stack {
+            let key = reference.node_key();
+            assert!(
+                seen.insert(key),
+                "a restore target must appear once: with the same node twice, \
+                 \"most recently focused\" does not name anything"
+            );
+
+            let _ = tree.holds_node(key);
+        }
+
+        assert!(
+            self.inactive_tiling_focus_stack.len() <= INACTIVE_TILING_FOCUS_STACK_LEN,
+            "the restore stack is bounded: it is never pruned when the tree changes, so \
+             without the bound a long-lived workspace accumulates one entry per focus change \
+             for as long as it exists"
+        );
     }
 
     pub(super) fn seat_focus_tiling_chain(&self) -> Vec<super::container::InactiveTilingReference> {
@@ -3628,6 +3666,8 @@ impl<W: LayoutElement> Workspace<W> {
     #[cfg(test)]
     pub fn verify_invariants(&self, move_win_id: Option<&W::Id>) {
         use approx::assert_abs_diff_eq;
+
+        self.verify_inactive_tiling_focus_stack();
 
         let scale = self.scale.fractional_scale();
         assert!(scale > 0.);
