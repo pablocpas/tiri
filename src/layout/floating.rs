@@ -2163,7 +2163,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return;
         }
 
-        space.split_in_branch(self.containers[idx].root, Layout::SplitV);
+        self.split_container(space, idx, Layout::SplitV);
     }
 
     pub fn consume_or_expel_window_left(
@@ -2186,14 +2186,14 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let Some(idx) = self.active_container_idx(space) else {
             return;
         };
-        space.split_in_branch(self.containers[idx].root, Layout::SplitV);
+        self.split_container(space, idx, Layout::SplitV);
     }
 
     pub fn expel_from_column(&mut self, space: &mut TreeSpace<W>) {
         let Some(idx) = self.active_container_idx(space) else {
             return;
         };
-        space.split_in_branch(self.containers[idx].root, Layout::SplitH);
+        self.split_container(space, idx, Layout::SplitH);
     }
 
     pub fn swap_window_in_direction(&mut self, space: &mut TreeSpace<W>, direction: Direction) {
@@ -2240,14 +2240,34 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let Some(idx) = self.active_container_idx(space) else {
             return;
         };
-        space.split_in_branch(self.containers[idx].root, Layout::SplitH);
+        self.split_container(space, idx, Layout::SplitH);
     }
 
     pub fn split_vertical(&mut self, space: &mut TreeSpace<W>) {
         let Some(idx) = self.active_container_idx(space) else {
             return;
         };
-        space.split_in_branch(self.containers[idx].root, Layout::SplitV);
+        self.split_container(space, idx, Layout::SplitV);
+    }
+
+    /// Apply an explicit split and keep the floating root's IPC provenance in sync.
+    ///
+    /// A lone floating window starts in a container that exists only because Tiri needs a
+    /// root for the floating stack. `split` turns that very container into one the user can
+    /// address; sway publishes it from then on, so it is no longer an implicit window group.
+    fn split_container(&mut self, space: &mut TreeSpace<W>, idx: usize, layout: Layout) -> bool {
+        let root = self.containers[idx].root;
+        let changed = space.split_in_branch(root, layout);
+        if changed
+            && self.containers[idx].kind == FloatingRootKind::ImplicitWindowGroup
+            && space
+                .tree()
+                .branch_container(root)
+                .is_some_and(|root| root.is_user_container())
+        {
+            self.containers[idx].kind = FloatingRootKind::FloatedContainer;
+        }
+        changed
     }
 
     pub fn set_layout_mode(&mut self, space: &mut TreeSpace<W>, layout: Layout) {
@@ -3100,6 +3120,14 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
             tree.floating_container_area(container.root)
                 .expect("every floating stack entry must name a floating root");
+            if container.kind == FloatingRootKind::ImplicitWindowGroup {
+                assert!(
+                    !tree
+                        .branch_container(container.root)
+                        .is_some_and(|root| root.is_user_container()),
+                    "an explicit floating root must not retain the implicit IPC kind"
+                );
+            }
 
             for tile in tree.tiles_in_branch(container.root) {
                 assert!(Rc::ptr_eq(space.options(), &tile.options));

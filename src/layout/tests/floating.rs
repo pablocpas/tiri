@@ -216,6 +216,30 @@ fn auto_add_window_inherits_grouped_floating_after_split() {
         Some(ContainerLayout::SplitV)
     );
 }
+
+#[test]
+fn split_on_lone_floating_window_publishes_the_explicit_container() {
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::ToggleWindowFloating { id: None },
+        Op::SplitVertical,
+    ]);
+
+    let tree = layout.layout_tree();
+    let [root] = tree.floating.as_slice() else {
+        panic!("one floating root should be published");
+    };
+    assert_eq!(
+        root.floating_root_kind,
+        Some(tiri_ipc::LayoutTreeFloatingRootKind::FloatedContainer),
+        "an explicit split is a real sway-visible container, not Tiri scaffolding"
+    );
+    assert_eq!(root.children.len(), 1);
+    assert_eq!(root.children[0].window_id, Some(1));
+}
 #[test]
 fn add_window_next_to_grouped_floating_inherits_group() {
     let layout = check_ops([
