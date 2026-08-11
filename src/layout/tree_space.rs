@@ -653,8 +653,22 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     pub(super) fn take_selected_subtree(&self) -> Option<(NodeKey, Rectangle<f64, Logical>)> {
         let key = self.tree.selected_node_key()?;
-        let rect = self.selected_geometry()?;
+        self.tree.container_info(key)?;
+        let rect = self.default_floating_container_rect();
         Some((key, rect))
+    }
+
+    /// sway's initial geometry for a container without a view when it starts floating.
+    fn default_floating_container_rect(&self) -> Rectangle<f64, Logical> {
+        let area = self.working_area;
+        let size = Size::from((area.size.w * 0.5, area.size.h * 0.75));
+        Rectangle::new(
+            Point::from((
+                area.loc.x + (area.size.w - size.w) / 2.0,
+                area.loc.y + (area.size.h - size.h) / 2.0,
+            )),
+            size,
+        )
     }
 
     /// The whole tiling workspace as one subtree, for floating it in one piece.
@@ -667,15 +681,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         // when there is a view to ask, and a wrapper around the workspace's children is not
         // one — which is why the number a floating *window* no longer gets is still this
         // one's.
-        let area = self.working_area;
-        let size = Size::from((area.size.w * 0.5, area.size.h * 0.75));
-        let rect = Rectangle::new(
-            Point::from((
-                area.loc.x + (area.size.w - size.w) / 2.0,
-                area.loc.y + (area.size.h - size.h) / 2.0,
-            )),
-            size,
-        );
+        let rect = self.default_floating_container_rect();
         (!self.tree.is_empty()).then_some((self.tree.workspace_root(), rect))
     }
 
