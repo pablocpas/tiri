@@ -366,6 +366,20 @@ impl<W: LayoutElement> ContainerTree<W> {
             .or_else(|| self.leaf_under_key(key))
     }
 
+    /// sway's `seat_get_focus_inactive`: the most recent node of either kind under `key`.
+    ///
+    /// This differs deliberately from [`Self::focus_inactive_view`]. In particular, a
+    /// recently active container can sit ahead of every leaf outside that container; callers
+    /// that subsequently ask for its inactive view must preserve that two-stage choice.
+    pub(super) fn focus_inactive_node(&self, key: NodeKey) -> Option<NodeKey> {
+        if matches!(self.get_node(key), Some(NodeData::Leaf(_))) {
+            return Some(key);
+        }
+        self.seat.order().iter().copied().find(|candidate| {
+            self.get_node(*candidate).is_some() && self.is_descendant(*candidate, key)
+        })
+    }
+
     fn focus_inactive_view_from_order(&self, key: NodeKey) -> Option<NodeKey> {
         self.seat.order().iter().copied().find(|candidate| {
             matches!(self.get_node(*candidate), Some(NodeData::Leaf(_)))

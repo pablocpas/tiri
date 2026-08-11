@@ -1,0 +1,60 @@
+# Opening from floating first restores the most recent tiling container, then its active view.
+# recorded from sway version 1.12-dev
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splith focus=2
+  window 1 0.000,0.000 0.500x1.000
+  window 2 0.500,0.000 0.500x1.000
+
+$ layout splitv
+workspace splith focus=2
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.500
+    window 2 0.000,0.500 1.000x0.500
+
+$ focus down
+workspace splith focus=1
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.500
+    window 2 0.000,0.500 1.000x0.500
+
+$ open
+workspace splith focus=3
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.333
+    window 3 0.000,0.333 1.000x0.333
+    window 2 0.000,0.667 1.000x0.333
+
+$ move left
+workspace splith focus=3
+  window 3 0.000,0.000 0.500x1.000
+  splitv 0.500,0.000 0.500x1.000
+    window 1 0.500,0.000 0.500x0.500
+    window 2 0.500,0.500 0.500x0.500
+
+$ focus left
+workspace splith focus=1
+  window 3 0.000,0.000 0.500x1.000
+  splitv 0.500,0.000 0.500x1.000
+    window 1 0.500,0.000 0.500x0.500
+    window 2 0.500,0.500 0.500x0.500
+
+$ floating toggle
+workspace splith focus=1
+  window 3 0.000,0.000 0.500x1.000
+  splitv 0.500,0.000 0.500x1.000
+    window 2 0.500,0.000 0.500x1.000
+  window 1 0.344,0.292 0.312x0.417 floating
+
+$ open
+workspace splith focus=4
+  window 3 0.000,0.000 0.500x1.000
+  splitv 0.500,0.000 0.500x1.000
+    window 2 0.500,0.000 0.500x0.500
+    window 4 0.500,0.500 0.500x0.500
+  window 1 0.344,0.292 0.312x0.417 floating

@@ -73,7 +73,14 @@ impl<W: LayoutElement> ContainerTree<W> {
             None => self
                 .effective_focused_key()
                 .filter(|key| self.is_descendant(*key, branch_root))
-                .or_else(|| self.focus_inactive_view(branch_root)),
+                .or_else(|| {
+                    // sway's `view_map` takes this exact two-step route when the active node
+                    // is floating: choose the most recent tiling node first, then the most
+                    // recent view inside that node. Going straight to a view under the whole
+                    // workspace loses a recently active container as the insertion context.
+                    self.focus_inactive_node(branch_root)
+                        .and_then(|node| self.focus_inactive_view(node))
+                }),
         };
 
         let insert_target = sibling_key
