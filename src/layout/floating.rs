@@ -665,12 +665,16 @@ impl<W: LayoutElement> FloatingSpace<W> {
     }
 
     /// Floating projection of the workspace's single fullscreen node.
-    fn fullscreen_window_id<'a>(&self, space: &'a TreeSpace<W>) -> Option<&'a W::Id> {
+    fn fullscreen_key(&self, space: &TreeSpace<W>) -> Option<NodeKey> {
         let tree = space.tree();
         let key = tree.fullscreen_key()?;
-        tree.is_floating(key)
-            .then(|| tree.fullscreen_window_id())
-            .flatten()
+        (tree.holds_node(key) && tree.is_floating(key)).then_some(key)
+    }
+
+    /// Floating leaf that owns fullscreen at the client protocol boundary.
+    fn fullscreen_window_id<'a>(&self, space: &'a TreeSpace<W>) -> Option<&'a W::Id> {
+        self.fullscreen_key(space)?;
+        space.tree().fullscreen_leaf_window_id()
     }
 
     fn active_container_idx(&self, space: &TreeSpace<W>) -> Option<usize> {
@@ -778,7 +782,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     }
 
     pub fn has_fullscreen_window(&self, space: &TreeSpace<W>) -> bool {
-        self.fullscreen_window_id(space).is_some()
+        self.fullscreen_key(space).is_some()
     }
 
     pub fn selected_is_container(&self, space: &TreeSpace<W>, id: Option<&W::Id>) -> bool {
@@ -1272,7 +1276,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let Some(key) = space.tree_mut().window_key(id) else {
             return false;
         };
-        if space.tree().is_fullscreen_window(id) {
+        if space.tree().window_owns_fullscreen(id) {
             // Clear the workspace pointer before the node crosses branches so the arrange below
             // computes its tiled geometry, not another fullscreen frame that no longer has an
             // owner after this operation.
@@ -3111,7 +3115,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                     assert!(idx < space.options().layout.preset_window_heights.len());
                 }
 
-                let is_fullscreen_tile = tree.is_fullscreen_window(tile.window().id());
+                let is_fullscreen_tile = tree.window_owns_fullscreen(tile.window().id());
                 if !is_fullscreen_tile {
                     assert_eq!(
                         tile.window().pending_sizing_mode(),

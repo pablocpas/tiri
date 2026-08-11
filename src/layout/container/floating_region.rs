@@ -304,8 +304,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             container.floating_geometry = None;
         }
         if self.branch_is_empty(key) {
-            self.nodes.remove(key);
-            self.parents.remove(key);
+            self.remove_node_from_store(key);
             self.prune_focus_order();
             self.prune_selected_key();
         }
@@ -389,8 +388,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         self.detach_child(child);
         self.forget_floating_root(group);
-        self.nodes.remove(group);
-        self.parents.remove(group);
+        self.remove_node_from_store(group);
 
         if !matches!(self.get_node(parent), Some(NodeData::Container(_))) {
             return None;
@@ -438,8 +436,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let group_empty = self.branch_is_empty(group);
         if group_empty {
             self.forget_floating_root(group);
-            self.nodes.remove(group);
-            self.parents.remove(group);
+            self.remove_node_from_store(group);
         }
 
         let workspace = self.root;

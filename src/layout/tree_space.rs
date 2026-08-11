@@ -14,7 +14,7 @@
 //! state — where each group sits, what order they stack in — is in [`super::floating`].
 
 use std::cell::{RefCell, RefMut};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -192,11 +192,15 @@ impl<W: LayoutElement> TreeSpace<W> {
             .then(|| id.clone())
     }
 
-    fn pending_fullscreen_window(&self) -> Option<&W::Id> {
+    fn tiled_fullscreen_key(&self) -> Option<NodeKey> {
         let key = self.tree.fullscreen_key()?;
-        (self.tree.branch_root(key) == self.tree.workspace_root())
-            .then(|| self.tree.fullscreen_window_id())
-            .flatten()
+        (self.tree.holds_node(key) && self.tree.branch_root(key) == self.tree.workspace_root())
+            .then_some(key)
+    }
+
+    fn pending_fullscreen_window(&self) -> Option<&W::Id> {
+        self.tiled_fullscreen_key()?;
+        self.tree.fullscreen_leaf_window_id()
     }
 
     /// The workspace's arena, holding both of its sides.
@@ -1501,42 +1505,19 @@ impl<W: LayoutElement> TreeSpace<W> {
         direction: Direction,
         allow_wrap: bool,
     ) -> bool {
-        // Model rule: with active fullscreen in tiling, directional focus can move inside the
-        // fullscreen subtree, but must not escape to another root sibling.
-        let fullscreen_scope = self.pending_fullscreen_window().map(|id| {
-            let root_idx = self
-                .tree
-                .find_window(id)
-                .and_then(|path| path.first().copied());
-            (id.clone(), root_idx)
-        });
+        // A fullscreen node is the exact boundary for directional focus: focus can move among
+        // descendants of a fullscreen container, but never inspect one of its siblings. A
+        // fullscreen leaf is a one-node branch and therefore cannot move at all.
+        let fullscreen_scope = self.tiled_fullscreen_key();
 
-        // If fullscreen is active but we cannot determine its root scope, be conservative.
-        if fullscreen_scope
-            .as_ref()
-            .is_some_and(|(_, root_idx)| root_idx.is_none())
-        {
-            return false;
-        }
-
-        let focused = if fullscreen_scope.is_some() || !allow_wrap {
+        if let Some(scope) = fullscreen_scope {
+            self.tree
+                .focus_in_direction_in_branch(scope, direction, false)
+        } else if !allow_wrap {
             self.tree.focus_in_direction_no_wrap(direction)
         } else {
             self.tree.focus_in_direction(direction)
-        };
-        if !focused {
-            return false;
         }
-
-        if let Some((fullscreen_id, Some(scope_root_idx))) = fullscreen_scope {
-            let escaped_scope = self.tree.focus_path().first().copied() != Some(scope_root_idx);
-            if escaped_scope {
-                let _ = self.mutate_tree(|tree| tree.focus_window_by_id(&fullscreen_id));
-                return false;
-            }
-        }
-
-        true
     }
 
     pub fn focus_left(&mut self) -> bool {
@@ -2286,11 +2267,12 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     pub fn is_fullscreen(&self, window: &W) -> bool {
-        self.tiled_window_key(window.id()).is_some() && self.tree.is_fullscreen_window(window.id())
+        self.tiled_window_key(window.id()).is_some()
+            && self.tree.window_owns_fullscreen(window.id())
     }
 
     pub fn has_fullscreen_window(&self) -> bool {
-        self.pending_fullscreen_window().is_some()
+        self.tiled_fullscreen_key().is_some()
     }
 
     /// Set the display mode for the focused container
@@ -2895,7 +2877,7 @@ impl<W: LayoutElement> TreeSpace<W> {
             return;
         };
         let id = tile.window().id().clone();
-        let currently_fullscreen = self.tree.is_fullscreen_window(tile.window().id());
+        let currently_fullscreen = self.tree.window_owns_fullscreen(tile.window().id());
         let _ = self.set_fullscreen(&id, !currently_fullscreen);
     }
 
@@ -3071,7 +3053,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         let selected_container = self.tree.selected_container_key();
 
         if is_fullscreen {
-            if self.tree.is_fullscreen_window(window) {
+            if self.tree.window_owns_fullscreen(window) {
                 return false;
             }
 
@@ -3105,7 +3087,7 @@ impl<W: LayoutElement> TreeSpace<W> {
             let Some(key) = self.tiled_window_key(window) else {
                 return false;
             };
-            let fullscreen_matches = self.tree.is_fullscreen_window(window);
+            let fullscreen_matches = self.tree.window_owns_fullscreen(window);
             let Some(tile) = self.tree.get_tile_mut(key) else {
                 return false;
             };
@@ -3394,22 +3376,28 @@ impl<W: LayoutElement> TreeSpace<W> {
         self.apply_fullscreen(self.tree.layout_tree_unfocused()?)
     }
 
-    /// What a fullscreen window does to the tree everyone else reads.
+    /// What a fullscreen node does to the tree everyone else reads.
     ///
     /// Two things sway's own tree says and the tiling tree does not, because both are the
-    /// space's state rather than the tree's: the fullscreen window covers the output, so its
-    /// rectangle is the output's and not the slot it came from; and it hides everything else
-    /// — the last clause of `view_is_visible`, which runs after the tab check for the reason
-    /// it should, since a fullscreen view on an inactive tab is still on an inactive tab.
+    /// space's state rather than the tree's: a fullscreen leaf covers the output, so its
+    /// rectangle is the output's and not the slot it came from; and a fullscreen node hides
+    /// every leaf outside its subtree. The latter is the last clause of `view_is_visible`,
+    /// which runs after the tab check so a hidden tab remains hidden inside a fullscreen
+    /// container.
     fn apply_fullscreen(&self, mut root: LayoutTreeNode) -> Option<LayoutTreeNode> {
-        let Some(fullscreen) = self
-            .pending_fullscreen_window()
-            .and_then(|id| self.tiled_window_key(id))
-            .and_then(|key| self.tree.get_tile(key))
-            .map(|tile| tile.window().ipc_id())
-        else {
+        let Some(fullscreen_key) = self.tiled_fullscreen_key() else {
             return Some(root);
         };
+        let fullscreen_windows: HashSet<u64> = self
+            .tree
+            .tiles_in_branch(fullscreen_key)
+            .into_iter()
+            .map(|tile| tile.window().ipc_id())
+            .collect();
+        let fullscreen_leaf = self
+            .tree
+            .get_tile(fullscreen_key)
+            .map(|tile| tile.window().ipc_id());
         let view = LayoutTreeRect {
             x: 0.0,
             y: 0.0,
@@ -3417,22 +3405,27 @@ impl<W: LayoutElement> TreeSpace<W> {
             height: self.view_size.h,
         };
 
-        fn walk(node: &mut LayoutTreeNode, fullscreen: u64, view: LayoutTreeRect) {
+        fn walk(
+            node: &mut LayoutTreeNode,
+            fullscreen_windows: &HashSet<u64>,
+            fullscreen_leaf: Option<u64>,
+            view: LayoutTreeRect,
+        ) {
             if let Some(window) = node.window_id {
-                if window == fullscreen {
-                    node.rect = Some(view);
-                } else {
+                if !fullscreen_windows.contains(&window) {
                     node.visible = false;
+                } else if Some(window) == fullscreen_leaf {
+                    node.rect = Some(view);
                 }
                 return;
             }
             for child in &mut node.children {
-                walk(child, fullscreen, view);
+                walk(child, fullscreen_windows, fullscreen_leaf, view);
             }
             node.visible = node.children.iter().any(|child| child.visible);
         }
 
-        walk(&mut root, fullscreen, view);
+        walk(&mut root, &fullscreen_windows, fullscreen_leaf, view);
         Some(root)
     }
 }

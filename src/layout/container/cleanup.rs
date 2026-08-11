@@ -48,8 +48,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                 }
             }
             self.detach_child(container_key);
-            self.nodes.remove(container_key);
-            self.parents.remove(container_key);
+            self.remove_node_from_store(container_key);
             current = parent_key;
         }
     }
@@ -155,8 +154,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         for key in [child_key, con_key] {
             self.unregister_unfocused_node(key, parent_key);
-            self.nodes.remove(key);
-            self.parents.remove(key);
+            self.remove_node_from_store(key);
         }
         self.prune_focus_order();
 

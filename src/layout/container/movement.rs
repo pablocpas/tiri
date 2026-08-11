@@ -116,6 +116,15 @@ impl<W: LayoutElement> ContainerTree<W> {
         let mut wrapped = false;
 
         let (ancestor_key, ancestor_idx) = loop {
+            // A child may move within the fullscreen subtree, but it cannot climb through the
+            // node that owns fullscreen. sway checks `current->pending.fullscreen_mode` on
+            // every ancestor before looking at that ancestor's parent layout; omitting the
+            // check dissolved a fullscreen wrapper when a leaf tried to move across it.
+            //
+            // sway/commands/move.c:324-328
+            if self.fullscreen_key == Some(current) || self.is_floating(current) {
+                return false;
+            }
             let Some(parent_key) = self.parent_of(current) else {
                 return false;
             };

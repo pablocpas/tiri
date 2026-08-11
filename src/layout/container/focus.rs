@@ -254,7 +254,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let Some(start) = self.branch_position(branch_root) else {
             return false;
         };
-        self.focus_in_direction_from(start, direction, allow_wrap, true)
+        self.focus_in_direction_from_until(start, direction, allow_wrap, true, Some(branch_root))
     }
 
     fn focus_in_direction_from(
@@ -264,12 +264,27 @@ impl<W: LayoutElement> ContainerTree<W> {
         allow_wrap: bool,
         descend: bool,
     ) -> bool {
+        self.focus_in_direction_from_until(selected_key, direction, allow_wrap, descend, None)
+    }
+
+    fn focus_in_direction_from_until(
+        &mut self,
+        selected_key: NodeKey,
+        direction: Direction,
+        allow_wrap: bool,
+        descend: bool,
+        boundary: Option<NodeKey>,
+    ) -> bool {
         let mut wrap_candidate: Option<(NodeKey, usize)> = None;
 
         // Walk ancestors from the innermost container outwards, trying a direct sibling
-        // step at every level whose layout runs along `direction`.
+        // step at every level whose layout runs along `direction`. A branch operation stops
+        // before considering the branch root's parent; crossing it would leave the branch.
         let mut current = selected_key;
-        while let Some(parent_key) = self.parent_of(current) {
+        while boundary != Some(current) {
+            let Some(parent_key) = self.parent_of(current) else {
+                break;
+            };
             let Some(container) = self.get_container(parent_key) else {
                 current = parent_key;
                 continue;

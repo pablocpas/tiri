@@ -1,0 +1,56 @@
+# A child cannot move out through the container that owns workspace fullscreen.
+# recorded from sway version 1.12-dev
+# client 400x285
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ move up
+workspace splitv focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splitv focus=2
+  window 1 0.000,0.000 1.000x0.500
+  window 2 0.000,0.500 1.000x0.500
+
+$ focus parent
+workspace splitv focus=@
+  window 1 0.000,0.000 1.000x0.500
+  window 2 0.000,0.500 1.000x0.500
+
+$ layout tabbed
+workspace tabbed focus=@
+  window 1 0.000,0.032 1.000x0.968 hidden
+  window 2 0.000,0.032 1.000x0.968
+
+$ focus child
+workspace tabbed focus=2
+  window 1 0.000,0.032 1.000x0.968 hidden
+  window 2 0.000,0.032 1.000x0.968
+
+$ fullscreen toggle
+workspace tabbed focus=2
+  window 1 0.000,0.032 1.000x0.968 hidden
+  window 2 0.000,0.000 1.000x1.000
+
+$ open
+workspace tabbed focus=2
+  window 1 0.000,0.032 1.000x0.968 hidden
+  window 2 0.000,0.000 1.000x1.000
+  window 3 0.000,0.032 0.000x-0.032 hidden
+
+$ split v
+workspace tabbed focus=2
+  window 1 0.000,0.032 1.000x0.968 hidden
+  splitv 0.000,0.000 1.000x1.000
+    window 2 0.000,0.000 1.000x1.000
+  window 3 0.000,0.032 0.000x-0.032 hidden
+
+$ move right
+workspace tabbed focus=2
+  window 1 0.000,0.032 1.000x0.968 hidden
+  splitv 0.000,0.000 1.000x1.000
+    window 2 0.000,0.000 1.000x1.000
+  window 3 0.000,0.032 0.000x-0.032 hidden

@@ -155,24 +155,39 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.fullscreen_key
     }
 
-    pub(in crate::layout) fn fullscreen_window_id(&self) -> Option<&W::Id> {
+    /// Window that directly owns fullscreen at the client protocol boundary.
+    ///
+    /// A fullscreen container has no such window: its descendants remain ordinary tiled
+    /// clients while the container's subtree occupies the output.
+    pub(in crate::layout) fn fullscreen_leaf_window_id(&self) -> Option<&W::Id> {
         self.fullscreen_key
             .and_then(|key| self.get_tile(key))
             .map(|tile| tile.window().id())
     }
 
-    pub(in crate::layout) fn is_fullscreen_window(&self, id: &W::Id) -> bool {
-        self.fullscreen_window_id()
+    pub(in crate::layout) fn window_owns_fullscreen(&self, id: &W::Id) -> bool {
+        self.fullscreen_leaf_window_id()
             .is_some_and(|current| current == id)
     }
 
-    /// Point `workspace->fullscreen` at a live leaf, or at nothing.
+    /// A window representative for APIs that cannot name a container.
+    ///
+    /// sway's workspace pointer can name a container. Existing tiri inspection APIs expose
+    /// window IDs, so descend through the seat's inactive-focus order rather than inventing a
+    /// second fullscreen owner.
+    pub(in crate::layout) fn fullscreen_representative_window_id(&self) -> Option<&W::Id> {
+        let key = self.fullscreen_key?;
+        let leaf = self.focus_inactive_view(key)?;
+        self.get_tile(leaf).map(|tile| tile.window().id())
+    }
+
+    /// Point `workspace->fullscreen` at a live node, or at nothing.
     ///
     /// Setting it does not arrange: callers still have side-specific window state to request
-    /// before arranging. Refusing a stale/container key keeps the authority meaningful even in
-    /// release builds; structural removal clears it centrally in `detach`.
+    /// before arranging. The synthetic workspace root is not a sway container and therefore
+    /// cannot own fullscreen; every other live node can.
     pub(in crate::layout) fn set_fullscreen_key(&mut self, key: Option<NodeKey>) -> bool {
-        if key.is_some_and(|key| self.get_tile(key).is_none()) {
+        if key.is_some_and(|key| key == self.root || !self.holds_node(key)) {
             return false;
         }
         if self.fullscreen_key == key {
@@ -180,6 +195,38 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
         self.fullscreen_key = key;
         true
+    }
+
+    /// Transfer fullscreen exactly as sway's `container_replace` does.
+    ///
+    /// The workspace authority moves to the replacement node. Client fullscreen state only
+    /// exists on leaves, so wrapping a fullscreen leaf revokes that state, while collapsing a
+    /// fullscreen container onto a leaf grants it to the replacement.
+    pub(super) fn transfer_fullscreen_to_replacement(
+        &mut self,
+        old_key: NodeKey,
+        new_key: NodeKey,
+    ) {
+        if self.fullscreen_key != Some(old_key) {
+            return;
+        }
+
+        let animate = !self.options.animations.off;
+        let working_area_size = self.working_area.size;
+        if let Some(tile) = self.get_tile_mut(old_key) {
+            if tile.pending_maximized {
+                tile.request_maximized(working_area_size, animate, None);
+            } else {
+                tile.request_tile_size(working_area_size, animate, None);
+            }
+        }
+
+        if let Some(tile) = self.get_tile_mut(new_key) {
+            tile.pending_maximized |= tile.window().pending_sizing_mode().is_maximized();
+            tile.request_fullscreen(animate, None);
+        }
+
+        self.fullscreen_key = Some(new_key);
     }
 
     fn layout_atomic(&mut self, animate_resize: bool) {

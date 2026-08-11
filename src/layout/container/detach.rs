@@ -17,9 +17,6 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Remove a window by ID, returns the removed tile
     pub(in crate::layout) fn remove_window(&mut self, window_id: &W::Id) -> Option<Tile<W>> {
         let node_key = self.window_key(window_id)?;
-        if self.fullscreen_key == Some(node_key) {
-            self.fullscreen_key = None;
-        }
         let cleanup_key = self.parent_of(node_key);
         let was_focused = self.focused_key() == Some(node_key);
         let former_ancestors = cleanup_key
@@ -37,8 +34,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.set_parent(node_key, None);
 
         // Now remove from this workspace store (only the leaf, not recursive).
-        let node_data = self.nodes.remove(node_key)?;
-        self.parents.remove(node_key);
+        let node_data = self.remove_node_from_store(node_key)?;
         let tile = match node_data {
             NodeData::Leaf(tile) => tile,
             NodeData::Container(_) => return None, // Should never happen
@@ -133,14 +129,9 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Extract a subtree rooted at the given key into a detached representation.
     pub(super) fn extract_subtree(&mut self, key: NodeKey) -> DetachedNode<W> {
-        if self.fullscreen_key == Some(key) {
-            self.fullscreen_key = None;
-        }
         let node_data = self
-            .nodes
-            .remove(key)
+            .remove_node_from_store(key)
             .expect("node key must exist when extracting subtree");
-        self.parents.remove(key);
 
         match node_data {
             NodeData::Leaf(tile) => {

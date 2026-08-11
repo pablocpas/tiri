@@ -130,8 +130,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         if self.focused_key() == Some(container_key) {
             self.seat.redirect_focused_leaf(Some(child_key));
         }
-        self.nodes.remove(container_key);
-        self.parents.remove(container_key);
+        self.remove_node_from_store(container_key);
         self.readdress_leaf_layouts();
     }
 

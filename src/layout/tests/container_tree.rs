@@ -167,6 +167,43 @@ fn extracting_parent_of_fullscreen_leaf_clears_workspace_pointer() {
 }
 
 #[test]
+fn wrapping_fullscreen_leaf_transfers_workspace_pointer_to_wrapper() {
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+
+    let root = harness.tree.root_node_key().expect("workspace root");
+    let leaf = harness.tree.window_key(&1).expect("fullscreen leaf");
+    assert!(harness.tree.set_fullscreen_key(Some(leaf)));
+
+    let wrapper = harness
+        .tree
+        .wrap_child_in_new_container(root, leaf, ContainerData::new(ContainerLayout::SplitV))
+        .expect("wrapper");
+
+    assert_eq!(harness.tree.fullscreen_key(), Some(wrapper));
+    assert_eq!(harness.tree.fullscreen_representative_window_id(), Some(&1));
+    assert_eq!(harness.tree.fullscreen_leaf_window_id(), None);
+}
+
+#[test]
+fn reaping_empty_fullscreen_wrapper_clears_workspace_pointer() {
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+
+    let root = harness.tree.root_node_key().expect("workspace root");
+    let leaf = harness.tree.window_key(&1).expect("leaf");
+    let wrapper = harness
+        .tree
+        .wrap_child_in_new_container(root, leaf, ContainerData::new(ContainerLayout::SplitV))
+        .expect("wrapper");
+    assert!(harness.tree.set_fullscreen_key(Some(wrapper)));
+
+    harness.tree.remove_window(&1).expect("removed leaf");
+
+    assert_eq!(harness.tree.fullscreen_key(), None);
+}
+
+#[test]
 fn moving_a_leaf_between_workspace_stores_carries_its_size_state() {
     let mut source = TreeHarness::new();
     let mut target = TreeHarness::new();
@@ -264,6 +301,7 @@ fn replacing_a_container_hands_its_parent_share_to_the_replacement() {
     let replacement_share = harness.tree.debug_node_sizing(inner).unwrap();
     let old_leaf_share = harness.tree.debug_node_sizing(leaf).unwrap();
     assert_ne!(replacement_share.0, old_leaf_share.0);
+    assert!(harness.tree.set_fullscreen_key(Some(inner)));
 
     // `cmd_layout` flattens the inner wrapper with `container_replace` before discovering
     // that the surviving outer wrapper already has the requested layout. There is therefore
@@ -277,6 +315,14 @@ fn replacing_a_container_hands_its_parent_share_to_the_replacement() {
         (leaf_share.0, leaf_share.1),
         (replacement_share.0, replacement_share.1),
     );
+    assert_eq!(harness.tree.fullscreen_key(), Some(leaf));
+    assert!(harness
+        .tree
+        .get_tile(leaf)
+        .expect("replacement leaf")
+        .window()
+        .pending_sizing_mode()
+        .is_fullscreen());
 }
 #[derive(Debug, Clone, Copy)]
 enum TreeRandomOp {

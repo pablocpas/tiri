@@ -2435,7 +2435,7 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn fullscreen_window_ids(&self) -> Vec<W::Id> {
         self.space
             .tree()
-            .fullscreen_window_id()
+            .fullscreen_representative_window_id()
             .cloned()
             .into_iter()
             .collect()
@@ -3675,7 +3675,7 @@ impl<W: LayoutElement> Workspace<W> {
         );
         if let Some(id) = pending_fullscreen.first() {
             assert!(
-                self.space.tree().is_fullscreen_window(id),
+                self.space.tree().window_owns_fullscreen(id),
                 "a pending fullscreen client must be the workspace fullscreen owner"
             );
         }

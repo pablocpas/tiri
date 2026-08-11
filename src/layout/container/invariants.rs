@@ -20,12 +20,15 @@ impl<W: LayoutElement> ContainerTree<W> {
             "root parent must be None"
         );
         if let Some(fullscreen_key) = self.fullscreen_key {
+            assert_ne!(
+                fullscreen_key, root_key,
+                "the synthetic workspace root cannot own fullscreen"
+            );
             assert!(
-                matches!(self.get_node(fullscreen_key), Some(NodeData::Leaf(_))),
-                "workspace fullscreen must point to one live leaf"
+                self.holds_node(fullscreen_key),
+                "workspace fullscreen must point to one live node"
             );
         }
-
         self.verify_floating_region();
 
         if self.is_empty() && self.floating_roots().next().is_none() {
@@ -71,6 +74,13 @@ impl<W: LayoutElement> ContainerTree<W> {
             assert!(
                 visited.contains(&key),
                 "node {key:?} exists in the workspace store but is unreachable"
+            );
+        }
+
+        if let Some(fullscreen_key) = self.fullscreen_key {
+            assert!(
+                visited.contains(&fullscreen_key),
+                "workspace fullscreen node must be reachable"
             );
         }
 
