@@ -2494,14 +2494,31 @@ impl<W: LayoutElement> Workspace<W> {
             return;
         }
 
-        let tile = self
-            .tiles()
-            .find(|tile| tile.window().id() == window)
-            .unwrap();
-        // Use space.is_fullscreen() as the source of truth instead of pending_sizing_mode()
-        // because pending_sizing_mode() updates asynchronously after animations complete.
-        let current = self.space.is_fullscreen(tile.window());
-        self.set_fullscreen(window, !current);
+        if !self.space.selected_is_container() {
+            let tile = self
+                .tiles()
+                .find(|tile| tile.window().id() == window)
+                .unwrap();
+            // Use space.is_fullscreen() as the source of truth instead of
+            // pending_sizing_mode(), which updates asynchronously after animations complete.
+            let current = self.space.is_fullscreen(tile.window());
+            self.set_fullscreen(window, !current);
+            return;
+        }
+
+        let Some(current) = self.space.selected_container_is_fullscreen() else {
+            return;
+        };
+
+        if !current {
+            // Revoke the previous leaf's client state before the tree authority changes. A
+            // previous container has no client state to revoke and will simply be replaced.
+            for id in self.fullscreen_window_ids() {
+                self.set_fullscreen(&id, false);
+            }
+        }
+
+        self.space.toggle_fullscreen_for_selected_container();
     }
 
     pub fn set_windowed_fullscreen(&mut self, window: &W::Id, is_fullscreen: bool) {

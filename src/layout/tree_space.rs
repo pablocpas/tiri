@@ -1647,15 +1647,12 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     fn target_is_fullscreen(&self, target: TreeCommandTarget) -> bool {
-        let TreeCommandTarget::Leaf(key) = target else {
-            return false;
+        let key = match target {
+            TreeCommandTarget::Workspace => return false,
+            TreeCommandTarget::Container(key) | TreeCommandTarget::Leaf(key) => key,
         };
-        let Some(fullscreen) = self.pending_fullscreen_window() else {
-            return false;
-        };
-        self.tree
-            .get_tile(key)
-            .is_some_and(|tile| tile.window().id() == fullscreen)
+        self.tiled_fullscreen_key()
+            .is_some_and(|fullscreen| self.tree.is_descendant(key, fullscreen))
     }
 
     // Move operations using ContainerTree
@@ -3116,6 +3113,44 @@ impl<W: LayoutElement> TreeSpace<W> {
             }
             true
         }
+    }
+
+    /// Whether the node selected by a tiled fullscreen command owns workspace fullscreen.
+    ///
+    /// A command can target a container even though the input binding reaches the layout with
+    /// the focused window's id. Keeping this question here prevents the command layer from
+    /// collapsing that container back to its inactive-focus leaf.
+    pub(super) fn selected_container_is_fullscreen(&self) -> Option<bool> {
+        let key = match self.tree.command_target_in(self.tiled_branch()) {
+            TreeCommandTarget::Workspace => return None,
+            TreeCommandTarget::Container(key) => key,
+            TreeCommandTarget::Leaf(_) => return None,
+        };
+        Some(self.tiled_fullscreen_key() == Some(key))
+    }
+
+    /// Toggle workspace fullscreen on the actual tiled command target.
+    ///
+    /// Only a leaf asks its Wayland client to enter fullscreen. For a container, sway enlarges
+    /// and arranges the complete subtree while every descendant remains an ordinary tiled
+    /// client. The tree already models that distinction in `fullscreen_key`; this is the
+    /// command path that preserves it.
+    pub(super) fn toggle_fullscreen_for_selected_container(&mut self) -> bool {
+        let key = match self.tree.command_target_in(self.tiled_branch()) {
+            TreeCommandTarget::Workspace => return false,
+            TreeCommandTarget::Container(key) => key,
+            TreeCommandTarget::Leaf(_) => return false,
+        };
+        let is_fullscreen = self.tiled_fullscreen_key() == Some(key);
+
+        if is_fullscreen {
+            self.tree.set_fullscreen_key(None);
+        } else {
+            self.tree.set_fullscreen_key(Some(key));
+        }
+
+        self.tree.layout();
+        true
     }
 
     fn sync_fullscreen_window(&mut self) {

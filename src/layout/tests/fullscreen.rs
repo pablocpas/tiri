@@ -798,6 +798,51 @@ fn fullscreen_directional_focus_stays_on_active_window_like_sway() {
         "focus should remain on the fullscreen window after directional focus:\n{tree}"
     );
 }
+
+#[test]
+fn fullscreen_command_keeps_a_selected_container_as_the_authority() {
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::SplitVertical,
+        Op::ToggleLayoutAll,
+        Op::SplitVertical,
+        Op::MoveColumnRight,
+        Op::FocusParent,
+        Op::SplitVertical,
+        Op::SetLayoutSplitH,
+        // A client/fullscreen API request still targets its leaf even while the container is
+        // selected. The following command must revoke that client state and replace the leaf
+        // authority with the selected container.
+        Op::SetFullscreenWindow {
+            window: 2,
+            is_fullscreen: true,
+        },
+        Op::ToggleFullscreenFocused,
+    ]);
+
+    let workspace = layout.active_workspace().expect("active workspace");
+    let tree = workspace.tiling().tree();
+    let authority = tree.fullscreen_key().expect("fullscreen authority");
+
+    assert!(
+        tree.get_tile(authority).is_none(),
+        "the selected container, not one representative window, must own fullscreen"
+    );
+    assert_eq!(tree.tiles_in_branch(authority).len(), 2);
+    assert!(
+        layout
+            .windows()
+            .all(|(_, window)| !window.pending_sizing_mode().is_fullscreen()),
+        "container fullscreen must leave every descendant as a tiled Wayland client"
+    );
+}
+
 #[test]
 fn fullscreen_focus_parent_is_noop_like_sway() {
     let mut layout = check_ops([
