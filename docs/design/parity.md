@@ -295,20 +295,22 @@ and `wrapper-left-by-a-move`, all three of which agree before and after.
 
 ## Known divergences
 
-Differences that are real, understood, and not yet fixed. These live in code, as the `KNOWN`
-table in `src/layout/tests/parity/known.rs`, so an entry has to name the fixture and step
-it silences and say why — and the suite fails if an entry stops diverging, which is what
-stops the list from rotting.
+None at present. `KNOWN` in `src/layout/tests/parity/known.rs` is empty, and all 117 recorded
+scenarios compare without suppression. The last entry was the floated-workspace wrapper:
+Tiri's IPC made a real, addressable wrapper indistinguishable from the synthetic group around
+a lone floating window. `LayoutTreeFloatingRootKind` now publishes that provenance, so the
+normalizer drops only `ImplicitWindowGroup` and keeps `FloatedContainer` and
+`WorkspaceWrapper`.
 
-The two entries this section originally held, `layout X` on a workspace child and stale
-cached geometry after a sibling leaves, were both closed by measurement. What the recorder
-found in their place is in the table.
+Future differences that are real, understood, and deliberately not fixed still belong in
+`KNOWN`: an entry has to name the fixture and step it silences and say why. The suite fails
+if an entry stops diverging, which stops the list from rotting.
 
 ## What already exists
 
 - **tiri IPC**: `Request::LayoutTree` → `Response::LayoutTree`, whose `LayoutTreeNode`
   carries `layout`, `focused`, `visible`, `rect`, `percent`, `marks`, `is_floating`,
-  `children`. Close to one-to-one with sway's `get_tree` nodes.
+  `floating_root_kind`, `children`. Close to one-to-one with sway's `get_tree` nodes.
 - **tiri actions**: `SplitHorizontal`, `SplitVertical`, `SetLayout{SplitH,SplitV,Tabbed,Stacked}`,
   `ToggleSplitLayout`, `ToggleLayoutAll`, `FocusParent`, `FocusChild`, the focus/move
   families, `CloseWindow`. The whole i3 command surface we need is already addressable.
@@ -318,7 +320,7 @@ found in their place is in the table.
   harness for profiling.
 - **Final Sway 1.12** (tag `8886939`) and `foot` on the development machine. The current
   fixture corpus was re-recorded against that exact build.
-- A typed `Op` command vocabulary and 90 recorded parity scenarios, plus differential fuzzing
+- A typed `Op` command vocabulary and 117 recorded parity scenarios, plus differential fuzzing
   that draws only from commands the Tiri replayer can parse.
 
 The observable model and the Sway/i3 harness described below are now in place.
@@ -332,12 +334,12 @@ One structure, produced from either compositor. It holds only what a user can pe
 ```
 Workspace {
     layout:  Split(H|V) | Tabbed | Stacked      // the workspace's own orientation
-    focused: Option<WindowRef>
+    focused: Nothing | Window(id) | Container(path)
     nodes:   [Node]
 }
 
 Node = Window { id, rect: FracRect, visible: bool, floating: bool, marks: [String] }
-     | Container { layout, explicit: bool, rect: FracRect, nodes: [Node] }
+     | Container { layout, rect: FracRect, nodes: [Node] }
 ```
 
 `FracRect` holds x/y/w/h as fractions of the working area, not pixels.
@@ -353,8 +355,8 @@ Derived from the measurements above, each with the reason it exists:
 |---|---|
 | Drop sway's `root` and `output` nodes; drop `__i3_scratch`. | Not part of the workspace model under test. |
 | Represent the workspace as `Workspace.layout` + its children, on both sides. tiri's bare-leaf root becomes a workspace with that leaf as its only node. | Observation D: same state, different representation. |
-| **Keep** single-child containers that came from an explicit split. | Observation C: sway keeps them too. Erasing them would hide a real difference. |
-| Collapse single-child containers that are *not* explicit splits. | Pure representation; neither compositor's users can see them. |
+| **Keep** semantic single-child containers. | Observation C and the floated-workspace fixture: sway keeps them and they can hold focus. Erasing them would hide a real difference. |
+| For a floating root, collapse only an IPC-labelled `ImplicitWindowGroup`; keep `FloatedContainer` and `WorkspaceWrapper`. | A lone floating window needs Tiri scaffolding, while the other two are real sway-visible containers even with one child. Provenance, not child count, decides. |
 | Compare rects as fractions with a tolerance (2e-3), never pixels. | Gaps, borders and title bars are configured, not behaviour. |
 | Compare `visible` for every window; under tabbed/stacked only the selected child is visible. | This is the observable consequence of a tabbed layout. |
 | Ignore `percent` unless it is the thing under test. | Derivable from rects; comparing both double-counts. |
@@ -459,8 +461,13 @@ whole suite — the other half of the whack-a-mole.
    the parent's layout had been set explicitly, a window escaping a container landing one
    position too far, a no-op move that dissolved a container anyway, and an escape that gives
    up at the first ancestor without room.
-5. **Widen the scripts** to the areas still only covered by hand-written expectations:
-   floating transport, scratchpad, marks, fullscreen.
+5. **Widen the scripts** to the areas still only covered by hand-written expectations.
+   *(partly done)* Floating transport and fullscreen are both in the script grammar, fixture
+   corpus and differential generator. `resize` in hundredths joined them: the corpus had been
+   entirely `px`, so the whole proportional half of resize was unmeasured. Scratchpad and
+   marks already have typed `Op` variants and direct tests, but are not yet accepted by the
+   parity script grammar, and neither is the edge form of `resize` in hundredths, whose `Op`
+   carries pixels.
 
 The seven `parity_seed*` tests that used to be the pilot for step 5 are gone. They came out
 of the whack-a-mole attempt, so their expectations were snapshots of whatever tiri did at
@@ -511,13 +518,15 @@ each is finite: this is a list that can be finished, not a tail.
    the delta. The `0.199/0.199/0.199/0.203` history therefore survives rather than being
    replaced with an even `0.200` reconstructed from the current sibling list.
 
-4. **`user_created`** — a flag tiri has and sway does not, consulted in twenty-two places.
-   Extra state means states sway cannot reach, and every one of them is a question sway never
-   asks and tiri has to answer alone.
+4. **`user_created`** — still present, but narrowed to the addressability distinction it
+   actually carries: a container the user can target versus scaffolding tiri synthesized.
+   Floating roots now carry the corresponding `FloatingRootKind`, and IPC preserves it as
+   `LayoutTreeFloatingRootKind`; the normalizer no longer guesses from the number of children.
 
-5. **The workspace is a node** — a deliberate simplification, and i3 agrees with it, but it
-   is paid for in `RootPolicy` and its forty-three uses, and in the one divergence left in the
-   ledger.
+5. **The workspace is a node** — a deliberate simplification, and i3 agrees with it.
+   `RootPolicy` and its forty-three threaded uses are gone: a command now takes a branch and
+   the tree decides whether that branch root is addressable. The floated-workspace round trip
+   keeps sway's wrapper and its container focus, so this no longer leaves a ledger entry.
 
 6. **Tiling and floating are two trees** — *fixed*. sway has one workspace holding two lists,
    and a container moves between them without ceasing to be itself. Tiri now does the same:

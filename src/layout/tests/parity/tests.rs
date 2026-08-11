@@ -331,10 +331,10 @@ workspace splith focus=1
 #[test]
 fn an_unknown_command_fails_the_script_instead_of_being_skipped() {
     let err = std::panic::catch_unwind(|| {
-        // `ppt` deliberately: sway measures it against the parent's extent and tiri's
-        // proportions are of the working area, so the table claims nothing about it.
+        // The edge form of `resize` in hundredths: real sway syntax, and the one shape of
+        // resize the table still has no `Op` for, since `ResizeWindowEdge` carries pixels.
         replay(
-            "open\nresize grow width 10 ppt\n",
+            "open\nresize grow left 10 ppt\n",
             tiri_parity::session::CLIENT,
         );
     });

@@ -109,23 +109,27 @@ fn op_for(command: &str, next_id: &mut usize, client: (i32, i32)) -> Result<Op, 
         // be claiming something untrue about every nested container.
         // sway's `resize set`, which works out the delta and hands it to the same
         // `container_resize_tiled` the adjust forms use.
-        ["resize", "set", axis @ ("width" | "height"), amount, "px"] => {
-            let amount: i32 = amount.parse().map_err(|_| Reason::BadArgument)?;
-            let change = SizeChange::SetFixed(amount);
+        // The unit is lexical, exactly as it is in sway: `px` is pixels and `ppt` is
+        // hundredths of whatever holds the target. Nothing infers it from the magnitude.
+        ["resize", "set", axis @ ("width" | "height"), amount, unit @ ("px" | "ppt")] => {
+            let change = match *unit {
+                "px" => SizeChange::SetFixed(amount.parse().map_err(|_| Reason::BadArgument)?),
+                _ => SizeChange::SetProportion(amount.parse().map_err(|_| Reason::BadArgument)?),
+            };
             match *axis {
                 "width" => Op::SetWindowWidth { id: None, change },
                 _ => Op::SetWindowHeight { id: None, change },
             }
         }
 
-        ["resize", grow_or_shrink @ ("grow" | "shrink"), axis @ ("width" | "height"), amount, "px"] =>
+        ["resize", grow_or_shrink @ ("grow" | "shrink"), axis @ ("width" | "height"), amount, unit @ ("px" | "ppt")] =>
         {
-            let amount: i32 = amount.parse().map_err(|_| Reason::BadArgument)?;
-            let change = SizeChange::AdjustFixed(if *grow_or_shrink == "shrink" {
-                -amount
-            } else {
-                amount
-            });
+            let sign = if *grow_or_shrink == "shrink" { -1. } else { 1. };
+            let amount: f64 = amount.parse().map_err(|_| Reason::BadArgument)?;
+            let change = match *unit {
+                "px" => SizeChange::AdjustFixed((sign * amount) as i32),
+                _ => SizeChange::AdjustProportion(sign * amount),
+            };
             match *axis {
                 "width" => Op::SetWindowWidth { id: None, change },
                 _ => Op::SetWindowHeight { id: None, change },
