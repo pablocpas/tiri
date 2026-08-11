@@ -13,10 +13,10 @@
 //!
 //! sway/tree/workspace.c:797-852
 
-use std::cell::RefCell;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::num::NonZeroU64;
+use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
 use smithay::utils::{Logical, Point, Rectangle, Size};
@@ -52,7 +52,6 @@ mod state;
 mod tab_bar_model;
 mod tree_store;
 
-pub(super) use command::TreeCommandTarget;
 pub(super) use floating_region::{floating_position_from_logical, scale_floating_position};
 use geometry::PendingLayout;
 pub(super) use resize::ResizeTarget;
@@ -143,6 +142,8 @@ pub(super) struct NodeSizing {
     fractions: ChildFractions,
     child_total_width: f64,
     child_total_height: f64,
+    /// Node box saved on entry to workspace fullscreen (`saved_*` in Sway).
+    fullscreen_restore_geometry: Option<Rectangle<f64, Logical>>,
 }
 
 impl NodeSizing {
@@ -218,6 +219,8 @@ const MIN_CHILD_PERCENT: f64 = 0.05;
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum NodeData<W: LayoutElement> {
+    /// The workspace node. It owns the tiled child list but is not a container.
+    Workspace(WorkspaceData),
     /// Container node with children (stored as identities)
     Container(ContainerData),
     /// Leaf node containing a tile
@@ -238,26 +241,34 @@ pub struct DetachedContainer<W: LayoutElement> {
     sizing: NodeSizing,
     layout: Layout,
     children: Vec<DetachedNode<W>>,
-    focus_stack: Vec<usize>,
+    focus_stack: Vec<NodeKey>,
     user_created: bool,
     prev_split_layout: Option<Layout>,
+}
+
+/// Fields shared by the workspace and real containers because both lay out child nodes.
+#[derive(Debug)]
+pub struct LayoutParentData {
+    layout: Layout,
+    children: Vec<NodeKey>,
+    prev_split_layout: Option<Layout>,
+    geometry: Rectangle<f64, Logical>,
+}
+
+/// Workspace data stored under its own stable node identity.
+#[derive(Debug)]
+pub struct WorkspaceData {
+    common: LayoutParentData,
 }
 
 /// Container data stored under a stable node identity.
 #[derive(Debug)]
 pub struct ContainerData {
-    /// Layout mode for this container
-    layout: Layout,
-    /// Child node identities.
-    children: Vec<NodeKey>,
+    common: LayoutParentData,
     /// Preserve container even if it has a single child (explicit split).
     user_created: bool,
-    /// Previous split layout for i3-style `layout toggle split`.
-    prev_split_layout: Option<Layout>,
     /// The fractions and resize reference spans belonging to this node itself.
     sizing: NodeSizing,
-    /// Cached geometry for rendering
-    geometry: Rectangle<f64, Logical>,
     /// The complete geometry state when this node is a floating root.
     ///
     /// Its presence is also the root-membership marker. `FloatingSpace` owns only stacking and
@@ -298,6 +309,12 @@ pub struct LeafLayoutInfo {
     /// title bar. Tree surgery can change the latter without arranging or changing this one.
     pub node_rect: Rectangle<f64, Logical>,
     pub visible: bool,
+    /// This geometry came from `arrange_workspace`'s fullscreen branch.
+    ///
+    /// A direct `arrange_container` can subsequently give the same fullscreen leaf an
+    /// ordinary (or zero) pending box. Keeping the provenance on the cached geometry lets
+    /// IPC distinguish those routes without duplicating fullscreen ownership state.
+    pub workspace_fullscreen: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -305,6 +322,26 @@ pub(super) struct InsertParentInfo {
     pub parent_path: Vec<usize>,
     pub insert_idx: usize,
     pub layout: Layout,
+}
+
+/// The tiling node chosen by the seat as the insertion context for an immediate unfloat.
+///
+/// This reference never outlives the workspace mutation that consumes it, so the stable node
+/// identity is the complete address. Persistent restore hints use [`InsertParentInfo`] instead:
+/// their original parent may be reaped and need rebuilding later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct InactiveTilingReference {
+    key: NodeKey,
+}
+
+impl InactiveTilingReference {
+    fn new(key: NodeKey) -> Self {
+        Self { key }
+    }
+
+    fn key(self) -> NodeKey {
+        self.key
+    }
 }
 
 /// Container key, child index, available span, child count and rect of a window's container.
@@ -395,7 +432,7 @@ pub struct ContainerTree<W: LayoutElement> {
     parents: ParentStore,
     /// The workspace.
     ///
-    /// Always present and always a container, empty tree included.
+    /// Always present as a [`NodeData::Workspace`], empty tree included.
     ///
     /// sway keeps `sway_workspace` and `sway_container` as separate structs, but the
     /// workspace carries the same `layout` and `prev_split_layout` and answers the same
@@ -432,10 +469,8 @@ pub struct ContainerTree<W: LayoutElement> {
     scale: f64,
     /// Layout options
     options: Rc<Options>,
-    /// Generation counter for cache invalidation.
+    /// Generation counter for layout invalidation.
     generation: u64,
-    /// Cached focus path to avoid recomputation (generation, focused_key, path).
-    focus_path_cache: RefCell<(u64, Option<NodeKey>, Vec<usize>)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -445,20 +480,16 @@ pub(super) struct PreviewLeafGeometry {
 }
 
 // ============================================================================
-// ContainerData Implementation
+// Workspace and container data implementation
 // ============================================================================
 
-impl ContainerData {
-    /// Create a new container with given layout
-    pub(super) fn new(layout: Layout) -> Self {
+impl LayoutParentData {
+    fn new(layout: Layout) -> Self {
         Self {
             layout,
             children: Vec::new(),
-            user_created: false,
             prev_split_layout: None,
-            sizing: NodeSizing::default(),
             geometry: Rectangle::from_size(Size::from((0.0, 0.0))),
-            floating_geometry: None,
         }
     }
 
@@ -469,35 +500,26 @@ impl ContainerData {
 
     /// Set container layout
     pub(super) fn set_layout(&mut self, layout: Layout) {
+        self.layout = layout;
+    }
+
+    /// Apply `cmd_layout`'s history rule rather than a structural orientation change.
+    pub(super) fn set_layout_from_command(&mut self, layout: Layout) {
         if self.layout != layout && matches!(self.layout, Layout::SplitH | Layout::SplitV) {
             self.prev_split_layout = Some(self.layout);
         }
         self.layout = layout;
     }
 
-    pub(super) fn set_layout_explicit(&mut self, layout: Layout) {
-        self.set_layout(layout);
-        self.user_created = true;
-    }
-
-    /// Whether this container is one the user asked for, rather than scaffolding.
-    ///
-    /// `focus parent` stops at one, a floating wrapper is selectable when it is one, and a
-    /// split is addressable when it is one. The bit used to carry a second, unrelated
-    /// meaning — "cleanup must not dissolve me" — which was approximating a rule about what
-    /// a command had just done rather than anything about the container. See the
-    /// `preserve_on_single` section of `docs/design/parity.md`.
-    pub(super) fn is_user_container(&self) -> bool {
-        self.user_created
+    /// `workspace_split` is the one split path that writes workspace layout history, and it
+    /// does so unconditionally when the workspace is empty.
+    pub(super) fn set_layout_from_empty_workspace_split(&mut self, layout: Layout) {
+        self.prev_split_layout = Some(self.layout);
+        self.layout = layout;
     }
 
     pub(super) fn prev_split_layout(&self) -> Option<Layout> {
         self.prev_split_layout
-    }
-
-    /// Mark this container as one the user asked for.
-    pub(super) fn mark_user_created(&mut self) {
-        self.user_created = true;
     }
 
     /// Get children keys
@@ -560,11 +582,89 @@ impl ContainerData {
     }
 }
 
+impl WorkspaceData {
+    fn new(layout: Layout) -> Self {
+        Self {
+            common: LayoutParentData::new(layout),
+        }
+    }
+}
+
+impl Deref for WorkspaceData {
+    type Target = LayoutParentData;
+
+    fn deref(&self) -> &Self::Target {
+        &self.common
+    }
+}
+
+impl DerefMut for WorkspaceData {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.common
+    }
+}
+
+impl ContainerData {
+    /// Create a new real container with given layout.
+    pub(super) fn new(layout: Layout) -> Self {
+        Self {
+            common: LayoutParentData::new(layout),
+            user_created: false,
+            sizing: NodeSizing::default(),
+            floating_geometry: None,
+        }
+    }
+
+    pub(super) fn set_layout_explicit(&mut self, layout: Layout) {
+        self.set_layout(layout);
+        self.user_created = true;
+    }
+
+    pub(super) fn set_layout_explicit_from_command(&mut self, layout: Layout) {
+        self.set_layout_from_command(layout);
+        self.user_created = true;
+    }
+
+    /// Whether this container is one the user asked for, rather than scaffolding.
+    pub(super) fn is_user_container(&self) -> bool {
+        self.user_created
+    }
+
+    pub(super) fn mark_user_created(&mut self) {
+        self.user_created = true;
+    }
+
+    pub(super) fn clear_user_created(&mut self) {
+        self.user_created = false;
+    }
+}
+
+impl Deref for ContainerData {
+    type Target = LayoutParentData;
+
+    fn deref(&self) -> &Self::Target {
+        &self.common
+    }
+}
+
+impl DerefMut for ContainerData {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.common
+    }
+}
+
 // ============================================================================
 // Detached subtree helpers
 // ============================================================================
 
 impl<W: LayoutElement> DetachedNode<W> {
+    fn key(&self) -> NodeKey {
+        match self {
+            DetachedNode::Container(container) => container.key,
+            DetachedNode::Leaf(tile) => tile.node_key(),
+        }
+    }
+
     pub(super) fn unset_root_fractions(&mut self) {
         match self {
             DetachedNode::Leaf(tile) => tile.unset_node_fractions(),
@@ -619,7 +719,7 @@ impl<W: LayoutElement> DetachedNode<W> {
 
 impl<W: LayoutElement> DetachedContainer<W> {
     pub(super) fn new(layout: Layout, children: Vec<DetachedNode<W>>) -> Self {
-        let focus_stack = (0..children.len()).collect();
+        let focus_stack = children.iter().map(DetachedNode::key).collect();
         Self {
             key: NodeKey::next(),
             sizing: NodeSizing::default(),
@@ -649,7 +749,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let root = NodeKey::next();
         nodes.insert(
             root,
-            NodeData::Container(ContainerData::new(Layout::SplitH)),
+            NodeData::Workspace(WorkspaceData::new(Layout::SplitH)),
         );
         parents.insert(root, None);
         let mut seat = seat::SeatFocus::default();
@@ -670,7 +770,6 @@ impl<W: LayoutElement> ContainerTree<W> {
             scale,
             options,
             generation: 0,
-            focus_path_cache: RefCell::new((u64::MAX, None, Vec::new())),
         }
     }
 }

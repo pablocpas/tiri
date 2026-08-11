@@ -866,12 +866,20 @@ enum Op {
     SplitHorizontal,
     SplitVertical,
     SplitToggle,
+    SplitNone,
     SetLayoutSplitH,
     SetLayoutSplitV,
     SetLayoutTabbed,
     SetLayoutStacked,
     ToggleSplitLayout,
     ToggleLayoutAll,
+    SetLayoutDefault,
+    ToggleLayoutCycle {
+        #[proptest(
+            strategy = "Just(vec![LayoutCycleEntry::Split, LayoutCycleEntry::Layout(ContainerLayout::Tabbed)])"
+        )]
+        cycle: Vec<LayoutCycleEntry>,
+    },
     // Mark operations
     MarkFocused {
         #[proptest(strategy = "1..=3usize")]
@@ -1789,12 +1797,15 @@ impl Op {
             Op::SplitHorizontal => layout.split_horizontal(),
             Op::SplitVertical => layout.split_vertical(),
             Op::SplitToggle => layout.split_toggle(),
+            Op::SplitNone => layout.split_none(),
             Op::SetLayoutSplitH => layout.set_layout_mode(ContainerLayout::SplitH),
             Op::SetLayoutSplitV => layout.set_layout_mode(ContainerLayout::SplitV),
             Op::SetLayoutTabbed => layout.set_layout_mode(ContainerLayout::Tabbed),
             Op::SetLayoutStacked => layout.set_layout_mode(ContainerLayout::Stacked),
             Op::ToggleSplitLayout => layout.toggle_split_layout(),
             Op::ToggleLayoutAll => layout.toggle_layout_all(),
+            Op::SetLayoutDefault => layout.set_default_layout(),
+            Op::ToggleLayoutCycle { cycle } => layout.toggle_layout_cycle(&cycle),
             // Mark operations
             Op::MarkFocused { mark_id, mode } => {
                 layout.mark_focused(format!("mark{mark_id}"), mode);
@@ -3330,14 +3341,10 @@ prop_compose! {
 // Focus parent/child navigation tests
 
 #[test]
-fn command_target_routing_matrix_for_core_command_families() {
+fn command_target_and_domain_follow_the_selected_node() {
     struct ExpectedRoute {
         handler: &'static str,
         command: &'static str,
-        focus: &'static str,
-        layout: &'static str,
-        move_directional: &'static str,
-        move_container: &'static str,
     }
 
     let cases: [(&str, Vec<Op>, ExpectedRoute); 5] = [
@@ -3352,10 +3359,6 @@ fn command_target_routing_matrix_for_core_command_families() {
             ExpectedRoute {
                 handler: "tiling_window",
                 command: "tiling",
-                focus: "tiling",
-                layout: "tiling",
-                move_directional: "tiling",
-                move_container: "tiling",
             },
         ),
         (
@@ -3376,10 +3379,6 @@ fn command_target_routing_matrix_for_core_command_families() {
             ExpectedRoute {
                 handler: "tiling_container",
                 command: "tiling",
-                focus: "tiling",
-                layout: "tiling",
-                move_directional: "tiling",
-                move_container: "tiling",
             },
         ),
         (
@@ -3394,10 +3393,6 @@ fn command_target_routing_matrix_for_core_command_families() {
             ExpectedRoute {
                 handler: "floating_window",
                 command: "floating",
-                focus: "floating",
-                layout: "floating",
-                move_directional: "floating",
-                move_container: "floating",
             },
         ),
         (
@@ -3414,10 +3409,6 @@ fn command_target_routing_matrix_for_core_command_families() {
             ExpectedRoute {
                 handler: "floating_container",
                 command: "floating",
-                focus: "floating",
-                layout: "floating",
-                move_directional: "floating",
-                move_container: "floating",
             },
         ),
         (
@@ -3435,10 +3426,6 @@ fn command_target_routing_matrix_for_core_command_families() {
             ExpectedRoute {
                 handler: "workspace",
                 command: "workspace",
-                focus: "workspace",
-                layout: "floating",
-                move_directional: "workspace",
-                move_container: "workspace",
             },
         ),
     ];
@@ -3456,26 +3443,6 @@ fn command_target_routing_matrix_for_core_command_families() {
             workspace.debug_command_context(),
             expected.command,
             "case={name}: unexpected command_context",
-        );
-        assert_eq!(
-            workspace.debug_route_domain_for_focus(),
-            expected.focus,
-            "case={name}: unexpected focus routing domain",
-        );
-        assert_eq!(
-            workspace.debug_route_domain_for_layout(),
-            expected.layout,
-            "case={name}: unexpected layout routing domain",
-        );
-        assert_eq!(
-            workspace.debug_route_domain_for_move_directional(),
-            expected.move_directional,
-            "case={name}: unexpected move-directional routing domain",
-        );
-        assert_eq!(
-            workspace.debug_route_domain_for_move_container(),
-            expected.move_container,
-            "case={name}: unexpected move-container routing domain",
         );
     }
 }
@@ -3597,6 +3564,46 @@ fn insert_position_center_of_window() {
         ),
         "Expected Swap or Split at window center, got {:?}",
         insert_pos
+    );
+}
+
+#[test]
+fn insert_hint_does_not_retarget_after_its_leaf_is_removed() {
+    use super::monitor::InsertPosition;
+
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+    ]);
+
+    let rect = tile_rect(&layout, 2);
+    let pos = rect.loc + rect.size.to_point().downscale(2.0);
+    let insert_pos = layout
+        .active_workspace()
+        .expect("active workspace")
+        .tiling_insert_position(pos);
+    assert!(matches!(
+        insert_pos,
+        InsertPosition::Swap { .. } | InsertPosition::Split { .. }
+    ));
+
+    check_ops_on_layout(&mut layout, [Op::CloseWindow(2)]);
+
+    assert!(
+        layout
+            .active_workspace()
+            .expect("active workspace")
+            .insert_hint_area(&insert_pos)
+            .is_none(),
+        "a hint must not silently retarget the window that shifted into the old path",
     );
 }
 

@@ -802,7 +802,7 @@ fn fullscreen_directional_focus_stays_on_active_window_like_sway() {
 
 #[test]
 fn fullscreen_command_keeps_a_selected_container_as_the_authority() {
-    let layout = check_ops([
+    let mut layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow {
             params: TestWindowParams::new(1),
@@ -824,8 +824,17 @@ fn fullscreen_command_keeps_a_selected_container_as_the_authority() {
             window: 2,
             is_fullscreen: true,
         },
-        Op::ToggleFullscreenFocused,
     ]);
+
+    assert_eq!(
+        layout
+            .active_workspace()
+            .expect("active workspace")
+            .debug_command_target(),
+        "tiling_container",
+        "precondition: the container selection must survive the client fullscreen request",
+    );
+    check_ops_on_layout(&mut layout, [Op::ToggleFullscreenFocused]);
 
     let workspace = layout.active_workspace().expect("active workspace");
     let tree = workspace.tiling().tree();
@@ -918,6 +927,145 @@ fn fullscreen_container_is_the_real_render_and_input_scope() {
 }
 
 #[test]
+fn floating_fullscreen_container_uses_the_same_render_and_input_scope() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::SplitVertical,
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::FocusParent,
+        Op::ToggleWindowFloating { id: None },
+    ]);
+
+    assert_eq!(
+        layout
+            .active_workspace()
+            .expect("active workspace")
+            .debug_command_target(),
+        "floating_container",
+        "test precondition: the multi-window floating container must remain selected",
+    );
+    assert!(
+        layout.active_command_can_fullscreen(),
+        "the real input action must accept a selected floating container",
+    );
+    check_ops_on_layout(&mut layout, [Op::ToggleFullscreenFocused]);
+
+    for _ in 0..3 {
+        check_ops_on_layout(
+            &mut layout,
+            [Op::Communicate(1), Op::Communicate(2), Op::Communicate(3)],
+        );
+        layout.update_render_elements(None);
+    }
+    check_ops_on_layout(&mut layout, [Op::CompleteAnimations]);
+
+    let (rect2, rect3) = {
+        let workspace = layout.active_workspace().expect("active workspace");
+        assert!(
+            workspace.render_above_top_layer(),
+            "a floating container must cover exclusive layers just like a tiled one",
+        );
+
+        let tree = workspace.tiling().tree();
+        let authority = tree.fullscreen_key().expect("fullscreen authority");
+        assert!(tree.is_floating(authority));
+        assert!(tree.get_tile(authority).is_none());
+        assert_eq!(tree.tiles_in_branch(authority).len(), 2);
+
+        let mut visible = HashMap::new();
+        let mut rects = HashMap::new();
+        for (tile, pos, is_visible) in workspace.tiles_with_render_positions() {
+            visible.insert(*tile.window().id(), is_visible);
+            rects.insert(*tile.window().id(), Rectangle::new(pos, tile.tile_size()));
+        }
+
+        assert_eq!(visible.get(&1), Some(&false));
+        assert_eq!(visible.get(&2), Some(&true));
+        assert_eq!(visible.get(&3), Some(&true));
+        (rects[&2], rects[&3])
+    };
+
+    assert_abs_diff_eq!(rect2.loc.x, 0.0, epsilon = 1e-5);
+    assert_abs_diff_eq!(rect2.loc.y, 0.0, epsilon = 1e-5);
+    assert_abs_diff_eq!(rect3.loc.x, 0.0, epsilon = 1e-5);
+    assert_abs_diff_eq!(rect2.size.w, rect3.size.w, epsilon = 1e-5);
+    assert_abs_diff_eq!(rect2.size.h, rect3.size.h, epsilon = 1e-5);
+    assert_abs_diff_eq!(rect3.loc.y, rect2.size.h, epsilon = 1e-5);
+
+    let output = layout.outputs().next().expect("output").clone();
+    let probe = Point::from((
+        rect2.loc.x + rect2.size.w / 2.0,
+        rect2.loc.y + rect2.size.h / 2.0,
+    ));
+    let (hit, _) = layout
+        .window_under(&output, probe)
+        .expect("fullscreen floating descendant under pointer");
+    assert_eq!(*hit.id(), 2);
+
+    assert!(
+        layout
+            .windows()
+            .all(|(_, window)| !window.pending_sizing_mode().is_fullscreen()),
+        "container fullscreen must not request client fullscreen from floating descendants",
+    );
+
+    check_ops_on_layout(&mut layout, [Op::ToggleFullscreenFocused]);
+    let workspace = layout.active_workspace().expect("active workspace");
+    assert!(workspace.tiling().tree().fullscreen_key().is_none());
+    assert_eq!(layout.close_window_ids_for_active_selection(), vec![2, 3]);
+}
+
+#[test]
+fn fullscreen_targets_the_container_created_by_floating_the_workspace() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::FocusParent,
+        Op::ToggleWindowFloating { id: None },
+    ]);
+
+    let workspace = layout.active_workspace().expect("active workspace");
+    assert!(workspace.floating().selected_is_container(None));
+    assert_eq!(workspace.debug_command_target(), "floating_container");
+    assert!(
+        layout.active_command_can_fullscreen(),
+        "the selected floating wrapper must pass the real input action's fullscreen gate",
+    );
+
+    check_ops_on_layout(&mut layout, [Op::ToggleFullscreenFocused]);
+
+    let workspace = layout.active_workspace().expect("active workspace");
+    let tree = workspace.tiling().tree();
+    let authority = tree.fullscreen_key().expect("fullscreen authority");
+    assert!(tree.is_floating(authority));
+    assert!(tree.get_tile(authority).is_none());
+    assert_eq!(tree.tiles_in_branch(authority).len(), 2);
+    assert!(workspace.render_above_top_layer());
+
+    check_ops_on_layout(&mut layout, [Op::ToggleFullscreenFocused]);
+    assert!(layout
+        .active_workspace()
+        .expect("active workspace")
+        .tiling()
+        .tree()
+        .fullscreen_key()
+        .is_none(),);
+}
+
+#[test]
 fn split_after_floating_fullscreen_tree_changes_keeps_layout_cache_addressed() {
     check_ops([
         Op::AddOutput(1),
@@ -975,6 +1123,27 @@ fn fullscreen_focus_parent_is_noop_like_sway() {
         workspace.tiling().focused_window_id() == Some(3),
         "focus should remain on the fullscreen window after focus_parent:\n{tree}"
     );
+}
+
+#[test]
+fn fullscreen_focus_parent_can_select_the_fullscreen_owner() {
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::FullscreenWindow(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::SplitHorizontal,
+        Op::FocusParent,
+    ]);
+
+    let workspace = layout.active_workspace().expect("active workspace");
+    assert_eq!(layout.focus().map(|win| *win.id()), Some(1));
+    assert_eq!(workspace.debug_command_target(), "tiling_container");
+    assert!(workspace.tiling().selected_is_container());
 }
 #[test]
 fn fullscreen_open_window_does_not_steal_focus_like_sway() {

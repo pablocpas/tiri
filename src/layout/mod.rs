@@ -79,6 +79,15 @@ use crate::utils::{
 };
 use crate::window::ResolvedWindowRules;
 
+/// One entry in sway's explicit `layout toggle ...` cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LayoutCycleEntry {
+    /// Match either split orientation and switch orientation when this entry is selected.
+    Split,
+    /// Match and select one concrete layout.
+    Layout(ContainerLayout),
+}
+
 pub mod closing_window;
 pub mod container;
 pub mod floating;
@@ -4091,6 +4100,11 @@ impl<W: LayoutElement> Layout<W> {
                 workspaces.push(ws);
             }
         }
+        // Monitor::insert_workspace() also normalizes the transient empty workspaces around
+        // the insertion.  That can retire a workspace other than the one just added, so the
+        // layout-wide focus stack must cross the same mutation boundary as every other
+        // workspace-lifetime change.
+        self.seat_focus_after_mutation();
     }
 
     pub fn update_config(&mut self, config: &Config) {
@@ -4223,6 +4237,12 @@ impl<W: LayoutElement> Layout<W> {
         }
     }
 
+    pub fn split_none(&mut self) {
+        if let Some(workspace) = self.active_workspace_mut() {
+            workspace.split_none();
+        }
+    }
+
     pub fn split_toggle(&mut self) {
         if let Some(workspace) = self.active_workspace_mut() {
             workspace.split_toggle();
@@ -4244,6 +4264,18 @@ impl<W: LayoutElement> Layout<W> {
     pub fn toggle_layout_all(&mut self) {
         if let Some(workspace) = self.active_workspace_mut() {
             workspace.toggle_layout_all();
+        }
+    }
+
+    pub fn set_default_layout(&mut self) {
+        if let Some(workspace) = self.active_workspace_mut() {
+            workspace.set_default_layout();
+        }
+    }
+
+    pub(crate) fn toggle_layout_cycle(&mut self, cycle: &[LayoutCycleEntry]) {
+        if let Some(workspace) = self.active_workspace_mut() {
+            workspace.toggle_layout_cycle(cycle);
         }
     }
 
@@ -6241,7 +6273,7 @@ impl<W: LayoutElement> Layout<W> {
                             false,
                         );
                     }
-                    InsertPosition::Swap { path, direction } => {
+                    InsertPosition::Swap { target, direction } => {
                         // Swapping is only possible back into the workspace the drag started
                         // from, where the vacated slot is still known.
                         let ws_id = mon.workspaces[ws_idx].id();
@@ -6250,8 +6282,9 @@ impl<W: LayoutElement> Layout<W> {
                             .flatten();
 
                         let swap = match origin {
-                            Some(origin) => mon.workspaces[ws_idx]
-                                .tiling_swap_tile_at_path(&path, move_.tile, &origin),
+                            Some(origin) => {
+                                mon.workspaces[ws_idx].tiling_swap_tile(target, move_.tile, &origin)
+                            }
                             None => Err(move_.tile),
                         };
 
@@ -6264,7 +6297,7 @@ impl<W: LayoutElement> Layout<W> {
                             Err(tile) => {
                                 let _ = mon.add_tile_split(
                                     ws_idx,
-                                    &path,
+                                    target,
                                     direction,
                                     tile,
                                     true,
@@ -6274,11 +6307,11 @@ impl<W: LayoutElement> Layout<W> {
                         }
                     }
                     InsertPosition::Split {
-                        path, direction, ..
+                        target, direction, ..
                     } => {
                         let _ = mon.add_tile_split(
                             ws_idx,
-                            &path,
+                            target,
                             direction,
                             move_.tile,
                             true,

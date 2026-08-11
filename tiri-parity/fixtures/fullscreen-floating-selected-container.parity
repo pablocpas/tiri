@@ -1,5 +1,5 @@
-# A selected nested container gets sway's default floating size, not its tiled rectangle.
-# recorded from sway version 1.12-dev
+# A selected multi-window floating container owns fullscreen as a subtree.
+# recorded from sway version 1.11
 # client 400x300
 
 $ open
@@ -38,17 +38,16 @@ workspace splith focus=@1
     window 2 0.250,0.125 0.500x0.375 floating
     window 3 0.250,0.500 0.500x0.375 floating
 
-$ floating toggle
+$ fullscreen toggle
 workspace splith focus=@1
-  window 1 0.000,0.000 0.500x1.000
-  splitv 0.500,0.000 0.500x1.000
-    window 2 0.500,0.000 0.500x0.500
-    window 3 0.500,0.500 0.500x0.500
+  window 1 0.000,0.000 1.000x1.000 hidden
+  splitv 0.000,0.000 1.000x1.000
+    window 2 0.000,0.000 1.000x0.500 floating
+    window 3 0.000,0.500 1.000x0.500 floating
 
-$ open
-workspace splith focus=4
-  window 1 0.000,0.000 0.334x1.000
-  splitv 0.334,0.000 0.334x1.000
-    window 2 0.334,0.000 0.334x0.500
-    window 3 0.334,0.500 0.334x0.500
-  window 4 0.667,0.000 0.333x1.000
+$ fullscreen toggle
+workspace splith focus=@1
+  window 1 0.000,0.000 1.000x1.000
+  splitv 0.250,0.125 0.500x0.750
+    window 2 0.250,0.125 0.500x0.375 floating
+    window 3 0.250,0.500 0.500x0.375 floating

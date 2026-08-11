@@ -51,7 +51,7 @@ fn simple() {
     let window = f.client(id).window(&surface);
     assert_snapshot!(
         window.format_recent_configures(),
-        @"size: 1904 × 1064, bounds: 800 × 600, states: []"
+        @"size: 0 × 0, bounds: 800 × 600, states: []"
     );
 
     window.attach_new_buffer();

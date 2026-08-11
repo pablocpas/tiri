@@ -56,7 +56,9 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(super) fn count_windows_in_node(&self, node_key: NodeKey) -> usize {
         match self.get_node(node_key) {
             Some(NodeData::Leaf(_)) => 1,
-            Some(NodeData::Container(container)) => container
+            Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => self
+                .get_container(node_key)
+                .expect("layout parent")
                 .children
                 .iter()
                 .map(|&child_key| self.count_windows_in_node(child_key))
@@ -133,17 +135,17 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// The workspace's layout.
     ///
-    /// The root container carries it, empty workspace included, so there is nothing to
+    /// The workspace node carries it, empty workspace included, so there is nothing to
     /// remember on the side and nothing to reconcile: a `split` on an empty workspace is a
-    /// `split` on the root container, and the first window arriving reads the same field.
+    /// `split` on the workspace node, and the first window arriving reads the same field.
     pub(in crate::layout) fn workspace_layout(&self) -> Layout {
         self.root_container_layout()
     }
 
-    /// The layout carried by the root container.
+    /// The layout carried by the workspace node.
     pub(in crate::layout) fn root_container_layout(&self) -> Layout {
         self.get_container(self.root)
-            .expect("workspace root must be a container")
+            .expect("workspace node must provide child-layout data")
             .layout()
     }
 

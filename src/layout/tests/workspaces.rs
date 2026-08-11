@@ -556,7 +556,7 @@ fn tiling_focus_parent_on_root_split_sets_workspace_intent_like_sway() {
     assert!((r3.loc.y - r1.loc.y).abs() <= 1.0);
 }
 #[test]
-fn tiling_workspace_context_keeps_root_selection_and_focus_child_returns_to_it() {
+fn workspace_node_selection_and_focus_child_return_to_the_active_child() {
     let mut layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow {
@@ -585,10 +585,9 @@ fn tiling_workspace_context_keeps_root_selection_and_focus_child_returns_to_it()
         assert_eq!(workspace.debug_command_target(), "workspace");
         assert!(workspace.is_tiling_workspace_context_active());
         assert!(
-            workspace.tiling().selected_is_container(),
-            "workspace context should retain the selected root tiling container",
+            !workspace.tiling().selected_is_container(),
+            "the workspace is its own node, not a hidden selected container",
         );
-        assert_eq!(workspace.tiling().selected_path(), Vec::<usize>::new());
     }
 
     check_ops_on_layout(&mut layout, [Op::FocusChild]);
@@ -599,7 +598,174 @@ fn tiling_workspace_context_keeps_root_selection_and_focus_child_returns_to_it()
         workspace.tiling().selected_is_container(),
         "focus_child from workspace context should return to the remembered root child container",
     );
-    assert_eq!(workspace.tiling().selected_path(), vec![1]);
+    assert_eq!(layout.close_window_ids_for_active_selection(), vec![2, 3]);
+}
+
+#[test]
+fn focus_parent_selection_has_visual_geometry_for_container_and_workspace() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::FocusWindow(2),
+        Op::SplitVertical,
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::FocusParent,
+    ]);
+
+    {
+        let workspace = layout.active_workspace().expect("active workspace");
+        assert_eq!(workspace.debug_command_target(), "tiling_container");
+        assert!(
+            workspace
+                .tiling()
+                .debug_selection_visual_geometry()
+                .is_some(),
+            "a selected container must produce the geometry for its focus-parent indicator",
+        );
+    }
+
+    check_ops_on_layout(&mut layout, [Op::FocusParent]);
+
+    let workspace = layout.active_workspace().expect("active workspace");
+    assert_eq!(workspace.debug_command_target(), "workspace");
+    assert!(
+        workspace
+            .tiling()
+            .debug_selection_visual_geometry()
+            .is_some(),
+        "the real workspace node must also produce focus-parent indicator geometry",
+    );
+}
+
+#[test]
+fn a_one_entry_layout_cycle_selects_that_entry_like_sway() {
+    // `get_layout_toggle_list` runs over any non-empty list. With a single entry it selects
+    // it whenever the current layout is not already it, and is a no-op once it is. Only the
+    // bare and `split` spellings are separate toggles.
+    let cycle = vec![LayoutCycleEntry::Layout(ContainerLayout::Tabbed)];
+    // The command lands on whatever holds the windows: the workspace node while they are its
+    // direct children, and the wrapper `layout tabbed` builds for them afterwards.
+    let owning_layout = |layout: &Layout<TestWindow>| {
+        layout
+            .workspaces()
+            .find_map(|(_, _, workspace)| {
+                let tree = workspace.tiling().tree();
+                let leaf = tree.window_key(&1)?;
+                tree.container_info(tree.parent_of(leaf)?)
+            })
+            .expect("the container holding the windows")
+            .0
+    };
+
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+    ]);
+    assert_eq!(owning_layout(&layout), ContainerLayout::SplitH);
+
+    check_ops_on_layout(
+        &mut layout,
+        [Op::ToggleLayoutCycle {
+            cycle: cycle.clone(),
+        }],
+    );
+    assert_eq!(owning_layout(&layout), ContainerLayout::Tabbed);
+
+    check_ops_on_layout(&mut layout, [Op::ToggleLayoutCycle { cycle }]);
+    assert_eq!(
+        owning_layout(&layout),
+        ContainerLayout::Tabbed,
+        "the only entry is already current, so the cycle has nowhere to go",
+    );
+}
+
+#[test]
+fn selected_floating_container_does_not_answer_for_the_tiled_side() {
+    // A floating root is parented to the workspace, so it is an ancestry descendant of the
+    // workspace root. Only branch membership separates the two sides: without it a selected
+    // floating container makes the tiling pass draw its own selection indicator over the
+    // floating one, and suppresses the tiled focus ring.
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::FocusWindow(2),
+        Op::ToggleWindowFloating { id: None },
+        Op::SplitHorizontal,
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+    ]);
+    check_ops_on_layout(&mut layout, [Op::FocusParent]);
+
+    let workspace = layout.active_workspace().expect("active workspace");
+    assert_eq!(workspace.debug_command_target(), "floating_container");
+    assert!(
+        !workspace.tiling().selected_is_container(),
+        "a floating container is not a selected container of the tiled branch",
+    );
+    assert_eq!(
+        workspace.tiling().debug_selection_visual_geometry(),
+        None,
+        "the tiling pass must not draw a selection indicator for a floating container",
+    );
+}
+
+#[test]
+fn closing_selected_container_descends_to_surviving_window() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::SplitVertical,
+        Op::AddWindow {
+            params: TestWindowParams::new(4),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(5),
+        },
+        Op::FocusParent,
+    ]);
+
+    assert_eq!(
+        layout.close_window_ids_for_active_selection(),
+        vec![3, 4, 5]
+    );
+    for id in [3, 4, 5] {
+        layout.remove_window(&id, Transaction::new());
+    }
+
+    let workspace = layout.active_workspace().expect("active workspace");
+    assert_eq!(workspace.debug_command_target(), "tiling_window");
+    assert_eq!(layout.focus().map(|window| *window.id()), Some(2));
+    assert_eq!(
+        layout.close_window_ids_for_active_selection(),
+        vec![2],
+        "the next close must target the surviving leaf, not its workspace parent",
+    );
 }
 
 #[test]
@@ -2259,9 +2425,7 @@ fn layout_matching_workspace_on_top_level_leaf_keeps_workspace_root_implicit() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert!(
-        workspace
-            .tiling()
-            .debug_root_is_synthetic_workspace_container(),
+        workspace.tiling().debug_root_is_workspace_node(),
         "layout matching workspace layout on a top-level leaf must stay in workspace context",
     );
 
@@ -2293,9 +2457,7 @@ fn layout_on_top_level_leaf_builds_a_wrapper_and_leaves_the_workspace_alone() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert!(
-        workspace
-            .tiling()
-            .debug_root_is_synthetic_workspace_container(),
+        workspace.tiling().debug_root_is_workspace_node(),
         "the workspace root must stay implicit: the command was aimed at a window",
     );
 

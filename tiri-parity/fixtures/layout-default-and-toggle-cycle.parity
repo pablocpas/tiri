@@ -1,0 +1,32 @@
+# Bare toggle, default, and an explicit layout cycle use the same remembered layout state.
+# recorded from sway version 1.12-dev
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ layout splitv
+workspace splith focus=1
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+
+$ layout tabbed
+workspace splith focus=1
+  tabbed 0.000,0.000 1.000x1.000
+    window 1 0.000,0.032 1.000x0.968
+
+$ layout default
+workspace splith focus=1
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+
+$ layout toggle
+workspace splith focus=1
+  splith 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+
+$ layout toggle splith tabbed stacking splitv
+workspace splith focus=1
+  tabbed 0.000,0.000 1.000x1.000
+    window 1 0.000,0.032 1.000x0.968

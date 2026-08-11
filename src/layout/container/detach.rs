@@ -1,7 +1,5 @@
 //! Detaching and reattaching subtrees (window removal, float/unfloat surgery).
 
-use std::collections::HashMap;
-
 use super::ContainerData;
 use super::ContainerTree;
 use super::DetachedContainer;
@@ -19,6 +17,9 @@ impl<W: LayoutElement> ContainerTree<W> {
         let node_key = self.window_key(window_id)?;
         let cleanup_key = self.parent_of(node_key);
         let was_focused = self.focused_key() == Some(node_key);
+        let removed_from_fullscreen = self
+            .fullscreen_key
+            .is_some_and(|scope| node_key == scope || self.is_descendant(node_key, scope));
         let former_ancestors = cleanup_key
             .map(|parent| self.focus_chain(parent))
             .unwrap_or_default();
@@ -37,7 +38,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let node_data = self.remove_node_from_store(node_key)?;
         let tile = match node_data {
             NodeData::Leaf(tile) => tile,
-            NodeData::Container(_) => return None, // Should never happen
+            NodeData::Workspace(_) | NodeData::Container(_) => return None,
         };
 
         if let Some(cleanup_key) = cleanup_key {
@@ -46,7 +47,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.prune_leaf_layouts();
 
         self.prune_selected_key();
-        self.reconcile_focus_after_change(was_focused, &former_ancestors);
+        self.reconcile_focus_after_change(was_focused, &former_ancestors, removed_from_fullscreen);
 
         self.layout();
 
@@ -76,10 +77,10 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// parent selected through `focus parent` is intentionally moved as a group. The workspace
     /// itself is not a container target and therefore cannot be detached here.
     pub(in crate::layout) fn take_command_target_subtree(&mut self) -> Option<DetachedNode<W>> {
-        let key = match self.command_target_in(self.root) {
-            super::TreeCommandTarget::Workspace => return None,
-            super::TreeCommandTarget::Container(key) | super::TreeCommandTarget::Leaf(key) => key,
-        };
+        let key = self.command_target_in(self.root);
+        if key == self.root {
+            return None;
+        }
         self.take_tiling_subtree(key)
     }
 
@@ -120,7 +121,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.prune_leaf_layouts();
 
         self.prune_selected_key();
-        self.reconcile_focus_after_change(focused_in_subtree, &former_ancestors);
+        self.reconcile_focus_after_change(focused_in_subtree, &former_ancestors, false);
 
         self.layout();
 
@@ -134,6 +135,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             .expect("node key must exist when extracting subtree");
 
         match node_data {
+            NodeData::Workspace(_) => unreachable!("the workspace cannot be detached"),
             NodeData::Leaf(tile) => {
                 debug_assert_eq!(tile.node_key(), key);
                 DetachedNode::Leaf(tile)
@@ -141,25 +143,22 @@ impl<W: LayoutElement> ContainerTree<W> {
             NodeData::Container(container) => {
                 let child_keys = container.children.clone();
                 let mut children = Vec::new();
-                for child_key in container.children {
+                for child_key in child_keys.iter().copied() {
                     children.push(self.extract_subtree(child_key));
                 }
-                let mut index_by_key = HashMap::new();
-                for (idx, key) in child_keys.iter().enumerate() {
-                    index_by_key.insert(*key, idx);
-                }
-                // The order travels as positions because the receiving workspace has its own
-                // seat order. Which child a switcher shows is behaviour, so it cannot be
-                // dropped and re-derived on arrival.
-                let mut focus_stack: Vec<usize> = self
+                // Which child a switcher shows is behaviour, so the subtree carries those
+                // stable identities into the receiving workspace instead of rebuilding them
+                // from child positions.
+                let mut focus_stack: Vec<NodeKey> = self
                     .seat
                     .order()
                     .iter()
-                    .filter_map(|key| index_by_key.get(key).copied())
+                    .copied()
+                    .filter(|key| child_keys.contains(key))
                     .collect();
-                for idx in 0..child_keys.len() {
-                    if !focus_stack.contains(&idx) {
-                        focus_stack.push(idx);
+                for key in child_keys {
+                    if !focus_stack.contains(&key) {
+                        focus_stack.push(key);
                     }
                 }
                 DetachedNode::Container(DetachedContainer {
@@ -193,7 +192,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     child_keys.push(child_key);
                 }
 
-                if let Some(node) = self.get_container_mut(container_key) {
+                if let Some(node) = self.get_real_container_mut(container_key) {
                     node.children = child_keys;
                     node.sizing = container.sizing;
                     node.user_created = container.user_created;
@@ -206,11 +205,11 @@ impl<W: LayoutElement> ContainerTree<W> {
                 let restored: Vec<NodeKey> = container
                     .focus_stack
                     .iter()
-                    .filter_map(|idx| {
+                    .filter_map(|key| {
                         self.get_container(container_key)?
                             .children()
-                            .get(*idx)
-                            .copied()
+                            .contains(key)
+                            .then_some(*key)
                     })
                     .collect();
                 // Appended, not placed: the receiving workspace has its own inactive order.
@@ -232,7 +231,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         match self.get_node(root_key) {
             Some(NodeData::Leaf(_)) => None,
-            Some(NodeData::Container(_)) => {
+            Some(NodeData::Workspace(_)) => {
                 let child_key = {
                     let container = self.get_container(root_key)?;
                     if idx >= container.children.len() {
@@ -254,7 +253,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     Some(NodeData::Leaf(_)) | None => {
                         self.focus_first_leaf();
                     }
-                    Some(NodeData::Container(root_container)) => {
+                    Some(NodeData::Workspace(root_container)) => {
                         if remaining > 0 {
                             let new_idx = idx.min(root_container.children.len().saturating_sub(1));
                             let child_key = root_container.child_key(new_idx);
@@ -267,13 +266,14 @@ impl<W: LayoutElement> ContainerTree<W> {
                             self.focus_first_leaf();
                         }
                     }
+                    Some(NodeData::Container(_)) => unreachable!("root must be a workspace"),
                 }
 
                 let subtree = self.extract_subtree(child_key);
                 self.prune_selected_key();
                 Some(subtree)
             }
-            None => None,
+            Some(NodeData::Container(_)) | None => None,
         }
     }
 }

@@ -27,9 +27,8 @@ use tiri_ipc::{ColumnDisplay, LayoutTreeNode, LayoutTreeRect, SizeChange};
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::container::{
-    ContainerMetrics, ContainerTree, DetachedContainer, DetachedNode, Direction, InsertParentInfo,
-    Layout, LeafLayoutInfo, NodeKey, ResizeDelta, ResizeReach, ResizeSpace, ResizeTarget,
-    TreeCommandTarget,
+    ContainerMetrics, ContainerTree, DetachedContainer, DetachedNode, Direction, Layout,
+    LeafLayoutInfo, NodeKey, ResizeDelta, ResizeReach, ResizeSpace, ResizeTarget,
 };
 use super::focus_ring::{
     render_container_selection, ContainerSelectionStyle, FocusRingEdges, FocusRingIndicatorEdge,
@@ -40,8 +39,8 @@ use super::monitor::{InsertPosition, SplitIndicator};
 use super::tile::{Tile, TileRenderElement};
 use super::viewport::FixedViewport;
 use super::{
-    ConfigureIntent, InteractiveResizeData, LayoutElement, Options, RemovedTile, ResizeAxis,
-    ResizeHit, ResizeRequest,
+    ConfigureIntent, InteractiveResizeData, LayoutCycleEntry, LayoutElement, Options, RemovedTile,
+    ResizeAxis, ResizeHit, ResizeRequest,
 };
 use crate::animation::{Animation, Clock};
 use crate::layout::tab_bar::{
@@ -118,8 +117,8 @@ pub struct TreeSpace<W: LayoutElement> {
     overview_background: SolidColorBuffer,
 }
 
-/// A leaf identified for hit-testing: node key, tree path and on-screen rect.
-type LeafHit = (NodeKey, Vec<usize>, Rectangle<f64, Logical>);
+/// A leaf identified for hit-testing: stable node identity and on-screen rect.
+type LeafHit = (NodeKey, Rectangle<f64, Logical>);
 
 /// Workspace-wide context shared by every tile in an `update_window_state` pass.
 struct WindowStateContext<'a, W: LayoutElement> {
@@ -230,6 +229,25 @@ impl<W: LayoutElement> TreeSpace<W> {
         (self.tree.branch_root(key) == self.tree.workspace_root()).then_some(key)
     }
 
+    /// Match sway's `view_map` arrange boundary after inserting a new tiled window.
+    ///
+    /// A view inserted below a container arranges that container against its current pending
+    /// box. A view inserted directly below the workspace node arranges the
+    /// whole workspace instead. Keeping this decision here also avoids reconstructing a path:
+    /// the inserted leaf and its parent are already stable `NodeKey`s.
+    fn layout_after_tiled_insert(&mut self, id: &W::Id) {
+        let root = self.tree.workspace_root();
+        let parent = self
+            .tiled_window_key(id)
+            .and_then(|key| self.tree.parent_of(key));
+
+        if let Some(parent) = parent.filter(|parent| *parent != root) {
+            self.tree.layout_container_subtree(parent);
+        } else {
+            self.tree.layout();
+        }
+    }
+
     fn render_fullscreen_window(&self) -> Option<W::Id> {
         let id = self.pending_fullscreen_window()?;
         let key = self.tiled_window_key(id)?;
@@ -300,7 +318,8 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     fn focused_key(&self) -> Option<NodeKey> {
-        self.tree.focus_inactive_view(self.tree.workspace_root())
+        self.tree
+            .focus_inactive_view_in_branch(self.tree.workspace_root())
     }
 
     fn focused_tile(&self) -> Option<&Tile<W>> {
@@ -318,8 +337,7 @@ impl<W: LayoutElement> TreeSpace<W> {
     /// the workspace, even when its parent is the workspace — measured against sway 1.11,
     /// which builds a container for such a command instead of retargeting the workspace.
     pub fn workspace_is_selected(&self) -> bool {
-        self.tree.is_empty()
-            || self.tree.selected_container_key() == Some(self.tree.workspace_root())
+        self.tree.workspace_is_selected()
     }
 
     fn available_span(&self, total: f64, child_count: usize) -> f64 {
@@ -437,7 +455,14 @@ impl<W: LayoutElement> TreeSpace<W> {
         reach: ResizeReach,
     ) -> Option<ContainerMetrics> {
         let (parent_key, child_idx) = self.tree.find_resize_parent(key, layout, reach)?;
-        self.container_metrics(parent_key, child_idx, layout)
+        let (container_layout, rect, child_count) = self.tree.container_info(parent_key)?;
+        if container_layout != layout || child_count == 0 {
+            return None;
+        }
+        let available = self
+            .tree
+            .child_resize_total(parent_key, child_idx, layout)?;
+        (available > 0.0).then_some((parent_key, child_idx, available, child_count, rect))
     }
 
     /// The container a resize would act on, and the span its children share.
@@ -480,13 +505,7 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     fn selected_geometry(&self) -> Option<Rectangle<f64, Logical>> {
-        self.display_layouts().next()?;
-        let key = self.tree.selected_node_key()?;
-
-        if self.tree.is_leaf(key) {
-            let info = self.display_layouts().find(|info| info.key == key)?;
-            return Some(info.rect);
-        }
+        let key = self.tree.selected_layout_parent_key()?;
 
         // For container selection visuals, prefer the on-screen leaf geometry under this
         // container. This stays in sync with what is currently rendered even when the
@@ -518,6 +537,15 @@ impl<W: LayoutElement> TreeSpace<W> {
         self.selected_container_in(self.tree.workspace_root())
     }
 
+    /// Whether a child-laying node is selected in the tiled branch. Unlike the command-facing
+    /// container query, this includes the workspace node so `focus parent` always has a visual
+    /// result.
+    fn selected_layout_parent_in_tiling(&self) -> bool {
+        self.tree
+            .selected_layout_parent_key()
+            .is_some_and(|key| self.tree.branch_root(key) == self.tree.workspace_root())
+    }
+
     // ── Commands, asked of a branch ──────────────────────────────────────────────────
     //
     // sway's commands take a container and walk from it, so there is exactly one of each.
@@ -530,10 +558,15 @@ impl<W: LayoutElement> TreeSpace<W> {
     // only whether anything does.
 
     /// Whether the selection is a container in this branch.
+    ///
+    /// A floating root is parented to the workspace so that `focus parent` can climb out of
+    /// it, which makes every floating node a descendant of the workspace root. Branch
+    /// membership is therefore the question to ask, not ancestry: otherwise a selected
+    /// floating container answers for the tiled side as well as its own.
     pub(super) fn selected_container_in(&self, branch: NodeKey) -> bool {
         self.tree
             .selected_container_key()
-            .is_some_and(|key| self.tree.is_descendant(key, branch))
+            .is_some_and(|key| self.tree.branch_root(key) == branch)
     }
 
     /// The layout a command in this branch would be read against: the selected container's
@@ -590,6 +623,13 @@ impl<W: LayoutElement> TreeSpace<W> {
         changed
     }
 
+    pub(super) fn unsplit_in_branch(&mut self, branch: NodeKey) -> Option<NodeKey> {
+        let target = self.tree.command_target_in(branch);
+        let root = self.tree.unsplit_target(target)?;
+        self.tree.layout();
+        Some(root)
+    }
+
     pub(super) fn set_layout_in_branch(&mut self, branch: NodeKey, layout: Layout) -> bool {
         if !self.branch_has_layout_target(branch) {
             return false;
@@ -620,6 +660,34 @@ impl<W: LayoutElement> TreeSpace<W> {
         }
         let target = self.tree.command_target_in(branch);
         let changed = self.tree.toggle_layout_all_for_target(target);
+        if changed {
+            self.tree.layout();
+        }
+        changed
+    }
+
+    pub(super) fn set_default_layout_in_branch(&mut self, branch: NodeKey) -> bool {
+        if !self.branch_has_layout_target(branch) {
+            return false;
+        }
+        let target = self.tree.command_target_in(branch);
+        let changed = self.tree.set_default_layout_for_target(target);
+        if changed {
+            self.tree.layout();
+        }
+        changed
+    }
+
+    pub(super) fn toggle_layout_cycle_in_branch(
+        &mut self,
+        branch: NodeKey,
+        cycle: &[LayoutCycleEntry],
+    ) -> bool {
+        if !self.branch_has_layout_target(branch) {
+            return false;
+        }
+        let target = self.tree.command_target_in(branch);
+        let changed = self.tree.toggle_layout_cycle_for_target(target, cycle);
         if changed {
             self.tree.layout();
         }
@@ -691,26 +759,15 @@ impl<W: LayoutElement> TreeSpace<W> {
     ) -> Option<(NodeKey, Rectangle<f64, Logical>)> {
         let key = self.tiled_window_key(id)?;
         let rect = self
-            .display_layouts()
-            .find(|info| info.key == key)
-            .map(|info| info.rect)?;
-        Some((key, rect))
-    }
-
-    /// Revoke fullscreen before its tiled node moves to `ws->floating`.
-    ///
-    /// `container_set_floating` hands the same container to `workspace_add_floating`
-    /// (`sway/tree/container.c:1004`), but tiri also asks a fullscreen view to return to its
-    /// normal state as part of preparing it for floating. The workspace fullscreen pointer
-    /// must therefore stop governing arrange before the shared tree lays out the moved branch.
-    pub(super) fn prepare_subtree_for_floating(&mut self, key: NodeKey) {
-        let contains_fullscreen = self
             .tree
-            .fullscreen_key()
-            .is_some_and(|fullscreen| self.tree.is_descendant(fullscreen, key));
-        if contains_fullscreen {
-            self.tree.set_fullscreen_key(None);
-        }
+            .fullscreen_restore_geometry(key)
+            .filter(|rect| rect.size.w > 0.0 && rect.size.h > 0.0)
+            .or_else(|| {
+                self.display_layouts()
+                    .find(|info| info.key == key)
+                    .map(|info| info.rect)
+            })?;
+        Some((key, rect))
     }
 
     /// Run a mutation on the tree and relayout when it reports a change.
@@ -825,12 +882,14 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     pub fn active_window_mut(&mut self) -> Option<&mut W> {
-        let key = self.tree.focus_inactive_view(self.tree.workspace_root())?;
+        let key = self
+            .tree
+            .focus_inactive_view_in_branch(self.tree.workspace_root())?;
         Some(self.tree.get_tile_mut(key)?.window_mut())
     }
 
     pub fn is_active_pending_fullscreen(&self) -> bool {
-        self.tiled_fullscreen_key().is_some()
+        self.tree.fullscreen_key().is_some()
             || self
                 .focused_tile()
                 .is_some_and(|tile| tile.window().is_pending_windowed_fullscreen())
@@ -938,20 +997,19 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     #[cfg(test)]
-    pub fn debug_root_is_synthetic_workspace_container(&self) -> bool {
-        self.tree.root_is_synthetic_workspace_container()
+    pub fn debug_root_is_workspace_node(&self) -> bool {
+        self.tree.root_is_workspace_node()
     }
 
     pub fn selected_path(&self) -> Vec<usize> {
         self.tree.selected_path()
     }
 
-    /// Select a container by tree path. Paths only enter here from the IPC/test edge.
-    pub fn select_container_path(&mut self, path: &[usize]) -> bool {
-        let Some(key) = self.tree.node_at_path(path) else {
-            return false;
-        };
-        self.tree.select_container(key)
+    #[cfg(test)]
+    pub fn debug_selection_visual_geometry(&self) -> Option<Rectangle<f64, Logical>> {
+        self.selected_layout_parent_in_tiling()
+            .then(|| self.selected_geometry())
+            .flatten()
     }
 
     pub fn remove_window(&mut self, window: &W) -> Option<RemovedTile<W>> {
@@ -995,7 +1053,8 @@ impl<W: LayoutElement> TreeSpace<W> {
         let mut active_elements = Vec::with_capacity(8);
         let scale = Scale::from(self.scale);
         let focused_key = self.focused_key();
-        let selection_is_container = self.selected_is_container();
+        let selection_is_layout_parent = self.selected_layout_parent_in_tiling();
+        let selection_is_active = self.side_is_active(false) || self.tree.workspace_is_selected();
         let fullscreen = self.fullscreen_render_state();
         let view_rect = Rectangle::from_size(self.view_size);
 
@@ -1006,7 +1065,7 @@ impl<W: LayoutElement> TreeSpace<W> {
 
         // Render container selection before regular tiling elements so it ends up
         // visually on top after the global reverse-order composition pass.
-        if selection_is_container && (tiling_focus_ring || self.side_is_active(false)) {
+        if selection_is_layout_parent && (tiling_focus_ring || selection_is_active) {
             if let Some(rect) = self.selected_geometry() {
                 let mut selection_border = self.options.layout.border;
                 if let Some(focus_info) = self
@@ -1024,7 +1083,7 @@ impl<W: LayoutElement> TreeSpace<W> {
                     rect,
                     view_rect,
                     self.scale,
-                    self.side_is_active(false),
+                    selection_is_active,
                     self.options.layout.focus_ring,
                     selection_border,
                     ContainerSelectionStyle::Tiling,
@@ -1057,7 +1116,7 @@ impl<W: LayoutElement> TreeSpace<W> {
 
                 let is_focused = self.side_is_active(false)
                     && Some(info.key) == focused_key
-                    && !selection_is_container;
+                    && !selection_is_layout_parent;
                 let draw_focus = tiling_focus_ring && is_focused;
                 let target_elements = if Some(info.key) == focused_key {
                     &mut active_elements
@@ -1288,7 +1347,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         state_layouts.retain(|info| info.branch == tiled_root);
         let workspace_view = Rectangle::from_size(self.view_size);
         let focused_key = self.focused_key();
-        let selection_is_container = self.selected_is_container();
+        let selection_is_layout_parent = self.selected_layout_parent_in_tiling();
         let scale = Scale::from(self.scale);
         let fullscreen = self.fullscreen_render_state();
         let fullscreen_container = fullscreen.container;
@@ -1368,7 +1427,7 @@ impl<W: LayoutElement> TreeSpace<W> {
 
                 if state.visible {
                     let is_focused =
-                        is_active && Some(info.key) == focused_key && !selection_is_container;
+                        is_active && Some(info.key) == focused_key && !selection_is_layout_parent;
                     tile.update_render_elements(
                         is_active,
                         is_focused,
@@ -1500,7 +1559,7 @@ impl<W: LayoutElement> TreeSpace<W> {
             return None;
         }
 
-        let (leaf_key, _path, rect) = self.closest_leaf_rect(pos)?;
+        let (leaf_key, rect) = self.closest_leaf_rect(pos)?;
         let tile = self.tree.get_tile(leaf_key)?;
         if !tile.window().pending_sizing_mode().is_normal() {
             return None;
@@ -1623,11 +1682,35 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     pub fn focus_parent(&mut self) -> bool {
-        if self.has_fullscreen_window() {
-            return false;
+        if let Some(fullscreen_key) = self.tiled_fullscreen_key() {
+            // Focus may move inside the fullscreen subtree, including onto the container
+            // that owns fullscreen, but it cannot climb through that owner. sway enforces
+            // the fullscreen node as the focus boundary; treating any fullscreen presence
+            // as a blanket no-op also blocked `focus parent` after a fullscreen leaf had
+            // been wrapped by `split`.
+            return self.tree.select_parent_in(fullscreen_key);
         }
 
         self.tree.select_parent()
+    }
+
+    /// Handle `focus parent` inside this branch's fullscreen boundary.
+    ///
+    /// The return value says the branch owns fullscreen, not whether focus moved: once the
+    /// owner is reached, a no-op must still not be interpreted as reaching the workspace.
+    pub(super) fn handle_focus_parent_in_branch_fullscreen_scope(
+        &mut self,
+        branch: NodeKey,
+    ) -> bool {
+        let Some(fullscreen) = self
+            .tree
+            .fullscreen_key()
+            .filter(|key| self.tree.branch_root(*key) == branch)
+        else {
+            return false;
+        };
+        let _ = self.tree.select_parent_in(fullscreen);
+        true
     }
 
     pub fn focus_child(&mut self) -> bool {
@@ -1640,7 +1723,11 @@ impl<W: LayoutElement> TreeSpace<W> {
         }
 
         if self.selected_is_container() {
-            return self.tree.selected_container_key() == Some(self.tree.workspace_root());
+            return false;
+        }
+
+        if self.tree.selected_layout_parent_key() == Some(self.tree.workspace_root()) {
+            return true;
         }
 
         self.tree.focused_leaf_targets_workspace_layout()
@@ -1648,6 +1735,12 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     pub fn clear_selection_context(&mut self) {
         self.tree.clear_selection();
+    }
+
+    pub(super) fn clear_workspace_selection(&mut self) {
+        if self.tree.workspace_is_selected() && !self.tree.is_empty() {
+            self.tree.clear_selection();
+        }
     }
 
     pub(super) fn root_layout_and_child_count(&self) -> Option<(Layout, usize)> {
@@ -1664,8 +1757,10 @@ impl<W: LayoutElement> TreeSpace<W> {
         self.tree.inactive_tiling_key()
     }
 
-    pub(super) fn inactive_tiling_restore_target(&self) -> Option<InsertParentInfo> {
-        self.tree.inactive_tiling_restore_target()
+    pub(super) fn inactive_tiling_reference(
+        &self,
+    ) -> Option<super::container::InactiveTilingReference> {
+        self.tree.inactive_tiling_reference()
     }
 
     pub(super) fn inactive_floating_window_id(&self) -> Option<W::Id> {
@@ -1708,13 +1803,12 @@ impl<W: LayoutElement> TreeSpace<W> {
         self.mutate_tree(|tree| tree.move_target_in_direction(direction, target))
     }
 
-    fn target_is_fullscreen(&self, target: TreeCommandTarget) -> bool {
-        let key = match target {
-            TreeCommandTarget::Workspace => return false,
-            TreeCommandTarget::Container(key) | TreeCommandTarget::Leaf(key) => key,
-        };
+    fn target_is_fullscreen(&self, target: NodeKey) -> bool {
+        if target == self.tree.workspace_root() {
+            return false;
+        }
         self.tiled_fullscreen_key()
-            .is_some_and(|fullscreen| self.tree.is_descendant(key, fullscreen))
+            .is_some_and(|fullscreen| self.tree.is_descendant(target, fullscreen))
     }
 
     // Move operations using ContainerTree
@@ -1776,14 +1870,16 @@ impl<W: LayoutElement> TreeSpace<W> {
         self.set_layout_in_branch(self.tiled_branch(), layout);
     }
 
+    pub fn split_none(&mut self) {
+        self.unsplit_in_branch(self.tiled_branch());
+    }
+
     /// `layout` with the workspace itself selected.
     ///
-    /// Measured against sway 1.11: this never builds a container. The workspace *is* the
-    /// container carrying the orientation, so the change lands on the root container when
-    /// there is one and on the recorded orientation otherwise — an empty workspace and a
-    /// lone window are the same case. See `docs/design/parity.md`, scenarios A–D.
+    /// Measured against sway 1.11: this never builds a container. The workspace node carries
+    /// the orientation itself, so an empty workspace and a lone window are the same case.
     pub fn set_workspace_layout_mode(&mut self, layout: Layout) -> bool {
-        self.mutate_tree(|tree| tree.set_root_container_layout(layout))
+        self.mutate_tree(|tree| tree.set_root_layout_from_command(layout))
     }
 
     /// The layout of the parent of whatever a command is aimed at.
@@ -1819,6 +1915,28 @@ impl<W: LayoutElement> TreeSpace<W> {
     pub fn toggle_workspace_layout_all(&mut self) {
         let next = self.tree.workspace_layout().next_in_cycle();
         self.set_workspace_layout_mode(next);
+    }
+
+    pub fn set_default_layout(&mut self) {
+        self.set_default_layout_in_branch(self.tiled_branch());
+    }
+
+    pub fn set_workspace_default_layout(&mut self) {
+        self.mutate_tree(|tree| {
+            let root = tree.workspace_root();
+            tree.set_default_layout_for_target(root)
+        });
+    }
+
+    pub(super) fn toggle_layout_cycle(&mut self, cycle: &[LayoutCycleEntry]) {
+        self.toggle_layout_cycle_in_branch(self.tiled_branch(), cycle);
+    }
+
+    pub(super) fn toggle_workspace_layout_cycle(&mut self, cycle: &[LayoutCycleEntry]) {
+        self.mutate_tree(|tree| {
+            let root = tree.workspace_root();
+            tree.toggle_layout_cycle_for_target(root, cycle)
+        });
     }
 
     /// Set the width of the currently focused root-level column
@@ -1858,7 +1976,7 @@ impl<W: LayoutElement> TreeSpace<W> {
             return;
         };
 
-        let Some((parent_path, _, _, _child_count, _rect)) =
+        let Some((parent_key, _, _, _child_count, _rect)) =
             self.window_container_metrics(key, Layout::SplitV)
         else {
             return;
@@ -1866,10 +1984,10 @@ impl<W: LayoutElement> TreeSpace<W> {
 
         if self
             .tree
-            .container_info(parent_path)
+            .container_info(parent_key)
             .is_some_and(|(layout, _, _)| layout == Layout::SplitV)
         {
-            self.tree.recalculate_child_percents(parent_path);
+            self.tree.recalculate_child_percents(parent_key);
             self.tree.layout();
         }
     }
@@ -1962,16 +2080,16 @@ impl<W: LayoutElement> TreeSpace<W> {
         (dir, min)
     }
 
-    fn leaf_rect_for_path(&self, path: &[usize]) -> Option<Rectangle<f64, Logical>> {
+    fn leaf_rect_for_key(&self, key: NodeKey) -> Option<Rectangle<f64, Logical>> {
         let scale = Scale::from(self.scale);
-        let info = self.display_layouts().find(|info| info.path == path)?;
+        let info = self.display_layouts().find(|info| info.key == key)?;
         let tile = self.tree.get_tile(info.key)?;
         let mut tile_pos = info.rect.loc + tile.render_offset();
         tile_pos = tile_pos.to_physical_precise_round(scale).to_logical(scale);
         Some(Rectangle::new(tile_pos, tile.tile_size()))
     }
 
-    /// The leaf under `pos`, or the nearest one: its node key, tree path and on-screen rect.
+    /// The leaf under `pos`, or the nearest one: its stable identity and on-screen rect.
     fn closest_leaf_rect(&self, pos: Point<f64, Logical>) -> Option<LeafHit> {
         let scale = Scale::from(self.scale);
         let fullscreen = self.fullscreen_render_state();
@@ -2002,7 +2120,7 @@ impl<W: LayoutElement> TreeSpace<W> {
                 let tile_rect = Rectangle::new(tile_pos, tile.tile_size());
 
                 if tile_rect.contains(pos) {
-                    return Some((info.key, info.path.clone(), tile_rect));
+                    return Some((info.key, tile_rect));
                 }
 
                 let dx = if pos.x < tile_rect.loc.x {
@@ -2023,7 +2141,7 @@ impl<W: LayoutElement> TreeSpace<W> {
 
                 let replace = nearest.as_ref().is_none_or(|(_, best)| dist2 < *best);
                 if replace {
-                    nearest = Some(((info.key, info.path.clone(), tile_rect), dist2));
+                    nearest = Some(((info.key, tile_rect), dist2));
                 }
             }
         }
@@ -2091,7 +2209,7 @@ impl<W: LayoutElement> TreeSpace<W> {
             };
         }
 
-        let Some((leaf_key, path, rect)) = self.closest_leaf_rect(pos) else {
+        let Some((leaf_key, rect)) = self.closest_leaf_rect(pos) else {
             return InsertPosition::NewColumn(0);
         };
 
@@ -2100,14 +2218,14 @@ impl<W: LayoutElement> TreeSpace<W> {
         if matches!(parent_layout, Layout::SplitH | Layout::Tabbed) {
             if pos.y < rect.loc.y + Self::DROP_LAYOUT_BORDER {
                 return InsertPosition::Split {
-                    path,
+                    target: leaf_key,
                     direction: Direction::Up,
                     indicator: SplitIndicator::LayoutBorder,
                 };
             }
             if pos.y > rect.loc.y + rect.size.h - Self::DROP_LAYOUT_BORDER {
                 return InsertPosition::Split {
-                    path,
+                    target: leaf_key,
                     direction: Direction::Down,
                     indicator: SplitIndicator::LayoutBorder,
                 };
@@ -2115,14 +2233,14 @@ impl<W: LayoutElement> TreeSpace<W> {
         } else if matches!(parent_layout, Layout::SplitV | Layout::Stacked) {
             if pos.x < rect.loc.x + Self::DROP_LAYOUT_BORDER {
                 return InsertPosition::Split {
-                    path,
+                    target: leaf_key,
                     direction: Direction::Left,
                     indicator: SplitIndicator::LayoutBorder,
                 };
             }
             if pos.x > rect.loc.x + rect.size.w - Self::DROP_LAYOUT_BORDER {
                 return InsertPosition::Split {
-                    path,
+                    target: leaf_key,
                     direction: Direction::Right,
                     indicator: SplitIndicator::LayoutBorder,
                 };
@@ -2132,10 +2250,13 @@ impl<W: LayoutElement> TreeSpace<W> {
         let (direction, dist) = Self::closest_edge(rect, pos);
         let thickness = f64::min(rect.size.w, rect.size.h) * Self::DROP_CENTER_RATIO;
         if dist > thickness {
-            InsertPosition::Swap { path, direction }
+            InsertPosition::Swap {
+                target: leaf_key,
+                direction,
+            }
         } else {
             InsertPosition::Split {
-                path,
+                target: leaf_key,
                 direction,
                 indicator: SplitIndicator::Center,
             }
@@ -2149,17 +2270,17 @@ impl<W: LayoutElement> TreeSpace<W> {
     ) -> Option<Rectangle<f64, Logical>> {
         match position {
             InsertPosition::NewColumn(_) => Some(self.layout_area()),
-            InsertPosition::Swap { path, .. } => {
-                let rect = self.leaf_rect_for_path(path)?;
+            InsertPosition::Swap { target, .. } => {
+                let rect = self.leaf_rect_for_key(*target)?;
                 let thickness = f64::min(rect.size.w, rect.size.h) * Self::DROP_CENTER_RATIO;
                 Some(Self::inset_rect(rect, thickness))
             }
             InsertPosition::Split {
-                path,
+                target,
                 direction,
                 indicator,
             } => {
-                let rect = self.leaf_rect_for_path(path)?;
+                let rect = self.leaf_rect_for_key(*target)?;
                 let thickness = match indicator {
                     SplitIndicator::LayoutBorder => Self::DROP_LAYOUT_BORDER,
                     SplitIndicator::Center => {
@@ -2448,10 +2569,6 @@ impl<W: LayoutElement> TreeSpace<W> {
         self.tree.is_empty()
     }
 
-    pub fn focus_is_root_leaf(&self) -> bool {
-        self.tree.focus_path().is_empty()
-    }
-
     pub fn add_tile(
         &mut self,
         col_idx: Option<usize>,
@@ -2461,13 +2578,14 @@ impl<W: LayoutElement> TreeSpace<W> {
         _is_full_width: bool,
         _height: Option<WindowHeight>,
     ) {
+        let id = tile.window().id().clone();
         if let Some(index) = col_idx {
             self.tree.insert_leaf_at(index, tile, activate);
         } else {
             self.tree.insert_window_with_focus(tile, activate);
         }
         self.sync_fullscreen_window();
-        self.tree.layout();
+        self.layout_after_tiled_insert(&id);
     }
 
     pub fn add_tile_right_of(
@@ -2478,9 +2596,10 @@ impl<W: LayoutElement> TreeSpace<W> {
         _width: ColumnWidth,
         _is_full_width: bool,
     ) {
+        let id = tile.window().id().clone();
         self.tree.insert_leaf_after(next_to, tile, activate);
         self.sync_fullscreen_window();
-        self.tree.layout();
+        self.layout_after_tiled_insert(&id);
     }
 
     pub fn add_tile_to_root_container(
@@ -2490,12 +2609,13 @@ impl<W: LayoutElement> TreeSpace<W> {
         tile: Tile<W>,
         activate: bool,
     ) {
+        let id = tile.window().id().clone();
         if self
             .tree
             .insert_leaf_in_root_container(root_idx, tile_idx, tile, activate)
         {
             self.sync_fullscreen_window();
-            self.tree.layout();
+            self.layout_after_tiled_insert(&id);
         }
     }
 
@@ -2535,6 +2655,7 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     pub fn add_tile_as_workspace_tiling_fallback(&mut self, tile: Tile<W>, activate: bool) {
+        let id = tile.window().id().clone();
         if self.tree.is_empty() {
             self.tree.insert_window_with_focus(tile, activate);
         } else {
@@ -2542,7 +2663,7 @@ impl<W: LayoutElement> TreeSpace<W> {
             self.tree.insert_leaf_at(index, tile, activate);
         }
         self.sync_fullscreen_window();
-        self.tree.layout();
+        self.layout_after_tiled_insert(&id);
     }
 
     pub(super) fn insert_parent_info_for_window(
@@ -2552,19 +2673,15 @@ impl<W: LayoutElement> TreeSpace<W> {
         self.tree.insert_parent_info_for_window(window)
     }
 
-    pub(super) fn replace_tile_at_path(
-        &mut self,
-        path: &[usize],
-        tile: Tile<W>,
-    ) -> Option<Tile<W>> {
-        let key = self.tree.node_at_path(path)?;
+    pub(super) fn replace_tiling_tile(&mut self, key: NodeKey, tile: Tile<W>) -> Option<Tile<W>> {
+        if !self.is_tiling_leaf(key) {
+            return None;
+        }
         self.tree.replace_leaf(key, tile)
     }
 
-    pub(super) fn is_leaf_at_path(&self, path: &[usize]) -> bool {
-        self.tree
-            .node_at_path(path)
-            .is_some_and(|key| self.tree.is_leaf(key))
+    pub(super) fn is_tiling_leaf(&self, key: NodeKey) -> bool {
+        self.tree.is_leaf(key) && self.tree.branch_root(key) == self.tree.workspace_root()
     }
 
     pub(super) fn insert_tile_with_parent_info(
@@ -2586,21 +2703,20 @@ impl<W: LayoutElement> TreeSpace<W> {
         false
     }
 
-    /// Split-insert next to the leaf at `target_path`. Paths only enter here from the
-    /// drag-and-drop hit result.
+    /// Split-insert next to the live tiling leaf selected by the drag-and-drop hit result.
     pub fn insert_tile_split(
         &mut self,
-        target_path: &[usize],
+        target: NodeKey,
         direction: Direction,
         tile: Tile<W>,
         activate: bool,
     ) -> bool {
-        let Some(target_key) = self.tree.node_at_path(target_path) else {
+        if !self.is_tiling_leaf(target) {
             return false;
-        };
+        }
         if self
             .tree
-            .insert_leaf_split(target_key, direction, tile, activate)
+            .insert_leaf_split(target, direction, tile, activate)
         {
             self.sync_fullscreen_window();
             self.tree.layout();
@@ -2641,7 +2757,9 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     /// Get mutable reference to the currently focused tile
     pub fn active_tile_mut(&mut self) -> Option<&mut Tile<W>> {
-        let key = self.tree.focus_inactive_view(self.tree.workspace_root())?;
+        let key = self
+            .tree
+            .focus_inactive_view_in_branch(self.tree.workspace_root())?;
         self.tree.get_tile_mut(key)
     }
 
@@ -2936,20 +3054,20 @@ impl<W: LayoutElement> TreeSpace<W> {
         let Some(key) = self.window_target(window) else {
             return;
         };
-        let Some((parent_path, child_idx, available, _, _)) =
+        let Some((parent_key, child_idx, available, _, _)) =
             self.window_container_metrics(key, layout)
         else {
             return;
         };
         let current_percent = self
             .tree
-            .child_percent(parent_path, child_idx)
+            .child_percent(parent_key, child_idx)
             .unwrap_or(1.0);
 
         if let Some(percent) = self.cycle_presets(available, current_percent, presets, forwards) {
             if self
                 .tree
-                .set_child_percent(parent_path, child_idx, layout, percent)
+                .set_child_percent(parent_key, child_idx, layout, percent)
             {
                 self.tree.layout();
             }
@@ -3029,7 +3147,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         let Some(key) = self.window_target(window) else {
             return;
         };
-        let Some((parent_path, child_idx, available, child_count, _)) =
+        let Some((parent_key, child_idx, available, child_count, _)) =
             self.resize_container_metrics(key, layout, reach)
         else {
             return;
@@ -3071,7 +3189,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         let child_spans = (0..child_count)
             .map(|idx| {
                 self.tree
-                    .child_rect_in(parent_path, idx)
+                    .child_rect_in(parent_key, idx)
                     .map(|rect| match layout {
                         Layout::SplitH => rect.size.w,
                         Layout::SplitV => rect.size.h,
@@ -3088,9 +3206,13 @@ impl<W: LayoutElement> TreeSpace<W> {
         };
         if self
             .tree
-            .resize_child(parent_path, child_idx, layout, reach, delta, space)
+            .resize_child(parent_key, child_idx, layout, reach, delta, space)
         {
-            self.tree.layout();
+            if parent_key == self.tree.workspace_root() {
+                self.tree.layout();
+            } else {
+                self.tree.layout_container_subtree(parent_key);
+            }
         }
     }
 
@@ -3163,33 +3285,16 @@ impl<W: LayoutElement> TreeSpace<W> {
         }
     }
 
-    /// Whether the node selected by a tiled fullscreen command owns workspace fullscreen.
-    ///
-    /// A command can target a container even though the input binding reaches the layout with
-    /// the focused window's id. Keeping this question here prevents the command layer from
-    /// collapsing that container back to its inactive-focus leaf.
-    pub(super) fn selected_container_is_fullscreen(&self) -> Option<bool> {
-        let key = match self.tree.command_target_in(self.tiled_branch()) {
-            TreeCommandTarget::Workspace => return None,
-            TreeCommandTarget::Container(key) => key,
-            TreeCommandTarget::Leaf(_) => return None,
-        };
-        Some(self.tiled_fullscreen_key() == Some(key))
-    }
-
-    /// Toggle workspace fullscreen on the actual tiled command target.
+    /// Toggle workspace fullscreen on an already resolved container target.
     ///
     /// Only a leaf asks its Wayland client to enter fullscreen. For a container, sway enlarges
     /// and arranges the complete subtree while every descendant remains an ordinary tiled
-    /// client. The tree already models that distinction in `fullscreen_key`; this is the
-    /// command path that preserves it.
-    pub(super) fn toggle_fullscreen_for_selected_container(&mut self) -> bool {
-        let key = match self.tree.command_target_in(self.tiled_branch()) {
-            TreeCommandTarget::Workspace => return false,
-            TreeCommandTarget::Container(key) => key,
-            TreeCommandTarget::Leaf(_) => return false,
-        };
-        let is_fullscreen = self.tiled_fullscreen_key() == Some(key);
+    /// client. The NodeKey carries that distinction across both tiled and floating branches.
+    pub(super) fn toggle_fullscreen_container(&mut self, key: NodeKey) -> bool {
+        if self.tree.container_info(key).is_none() {
+            return false;
+        }
+        let is_fullscreen = self.tree.fullscreen_key() == Some(key);
 
         if is_fullscreen {
             self.tree.set_fullscreen_key(None);
@@ -3461,11 +3566,11 @@ impl<W: LayoutElement> TreeSpace<W> {
 
 impl<W: LayoutElement> TreeSpace<W> {
     pub(crate) fn layout_tree(&self) -> Option<LayoutTreeNode> {
-        self.apply_fullscreen(self.tree.layout_tree()?)
+        self.apply_workspace_fullscreen(self.tree.layout_tree()?)
     }
 
     pub(crate) fn layout_tree_unfocused(&self) -> Option<LayoutTreeNode> {
-        self.apply_fullscreen(self.tree.layout_tree_unfocused()?)
+        self.apply_workspace_fullscreen(self.tree.layout_tree_unfocused()?)
     }
 
     /// What a fullscreen node does to the tree everyone else reads.
@@ -3476,8 +3581,11 @@ impl<W: LayoutElement> TreeSpace<W> {
     /// every leaf outside its subtree. The latter is the last clause of `view_is_visible`,
     /// which runs after the tab check so a hidden tab remains hidden inside a fullscreen
     /// container.
-    fn apply_fullscreen(&self, mut root: LayoutTreeNode) -> Option<LayoutTreeNode> {
-        let Some(fullscreen_key) = self.tiled_fullscreen_key() else {
+    pub(super) fn apply_workspace_fullscreen(
+        &self,
+        mut root: LayoutTreeNode,
+    ) -> Option<LayoutTreeNode> {
+        let Some(fullscreen_key) = self.tree.fullscreen_key() else {
             return Some(root);
         };
         let fullscreen_windows: HashSet<u64> = self
@@ -3490,6 +3598,12 @@ impl<W: LayoutElement> TreeSpace<W> {
             .tree
             .get_tile(fullscreen_key)
             .map(|tile| tile.window().ipc_id());
+        let fullscreen_leaf_uses_output = self
+            .tree
+            .leaf_layouts()
+            .iter()
+            .find(|info| info.key == fullscreen_key)
+            .is_some_and(|info| info.workspace_fullscreen);
         let view = LayoutTreeRect {
             x: 0.0,
             y: 0.0,
@@ -3501,23 +3615,41 @@ impl<W: LayoutElement> TreeSpace<W> {
             node: &mut LayoutTreeNode,
             fullscreen_windows: &HashSet<u64>,
             fullscreen_leaf: Option<u64>,
+            fullscreen_leaf_uses_output: bool,
             view: LayoutTreeRect,
         ) {
             if let Some(window) = node.window_id {
                 if !fullscreen_windows.contains(&window) {
                     node.visible = false;
-                } else if Some(window) == fullscreen_leaf {
+                } else if Some(window) == fullscreen_leaf && fullscreen_leaf_uses_output {
+                    // An ordinary `arrange_workspace` gives a fullscreen view the output.
+                    // A direct `arrange_container(parent)` is different: the leaf keeps the
+                    // ordinary (possibly zero) pending box from that pass. The cached layout
+                    // records which route produced it, so ownership and geometry remain
+                    // separate meanings.
                     node.rect = Some(view);
                 }
                 return;
             }
             for child in &mut node.children {
-                walk(child, fullscreen_windows, fullscreen_leaf, view);
+                walk(
+                    child,
+                    fullscreen_windows,
+                    fullscreen_leaf,
+                    fullscreen_leaf_uses_output,
+                    view,
+                );
             }
             node.visible = node.children.iter().any(|child| child.visible);
         }
 
-        walk(&mut root, &fullscreen_windows, fullscreen_leaf, view);
+        walk(
+            &mut root,
+            &fullscreen_windows,
+            fullscreen_leaf,
+            fullscreen_leaf_uses_output,
+            view,
+        );
         Some(root)
     }
 }

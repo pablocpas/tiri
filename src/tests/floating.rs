@@ -13,6 +13,13 @@ fn set_up() -> (Fixture, ClientId, WlSurface) {
 }
 
 fn set_up_with_config(config: Config) -> (Fixture, ClientId, WlSurface) {
+    set_up_with_config_and_size(config, (100, 100))
+}
+
+fn set_up_with_config_and_size(
+    config: Config,
+    initial_size: (u16, u16),
+) -> (Fixture, ClientId, WlSurface) {
     let mut f = Fixture::with_config(config);
     f.add_output(1, (1920, 1080));
     f.add_output(2, (1280, 720));
@@ -25,11 +32,54 @@ fn set_up_with_config(config: Config) -> (Fixture, ClientId, WlSurface) {
 
     let window = f.client(id).window(&surface);
     window.attach_new_buffer();
-    window.set_size(100, 100);
+    window.set_size(initial_size.0, initial_size.1);
     window.ack_last_and_commit();
     f.double_roundtrip(id);
 
     (f, id, surface)
+}
+
+#[test]
+fn tiled_window_floats_at_initial_natural_size() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+
+    let id = f.add_client();
+    let window = f.client(id).create_window();
+    let surface = window.surface.clone();
+    window.commit();
+    f.roundtrip(id);
+
+    // Behave like a real client: use our own natural size only when the compositor leaves
+    // the initial size unspecified, otherwise obey the configured tiled size.
+    let window = f.client(id).window(&surface);
+    let configured = window.configures_received.last().unwrap().1.size;
+    let initial_size = if configured == (0, 0) {
+        (640, 480)
+    } else {
+        configured
+    };
+    window.attach_new_buffer();
+    window.set_size(initial_size.0 as u16, initial_size.1 as u16);
+    window.ack_last_and_commit();
+    f.double_roundtrip(id);
+
+    // Obey the post-map tiled configure too. The floating size must nevertheless come from
+    // the geometry at map time, matching sway's natural_width/natural_height behavior.
+    let window = f.client(id).window(&surface);
+    let tiled_size = window.configures_received.last().unwrap().1.size;
+    window.set_size(tiled_size.0 as u16, tiled_size.1 as u16);
+    window.ack_last_and_commit();
+    f.double_roundtrip(id);
+    let _ = f.client(id).window(&surface).recent_configures();
+
+    f.niri().layout.toggle_window_floating(None);
+    f.double_roundtrip(id);
+
+    assert_snapshot!(
+        f.client(id).window(&surface).format_recent_configures(),
+        @"size: 640 × 480, bounds: 1920 × 1080, states: [Activated]"
+    );
 }
 
 #[test]
@@ -802,25 +852,42 @@ fn floating_doesnt_store_fullscreen_size() {
 
     let _ = f.client(id).window(&surface).recent_configures();
 
+    let window_id = f
+        .niri()
+        .layout
+        .windows()
+        .next()
+        .expect("mapped window")
+        .1
+        .window
+        .clone();
+
     // Make it floating.
     f.niri().layout.toggle_window_floating(None);
     f.double_roundtrip(id);
 
-    // First float from fullscreen uses the size the window mapped with, like sway.
+    // Sway preserves fullscreen authority while moving the same node to the floating list.
+    assert_snapshot!(
+        f.client(id).window(&surface).format_recent_configures(),
+        @""
+    );
+
+    // Leaving fullscreen now reveals the floating node at its pre-fullscreen geometry.
+    f.niri().layout.set_fullscreen(&window_id, false);
+    f.double_roundtrip(id);
     assert_snapshot!(
         f.client(id).window(&surface).format_recent_configures(),
         @"size: 1920 × 1080, bounds: 1920 × 1080, states: [Activated]"
     );
 
-    // Without committing, make it tiling again. We never committed while floating, so there's no
-    // floating size to remember.
+    // Without committing the floating configure, make it tiling again.
     f.niri().layout.toggle_window_floating(None);
     f.double_roundtrip(id);
 
-    // This should request the tiled size.
+    // Tiling applies its border and therefore requests the tiled client size.
     assert_snapshot!(
         f.client(id).window(&surface).format_recent_configures(),
-        @""
+        @"size: 1904 × 1064, bounds: 1904 × 1064, states: [Activated]"
     );
 
     // Commit in response.
@@ -833,11 +900,10 @@ fn floating_doesnt_store_fullscreen_size() {
     f.niri().layout.toggle_window_floating(None);
     f.double_roundtrip(id);
 
-    // The size it mapped with, again: nothing floating was ever committed to remember.
+    // The size it mapped with, again: nothing floating was ever committed to replace it.
     assert_eq!(
         f.client(id).window(&surface).format_recent_configures(),
-        "size: 1904 × 1064, bounds: 1904 × 1064, states: [Activated]\n\
-         size: 1920 × 1080, bounds: 1920 × 1080, states: [Activated]"
+        "size: 1920 × 1080, bounds: 1920 × 1080, states: [Activated]"
     );
 }
 
@@ -1205,7 +1271,7 @@ layout {
 }
 "##;
     let config = Config::parse_mem(config).unwrap();
-    let (mut f, id, surface) = set_up_with_config(config);
+    let (mut f, id, surface) = set_up_with_config_and_size(config, (1920, 1080));
 
     let mapped = f.niri().layout.windows().next().unwrap().1;
     let window_id = mapped.window.clone();
@@ -1214,7 +1280,7 @@ layout {
     f.niri().layout.toggle_window_floating(None);
     f.double_roundtrip(id);
 
-    // Change size to the same as fullscreen, make niri remember it.
+    // Commit to the floating configure so niri remembers the natural fullscreen-sized window.
     let window = f.client(id).window(&surface);
     window.set_size(1920, 1080);
     window.ack_last_and_commit();
@@ -1252,13 +1318,13 @@ layout {
 }
 "##;
     let config = Config::parse_mem(config).unwrap();
-    let (mut f, id, surface) = set_up_with_config(config);
+    let (mut f, id, surface) = set_up_with_config_and_size(config, (1920, 1080));
 
     // Make it floating.
     f.niri().layout.toggle_window_floating(None);
     f.double_roundtrip(id);
 
-    // Change size to the same as fullscreen, make niri remember it.
+    // Commit to the floating configure so niri remembers the natural fullscreen-sized window.
     let window = f.client(id).window(&surface);
     window.set_size(1920, 1080);
     window.ack_last_and_commit();

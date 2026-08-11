@@ -606,12 +606,24 @@ pub enum Action {
     SplitHorizontal {},
     /// Split the focused node vertically.
     SplitVertical {},
+    /// Toggle the focused node's split orientation, like sway's `split toggle`.
+    SplitToggle {},
+    /// Flatten the focused node's single-child parent, like sway's `split none`.
+    SplitNone {},
     /// Set focused container layout to split horizontal.
     SetLayoutSplitH {},
     /// Set focused container layout to split vertical.
     SetLayoutSplitV {},
     /// Toggle focused container between split horizontal and split vertical.
     ToggleSplitLayout {},
+    /// Restore the focused container's remembered split layout.
+    SetLayoutDefault {},
+    /// Cycle the focused container through an explicit sway-style layout list.
+    ToggleLayout {
+        /// Cycle entries in order. An empty list is the same as `layout toggle`.
+        #[cfg_attr(feature = "clap", arg())]
+        layouts: Vec<LayoutCycleTarget>,
+    },
     /// Set focused container layout to stacked.
     SetLayoutStacked {},
     /// Set focused container layout to tabbed.
@@ -1286,6 +1298,23 @@ pub enum LayoutSwitchTarget {
     Prev,
     /// The specific layout by index.
     Index(u8),
+}
+
+/// One entry accepted by sway's `layout toggle ...` command.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub enum LayoutCycleTarget {
+    /// Either split orientation, toggling orientation when selected as the next entry.
+    Split,
+    /// Horizontal split.
+    Splith,
+    /// Vertical split.
+    Splitv,
+    /// Tabbed layout.
+    Tabbed,
+    /// Stacked layout.
+    Stacking,
 }
 
 /// How windows display in a column.
@@ -2207,6 +2236,23 @@ impl FromStr for LayoutSwitchTarget {
                 Ok(layout) => Ok(Self::Index(layout)),
                 _ => Err(r#"invalid layout action, can be "next", "prev" or a layout index"#),
             },
+        }
+    }
+}
+
+impl FromStr for LayoutCycleTarget {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "split" => Ok(Self::Split),
+            "splith" => Ok(Self::Splith),
+            "splitv" => Ok(Self::Splitv),
+            "tabbed" => Ok(Self::Tabbed),
+            "stacking" => Ok(Self::Stacking),
+            _ => Err(
+                r#"invalid layout cycle entry, expected "split", "splith", "splitv", "tabbed" or "stacking""#,
+            ),
         }
     }
 }

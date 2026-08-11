@@ -15,7 +15,6 @@ use super::Direction;
 use super::LayoutElement;
 use super::NodeData;
 use super::NodeKey;
-use super::TreeCommandTarget;
 
 /// What a reparent does to the shares of the node it moves.
 ///
@@ -55,7 +54,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn move_target_in_direction(
         &mut self,
         direction: Direction,
-        target: TreeCommandTarget,
+        target: NodeKey,
     ) -> bool {
         self.clear_focus_history();
 
@@ -88,21 +87,21 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Resolve the command target into the node to move, and whether it is a container whose
     /// selection should survive the move.
-    fn resolve_move_source(&mut self, target: TreeCommandTarget) -> Option<(NodeKey, bool)> {
-        let (move_key, preserve_selected_container) = match target {
-            TreeCommandTarget::Workspace => return None,
-            TreeCommandTarget::Container(key) => {
-                matches!(self.get_node(key), Some(NodeData::Container(_))).then_some((key, true))?
-            }
-            TreeCommandTarget::Leaf(key) => {
-                matches!(self.get_node(key), Some(NodeData::Leaf(_))).then_some((key, false))?
-            }
+    fn resolve_move_source(&mut self, target: NodeKey) -> Option<(NodeKey, bool)> {
+        if target == self.root {
+            return None;
+        }
+        let preserve_selected_container = match self.get_node(target) {
+            Some(NodeData::Workspace(_)) => return None,
+            Some(NodeData::Container(_)) => true,
+            Some(NodeData::Leaf(_)) => false,
+            None => return None,
         };
 
         // A branch's root has nowhere to go, and moving it is not one of these commands.
-        self.parent_of(move_key)
+        self.parent_of(target)
             .is_some()
-            .then_some((move_key, preserve_selected_container))
+            .then_some((target, preserve_selected_container))
     }
 
     /// sway's `container_move_in_direction`.

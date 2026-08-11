@@ -1,6 +1,6 @@
 //! Workspace-local inactive tiling focus, read directly from the seat order.
 
-use super::{ContainerTree, InsertParentInfo, LayoutElement, NodeData, NodeKey};
+use super::{ContainerTree, InactiveTilingReference, LayoutElement, NodeData, NodeKey};
 
 impl<W: LayoutElement> ContainerTree<W> {
     /// The most recent node that still belongs to `ws->tiling`.
@@ -11,7 +11,8 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn inactive_tiling_key(&self) -> Option<NodeKey> {
         self.seat.order().iter().copied().find(|key| {
             *key != self.root
-                && self.find_node_path(*key).is_some()
+                && self.get_node(*key).is_some()
+                && self.branch_root(*key) == self.root
                 && matches!(
                     self.get_node(*key),
                     Some(NodeData::Leaf(_) | NodeData::Container(_))
@@ -19,34 +20,36 @@ impl<W: LayoutElement> ContainerTree<W> {
         })
     }
 
-    /// Where a floating node rejoins tiling, derived from the same key the seat chose.
-    pub(in crate::layout) fn inactive_tiling_restore_target(&self) -> Option<InsertParentInfo> {
-        self.insert_parent_info_for_inactive_tiling_key(self.inactive_tiling_key()?)
+    /// Keep the exact tiling node the seat chose as the immediate unfloat context.
+    pub(in crate::layout) fn inactive_tiling_reference(&self) -> Option<InactiveTilingReference> {
+        Some(InactiveTilingReference::new(self.inactive_tiling_key()?))
     }
 
-    fn insert_parent_info_for_inactive_tiling_key(&self, key: NodeKey) -> Option<InsertParentInfo> {
-        let path = self.find_node_path(key)?;
+    /// Resolve an immediate unfloat reference without projecting it through a tree path.
+    /// Containers receive the node as their last child; leaves receive it as their next sibling.
+    pub(super) fn tiling_insertion_point(
+        &self,
+        reference: &InactiveTilingReference,
+    ) -> Option<(NodeKey, usize)> {
+        let key = reference.key();
+        if self.get_node(key).is_none() || self.branch_root(key) != self.root {
+            return None;
+        }
+
         match self.get_node(key)? {
-            NodeData::Container(container) => Some(InsertParentInfo {
-                parent_path: path,
-                insert_idx: container.child_count(),
-                layout: container.layout(),
-            }),
+            NodeData::Workspace(_) => None,
+            NodeData::Container(container) => Some((key, container.child_count())),
             NodeData::Leaf(_) => {
-                let (leaf_idx, parent_path) = path.split_last()?;
-                let parent_key = self.get_node_key_at_path(parent_path)?;
+                let parent_key = self.parent_of(key)?;
                 let parent = self.get_container(parent_key)?;
-                Some(InsertParentInfo {
-                    parent_path: parent_path.to_vec(),
-                    insert_idx: (leaf_idx + 1).min(parent.child_count()),
-                    layout: parent.layout(),
-                })
+                let leaf_idx = self.child_index(parent_key, key)?;
+                Some((parent_key, (leaf_idx + 1).min(parent.child_count())))
             }
         }
     }
 
     pub(in crate::layout) fn focus_inactive_tiling_key(&mut self, key: NodeKey) -> bool {
-        if key == self.root || self.find_node_path(key).is_none() {
+        if key == self.root || self.get_node(key).is_none() || self.branch_root(key) != self.root {
             return false;
         }
         self.focus_node_key(key);
@@ -55,7 +58,9 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     pub(in crate::layout) fn window_for_inactive_tiling_key(&self, key: NodeKey) -> Option<&W> {
-        self.find_node_path(key)?;
+        if self.get_node(key).is_none() || self.branch_root(key) != self.root {
+            return None;
+        }
         self.get_tile(key).map(|tile| tile.window())
     }
 }

@@ -1,0 +1,23 @@
+# A view mapped into a real split uses that container's box, not workspace fullscreen geometry.
+# recorded from sway version 1.12-dev
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ layout splitv
+workspace splith focus=1
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+
+$ fullscreen toggle
+workspace splith focus=1
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splith focus=1
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.500
+    window 2 0.000,0.500 1.000x0.500 hidden

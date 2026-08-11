@@ -10,7 +10,8 @@ use smithay::input::keyboard::keysyms::KEY_NoSymbol;
 use smithay::input::keyboard::xkb::{keysym_from_name, KEYSYM_CASE_INSENSITIVE, KEYSYM_NO_FLAGS};
 use smithay::input::keyboard::Keysym;
 use tiri_ipc::{
-    ColumnDisplay, LayoutSwitchTarget, PositionChange, SizeChange, WorkspaceReferenceArg,
+    ColumnDisplay, LayoutCycleTarget, LayoutSwitchTarget, PositionChange, SizeChange,
+    WorkspaceReferenceArg,
 };
 
 use crate::recent_windows::{MruDirection, MruFilter, MruScope};
@@ -350,9 +351,13 @@ pub enum Action {
     FocusChild,
     SplitHorizontal,
     SplitVertical,
+    SplitToggle,
+    SplitNone,
     SetLayoutSplitH,
     SetLayoutSplitV,
     ToggleSplitLayout,
+    SetLayoutDefault,
+    ToggleLayout(#[knuffel(arguments, str)] Vec<LayoutCycleTarget>),
     ToggleLayoutAll,
     SetLayoutStacked,
     SetLayoutTabbed,
@@ -586,9 +591,13 @@ impl From<tiri_ipc::Action> for Action {
             tiri_ipc::Action::FocusChild {} => Self::FocusChild,
             tiri_ipc::Action::SplitHorizontal {} => Self::SplitHorizontal,
             tiri_ipc::Action::SplitVertical {} => Self::SplitVertical,
+            tiri_ipc::Action::SplitToggle {} => Self::SplitToggle,
+            tiri_ipc::Action::SplitNone {} => Self::SplitNone,
             tiri_ipc::Action::SetLayoutSplitH {} => Self::SetLayoutSplitH,
             tiri_ipc::Action::SetLayoutSplitV {} => Self::SetLayoutSplitV,
             tiri_ipc::Action::ToggleSplitLayout {} => Self::ToggleSplitLayout,
+            tiri_ipc::Action::SetLayoutDefault {} => Self::SetLayoutDefault,
+            tiri_ipc::Action::ToggleLayout { layouts } => Self::ToggleLayout(layouts),
             tiri_ipc::Action::SetLayoutStacked {} => Self::SetLayoutStacked,
             tiri_ipc::Action::SetLayoutTabbed {} => Self::SetLayoutTabbed,
             tiri_ipc::Action::ConsumeOrExpelWindowLeft { id: None } => {
@@ -1306,6 +1315,41 @@ binds {
                 Action::ResizeShrinkUp,
                 Action::ResizeGrowDown,
                 Action::ResizeShrinkDown,
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_sway_split_and_layout_actions() {
+        let config = crate::Config::parse_mem(
+            r#"
+binds {
+    A { split-toggle; }
+    B { split-none; }
+    C { set-layout-default; }
+    D { toggle-layout; }
+    E { toggle-layout "splith" "tabbed" "stacking" "splitv"; }
+    F { toggle-layout "tabbed"; }
+}
+"#,
+        )
+        .unwrap();
+
+        let actions: Vec<_> = config.binds.0.into_iter().map(|bind| bind.action).collect();
+        assert_eq!(
+            actions,
+            [
+                Action::SplitToggle,
+                Action::SplitNone,
+                Action::SetLayoutDefault,
+                Action::ToggleLayout(vec![]),
+                Action::ToggleLayout(vec![
+                    LayoutCycleTarget::Splith,
+                    LayoutCycleTarget::Tabbed,
+                    LayoutCycleTarget::Stacking,
+                    LayoutCycleTarget::Splitv,
+                ]),
+                Action::ToggleLayout(vec![LayoutCycleTarget::Tabbed]),
             ]
         );
     }

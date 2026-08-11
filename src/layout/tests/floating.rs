@@ -575,8 +575,42 @@ fn floating_toggle_multi_window_selected_container_moves_to_tiling() {
         );
     }
 }
+
 #[test]
-fn floating_toggle_selected_tiling_container_roundtrips_through_workspace_context() {
+fn floating_roundtrip_keeps_selected_container_as_command_target() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::SplitVertical,
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::FocusParent,
+    ]);
+
+    assert_eq!(
+        layout.close_window_ids_for_active_selection(),
+        vec![2, 3],
+        "precondition: the nested tiling container should be selected",
+    );
+
+    layout.toggle_window_floating(None);
+    layout.toggle_window_floating(None);
+
+    assert_eq!(
+        layout.close_window_ids_for_active_selection(),
+        vec![2, 3],
+        "floating -> tiling must keep the returned container selected like sway",
+    );
+}
+
+#[test]
+fn floating_toggle_selected_tiling_container_roundtrips_as_the_same_node() {
     let mut layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow {
@@ -624,20 +658,13 @@ fn floating_toggle_selected_tiling_container_roundtrips_through_workspace_contex
         }
     }
 
-    check_ops_on_layout(
-        &mut layout,
-        [
-            Op::FocusParent,
-            Op::FocusParent,
-            Op::ToggleWindowFloating { id: None },
-        ],
-    );
+    check_ops_on_layout(&mut layout, [Op::ToggleWindowFloating { id: None }]);
 
     let workspace = layout.active_workspace().expect("active workspace");
     let tree_after = workspace.tiling().debug_tree().replace(" *", "");
     assert!(
         !workspace.floating_is_active(),
-        "toggle_floating from floating workspace-context should restore the subtree to tiling",
+        "toggling the selected floating node should restore that same node to tiling",
     );
     assert_eq!(workspace.floating().tiles().count(), 0);
     assert_eq!(workspace.tiling().tiles().count(), 4);
@@ -693,10 +720,7 @@ fn floating_toggle_workspace_subtree_returns_all_windows_inside_the_sway_wrapper
         }
     }
 
-    check_ops_on_layout(
-        &mut layout,
-        [Op::FocusParent, Op::ToggleWindowFloating { id: None }],
-    );
+    check_ops_on_layout(&mut layout, [Op::ToggleWindowFloating { id: None }]);
 
     let workspace = layout.active_workspace().expect("active workspace");
     let tree_after = workspace.tiling().debug_tree().replace(" *", "");
@@ -737,11 +761,7 @@ fn floating_workspace_roundtrip_preserves_previous_split_layout() {
 
     check_ops_on_layout(
         &mut layout,
-        [
-            Op::FocusParent,
-            Op::ToggleWindowFloating { id: None },
-            Op::ToggleSplitLayout,
-        ],
+        [Op::ToggleWindowFloating { id: None }, Op::ToggleSplitLayout],
     );
 
     // The workspace comes back tabbed and still remembering it was a splitv, so the toggle
@@ -794,7 +814,7 @@ fn floating_single_window_roundtrip_does_not_reintroduce_implicit_split_wrapper(
     assert_eq!(workspace.tiling().tiles().count(), 0);
 }
 #[test]
-fn workspace_split_from_workspace_context_keeps_floating_mode_like_sway() {
+fn workspace_split_selects_the_new_tiling_wrapper_like_sway() {
     let mut layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow {
@@ -825,12 +845,13 @@ fn workspace_split_from_workspace_context_keeps_floating_mode_like_sway() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert!(
-        workspace.floating_is_active(),
-        "workspace split in floating workspace-context should keep floating mode (sway parity)",
+        !workspace.floating_is_active(),
+        "the wrapper created around tiled children becomes the active side",
     );
-    assert!(
-        workspace.debug_floating_workspace_context(),
-        "workspace split in this path should keep workspace command context",
+    assert_eq!(
+        workspace.debug_command_target(),
+        "tiling_container",
+        "workspace split should select the real wrapper node Sway reports as @0",
     );
 }
 #[test]
@@ -1219,7 +1240,7 @@ fn floating_focus_child_exits_wrapper_selection() {
     assert!(!workspace.floating().wrapper_selected_for_window(&1));
 }
 #[test]
-fn floating_split_with_wrapper_selected_changes_root_layout() {
+fn floating_split_on_selected_workspace_does_not_retarget_wrapper() {
     let mut params2 = TestWindowParams::new(2);
     params2.is_floating = true;
 
@@ -1242,7 +1263,7 @@ fn floating_split_with_wrapper_selected_changes_root_layout() {
     assert!(workspace.is_floating(&2));
     assert_eq!(
         workspace.floating().root_layout_for_window(&1),
-        Some(ContainerLayout::SplitH)
+        Some(ContainerLayout::SplitV)
     );
 }
 #[test]
@@ -1270,6 +1291,7 @@ fn floating_set_layout_mode_on_wrapper_is_noop_like_sway() {
         workspace.floating().root_layout_for_window(&1),
         Some(ContainerLayout::SplitV)
     );
+    assert_eq!(workspace.debug_workspace_layout(), ContainerLayout::Tabbed);
 }
 #[test]
 fn floating_consume_into_column_uses_floating_tree() {
@@ -1924,7 +1946,7 @@ fn focusing_floating_leaf_clears_container_selection_and_restores_leaf_navigatio
     assert_eq!(workspace.tiling().tiles().count(), 3);
 }
 #[test]
-fn floating_workspace_context_toggle_floating_uses_selected_floating_container_like_sway() {
+fn floating_toggle_on_selected_workspace_with_only_floating_is_noop_like_sway() {
     let mut layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow {
@@ -1941,22 +1963,18 @@ fn floating_workspace_context_toggle_floating_uses_selected_floating_container_l
         assert!(workspace.floating_is_active());
         assert!(workspace.debug_floating_workspace_context());
         assert_eq!(workspace.debug_command_context(), "workspace");
-        assert_eq!(
-            workspace.debug_active_floating_command_container_path(),
-            Some(Vec::new()),
-            "precondition: workspace context should still retain floating wrapper selection",
-        );
+        assert_eq!(workspace.debug_command_target(), "workspace");
     }
 
     layout.toggle_window_floating(None);
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert!(
-        !workspace.floating_is_active(),
-        "workspace-context toggle_floating should restore the selected floating container to tiling",
+        workspace.floating_is_active(),
+        "the selected workspace has no tiled node that floating toggle could move",
     );
-    assert_eq!(workspace.floating().tiles().count(), 0);
-    assert_eq!(workspace.tiling().tiles().count(), 1);
+    assert_eq!(workspace.floating().tiles().count(), 1);
+    assert_eq!(workspace.tiling().tiles().count(), 0);
 }
 #[test]
 fn layout_focus_history_keeps_workspace_scope_and_workspace_restores_floating_node() {

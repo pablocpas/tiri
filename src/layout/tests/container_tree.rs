@@ -1,9 +1,7 @@
 use insta::assert_snapshot;
 use proptest::prelude::*;
 
-use super::super::container::{
-    ContainerData, ContainerTree, Direction, Layout as ContainerLayout, TreeCommandTarget,
-};
+use super::super::container::{ContainerData, ContainerTree, Direction, Layout as ContainerLayout};
 use super::super::tile::Tile;
 use super::*;
 
@@ -308,7 +306,7 @@ fn replacing_a_container_hands_its_parent_share_to_the_replacement() {
     // no arrange pass to hide a missing fraction transfer.
     assert!(!harness
         .tree
-        .set_layout_for_target(ContainerLayout::SplitH, TreeCommandTarget::Leaf(leaf),));
+        .set_layout_for_target(ContainerLayout::SplitH, leaf));
     assert_eq!(harness.tree.parent_of(leaf), Some(outer));
     let leaf_share = harness.tree.debug_node_sizing(leaf).unwrap();
     assert_eq!(

@@ -1,0 +1,27 @@
+# An unsupported layout command on a floating parent must not fall back to the workspace.
+# recorded from sway version 1.12-dev
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ move up
+workspace splitv focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ fullscreen toggle
+workspace splitv focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ floating toggle
+workspace splitv focus=1
+  window 1 0.000,0.000 1.000x1.000 floating
+
+$ focus parent
+workspace splitv focus=1
+  window 1 0.000,0.000 1.000x1.000 floating
+
+$ layout splith
+workspace splitv focus=1
+  window 1 0.000,0.000 1.000x1.000 floating

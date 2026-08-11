@@ -67,7 +67,8 @@ impl<W: LayoutElement> ContainerTree<W> {
                     children: Vec::new(),
                 }
             }
-            Some(NodeData::Container(container)) => {
+            Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => {
+                let container = self.get_container(node_key).expect("layout parent");
                 let child_count = container.child_count();
                 let percents = self.get_normalized_child_percents(node_key, child_count);
                 let mut children = Vec::with_capacity(child_count);
@@ -134,12 +135,29 @@ impl<W: LayoutElement> ContainerTree<W> {
         // rectangle out from the parent instead answers where the node *will* be, which is a
         // different question and one nothing asked.
         let rect = match self.get_node(node_key)? {
-            NodeData::Leaf(_) => self
+            NodeData::Leaf(tile) => self
                 .leaf_layouts()
                 .iter()
                 .find(|info| info.key == node_key)
-                .map(|info| info.rect)
+                .map(|info| {
+                    let mut rect = info.node_rect;
+                    if !tile.window().pending_sizing_mode().is_fullscreen() {
+                        if let Some(parent) = self.parent_of(node_key) {
+                            if let Some(container) = self.get_container(parent) {
+                                let offset = self.switcher_content_offset(
+                                    container.layout(),
+                                    container.child_count(),
+                                    rect.size.h,
+                                );
+                                rect.loc.y += offset;
+                                rect.size.h = (rect.size.h - offset).max(0.0);
+                            }
+                        }
+                    }
+                    rect
+                })
                 .unwrap_or_default(),
+            NodeData::Workspace(workspace) => workspace.geometry(),
             NodeData::Container(container) => container.geometry(),
         };
 

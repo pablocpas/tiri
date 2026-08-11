@@ -139,7 +139,8 @@ impl<W: LayoutElement> ContainerTree<W> {
                 let focused = if *path == focused_path { " *" } else { "" };
                 let _ = writeln!(out, "{indent}Window {}{focused}", tile.window().id());
             }
-            Some(NodeData::Container(container)) => {
+            Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => {
+                let container = self.get_container(node_key).expect("layout parent");
                 let label = layout_label(container.layout());
                 let _ = writeln!(out, "{indent}{label}");
                 for (idx, child_key) in container.children.iter().enumerate() {

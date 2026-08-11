@@ -27,7 +27,10 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(super) fn reap_empty(&mut self, key: NodeKey) {
         let mut current = Some(key);
         while let Some(container_key) = current {
-            if self.parent_of(container_key).is_none() {
+            if container_key == self.root
+                || (self.branch_root(container_key) == container_key
+                    && self.branch_is_addressable(container_key))
+            {
                 return;
             }
             let Some(container) = self.get_container(container_key) else {
@@ -165,16 +168,22 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// other where the grandparent already lays its children out the child's way, so the
     /// container in the middle adds an orientation nothing reads.
     fn is_squashable(&self, con_key: NodeKey, child_key: NodeKey) -> bool {
-        let Some(con_layout) = self.get_container(con_key).map(ContainerData::layout) else {
+        let Some(con_layout) = self
+            .get_container(con_key)
+            .map(|container| container.layout())
+        else {
             return false;
         };
-        let Some(child_layout) = self.get_container(child_key).map(ContainerData::layout) else {
+        let Some(child_layout) = self
+            .get_container(child_key)
+            .map(|container| container.layout())
+        else {
             return false;
         };
         let Some(grandparent_layout) = self
             .parent_of(con_key)
             .and_then(|key| self.get_container(key))
-            .map(ContainerData::layout)
+            .map(|container| container.layout())
         else {
             return false;
         };

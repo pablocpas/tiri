@@ -26,7 +26,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         out: &mut Vec<TabBarInfo>,
         visible: bool,
     ) {
-        let Some(NodeData::Container(container)) = self.get_node(node_key) else {
+        let Some(container) = self.get_container(node_key) else {
             return;
         };
 
@@ -112,8 +112,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(super) fn focused_window_in_subtree(&self, node_key: NodeKey) -> Option<&W> {
         match self.get_node(node_key) {
             Some(NodeData::Leaf(tile)) => Some(tile.window()),
-            Some(NodeData::Container(container)) => {
-                let _ = container;
+            Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => {
                 let child_key = self.active_child(node_key)?;
                 self.focused_window_in_subtree(child_key)
             }
@@ -124,7 +123,9 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(super) fn subtree_has_urgent(&self, node_key: NodeKey) -> bool {
         match self.get_node(node_key) {
             Some(NodeData::Leaf(tile)) => tile.window().is_urgent(),
-            Some(NodeData::Container(container)) => container
+            Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => self
+                .get_container(node_key)
+                .expect("layout parent")
                 .children
                 .iter()
                 .any(|&child_key| self.subtree_has_urgent(child_key)),

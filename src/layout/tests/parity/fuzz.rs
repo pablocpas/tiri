@@ -83,15 +83,25 @@ const VOCABULARY: &[(&str, u32)] = &[
     ("close", 2),
     ("split h", 4),
     ("split horizontal", 1),
+    ("splith", 1),
     ("split v", 4),
     ("split vertical", 1),
+    ("splitv", 1),
     ("split toggle", 2),
+    ("split t", 1),
+    ("splitt", 1),
+    ("split none", 1),
+    ("split n", 1),
     ("layout splith", 3),
     ("layout splitv", 3),
     ("layout tabbed", 3),
     ("layout stacking", 3),
+    ("layout default", 1),
+    ("layout toggle", 1),
     ("layout toggle split", 2),
     ("layout toggle all", 2),
+    ("layout toggle tabbed", 1),
+    ("layout toggle splith tabbed stacking splitv", 1),
     ("floating toggle", 2),
     ("fullscreen toggle", 2),
     // Every resize grammar branch is represented. Amounts cover sub-rounding, ordinary,
@@ -176,6 +186,15 @@ const SWAY_1_12_MOVE_RIGHT_SELECTED_WORKSPACE_CRASH: &[&str] = &[
     "focus parent",
     "split toggle",
     "move right",
+];
+
+const SWAY_1_12_MOVE_LEFT_AFTER_REPEATED_SPLIT_TOGGLE_CRASH: &[&str] = &[
+    "open",
+    "focus parent",
+    "split toggle",
+    "focus parent",
+    "split toggle",
+    "move left",
 ];
 
 /// Further minimal routes to the same `arrange_workspace <- cmd_move_in_direction` SIGSEGV,
@@ -474,6 +493,10 @@ fn is_known_reference_failure(name: &str, script: &[String], error: &str) -> boo
         ("move up", SWAY_1_12_MOVE_SELECTED_WORKSPACE_CRASH),
         ("move left", SWAY_1_12_MOVE_LEFT_SELECTED_WORKSPACE_CRASH),
         ("move right", SWAY_1_12_MOVE_RIGHT_SELECTED_WORKSPACE_CRASH),
+        (
+            "move left",
+            SWAY_1_12_MOVE_LEFT_AFTER_REPEATED_SPLIT_TOGGLE_CRASH,
+        ),
         ("move up", SWAY_1_12_MOVE_UP_AFTER_TOGGLE_ALL_CRASH),
         ("move down", SWAY_1_12_MOVE_DOWN_AFTER_TOGGLE_ALL_CRASH),
         (
@@ -518,6 +541,10 @@ fn pinned_sway_workspace_move_crashes_are_known_by_exact_script() {
         ("move up", SWAY_1_12_MOVE_SELECTED_WORKSPACE_CRASH),
         ("move left", SWAY_1_12_MOVE_LEFT_SELECTED_WORKSPACE_CRASH),
         ("move right", SWAY_1_12_MOVE_RIGHT_SELECTED_WORKSPACE_CRASH),
+        (
+            "move left",
+            SWAY_1_12_MOVE_LEFT_AFTER_REPEATED_SPLIT_TOGGLE_CRASH,
+        ),
         ("move up", SWAY_1_12_MOVE_UP_AFTER_TOGGLE_ALL_CRASH),
         ("move down", SWAY_1_12_MOVE_DOWN_AFTER_TOGGLE_ALL_CRASH),
         (

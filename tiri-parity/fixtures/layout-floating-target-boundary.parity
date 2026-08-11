@@ -1,0 +1,88 @@
+# Layout rejects the selected top-level floating wrapper, but a child can relayout it.
+# recorded from sway version 1.12-dev
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splith focus=2
+  window 1 0.000,0.000 0.500x1.000
+  window 2 0.500,0.000 0.500x1.000
+
+$ split v
+workspace splith focus=2
+  window 1 0.000,0.000 0.500x1.000
+  splitv 0.500,0.000 0.500x1.000
+    window 2 0.500,0.000 0.500x1.000
+
+$ open
+workspace splith focus=3
+  window 1 0.000,0.000 0.500x1.000
+  splitv 0.500,0.000 0.500x1.000
+    window 2 0.500,0.000 0.500x0.500
+    window 3 0.500,0.500 0.500x0.500
+
+$ focus parent
+workspace splith focus=@1
+  window 1 0.000,0.000 0.500x1.000
+  splitv 0.500,0.000 0.500x1.000
+    window 2 0.500,0.000 0.500x0.500
+    window 3 0.500,0.500 0.500x0.500
+
+$ floating toggle
+workspace splith focus=@1
+  window 1 0.000,0.000 1.000x1.000
+  splitv 0.250,0.125 0.500x0.750
+    window 2 0.250,0.125 0.500x0.375 floating
+    window 3 0.250,0.500 0.500x0.375 floating
+
+$ layout tabbed
+workspace splith focus=@1
+  window 1 0.000,0.000 1.000x1.000
+  splitv 0.250,0.125 0.500x0.750
+    window 2 0.250,0.125 0.500x0.375 floating
+    window 3 0.250,0.500 0.500x0.375 floating
+
+$ focus child
+workspace splith focus=3
+  window 1 0.000,0.000 1.000x1.000
+  splitv 0.250,0.125 0.500x0.750
+    window 2 0.250,0.125 0.500x0.375 floating
+    window 3 0.250,0.500 0.500x0.375 floating
+
+$ layout tabbed
+workspace splith focus=3
+  window 1 0.000,0.000 1.000x1.000
+  tabbed 0.250,0.125 0.500x0.750
+    window 2 0.250,0.157 0.500x0.718 hidden floating
+    window 3 0.250,0.157 0.500x0.718 floating
+
+$ focus parent
+workspace splith focus=@1
+  window 1 0.000,0.000 1.000x1.000
+  tabbed 0.250,0.125 0.500x0.750
+    window 2 0.250,0.157 0.500x0.718 hidden floating
+    window 3 0.250,0.157 0.500x0.718 floating
+
+$ layout toggle all
+workspace splith focus=@1
+  window 1 0.000,0.000 1.000x1.000
+  tabbed 0.250,0.125 0.500x0.750
+    window 2 0.250,0.157 0.500x0.718 hidden floating
+    window 3 0.250,0.157 0.500x0.718 floating
+
+$ focus child
+workspace splith focus=3
+  window 1 0.000,0.000 1.000x1.000
+  tabbed 0.250,0.125 0.500x0.750
+    window 2 0.250,0.157 0.500x0.718 hidden floating
+    window 3 0.250,0.157 0.500x0.718 floating
+
+$ layout toggle all
+workspace splith focus=3
+  window 1 0.000,0.000 1.000x1.000
+  splith 0.250,0.125 0.500x0.750
+    window 2 0.250,0.125 0.250x0.750 floating
+    window 3 0.500,0.125 0.250x0.750 floating

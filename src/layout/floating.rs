@@ -14,8 +14,8 @@ use tiri_ipc::{
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::container::{
-    floating_position_from_logical, scale_floating_position, Direction, InsertParentInfo, Layout,
-    LeafLayoutInfo, NodeKey, TabBarInfo,
+    floating_position_from_logical, scale_floating_position, Direction, InactiveTilingReference,
+    InsertParentInfo, Layout, LeafLayoutInfo, NodeKey, TabBarInfo,
 };
 use super::focus_ring::{
     render_container_selection, ContainerSelectionStyle, FocusRingEdges, FocusRingRenderElement,
@@ -25,8 +25,8 @@ use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
 use super::tree_space::{percent_from_size_change, TileConfig, TreeSpace};
 use super::workspace::{InteractiveResize, ResolvedSize};
 use super::{
-    resize_edges_for_point, ConfigureIntent, InteractiveResizeData, LayoutElement, Options,
-    RemovedTile, ResizeAxis, ResizeRequest, SizeFrac,
+    resize_edges_for_point, ConfigureIntent, InteractiveResizeData, LayoutCycleEntry,
+    LayoutElement, Options, RemovedTile, ResizeAxis, ResizeRequest, SizeFrac,
 };
 use crate::animation::Animation;
 use crate::layout::tab_bar::{
@@ -553,11 +553,22 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return super::HitType::hit_tile(tile, Point::from((0.0, 0.0)), pos);
         }
 
-        if let Some(hit) = self.tab_bar_hit(space, pos) {
+        let fullscreen_scope = self.fullscreen_key(space);
+        let tab_hit = if let Some(scope) = fullscreen_scope {
+            space.branch_tab_bar_hit(scope, pos, 1)
+        } else {
+            self.tab_bar_hit(space, pos)
+        };
+        if let Some(hit) = tab_hit {
             return Some(hit);
         }
 
         for (tile, tile_pos) in self.tiles_with_render_positions(space) {
+            if fullscreen_scope
+                .is_some_and(|scope| !space.tree().is_descendant(tile.node_key(), scope))
+            {
+                continue;
+            }
             if let Some(rv) = super::HitType::hit_tile(tile, tile_pos, pos) {
                 return Some(rv);
             }
@@ -671,7 +682,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     }
 
     /// Floating projection of the workspace's single fullscreen node.
-    fn fullscreen_key(&self, space: &TreeSpace<W>) -> Option<NodeKey> {
+    pub(super) fn fullscreen_key(&self, space: &TreeSpace<W>) -> Option<NodeKey> {
         let tree = space.tree();
         let key = tree.fullscreen_key()?;
         (tree.holds_node(key) && tree.is_floating(key)).then_some(key)
@@ -771,6 +782,15 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 return;
             }
 
+            // A one-window floating root records client commits as its resize base without
+            // retargeting an in-flight compositor size. Fullscreen is precisely such a target;
+            // restore the live base now so the ordinary floating arrange below cannot overwrite
+            // the saved client size with the pre-fullscreen target.
+            if let Some(idx) = self.idx_of(space, window) {
+                let restore_size = self.container_area(space, idx).size;
+                self.set_container_size(space, idx, restore_size);
+            }
+
             // Restore the floating size.
             if let Some(tile) = self.tiles_mut(space).find(|t| t.window().id() == window) {
                 let size = tile.floating_window_size.unwrap_or_default();
@@ -808,22 +828,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return false;
         };
         tree.selected_container_key() == Some(self.containers[idx].root)
-    }
-
-    pub(super) fn active_command_container_selected(&self, space: &TreeSpace<W>) -> bool {
-        let Some(idx) = self.active_container_idx(space) else {
-            return false;
-        };
-        self.selected_is_container_in(space, idx)
-    }
-
-    pub(super) fn active_command_container_path(&self, space: &TreeSpace<W>) -> Option<Vec<usize>> {
-        let tree = space.tree();
-        let idx = self.active_container_idx(space)?;
-        let key = tree.selected_container_key()?;
-        tree.is_descendant(key, self.containers[idx].root)
-            .then(|| tree.branch_relative_path(key))
-            .flatten()
     }
 
     pub(super) fn close_window_ids_for_active_selection(&self, space: &TreeSpace<W>) -> Vec<W::Id> {
@@ -924,6 +928,24 @@ impl<W: LayoutElement> FloatingSpace<W> {
         });
 
         (win_id, requested_tile_size)
+    }
+
+    fn preserve_fullscreen_tile_for_floating(
+        config: &TileConfig,
+        tile: &mut Tile<W>,
+        restore_tile_size: Option<Size<f64, Logical>>,
+    ) {
+        tile.update_config(config.view_size, config.scale, config.options.clone());
+        tile.pending_maximized = false;
+        if tile.floating_window_size.is_none() {
+            tile.floating_window_size = restore_tile_size
+                .filter(|size| size.w > 0.0 && size.h > 0.0)
+                .map(|size| tile.requested_window_size_for_tile(size, tile.tab_bar_offset()))
+                .or_else(|| {
+                    let size = tile.window().natural_size();
+                    (size.w > 0 && size.h > 0).then_some(size)
+                });
+        }
     }
 
     fn add_tile_at(
@@ -1117,23 +1139,46 @@ impl<W: LayoutElement> FloatingSpace<W> {
         workspace_floated: bool,
     ) -> bool {
         let config = space.tile_config();
+        let fullscreen_key = space.tree().fullscreen_key();
+        let fullscreen_restore_size = fullscreen_key
+            .filter(|fullscreen| *fullscreen == key)
+            .and_then(|fullscreen| space.tree().fullscreen_restore_geometry(fullscreen))
+            .map(|rect| rect.size);
         let mut prepared_leaf = None;
+        let mut preserved_fullscreen_leaf = false;
         if space.tree_mut().is_leaf(key) {
             if let Some(tile) = space.tree_mut().get_tile_mut(key) {
-                if tile.floating_window_size.is_none() {
-                    let mut size = tile.window().natural_size();
-                    size.w = size.w.min(config.view_size.w.floor() as i32).max(75);
-                    size.h = size.h.min(config.view_size.h.floor() as i32).max(50);
-                    let min_size = tile.window().min_size();
-                    let max_size = tile.window().max_size();
-                    size.w = ensure_min_max_size_maybe_zero(size.w, min_size.w, max_size.w);
-                    size.h = ensure_min_max_size_maybe_zero(size.h, min_size.h, max_size.h);
-                    tile.floating_window_size = Some(size);
+                if fullscreen_key == Some(key)
+                    && tile.window().pending_sizing_mode().is_fullscreen()
+                {
+                    // `container_set_floating(true)` moves the same fullscreen view between
+                    // workspace lists. It neither revokes the workspace authority nor asks
+                    // the client to return to normal. Its pre-fullscreen tiled box becomes
+                    // the floating restore box when fullscreen is later disabled.
+                    Self::preserve_fullscreen_tile_for_floating(
+                        &config,
+                        tile,
+                        fullscreen_restore_size,
+                    );
+                    prepared_leaf = Some((key, None));
+                    preserved_fullscreen_leaf = true;
+                } else {
+                    if tile.floating_window_size.is_none() {
+                        let mut size = tile.window().natural_size();
+                        size.w = size.w.min(config.view_size.w.floor() as i32).max(75);
+                        size.h = size.h.min(config.view_size.h.floor() as i32).max(50);
+                        let min_size = tile.window().min_size();
+                        let max_size = tile.window().max_size();
+                        size.w = ensure_min_max_size_maybe_zero(size.w, min_size.w, max_size.w);
+                        size.h = ensure_min_max_size_maybe_zero(size.h, min_size.h, max_size.h);
+                        tile.floating_window_size = Some(size);
+                    }
+                    let (_, requested) = Self::prepare_tile_for_floating(&config, tile);
+                    prepared_leaf = Some((key, requested));
                 }
-                let (_, requested) = Self::prepare_tile_for_floating(&config, tile);
-                prepared_leaf = Some((key, requested));
             }
-            if let Some((_, requested)) = prepared_leaf {
+            if !preserved_fullscreen_leaf {
+                let requested = prepared_leaf.and_then(|(_, requested)| requested);
                 let working_area = space.working_area();
                 if let Some(tile) = space.tree().get_tile(key) {
                     let size = requested.unwrap_or_else(|| tile.tile_size());
@@ -1160,8 +1205,22 @@ impl<W: LayoutElement> FloatingSpace<W> {
             if prepared_leaf.is_some_and(|(prepared, _)| prepared == key) {
                 continue;
             }
+            let fullscreen_restore_size = (fullscreen_key == Some(key))
+                .then(|| space.tree().fullscreen_restore_geometry(key))
+                .flatten()
+                .map(|rect| rect.size);
             if let Some(tile) = space.tree_mut().get_tile_mut(key) {
-                Self::prepare_tile_for_floating(&config, tile);
+                if fullscreen_key == Some(key)
+                    && tile.window().pending_sizing_mode().is_fullscreen()
+                {
+                    Self::preserve_fullscreen_tile_for_floating(
+                        &config,
+                        tile,
+                        fullscreen_restore_size,
+                    );
+                } else {
+                    Self::prepare_tile_for_floating(&config, tile);
+                }
             }
         }
         if activate {
@@ -1228,7 +1287,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         &mut self,
         space: &mut TreeSpace<W>,
         id: &W::Id,
-        info: Option<&InsertParentInfo>,
+        reference: Option<&InactiveTilingReference>,
         as_workspace: bool,
         focus: bool,
     ) -> bool {
@@ -1255,8 +1314,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
         let changed = if as_workspace {
             space.tree_mut().unfloat_as_workspace(root, focus)
-        } else if let Some(info) = info {
-            space.tree_mut().unfloat_with_parent_info(root, info, focus)
+        } else if let Some(reference) = reference {
+            space
+                .tree_mut()
+                .unfloat_with_tiling_reference(root, reference, focus)
         } else {
             space.tree_mut().unfloat_into_workspace(root, focus)
         };
@@ -1273,7 +1334,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         &mut self,
         space: &mut TreeSpace<W>,
         id: &W::Id,
-        info: Option<&InsertParentInfo>,
+        reference: Option<&InactiveTilingReference>,
         focus: bool,
     ) -> bool {
         let Some(idx) = self.idx_of(space, id) else {
@@ -1297,7 +1358,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             tile.floating_pos = Some(pos);
             tile.set_scratchpad(false);
         }
-        let Some(group_empty) = space.tree_mut().unfloat_node(key, info, focus) else {
+        let Some(group_empty) = space.tree_mut().unfloat_node(key, reference, focus) else {
             return false;
         };
         if group_empty {
@@ -1689,7 +1750,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             tile.floating_preset_width_idx = None;
         }
 
-        let Some((parent_path, child_idx, available, child_count, _)) =
+        let Some((parent_key, child_idx, available, child_count, _)) =
             space.container_metrics_for(key, Layout::SplitH)
         else {
             self.resize_container_around_center(space, idx, change, ResizeAxis::Horizontal);
@@ -1702,7 +1763,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         let current_percent = space
             .tree_mut()
-            .child_percent(parent_path, child_idx)
+            .child_percent(parent_key, child_idx)
             .unwrap_or(1.0);
         let percent = percent_from_size_change(
             current_percent,
@@ -1713,7 +1774,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         if space
             .tree_mut()
-            .set_child_percent(parent_path, child_idx, Layout::SplitH, percent)
+            .set_child_percent(parent_key, child_idx, Layout::SplitH, percent)
         {
             let _ = animate;
             space.tree_mut().layout_branch(self.containers[idx].root);
@@ -1804,7 +1865,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             tile.floating_preset_height_idx = None;
         }
 
-        let Some((parent_path, child_idx, available, child_count, _)) =
+        let Some((parent_key, child_idx, available, child_count, _)) =
             space.container_metrics_for(key, Layout::SplitV)
         else {
             self.resize_container_around_center(space, idx, change, ResizeAxis::Vertical);
@@ -1817,7 +1878,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         let current_percent = space
             .tree_mut()
-            .child_percent(parent_path, child_idx)
+            .child_percent(parent_key, child_idx)
             .unwrap_or(1.0);
         let percent = percent_from_size_change(
             current_percent,
@@ -1828,7 +1889,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         if space
             .tree_mut()
-            .set_child_percent(parent_path, child_idx, Layout::SplitV, percent)
+            .set_child_percent(parent_key, child_idx, Layout::SplitV, percent)
         {
             let _ = animate;
             space.tree_mut().layout_branch(self.containers[idx].root);
@@ -2104,30 +2165,20 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
     }
 
-    pub fn focus_parent(&mut self, space: &mut TreeSpace<W>) -> bool {
+    pub(super) fn focus_parent(&mut self, space: &mut TreeSpace<W>) -> bool {
         let Some(idx) = self.active_container_idx(space) else {
             return false;
         };
         let root = self.containers[idx].root;
+        if space.handle_focus_parent_in_branch_fullscreen_scope(root) {
+            return true;
+        }
 
         // The floating root is an ordinary sway container. Once it holds focus, the next
         // parent is the workspace, which Workspace represents outside ContainerTree; leave
         // the root selected so command routing still knows which floating group was raised.
         if space.tree_mut().selected_container_key() == Some(root) {
-            let child_count = space.tree_mut().branch_children_len(root);
-            let meaningful = space
-                .tree_mut()
-                .container_is_meaningful_parent(root)
-                .unwrap_or(false);
-            let user_container = space
-                .tree_mut()
-                .branch_container(root)
-                .is_some_and(|container| container.is_user_container())
-                && !self.containers[idx].kind.is_workspace_wrapper();
-            if !meaningful || (child_count <= 1 && !user_container) {
-                space.tree_mut().clear_selection();
-            }
-            return false;
+            return space.tree_mut().select_parent();
         }
 
         // One step, not a walk: `select_parent_in` stops at the branch root, so there is
@@ -2150,8 +2201,15 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         // The root around a lone floating view exists only because tiri needs a node for the
         // entry in ws->floating. sway does not expose an extra focus-parent stop for it.
-        space.tree_mut().clear_selection();
-        false
+        space.tree_mut().select_parent()
+    }
+
+    pub(super) fn focus_child_from_workspace(&mut self, space: &mut TreeSpace<W>) -> bool {
+        let Some(idx) = self.active_container_idx(space) else {
+            return false;
+        };
+        let root = self.containers[idx].root;
+        space.tree_mut().select_container(root) && space.tree_mut().select_child()
     }
 
     pub fn focus_child(&mut self, space: &mut TreeSpace<W>) -> bool {
@@ -2273,6 +2331,19 @@ impl<W: LayoutElement> FloatingSpace<W> {
         self.split_container(space, idx, Layout::SplitV);
     }
 
+    pub fn split_none(&mut self, space: &mut TreeSpace<W>) {
+        let Some(idx) = self.active_container_idx(space) else {
+            return;
+        };
+        let Some(root) = space.unsplit_in_branch(self.containers[idx].root) else {
+            return;
+        };
+        self.containers[idx].root = root;
+        if space.branch_root_is_implicit(root) {
+            self.containers[idx].kind = FloatingRootKind::ImplicitWindowGroup;
+        }
+    }
+
     /// Apply an explicit split and keep the floating root's IPC provenance in sync.
     ///
     /// A lone floating window starts in a container that exists only because Tiri needs a
@@ -2312,6 +2383,24 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return;
         };
         space.toggle_layout_all_in_branch(self.containers[idx].root);
+    }
+
+    pub fn set_default_layout(&mut self, space: &mut TreeSpace<W>) {
+        let Some(idx) = self.active_container_idx(space) else {
+            return;
+        };
+        space.set_default_layout_in_branch(self.containers[idx].root);
+    }
+
+    pub(super) fn toggle_layout_cycle(
+        &mut self,
+        space: &mut TreeSpace<W>,
+        cycle: &[LayoutCycleEntry],
+    ) {
+        let Some(idx) = self.active_container_idx(space) else {
+            return;
+        };
+        space.toggle_layout_cycle_in_branch(self.containers[idx].root, cycle);
     }
 
     fn move_container_to(
@@ -2485,10 +2574,15 @@ impl<W: LayoutElement> FloatingSpace<W> {
             let Some(tile) = space.tree_mut().get_tile(key) else {
                 return true;
             };
-            let tile_size = tile.tile_size();
-            space
-                .tree_mut()
-                .record_floating_resize_base(root, tile_size);
+            // Fullscreen is a temporary output-sized commit, not a new floating resize base.
+            // Keeping it would make unfullscreen restore the output size instead of the last
+            // ordinary floating size.
+            if tile.window().pending_sizing_mode().is_normal() {
+                let tile_size = tile.tile_size();
+                space
+                    .tree_mut()
+                    .record_floating_resize_base(root, tile_size);
+            }
         }
 
         true
@@ -2517,6 +2611,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
 
         let active = self.active_window_id(space);
+        let fullscreen_key = self.fullscreen_key(space);
         let fullscreen_id = self.fullscreen_window_id(space).cloned();
         let selection_is_container = self
             .active_container_idx(space)
@@ -2559,9 +2654,17 @@ impl<W: LayoutElement> FloatingSpace<W> {
             let is_active_workspace = space.side_is_active(true);
             let target = ctx.target;
 
-            for container in &self.containers {
-                let gap = space.branch_gap(container.root);
-                for info in tree.tab_bar_layouts_in_branch(container.root) {
+            let roots: Vec<NodeKey> = if let Some(scope) = fullscreen_key {
+                vec![scope]
+            } else {
+                self.containers
+                    .iter()
+                    .map(|container| container.root)
+                    .collect()
+            };
+            for root in roots {
+                let gap = space.branch_gap(root);
+                for info in tree.tab_bar_layouts_in_branch(root) {
                     let mut info = info.clone();
                     if gap > 0.0 && info.path.is_empty() {
                         info.rect.loc.x -= gap;
@@ -2643,6 +2746,9 @@ impl<W: LayoutElement> FloatingSpace<W> {
             }
         } else {
             for (tile, tile_pos) in self.tiles_with_render_positions(space) {
+                if fullscreen_key.is_some_and(|scope| !tree.is_descendant(tile.node_key(), scope)) {
+                    continue;
+                }
                 // Skip tiles entirely outside the viewport (culling)
                 let tile_rect = Rectangle::new(tile_pos, tile.tile_size());
                 if !tile_rect.overlaps(view_rect) {
@@ -3210,7 +3316,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 let mut root =
                     tree.layout_tree_for_branch(container.root, focused_key, &mut path, true)?;
                 root.floating_root_kind = Some(container.kind.ipc());
-                Some(root)
+                space.apply_workspace_fullscreen(root)
             })
             .collect()
     }

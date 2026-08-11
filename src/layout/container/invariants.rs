@@ -11,8 +11,8 @@ impl<W: LayoutElement> ContainerTree<W> {
             "root key must point to an existing node"
         );
         assert!(
-            matches!(self.get_node(root_key), Some(NodeData::Container(_))),
-            "workspace root must be a container"
+            matches!(self.get_node(root_key), Some(NodeData::Workspace(_))),
+            "workspace root must be a workspace node"
         );
         assert_eq!(
             self.parents.get(root_key).copied().flatten(),
@@ -22,7 +22,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         if let Some(fullscreen_key) = self.fullscreen_key {
             assert_ne!(
                 fullscreen_key, root_key,
-                "the synthetic workspace root cannot own fullscreen"
+                "the workspace node cannot own fullscreen"
             );
             assert!(
                 self.holds_node(fullscreen_key),
@@ -57,11 +57,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         let mut visited = HashSet::new();
         let mut leaves = HashSet::new();
         self.verify_node(root_key, None, &mut visited, &mut leaves);
-        // The floating groups are roots of their own, the way sway's `ws->floating` holds
-        // containers that hang off the workspace's list rather than off its tiling tree.
-        // Reachability is from any root, not from the tiled one.
+        // The floating groups have the workspace as semantic parent, but live in its separate
+        // floating list rather than its tiled child list.
         for floating_root in self.floating_roots().collect::<Vec<_>>() {
-            self.verify_node(floating_root, None, &mut visited, &mut leaves);
+            self.verify_node(floating_root, Some(root_key), &mut visited, &mut leaves);
         }
 
         assert_eq!(
@@ -139,33 +138,39 @@ impl<W: LayoutElement> ContainerTree<W> {
         );
 
         let sizing = match self.get_node(key).expect("visited node must exist") {
-            NodeData::Container(container) => &container.sizing,
-            NodeData::Leaf(tile) => tile.node_sizing(),
+            NodeData::Workspace(_) => None,
+            NodeData::Container(container) => Some(&container.sizing),
+            NodeData::Leaf(tile) => Some(tile.node_sizing()),
         };
-        for (axis, percent) in [
-            ("horizontal", sizing.fractions.width),
-            ("vertical", sizing.fractions.height),
-        ] {
-            assert!(
-                percent.is_finite() && percent >= 0.0,
-                "{axis} fraction must be finite and non-negative"
-            );
-        }
-        for (axis, total) in [
-            ("horizontal", sizing.child_total_width),
-            ("vertical", sizing.child_total_height),
-        ] {
-            assert!(
-                total.is_finite() && total >= 0.0,
-                "{axis} child total must be finite and non-negative"
-            );
+        if let Some(sizing) = sizing {
+            for (axis, percent) in [
+                ("horizontal", sizing.fractions.width),
+                ("vertical", sizing.fractions.height),
+            ] {
+                assert!(
+                    percent.is_finite() && percent >= 0.0,
+                    "{axis} fraction must be finite and non-negative"
+                );
+            }
+            for (axis, total) in [
+                ("horizontal", sizing.child_total_width),
+                ("vertical", sizing.child_total_height),
+            ] {
+                assert!(
+                    total.is_finite() && total >= 0.0,
+                    "{axis} child total must be finite and non-negative"
+                );
+            }
         }
 
         match self.get_node(key).expect("visited node must exist") {
             NodeData::Leaf(_) => {
                 leaves.insert(key);
             }
-            NodeData::Container(container) => {
+            NodeData::Workspace(_) | NodeData::Container(_) => {
+                let container = self
+                    .get_container(key)
+                    .expect("workspace and container nodes are layout parents");
                 let child_count = container.child_count();
                 assert!(
                     child_count > 0 || key == self.root,
@@ -233,7 +238,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 impl<W: LayoutElement> ContainerTree<W> {
     /// The floating side is in the same arena, and has to look like it.
     ///
-    /// Every floating root is a live node with no parent, listed once. The whole point of
+    /// Every floating root is a live node parented semantically by the workspace, listed once.
     /// holding both sides here is that a node keeps its key when it crosses, so a stale entry
     /// would be worse than the two-tree model it replaces: a key that still resolves, still
     /// answers, and belongs to a branch nobody can reach.
@@ -246,8 +251,8 @@ impl<W: LayoutElement> ContainerTree<W> {
             );
             assert_eq!(
                 self.parents.get(key).copied().flatten(),
-                None,
-                "a floating root must have no parent — that is what makes it a root"
+                Some(self.root),
+                "a floating root must have the workspace as semantic parent"
             );
             assert_ne!(
                 key, self.root,
@@ -259,7 +264,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             );
 
             let container = self
-                .get_container(key)
+                .get_real_container(key)
                 .expect("every floating root must be a container");
             let geometry = container
                 .floating_geometry

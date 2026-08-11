@@ -66,20 +66,26 @@ impl<W: LayoutElement> ContainerTree<W> {
     ) {
         let sibling_key = match self
             .selected_key()
-            .filter(|key| self.get_node(*key).is_some() && self.is_descendant(*key, branch_root))
+            .filter(|key| self.get_node(*key).is_some() && self.branch_root(*key) == branch_root)
         {
             Some(key) if key != branch_root => Some(key),
             Some(_) => self.active_child(branch_root),
             None => self
                 .effective_focused_key()
-                .filter(|key| self.is_descendant(*key, branch_root))
+                .filter(|key| self.branch_root(*key) == branch_root)
                 .or_else(|| {
                     // sway's `view_map` takes this exact two-step route when the active node
                     // is floating: choose the most recent tiling node first, then the most
                     // recent view inside that node. Going straight to a view under the whole
                     // workspace loses a recently active container as the insertion context.
-                    self.focus_inactive_node(branch_root)
-                        .and_then(|node| self.focus_inactive_view(node))
+                    self.focus_inactive_node_in_branch(branch_root)
+                        .and_then(|node| {
+                            if node == branch_root {
+                                self.focus_inactive_view_in_branch(branch_root)
+                            } else {
+                                self.focus_inactive_view(node)
+                            }
+                        })
                 }),
         };
 
@@ -94,50 +100,45 @@ impl<W: LayoutElement> ContainerTree<W> {
         let Some((parent_key, insert_idx)) = insert_target else {
             return;
         };
-        if let Some(NodeData::Container(parent_container)) = self.get_node_mut(parent_key) {
+        if let Some(parent_container) = self.get_container_mut(parent_key) {
             parent_container.insert_child(insert_idx, node_key);
             self.set_parent(node_key, Some(parent_key));
             self.settle_focus_after_insert(node_key, focus);
         }
     }
 
+    /// Insert a leaf as the next sibling of `window_id`, or at the end of the workspace when
+    /// that window is not on the tiled side.
+    ///
+    /// The slot is resolved before the tile is consumed. A tile that has been moved into the
+    /// arena and then not attached is a window the client believes is mapped and the tree
+    /// cannot show, so every route here has to end in an insertion.
     pub(in crate::layout) fn insert_leaf_after(
         &mut self,
         window_id: &W::Id,
         tile: Tile<W>,
         focus: bool,
-    ) -> bool {
-        let path = match self.find_window(window_id) {
-            Some(path) => path,
-            None => {
-                self.append_leaf(tile, focus);
-                return true;
-            }
+    ) {
+        let slot = self
+            .window_key(window_id)
+            .filter(|key| self.branch_root(*key) == self.root)
+            .and_then(|current_key| {
+                let parent_key = self.parent_of(current_key)?;
+                let current_idx = self.child_index(parent_key, current_key)?;
+                Some((parent_key, current_idx + 1))
+            });
+
+        let Some((parent_key, insert_idx)) = slot else {
+            self.append_leaf(tile, focus);
+            return;
         };
 
-        if path.is_empty() {
-            self.append_leaf(tile, focus);
-            return true;
-        }
-
-        let parent_path = &path[..path.len() - 1];
-        let current_idx = *path.last().unwrap();
-
-        let parent_key = self.get_node_key_at_path(parent_path);
-
-        if let Some(parent_key) = parent_key {
-            let insert_idx = current_idx + 1;
-            let tile_key = self.insert_node(NodeData::Leaf(tile));
-
-            if let Some(parent) = self.get_container_mut(parent_key) {
-                parent.insert_child(insert_idx, tile_key);
-                self.set_parent(tile_key, Some(parent_key));
-                self.settle_focus_after_insert(tile_key, focus);
-                return true;
-            }
-        }
-
-        false
+        let tile_key = self.insert_node(NodeData::Leaf(tile));
+        self.get_container_mut(parent_key)
+            .expect("child_index resolved this parent as a layout parent")
+            .insert_child(insert_idx, tile_key);
+        self.set_parent(tile_key, Some(parent_key));
+        self.settle_focus_after_insert(tile_key, focus);
     }
 
     pub(in crate::layout) fn insert_leaf_in_root_container(

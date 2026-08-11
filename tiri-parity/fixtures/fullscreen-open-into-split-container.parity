@@ -1,0 +1,29 @@
+# A window opened after splitting a fullscreen leaf joins the fullscreen container.
+# recorded from sway version 1.12-dev
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ fullscreen toggle
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+  window 2 0.000,0.000 0.000x0.000 hidden
+
+$ split h
+workspace splith focus=1
+  splith 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+  window 2 0.000,0.000 0.000x0.000 hidden
+
+$ open
+workspace splith focus=1
+  splith 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 0.500x1.000
+    window 3 0.500,0.000 0.500x1.000
+  window 2 0.000,0.000 0.000x0.000 hidden

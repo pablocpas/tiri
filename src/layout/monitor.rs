@@ -10,7 +10,7 @@ use smithay::output::Output;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 use tiri_config::{CornerRadius, LayoutPart};
 
-use super::container::Direction;
+use super::container::{Direction, NodeKey};
 use super::floating::{FloatingResizeResult, FloatingSpace};
 use super::insert_hint_element::{InsertHintElement, InsertHintRenderElement};
 use super::legacy_column::{Column, ColumnWidth};
@@ -150,11 +150,11 @@ pub(super) enum SplitIndicator {
 pub(super) enum InsertPosition {
     NewColumn(usize),
     Swap {
-        path: Vec<usize>,
+        target: NodeKey,
         direction: Direction,
     },
     Split {
-        path: Vec<usize>,
+        target: NodeKey,
         direction: Direction,
         indicator: SplitIndicator,
     },
@@ -1120,7 +1120,7 @@ impl<W: LayoutElement> Monitor<W> {
     pub fn add_tile_split(
         &mut self,
         workspace_idx: usize,
-        target_path: &[usize],
+        target: NodeKey,
         direction: Direction,
         tile: Tile<W>,
         activate: bool,
@@ -1128,7 +1128,7 @@ impl<W: LayoutElement> Monitor<W> {
     ) -> bool {
         let inserted = {
             let workspace = &mut self.workspaces[workspace_idx];
-            let inserted = workspace.add_tile_split(target_path, direction, tile, activate);
+            let inserted = workspace.add_tile_split(target, direction, tile, activate);
 
             // After adding a new window, workspace becomes this output's own.
             if inserted && !workspace.has_persistent_identity() {

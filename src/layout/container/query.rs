@@ -54,8 +54,12 @@ impl<W: LayoutElement> ContainerTree<W> {
     ) {
         match self.get_node(node_key) {
             Some(NodeData::Leaf(tile)) => windows.push(tile.window()),
-            Some(NodeData::Container(container)) => {
-                for &child_key in &container.children {
+            Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => {
+                for &child_key in &self
+                    .get_container(node_key)
+                    .expect("layout parent")
+                    .children
+                {
                     self.collect_windows_from_node(child_key, windows);
                 }
             }
@@ -79,8 +83,12 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(super) fn collect_window_ids_from_node(&self, node_key: NodeKey, ids: &mut Vec<W::Id>) {
         match self.get_node(node_key) {
             Some(NodeData::Leaf(tile)) => ids.push(tile.window().id().clone()),
-            Some(NodeData::Container(container)) => {
-                for &child_key in &container.children {
+            Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => {
+                for &child_key in &self
+                    .get_container(node_key)
+                    .expect("layout parent")
+                    .children
+                {
                     self.collect_window_ids_from_node(child_key, ids);
                 }
             }
@@ -103,8 +111,12 @@ impl<W: LayoutElement> ContainerTree<W> {
     ) {
         match self.get_node(node_key) {
             Some(NodeData::Leaf(tile)) => tiles.push(tile),
-            Some(NodeData::Container(container)) => {
-                for &child_key in &container.children {
+            Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => {
+                for &child_key in &self
+                    .get_container(node_key)
+                    .expect("layout parent")
+                    .children
+                {
                     self.collect_tiles_from_node(child_key, tiles);
                 }
             }
@@ -131,8 +143,12 @@ impl<W: LayoutElement> ContainerTree<W> {
     fn collect_leaf_keys(&self, node_key: NodeKey, out: &mut Vec<NodeKey>) {
         match self.get_node(node_key) {
             Some(NodeData::Leaf(_)) => out.push(node_key),
-            Some(NodeData::Container(container)) => {
-                for &child_key in &container.children {
+            Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => {
+                for &child_key in &self
+                    .get_container(node_key)
+                    .expect("layout parent")
+                    .children
+                {
                     self.collect_leaf_keys(child_key, out);
                 }
             }
@@ -154,7 +170,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn contains_layout(&self, layout: Layout) -> bool {
         self.nodes.iter().any(|(key, node)| match node {
             NodeData::Container(container) => key != self.root && container.layout() == layout,
-            NodeData::Leaf(_) => false,
+            NodeData::Workspace(_) | NodeData::Leaf(_) => false,
         })
     }
 
@@ -194,7 +210,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         out
     }
 
-    /// Layout, geometry and child count of the container at `key`.
+    /// Layout, geometry and child count of a workspace or container node.
     pub(in crate::layout) fn container_info(
         &self,
         key: NodeKey,
@@ -210,7 +226,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Whether the container at `key` is a container the user can address: it either holds
     /// several children or was created by an explicit split.
     pub(in crate::layout) fn container_is_meaningful_parent(&self, key: NodeKey) -> Option<bool> {
-        let container = self.get_container(key)?;
+        let container = self.get_real_container(key)?;
         Some(container.child_count() > 1 || container.is_user_container())
     }
 
@@ -310,7 +326,8 @@ impl<W: LayoutElement> ContainerTree<W> {
     ) {
         match self.get_node(node_key) {
             Some(NodeData::Leaf(_)) => results.push(path.clone()),
-            Some(NodeData::Container(container)) => {
+            Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => {
+                let container = self.get_container(node_key).expect("layout parent");
                 for (idx, &child_key) in container.children.iter().enumerate() {
                     path.push(idx);
                     self.collect_leaf_paths_from_node(child_key, path, results);

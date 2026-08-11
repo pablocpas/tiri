@@ -36,7 +36,7 @@ use smithay::wayland::tablet_manager::{TabletDescriptor, TabletSeatTrait};
 use tiri_config::{
     Action, Bind, Binds, Config, Key, ModKey, Modifiers, MruDirection, SwitchBinds, Trigger,
 };
-use tiri_ipc::LayoutSwitchTarget;
+use tiri_ipc::{LayoutCycleTarget, LayoutSwitchTarget};
 use touch_overview_grab::TouchOverviewGrab;
 
 use self::move_grab::MoveGrab;
@@ -48,7 +48,8 @@ use crate::cursor::CursorOverride;
 #[cfg(feature = "dbus")]
 use crate::dbus::freedesktop_a11y::KbMonBlock;
 use crate::layout::{
-    ActivateWindow, ContainerLayout, Direction, LayoutElement as _, ResizeAxis, ResizeRequest,
+    ActivateWindow, ContainerLayout, Direction, LayoutCycleEntry, LayoutElement as _, ResizeAxis,
+    ResizeRequest,
 };
 use crate::tiri::{CastTarget, PointerVisibility, State};
 use crate::ui::mru::{WindowMru, WindowMruUi};
@@ -2211,6 +2212,12 @@ impl State {
             Action::SplitVertical => {
                 self.niri.layout.split_vertical();
             }
+            Action::SplitToggle => {
+                self.niri.layout.split_toggle();
+            }
+            Action::SplitNone => {
+                self.niri.layout.split_none();
+            }
             Action::SetLayoutSplitH => {
                 self.niri.layout.set_layout_mode(ContainerLayout::SplitH);
             }
@@ -2219,6 +2226,37 @@ impl State {
             }
             Action::ToggleSplitLayout => {
                 self.niri.layout.toggle_split_layout();
+            }
+            Action::SetLayoutDefault => {
+                self.niri.layout.set_default_layout();
+            }
+            Action::ToggleLayout(layouts) => {
+                if layouts.is_empty() || layouts == [LayoutCycleTarget::Split] {
+                    self.niri.layout.toggle_split_layout();
+                } else {
+                    // A one-entry cycle is an ordinary cycle for sway: the entry is selected
+                    // whenever the current layout is not already it. Only the bare and
+                    // `split` spellings are the separate toggles handled above.
+                    let cycle: Vec<_> = layouts
+                        .into_iter()
+                        .map(|layout| match layout {
+                            LayoutCycleTarget::Split => LayoutCycleEntry::Split,
+                            LayoutCycleTarget::Splith => {
+                                LayoutCycleEntry::Layout(ContainerLayout::SplitH)
+                            }
+                            LayoutCycleTarget::Splitv => {
+                                LayoutCycleEntry::Layout(ContainerLayout::SplitV)
+                            }
+                            LayoutCycleTarget::Tabbed => {
+                                LayoutCycleEntry::Layout(ContainerLayout::Tabbed)
+                            }
+                            LayoutCycleTarget::Stacking => {
+                                LayoutCycleEntry::Layout(ContainerLayout::Stacked)
+                            }
+                        })
+                        .collect();
+                    self.niri.layout.toggle_layout_cycle(&cycle);
+                }
             }
             Action::ToggleLayoutAll => {
                 self.niri.layout.toggle_layout_all();

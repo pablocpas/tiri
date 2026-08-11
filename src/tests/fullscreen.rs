@@ -28,6 +28,57 @@ fn set_up() -> (Fixture, ClientId, WlSurface) {
 }
 
 #[test]
+fn fullscreen_binding_accepts_a_selected_floating_container() {
+    let (mut f, id, _surface1) = set_up();
+
+    let window2 = f.client(id).create_window();
+    let surface2 = window2.surface.clone();
+    window2.commit();
+    f.roundtrip(id);
+
+    let window2 = f.client(id).window(&surface2);
+    window2.attach_new_buffer();
+    window2.set_size(100, 100);
+    window2.ack_last_and_commit();
+    f.double_roundtrip(id);
+
+    {
+        let niri = f.niri();
+        niri.layout.focus_parent();
+        niri.layout.toggle_window_floating(None);
+        assert!(niri.layout.active_selection_is_container());
+    }
+
+    // Exercise the same entrypoint as `Mod+F { fullscreen-window; }`, including its target
+    // acceptance gate. Calling the layout method directly would miss the runtime regression.
+    f.niri_state()
+        .do_action(tiri_config::Action::FullscreenWindow, false);
+
+    let workspace = f
+        .niri()
+        .layout
+        .active_workspace()
+        .expect("active workspace");
+    assert_eq!(workspace.fullscreen_window_ids().len(), 1);
+    assert!(workspace.render_above_top_layer());
+    assert_eq!(
+        workspace
+            .tiles_with_render_positions()
+            .filter(|(_, _, visible)| *visible)
+            .count(),
+        2,
+        "both descendants of the fullscreen container must remain visible",
+    );
+    assert!(
+        f.niri()
+            .layout
+            .windows()
+            .all(|(_, window)| !window.pending_sizing_mode().is_fullscreen()),
+        "container fullscreen must not be downgraded to client fullscreen on one window",
+    );
+}
+
+#[test]
 fn windowed_fullscreen() {
     let (mut f, id, surface) = set_up();
 

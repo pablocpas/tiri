@@ -29,7 +29,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         &self,
         branch_root: NodeKey,
     ) -> Option<&ContainerData> {
-        self.get_container(branch_root)
+        self.get_real_container(branch_root)
     }
 
     /// The tab bars inside one branch, addressed from its own root.
@@ -66,7 +66,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// The window a branch would hand back as focused — sway's `seat_get_focus_inactive_view`
     /// restricted to it.
     pub(in crate::layout) fn focused_window_in_branch(&self, branch_root: NodeKey) -> Option<&W> {
-        let key = self.focus_inactive_view(branch_root)?;
+        let key = self.focus_inactive_view_in_branch(branch_root)?;
         Some(self.get_tile(key)?.window())
     }
 

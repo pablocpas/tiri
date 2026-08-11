@@ -29,15 +29,17 @@ fn normalize_percents(percents: &mut [f64]) {
 }
 
 impl<W: LayoutElement> ContainerTree<W> {
-    fn node_sizing(&self, key: NodeKey) -> Option<&NodeSizing> {
+    pub(super) fn node_sizing(&self, key: NodeKey) -> Option<&NodeSizing> {
         match self.get_node(key)? {
+            NodeData::Workspace(_) => None,
             NodeData::Container(container) => Some(&container.sizing),
             NodeData::Leaf(tile) => Some(tile.node_sizing()),
         }
     }
 
-    fn node_sizing_mut(&mut self, key: NodeKey) -> Option<&mut NodeSizing> {
+    pub(super) fn node_sizing_mut(&mut self, key: NodeKey) -> Option<&mut NodeSizing> {
         match self.get_node_mut(key)? {
+            NodeData::Workspace(_) => None,
             NodeData::Container(container) => Some(&mut container.sizing),
             NodeData::Leaf(tile) => Some(tile.node_sizing_mut()),
         }
@@ -79,6 +81,22 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     pub(super) fn node_child_total(&self, key: NodeKey, layout: Layout) -> Option<f64> {
         Some(self.node_sizing(key)?.child_total(layout))
+    }
+
+    /// The resize denominator stored on one direct child of `parent`.
+    ///
+    /// Unlike the parent's current box, this survives a fullscreen arrange that deliberately
+    /// skips the parent. sway's tiled resize reads this historical `child_total_*` before it
+    /// calls `arrange_container(parent)`, so the command can still act while that parent's
+    /// own pending box is zero.
+    pub(in crate::layout) fn child_resize_total(
+        &self,
+        parent: NodeKey,
+        child_idx: usize,
+        layout: Layout,
+    ) -> Option<f64> {
+        let child = self.get_container(parent)?.child_key(child_idx)?;
+        self.node_child_total(child, layout)
     }
 
     pub(super) fn set_node_child_total(
@@ -277,9 +295,11 @@ impl<W: LayoutElement> ContainerTree<W> {
             let Some(total) = self.node_child_total(*child, layout) else {
                 return false;
             };
-            if total <= 0.0 {
-                return false;
-            }
+            // sway validates only the command target's denominator above. A sibling skipped
+            // by fullscreen can still carry zero here; C division then produces a non-finite
+            // fraction and `arrange_container(parent)` exposes the parent's zero box. Let
+            // the same division happen. `resolved_percents` is the common safe boundary that
+            // sanitizes it before Tiri could reproduce sway's later wlroots assertion crash.
             snapped.push(*span / total);
         }
         let amount_fraction = delta.pixels / child_total;

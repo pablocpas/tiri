@@ -620,6 +620,12 @@ binds {
     Mod+S { set-layout-stacked; }
     Mod+W { set-layout-tabbed; }
     Mod+E { toggle-split-layout; }
+    // The remaining sway forms are available without rewriting them as another command:
+    // Mod+T { split-toggle; }       // `split toggle` / `splitt`
+    // Mod+N { split-none; }         // `split none`
+    // Mod+D { set-layout-default; } // `layout default`
+    // Mod+G { toggle-layout; }       // bare `layout toggle`
+    // Mod+Y { toggle-layout "splith" "tabbed" "stacking" "splitv"; }
     Mod+Shift+Space { toggle-window-floating; }
     Mod+Space       { switch-focus-between-floating-and-tiling; }
 

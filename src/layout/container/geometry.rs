@@ -95,7 +95,17 @@ impl<W: LayoutElement> ContainerTree<W> {
     fn layout_with_animations(&mut self, animate: bool, animate_resize: bool) {
         self.generation = self.generation.wrapping_add(1);
         let _ = animate;
-        self.layout_atomic(animate_resize);
+        self.layout_atomic(animate_resize, None);
+    }
+
+    /// sway's `arrange_container`: arrange one real container against the pending box it is
+    /// currently holding, without applying the workspace fullscreen branch first.
+    pub(in crate::layout) fn layout_container_subtree(&mut self, key: NodeKey) {
+        if self.get_container(key).is_none() {
+            return;
+        }
+        self.generation = self.generation.wrapping_add(1);
+        self.layout_atomic(true, Some(key));
     }
 
     pub(in crate::layout) fn layout_area(&self) -> Rectangle<f64, Logical> {
@@ -184,8 +194,8 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Point `workspace->fullscreen` at a live node, or at nothing.
     ///
     /// Setting it does not arrange: callers still have side-specific window state to request
-    /// before arranging. The synthetic workspace root is not a sway container and therefore
-    /// cannot own fullscreen; every other live node can.
+    /// before arranging. The workspace node is not a fullscreen target; every other live
+    /// node can be one.
     pub(in crate::layout) fn set_fullscreen_key(&mut self, key: Option<NodeKey>) -> bool {
         if key.is_some_and(|key| key == self.root || !self.holds_node(key)) {
             return false;
@@ -193,8 +203,33 @@ impl<W: LayoutElement> ContainerTree<W> {
         if self.fullscreen_key == key {
             return false;
         }
+        if let Some(old) = self.fullscreen_key {
+            self.set_node_fullscreen_restore_geometry(old, None);
+        }
+        if let Some(key) = key {
+            let restore = self.node_geometry(key).unwrap_or_default();
+            self.set_node_fullscreen_restore_geometry(key, Some(restore));
+        }
         self.fullscreen_key = key;
         true
+    }
+
+    /// The box this node held immediately before entering workspace fullscreen.
+    pub(in crate::layout) fn fullscreen_restore_geometry(
+        &self,
+        key: NodeKey,
+    ) -> Option<Rectangle<f64, Logical>> {
+        self.node_sizing(key)?.fullscreen_restore_geometry
+    }
+
+    fn set_node_fullscreen_restore_geometry(
+        &mut self,
+        key: NodeKey,
+        geometry: Option<Rectangle<f64, Logical>>,
+    ) {
+        if let Some(sizing) = self.node_sizing_mut(key) {
+            sizing.fullscreen_restore_geometry = geometry;
+        }
     }
 
     /// Transfer fullscreen exactly as sway's `container_replace` does.
@@ -213,6 +248,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         let animate = !self.options.animations.off;
         let working_area_size = self.working_area.size;
+        let replacement_restore = self.node_geometry(new_key).unwrap_or_default();
         if let Some(tile) = self.get_tile_mut(old_key) {
             if tile.pending_maximized {
                 tile.request_maximized(working_area_size, animate, None);
@@ -226,10 +262,12 @@ impl<W: LayoutElement> ContainerTree<W> {
             tile.request_fullscreen(animate, None);
         }
 
+        self.set_node_fullscreen_restore_geometry(old_key, None);
+        self.set_node_fullscreen_restore_geometry(new_key, Some(replacement_restore));
         self.fullscreen_key = Some(new_key);
     }
 
-    fn layout_atomic(&mut self, animate_resize: bool) {
+    fn layout_atomic(&mut self, animate_resize: bool, subtree: Option<NodeKey>) {
         self.apply_pending_layouts_if_ready();
         if !self.pending_layouts.is_empty() {
             // A branch still waiting is not re-arranged: this call only records that another
@@ -268,14 +306,31 @@ impl<W: LayoutElement> ContainerTree<W> {
             .iter()
             .map(|pending| pending.branch)
             .collect();
-        for branch in std::iter::once(root_key).chain(self.floating_roots().collect::<Vec<_>>()) {
-            if !waiting.contains(&branch) {
-                self.resolve_percents(branch);
+        let resolve_roots = subtree.map_or_else(
+            || {
+                std::iter::once(root_key)
+                    .chain(self.floating_roots().collect::<Vec<_>>())
+                    .collect::<Vec<_>>()
+            },
+            |key| vec![key],
+        );
+        for key in resolve_roots {
+            if !waiting.contains(&self.branch_root(key)) {
+                self.resolve_percents(key);
             }
         }
 
         let mut requested = false;
-        for (branch, data) in self.arrange_each_branch() {
+        let arrangements = match subtree {
+            Some(key) => self.node_geometry(key).map_or_else(Vec::new, |area| {
+                vec![(
+                    self.branch_root(key),
+                    self.collect_branch_layout_data(key, area),
+                )]
+            }),
+            None => self.arrange_each_branch(),
+        };
+        for (branch, data) in arrangements {
             if waiting.contains(&branch) {
                 // Still waiting on its own windows. Its neighbours are not.
                 self.pending_relayout = true;
@@ -339,10 +394,8 @@ impl<W: LayoutElement> ContainerTree<W> {
             .fullscreen_key
             .filter(|key| self.nodes.contains_key(*key))
         {
-            return vec![(
-                root_key,
-                self.collect_fullscreen_layout_data(fullscreen_key),
-            )];
+            let branch = self.branch_root(fullscreen_key);
+            return vec![(branch, self.collect_fullscreen_layout_data(fullscreen_key))];
         }
 
         let mut out = vec![(root_key, self.collect_layout_data(root_key))];
@@ -698,7 +751,17 @@ impl<W: LayoutElement> ContainerTree<W> {
         } else {
             self.layout_area()
         };
-        self.collect_branch_layout_data(fullscreen_key, area)
+        let mut data = self.collect_branch_layout_data(fullscreen_key, area);
+        if self.get_tile(fullscreen_key).is_some() {
+            if let Some(info) = data
+                .leaf_layouts
+                .iter_mut()
+                .find(|info| info.key == fullscreen_key)
+            {
+                info.workspace_fullscreen = true;
+            }
+        }
+        data
     }
 
     /// Arrange one branch inside one rectangle, holding everything outside it.
@@ -724,21 +787,11 @@ impl<W: LayoutElement> ContainerTree<W> {
             tabbed_context_flags: HashMap::new(),
         };
 
-        // Seeded with where the node actually is, so the addresses beside the geometry stay
-        // absolute — they are read as paths from the workspace, not from here.
-        //
-        // A floating root has no path from the workspace, because it hangs off the workspace's
-        // other list rather than off its tiling tree, so its branch is addressed from itself.
-        //
-        // That is not a decision taken here — it is the one sway's IPC already took, and the
-        // one tiri already follows. `get_tree` gives a workspace two arrays, `nodes` and
-        // `floating_nodes`, and a floating container is addressed as its index in the second
-        // plus a path within itself. `LayoutTree` has the same shape: `root` for the tiled
-        // side and `floating` for the groups, each node's path being "within its tree". The
-        // several roots were always there in what tiri publishes; only the arena was split.
-        let path = match self.find_node_path(branch_root) {
+        // Addresses are relative to the node's actual branch, not necessarily to the tiled
+        // workspace root. This matters when fullscreen names a descendant of a floating
+        // group: the subtree keeps its NodeKey authority but is arranged against the output.
+        let path = match self.branch_relative_path(branch_root) {
             Some(path) => path,
-            None if self.floating_roots().any(|root| root == branch_root) => Vec::new(),
             None => return self.collect_layout_data(self.root),
         };
         let mut walk = LayoutWalk {
@@ -777,6 +830,34 @@ impl<W: LayoutElement> ContainerTree<W> {
             })
             .collect();
         data.leaf_layouts.extend(held);
+
+        // A window can map outside the fullscreen subtree. sway keeps that new tiling node
+        // in the workspace with its untouched zero pending box until fullscreen ends. It has
+        // no previous cache entry for us to carry above, but it still belongs to this branch:
+        // omitting it makes `pending_layout_addresses_are_current` reject an otherwise valid
+        // arrange of the fullscreen subtree because the snapshot appears to have lost a leaf.
+        // Give every such new leaf the state sway exposes instead — present, hidden and with
+        // a zero box — so snapshots remain complete without arranging outside fullscreen.
+        let represented: HashSet<NodeKey> = data.leaf_layouts.iter().map(|info| info.key).collect();
+        let zero = Rectangle::new(Point::from((0.0, 0.0)), Size::from((0.0, 0.0)));
+        for key in self
+            .dfs_leaf_keys()
+            .into_iter()
+            .filter(|key| self.branch_root(*key) == branch && !represented.contains(key))
+        {
+            let Some(path) = self.branch_relative_path(key) else {
+                continue;
+            };
+            data.leaf_layouts.push(LeafLayoutInfo {
+                key,
+                branch,
+                path,
+                rect: zero,
+                node_rect: zero,
+                visible: false,
+                workspace_fullscreen: false,
+            });
+        }
         data
     }
 
@@ -831,18 +912,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                 (rects, 0.0)
             }
             Layout::Tabbed | Layout::Stacked => {
-                let bar_row_height = self.tab_bar_row_height();
-                let mut tab_offset = 0.0;
-                if bar_row_height > 0.0 {
-                    let bar_height = match layout {
-                        Layout::Tabbed => bar_row_height,
-                        Layout::Stacked => bar_row_height * child_count as f64,
-                        _ => 0.0,
-                    };
-                    tab_offset = (bar_height + self.tab_bar_spacing())
-                        .min(rect.size.h)
-                        .max(0.0);
-                }
+                let tab_offset = self.switcher_content_offset(layout, child_count, rect.size.h);
 
                 let mut content_rect = rect;
                 if tab_offset > 0.0 {
@@ -852,6 +922,29 @@ impl<W: LayoutElement> ContainerTree<W> {
                 (vec![content_rect; child_count], tab_offset)
             }
         }
+    }
+
+    /// Decoration inset a tabbed or stacked parent applies to each child's IPC/content box.
+    ///
+    /// The parent layout can change while workspace fullscreen prevents its children from
+    /// being arranged. Sway then keeps each child's pending node box and derives its exposed
+    /// rectangle using the new parent layout, so layout and IPC must share this calculation.
+    pub(super) fn switcher_content_offset(
+        &self,
+        layout: Layout,
+        child_count: usize,
+        height: f64,
+    ) -> f64 {
+        let row_height = self.tab_bar_row_height();
+        if row_height <= 0.0 {
+            return 0.0;
+        }
+        let bar_height = match layout {
+            Layout::Tabbed => row_height,
+            Layout::Stacked => row_height * child_count as f64,
+            Layout::SplitH | Layout::SplitV => return 0.0,
+        };
+        (bar_height + self.tab_bar_spacing()).min(height).max(0.0)
     }
 
     fn collect_layout_node(
@@ -883,10 +976,12 @@ impl<W: LayoutElement> ContainerTree<W> {
                     rect,
                     node_rect,
                     visible,
+                    workspace_fullscreen: false,
                 });
                 return;
             }
-            Some(NodeData::Container(container)) => {
+            Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => {
+                let container = self.get_container(node_key).expect("layout parent");
                 walk.data.container_geometries.insert(node_key, rect);
                 (
                     container.layout(),
@@ -1042,7 +1137,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// rendering) gets the same answer whichever branch was arranged last.
     pub(super) fn apply_layout_data(&mut self, branch: NodeKey, data: LayoutData) {
         for (key, rect) in data.container_geometries {
-            if let Some(NodeData::Container(container)) = self.get_node_mut(key) {
+            if let Some(container) = self.get_container_mut(key) {
                 container.set_geometry(rect);
             }
         }
@@ -1106,10 +1201,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     fn get_container_child_at(&self, container_key: NodeKey, idx: usize) -> Option<NodeKey> {
-        match self.get_node(container_key) {
-            Some(NodeData::Container(container)) => container.child_key(idx),
-            _ => None,
-        }
+        self.get_container(container_key)?.child_key(idx)
     }
 
     pub(in crate::layout) fn get_normalized_child_percents(
@@ -1117,7 +1209,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         container_key: NodeKey,
         child_count: usize,
     ) -> Vec<f64> {
-        let Some(NodeData::Container(_)) = self.get_node(container_key) else {
+        let Some(_) = self.get_container(container_key) else {
             return vec![1.0 / child_count.max(1) as f64; child_count];
         };
         super::resolved_percents(&self.child_percents(container_key), child_count)

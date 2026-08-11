@@ -12,7 +12,7 @@ use std::fmt;
 use tiri_ipc::SizeChange;
 
 use crate::layout::tests::{Op, TestWindowParams};
-use crate::layout::Direction;
+use crate::layout::{ContainerLayout, Direction, LayoutCycleEntry};
 
 /// One line of a script: the text as written, and what tiri does with it.
 pub(crate) struct Step {
@@ -159,11 +159,15 @@ fn op_for(command: &str, next_id: &mut usize, client: (i32, i32)) -> Result<Op, 
             }
         }
 
+        ["splith"] => Op::SplitHorizontal,
+        ["splitv"] => Op::SplitVertical,
+        ["splitt"] => Op::SplitToggle,
         ["split", arg] => match *arg {
             "h" | "horizontal" => Op::SplitHorizontal,
             "v" | "vertical" => Op::SplitVertical,
             // Not `layout toggle split`: sway's `split toggle` is a `split`, and wraps.
-            "toggle" => Op::SplitToggle,
+            "t" | "toggle" => Op::SplitToggle,
+            "n" | "none" => Op::SplitNone,
             _ => return Err(Reason::BadArgument),
         },
 
@@ -172,10 +176,27 @@ fn op_for(command: &str, next_id: &mut usize, client: (i32, i32)) -> Result<Op, 
             "splitv" => Op::SetLayoutSplitV,
             "tabbed" => Op::SetLayoutTabbed,
             "stacking" => Op::SetLayoutStacked,
+            "default" => Op::SetLayoutDefault,
+            "toggle" => Op::ToggleSplitLayout,
             _ => return Err(Reason::BadArgument),
         },
         ["layout", "toggle", "split"] => Op::ToggleSplitLayout,
         ["layout", "toggle", "all"] => Op::ToggleLayoutAll,
+        ["layout", "toggle", entries @ ..] if !entries.is_empty() => {
+            let cycle = entries
+                .iter()
+                .filter_map(|entry| match *entry {
+                    "split" => Some(LayoutCycleEntry::Split),
+                    "splith" => Some(LayoutCycleEntry::Layout(ContainerLayout::SplitH)),
+                    "splitv" => Some(LayoutCycleEntry::Layout(ContainerLayout::SplitV)),
+                    "tabbed" => Some(LayoutCycleEntry::Layout(ContainerLayout::Tabbed)),
+                    "stacking" => Some(LayoutCycleEntry::Layout(ContainerLayout::Stacked)),
+                    // sway silently ignores invalid entries in an explicit cycle.
+                    _ => None,
+                })
+                .collect();
+            Op::ToggleLayoutCycle { cycle }
+        }
 
         // sway reads the direction off the parent's layout and then does an ordinary
         // directional focus; `sibling` only stops it descending into what it lands on.

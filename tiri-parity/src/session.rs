@@ -67,6 +67,13 @@ fn is_command_syntax_error(detail: &str) -> bool {
     lower.contains("unknown") || lower.contains("invalid") || lower.contains("expected")
 }
 
+/// Commands whose valid spelling sway reports with its syntax error class when the current
+/// node has no value to apply.
+fn is_state_dependent_command_rejection(command: &str, detail: &str) -> bool {
+    command.eq_ignore_ascii_case("layout default")
+        && detail.contains("Expected 'layout default|tabbed|stacking|splitv|splith'")
+}
+
 pub fn version() -> Result<String, String> {
     let out = Command::new(sway_binary())
         .arg("--version")
@@ -309,7 +316,12 @@ impl Sway {
     fn command(&self, command: &str) -> Result<(), String> {
         match self.msg(&[command]) {
             Ok(_) => Ok(()),
-            Err(err) if is_command_syntax_error(&err) => Err(err),
+            Err(err)
+                if is_command_syntax_error(&err)
+                    && !is_state_dependent_command_rejection(command, &err) =>
+            {
+                Err(err)
+            }
             Err(_) => Ok(()),
         }
     }
@@ -776,5 +788,24 @@ fn collect_leaves(node: &serde_json::Value, out: &mut HashSet<i64>) {
     }
     for child in children {
         collect_leaves(child, out);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_state_dependent_command_rejection;
+
+    #[test]
+    fn only_layout_default_gets_the_state_dependent_syntax_exception() {
+        let reply = "Expected 'layout default|tabbed|stacking|splitv|splith' or 'layout toggle'";
+        assert!(is_state_dependent_command_rejection(
+            "layout default",
+            reply
+        ));
+        assert!(!is_state_dependent_command_rejection("layout typo", reply));
+        assert!(!is_state_dependent_command_rejection(
+            "layout default",
+            "Unknown command"
+        ));
     }
 }

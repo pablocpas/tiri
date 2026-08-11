@@ -1,0 +1,23 @@
+# Sway's standalone aliases and the short toggle spelling are real split commands.
+# recorded from sway version 1.12-dev
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ splith
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ splitv
+workspace splitv focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ splitt
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ split t
+workspace splitv focus=1
+  window 1 0.000,0.000 1.000x1.000

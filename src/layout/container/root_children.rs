@@ -1,11 +1,11 @@
 //! Root-child ("column") compatibility layer over the tree root.
 
-use super::ContainerData;
 use super::ContainerTree;
 use super::DetachedNode;
 use super::LayoutElement;
 use super::NodeData;
 use super::NodeKey;
+use super::WorkspaceData;
 use crate::layout::tile::Tile;
 
 impl<W: LayoutElement> ContainerTree<W> {
@@ -15,14 +15,14 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         match self.get_node(root_key) {
             Some(NodeData::Leaf(_)) => 1,
+            Some(NodeData::Workspace(workspace)) => workspace.children.len(),
             Some(NodeData::Container(container)) => container.children.len(),
             None => 0,
         }
     }
 
-    pub(in crate::layout) fn root_container(&self) -> Option<&ContainerData> {
-        let root_key = self.root;
-        self.get_container(root_key)
+    pub(in crate::layout) fn root_container(&self) -> Option<&WorkspaceData> {
+        self.get_workspace()
     }
 
     /// Index of currently focused root child, if any.
@@ -43,7 +43,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         match self.get_node(root_key) {
             Some(NodeData::Leaf(_)) => Some(0),
-            Some(NodeData::Container(_)) => {
+            Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => {
                 // Nothing focused yet: fall back to the container's own focus history.
                 let Some(focused_key) = self.effective_focused_key() else {
                     return self.active_child_index(root_key);
@@ -71,6 +71,18 @@ impl<W: LayoutElement> ContainerTree<W> {
             Some(NodeData::Leaf(_)) => {
                 if idx == 0 {
                     self.focus_node_key(root_key);
+                    true
+                } else {
+                    false
+                }
+            }
+            Some(NodeData::Workspace(workspace)) => {
+                if idx >= workspace.children.len() {
+                    return false;
+                }
+                let child_key = workspace.child_key(idx);
+                if let Some(child_key) = child_key {
+                    self.focus_node_key(child_key);
                     true
                 } else {
                     false

@@ -18,7 +18,7 @@
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use super::{
-    ContainerData, ContainerTree, FloatingGeometry, InsertParentInfo, Layout, LayoutElement,
+    ContainerData, ContainerTree, FloatingGeometry, InactiveTilingReference, Layout, LayoutElement,
     NodeData, NodeKey,
 };
 use crate::layout::tile::Tile;
@@ -46,7 +46,10 @@ pub(in crate::layout) fn floating_position_from_logical(
 }
 
 impl FloatingGeometry {
-    fn new(working_area: Rectangle<f64, Logical>, area: Rectangle<f64, Logical>) -> Self {
+    pub(super) fn new(
+        working_area: Rectangle<f64, Logical>,
+        area: Rectangle<f64, Logical>,
+    ) -> Self {
         let mut geometry = Self {
             pos: floating_position_from_logical(working_area, area.loc),
             working_area,
@@ -114,7 +117,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// The box a floating group is laid out in.
     pub(in crate::layout) fn floating_area(&self, key: NodeKey) -> Option<Rectangle<f64, Logical>> {
-        self.get_container(key)?
+        self.get_real_container(key)?
             .floating_geometry
             .map(|geometry| geometry.target)
     }
@@ -124,14 +127,18 @@ impl<W: LayoutElement> ContainerTree<W> {
         &self,
         key: NodeKey,
     ) -> Option<Rectangle<f64, Logical>> {
-        Some(self.get_container(key)?.floating_geometry?.effective_area())
+        Some(
+            self.get_real_container(key)?
+                .floating_geometry?
+                .effective_area(),
+        )
     }
 
     pub(in crate::layout) fn floating_position(
         &self,
         key: NodeKey,
     ) -> Option<Point<f64, SizeFrac>> {
-        Some(self.get_container(key)?.floating_geometry?.pos)
+        Some(self.get_real_container(key)?.floating_geometry?.pos)
     }
 
     /// Move a floating root and retarget its layout from the same authoritative state.
@@ -141,7 +148,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         logical_pos: Point<f64, Logical>,
     ) -> Point<f64, Logical> {
         let geometry = self
-            .get_container_mut(key)
+            .get_real_container_mut(key)
             .and_then(|container| container.floating_geometry.as_mut())
             .expect("floating geometry can only be written for a floating root");
         geometry.pos = floating_position_from_logical(geometry.working_area, logical_pos);
@@ -155,7 +162,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         size: Size<f64, Logical>,
     ) -> Rectangle<f64, Logical> {
         let geometry = self
-            .get_container_mut(key)
+            .get_real_container_mut(key)
             .and_then(|container| container.floating_geometry.as_mut())
             .expect("floating geometry can only be written for a floating root");
         geometry.resize_base_size = size;
@@ -169,7 +176,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         working_area: Rectangle<f64, Logical>,
     ) -> Rectangle<f64, Logical> {
         let geometry = self
-            .get_container_mut(key)
+            .get_real_container_mut(key)
             .and_then(|container| container.floating_geometry.as_mut())
             .expect("a floating stack entry must name a floating root");
         geometry.working_area = working_area;
@@ -185,7 +192,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         key: NodeKey,
         size: Size<f64, Logical>,
     ) {
-        self.get_container_mut(key)
+        self.get_real_container_mut(key)
             .and_then(|container| container.floating_geometry.as_mut())
             .expect("a resize base can only be recorded for a floating root")
             .resize_base_size = size;
@@ -198,14 +205,28 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// is one of the floating ones.
     pub(in crate::layout) fn is_floating(&self, key: NodeKey) -> bool {
         let branch = self.branch_root(key);
-        self.get_container(branch)
+        self.get_real_container(branch)
             .is_some_and(|container| container.floating_geometry.is_some())
     }
 
-    /// The topmost ancestor of a node — the workspace root, or a floating root.
+    /// The layout branch that owns a node: the workspace's tiled side or one floating group.
+    ///
+    /// Floating roots have the workspace as their semantic parent, but they are not children in
+    /// its tiled list. Stop at the direct child carrying floating geometry instead of walking
+    /// through that semantic edge.
     pub(in crate::layout) fn branch_root(&self, key: NodeKey) -> NodeKey {
         let mut current = key;
         while let Some(parent) = self.parent_of(current) {
+            if parent == self.root {
+                return if self
+                    .get_real_container(current)
+                    .is_some_and(|container| container.floating_geometry.is_some())
+                {
+                    current
+                } else {
+                    self.root
+                };
+            }
             current = parent;
         }
         current
@@ -220,13 +241,14 @@ impl<W: LayoutElement> ContainerTree<W> {
         );
         let working_area = self.working_area;
         let container = self
-            .get_container_mut(key)
+            .get_real_container_mut(key)
             .expect("a floating root is always a container");
         assert!(
             container.floating_geometry.is_none(),
             "a floating root can only be registered once"
         );
         container.floating_geometry = Some(FloatingGeometry::new(working_area, area));
+        self.set_parent(key, Some(self.root));
     }
 
     /// Move a subtree from the tiled side to the floating side, keeping its identity.
@@ -254,7 +276,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.discard_layout_superseded_by_transfer();
         let old_parent = self.parent_of(key);
         self.detach_child(key);
-        self.set_parent(key, None);
         self.register_floating_root(key, area);
         if let Some(old_parent) = old_parent {
             self.reap_empty(old_parent);
@@ -271,17 +292,17 @@ impl<W: LayoutElement> ContainerTree<W> {
         index: usize,
     ) -> bool {
         if key == self.root
-            || self.parent_of(key).is_some()
+            || self.parent_of(key) != Some(self.root)
             || !self
-                .get_container(key)
+                .get_real_container(key)
                 .is_some_and(|container| container.floating_geometry.is_some())
         {
             return false;
         }
-        if !matches!(self.get_node(parent), Some(NodeData::Container(_))) {
+        if self.get_container(parent).is_none() {
             return false;
         }
-        self.get_container_mut(key)
+        self.get_real_container_mut(key)
             .expect("a floating root is always a container")
             .floating_geometry = None;
         if let Some(container) = self.get_container_mut(parent) {
@@ -300,7 +321,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Drop a floating root that is going away.
     pub(in crate::layout) fn forget_floating_root(&mut self, key: NodeKey) {
-        if let Some(container) = self.get_container_mut(key) {
+        if let Some(container) = self.get_real_container_mut(key) {
             container.floating_geometry = None;
         }
         if self.branch_is_empty(key) {
@@ -322,10 +343,15 @@ impl<W: LayoutElement> ContainerTree<W> {
         area: Rectangle<f64, Logical>,
     ) -> Option<NodeKey> {
         let group = match self.get_node(key)? {
+            NodeData::Workspace(_) => return None,
             NodeData::Container(_) => key,
             NodeData::Leaf(_) => {
                 let parent = self.parent_of(key)?;
-                self.wrap_child_in_new_container(parent, key, ContainerData::new(Layout::SplitH))?
+                self.wrap_child_in_implicit_floating_group(
+                    parent,
+                    key,
+                    ContainerData::new(Layout::SplitH),
+                )?
             }
         };
         self.float_subtree(group, area).then_some(group)
@@ -346,7 +372,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         // on the workspace, focused, with nothing on screen.
         self.discard_layout_superseded_by_transfer();
         let group = self.insert_node(NodeData::Container(ContainerData::new(Layout::SplitH)));
-        self.set_parent(group, None);
         self.register_floating_root(group, area);
         let leaf = self.insert_node(NodeData::Leaf(tile));
         if let Some(container) = self.get_container_mut(group) {
@@ -359,7 +384,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// The child a group container holds when the container is only tiri's way of addressing
     /// one window, rather than an arrangement the user asked for.
     fn implicit_group_child(&self, group: NodeKey) -> Option<NodeKey> {
-        let container = self.get_container(group)?;
+        let container = self.get_real_container(group)?;
         if container.child_count() != 1
             || container.is_user_container()
             || !matches!(container.layout(), Layout::SplitH | Layout::SplitV)
@@ -390,13 +415,9 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.forget_floating_root(group);
         self.remove_node_from_store(group);
 
-        if !matches!(self.get_node(parent), Some(NodeData::Container(_))) {
-            return None;
-        }
-        if let Some(container) = self.get_container_mut(parent) {
-            let index = index.min(container.child_count());
-            container.insert_child(index, child);
-        }
+        let container = self.get_container_mut(parent)?;
+        let index = index.min(container.child_count());
+        container.insert_child(index, child);
         self.set_parent(child, Some(parent));
         self.unset_node_fractions(child);
         self.prune_focus_order();
@@ -413,7 +434,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn unfloat_node(
         &mut self,
         key: NodeKey,
-        info: Option<&InsertParentInfo>,
+        reference: Option<&InactiveTilingReference>,
         focus: bool,
     ) -> Option<bool> {
         if !self.is_floating(key) {
@@ -421,8 +442,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
         let group = self.branch_root(key);
         if key == group {
-            let changed = match info {
-                Some(info) => self.unfloat_with_parent_info(group, info, focus),
+            let changed = match reference {
+                Some(reference) => self.unfloat_with_tiling_reference(group, reference, focus),
                 None => self.unfloat_into_workspace(group, focus),
             };
             return changed.then_some(true);
@@ -440,12 +461,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         let workspace = self.root;
-        let (parent, index) = info
-            .and_then(|info| {
-                let parent =
-                    self.ensure_container_at_path(workspace, &info.parent_path, info.layout)?;
-                Some((parent, info.insert_idx))
-            })
+        let (parent, index) = reference
+            .and_then(|reference| self.tiling_insertion_point(reference))
             .unwrap_or_else(|| (workspace, self.branch_children_len(workspace)));
         self.insert_key_into_branch(parent, index, key, focus);
         self.unset_node_fractions(key);
@@ -466,7 +483,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let layout = self.root_container_layout();
         let prev_split_layout = self
             .get_container(self.root)
-            .and_then(ContainerData::prev_split_layout);
+            .and_then(|workspace| workspace.prev_split_layout());
         let wrapper = self.wrap_workspace_children(layout, layout)?;
         if let Some(container) = self.get_container_mut(wrapper) {
             container.prev_split_layout = prev_split_layout;
@@ -474,18 +491,15 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.float_subtree(wrapper, area).then_some(wrapper)
     }
 
-    /// Put a floating group back where `info` says it came from.
-    pub(in crate::layout) fn unfloat_with_parent_info(
+    /// Put a floating group back beside or inside the exact tiling node selected by the seat.
+    pub(in crate::layout) fn unfloat_with_tiling_reference(
         &mut self,
         group: NodeKey,
-        info: &InsertParentInfo,
+        reference: &InactiveTilingReference,
         focus: bool,
     ) -> bool {
-        let root = self.root;
-        match self.ensure_container_at_path(root, &info.parent_path, info.layout) {
-            Some(container_key) => {
-                self.place_unfloated(group, container_key, info.insert_idx, focus)
-            }
+        match self.tiling_insertion_point(reference) {
+            Some((parent, index)) => self.place_unfloated(group, parent, index, focus),
             None => self.unfloat_into_workspace(group, focus),
         }
     }
@@ -525,10 +539,24 @@ impl<W: LayoutElement> ContainerTree<W> {
         index: usize,
         focus: bool,
     ) -> bool {
+        // Moving a subtree between sway's workspace lists does not focus a different node.
+        // In particular, a container selected with `focus parent` stays selected because the
+        // very same node comes back to tiling. Remember that semantic state before
+        // `unfloat_group` potentially dissolves Tiri's implicit one-window wrapper.
+        let selected_container_moves_with_group = self
+            .selected_container_key()
+            .is_some_and(|selected| self.is_descendant(selected, group));
         let Some(landed) = self.unfloat_group(group, parent, index) else {
             return false;
         };
-        self.settle_focus_after_insert(landed, focus);
+        if !focus || !selected_container_moves_with_group {
+            self.settle_focus_after_insert(landed, focus);
+        } else {
+            // The selected key and keyboard-focus leaf both survived the transfer. Calling
+            // `focus_node_key(landed)` here would descend to the leaf and clear the container
+            // selection, changing the target of the next command.
+            self.refresh_focus_visibility();
+        }
         true
     }
 }
