@@ -918,6 +918,26 @@ fn fullscreen_container_is_the_real_render_and_input_scope() {
 }
 
 #[test]
+fn split_after_floating_fullscreen_tree_changes_keeps_layout_cache_addressed() {
+    check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::ToggleWindowFloating { id: None },
+        Op::SplitToggle,
+        Op::SplitToggle,
+        Op::ToggleSplitLayout,
+        Op::ToggleFullscreenFocused,
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::FocusWindowUp,
+        Op::SplitVertical,
+    ]);
+}
+
+#[test]
 fn fullscreen_focus_parent_is_noop_like_sway() {
     let mut layout = check_ops([
         Op::AddOutput(1),

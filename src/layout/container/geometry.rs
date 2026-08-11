@@ -536,6 +536,37 @@ impl<W: LayoutElement> ContainerTree<W> {
         true
     }
 
+    /// Whether a deferred arrange still addresses the same live branch shape.
+    ///
+    /// Geometry may intentionally stay old until the transaction completes; node paths may
+    /// not. A leaf that moved branches, gained a wrapper, or disappeared makes the snapshot
+    /// unusable as committed cache data. The pending relayout will calculate a fresh one.
+    fn pending_layout_addresses_are_current(&self, pending: &PendingLayout) -> bool {
+        let described_branches: HashSet<NodeKey> = pending
+            .data
+            .leaf_layouts
+            .iter()
+            .map(|info| info.branch)
+            .collect();
+        let snapshot: HashSet<(NodeKey, NodeKey)> = pending
+            .data
+            .leaf_layouts
+            .iter()
+            .map(|info| (info.key, info.branch))
+            .collect();
+        let current: HashSet<(NodeKey, NodeKey)> = self
+            .dfs_leaf_keys()
+            .into_iter()
+            .map(|key| (key, self.branch_root(key)))
+            .filter(|(_, branch)| described_branches.contains(branch))
+            .collect();
+
+        snapshot == current
+            && pending.data.leaf_layouts.iter().all(|info| {
+                self.branch_relative_path(info.key).as_deref() == Some(info.path.as_slice())
+            })
+    }
+
     /// Commit every branch whose windows have answered. A branch still waiting keeps its
     /// place in the queue and its neighbours do not wait with it.
     pub(in crate::layout) fn apply_pending_layouts_if_ready(&mut self) -> bool {
@@ -555,6 +586,10 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         }
         for pending in ready {
+            if !self.pending_layout_addresses_are_current(&pending) {
+                self.pending_relayout = true;
+                continue;
+            }
             self.apply_layout_data(pending.branch, pending.data);
         }
         self.debug_layout_state("layout_atomic_apply_pending");

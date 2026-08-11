@@ -332,11 +332,15 @@ impl<W: LayoutElement> ContainerTree<W> {
     ) -> bool {
         self.clear_focus_history();
 
-        match target {
+        let changed = match target {
             TreeCommandTarget::Workspace => self.split_workspace_container(layout),
             TreeCommandTarget::Container(key) => self.split_selected_container(key, layout),
             TreeCommandTarget::Leaf(key) => self.split_leaf(key, layout),
+        };
+        if changed {
+            self.readdress_leaf_layouts();
         }
+        changed
     }
 
     /// Split a branch's root container, keeping the command context on it.
