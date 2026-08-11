@@ -876,16 +876,18 @@ impl State {
                 }
             }
             Action::FullscreenWindow => {
-                // Match sway command-context semantics: fullscreen requires a container
-                // (window) target. Workspace/container command targets currently no-op
-                // because tiri models fullscreen at window granularity.
-                if !self.niri.layout.active_command_has_window_target() {
+                // sway accepts either a leaf or a tiled container, but not the synthetic
+                // workspace target. The focused window id below identifies the workspace;
+                // the layout resolves the selected tiling container inside it.
+                if !self.niri.layout.active_command_can_fullscreen() {
                     return;
                 }
 
                 let focus = self.niri.layout.focus().map(|m| m.window.clone());
                 if let Some(window) = focus {
-                    self.niri.layout.toggle_fullscreen(&window);
+                    self.niri
+                        .layout
+                        .toggle_fullscreen_for_active_command(&window);
                     // FIXME: granular
                     self.niri.queue_redraw_all();
                 }

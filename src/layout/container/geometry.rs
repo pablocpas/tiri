@@ -652,15 +652,18 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// entries they already had. They are not stale — they are the answer, until the
     /// fullscreen goes away and the tree is arranged again.
     ///
-    /// sway hands the node `output->lx/ly/width/height` — the whole output, bar and gaps
-    /// included — and the layout area is used here instead. The difference is not observable:
-    /// the one place the fullscreen rectangle is published is the IPC tree, and that already
-    /// answers with the output's box regardless of what the node holds. What the node's box
-    /// still drives is the size asked of the window, and a fullscreen tile is sized from the
-    /// view rather than from its slot, so feeding the output box in twice only makes the
-    /// unfullscreen look like a resize it is not.
+    /// sway hands a fullscreen container `output->lx/ly/width/height`: the complete output,
+    /// including the area normally reserved for layers and outer gaps. A fullscreen leaf is
+    /// still sized through its client fullscreen request, so it keeps its ordinary slot here
+    /// until that configure commits; a container has no such protocol state and must receive
+    /// the output box directly.
     fn collect_fullscreen_layout_data(&self, fullscreen_key: NodeKey) -> LayoutData {
-        self.collect_branch_layout_data(fullscreen_key, self.layout_area())
+        let area = if self.get_container(fullscreen_key).is_some() {
+            Rectangle::from_size(self.view_size)
+        } else {
+            self.layout_area()
+        };
+        self.collect_branch_layout_data(fullscreen_key, area)
     }
 
     /// Arrange one branch inside one rectangle, holding everything outside it.

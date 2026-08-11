@@ -1,3 +1,4 @@
+use approx::assert_abs_diff_eq;
 use insta::assert_snapshot;
 
 use super::*;
@@ -840,6 +841,79 @@ fn fullscreen_command_keeps_a_selected_container_as_the_authority() {
             .windows()
             .all(|(_, window)| !window.pending_sizing_mode().is_fullscreen()),
         "container fullscreen must leave every descendant as a tiled Wayland client"
+    );
+}
+
+#[test]
+fn fullscreen_container_is_the_real_render_and_input_scope() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::SplitVertical,
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::FocusParent,
+    ]);
+    assert!(
+        layout.active_command_can_fullscreen(),
+        "the input command must accept a selected container"
+    );
+    check_ops_on_layout(&mut layout, [Op::ToggleFullscreenFocused]);
+
+    for _ in 0..3 {
+        check_ops_on_layout(
+            &mut layout,
+            [Op::Communicate(1), Op::Communicate(2), Op::Communicate(3)],
+        );
+        layout.update_render_elements(None);
+    }
+    check_ops_on_layout(&mut layout, [Op::CompleteAnimations]);
+
+    let (rect2, rect3) = {
+        let workspace = layout.active_workspace().expect("active workspace");
+        assert!(
+            workspace.render_above_top_layer(),
+            "container fullscreen must cover exclusive layers like leaf fullscreen"
+        );
+
+        let mut visible = HashMap::new();
+        let mut rects = HashMap::new();
+        for (tile, pos, is_visible) in workspace.tiles_with_render_positions() {
+            visible.insert(*tile.window().id(), is_visible);
+            rects.insert(*tile.window().id(), Rectangle::new(pos, tile.tile_size()));
+        }
+
+        assert_eq!(visible.get(&1), Some(&false));
+        assert_eq!(visible.get(&2), Some(&true));
+        assert_eq!(visible.get(&3), Some(&true));
+        (rects[&2], rects[&3])
+    };
+
+    assert_abs_diff_eq!(rect2.loc.x, 0.0, epsilon = 1e-5);
+    assert_abs_diff_eq!(rect3.loc.x, 0.0, epsilon = 1e-5);
+    assert_abs_diff_eq!(rect2.size.w, rect3.size.w, epsilon = 1e-5);
+
+    let output = layout.outputs().next().expect("output").clone();
+    let probe = Point::from((
+        rect2.loc.x + rect2.size.w / 2.0,
+        rect2.loc.y + rect2.size.h / 2.0,
+    ));
+    let (hit, _) = layout
+        .window_under(&output, probe)
+        .expect("fullscreen descendant under pointer");
+    assert_eq!(*hit.id(), 2);
+
+    assert!(
+        layout
+            .windows()
+            .all(|(_, window)| !window.pending_sizing_mode().is_fullscreen()),
+        "container fullscreen must not request client fullscreen from a descendant"
     );
 }
 

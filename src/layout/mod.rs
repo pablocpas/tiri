@@ -3360,9 +3360,9 @@ impl<W: LayoutElement> Layout<W> {
             .is_some_and(Workspace::active_selection_is_container)
     }
 
-    pub fn active_command_has_window_target(&self) -> bool {
+    pub fn active_command_can_fullscreen(&self) -> bool {
         self.active_workspace()
-            .is_some_and(Workspace::active_command_has_window_target)
+            .is_some_and(Workspace::active_command_can_fullscreen)
     }
 
     pub fn focus_with_output(&self) -> Option<(&W, &Output)> {
@@ -5202,6 +5202,19 @@ impl<W: LayoutElement> Layout<W> {
         for ws in self.workspaces_mut() {
             if ws.has_window(id) {
                 ws.toggle_fullscreen(id);
+                return;
+            }
+        }
+    }
+
+    pub fn toggle_fullscreen_for_active_command(&mut self, id: &W::Id) {
+        if self.interactive_move_targets_window(id) {
+            return;
+        }
+
+        for ws in self.workspaces_mut() {
+            if ws.has_window(id) {
+                ws.toggle_fullscreen_for_command(id);
                 return;
             }
         }

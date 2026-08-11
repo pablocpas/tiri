@@ -1503,7 +1503,7 @@ impl Op {
             }
             Op::ToggleFullscreenFocused => {
                 if let Some(id) = layout.focus().map(|win| *win.id()) {
-                    layout.toggle_fullscreen(&id);
+                    layout.toggle_fullscreen_for_active_command(&id);
                 }
             }
             Op::SetWindowFloating { id, floating } => {

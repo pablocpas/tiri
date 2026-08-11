@@ -133,7 +133,55 @@ struct WindowStateContext<'a, W: LayoutElement> {
     options: &'a Options,
     fullscreen_id: Option<&'a W::Id>,
     windowed_fullscreen_id: Option<&'a W::Id>,
+    has_fullscreen_container: bool,
     view_size: Size<f64, Logical>,
+}
+
+/// The compositor-side fullscreen projection used by rendering and hit testing.
+///
+/// A container becomes exclusive immediately because no client protocol state represents it.
+/// A leaf becomes visual only after its fullscreen configure commits. Windowed fullscreen is
+/// considered only when the workspace has no ordinary fullscreen authority.
+struct FullscreenRenderState<I> {
+    container: Option<NodeKey>,
+    fullscreen_id: Option<I>,
+    windowed_fullscreen_id: Option<I>,
+}
+
+#[derive(Clone, Copy)]
+struct FullscreenTileState {
+    client_fullscreen: bool,
+    visible: bool,
+}
+
+impl<I: PartialEq> FullscreenRenderState<I> {
+    fn has_client_fullscreen(&self) -> bool {
+        self.fullscreen_id.is_some() || self.windowed_fullscreen_id.is_some()
+    }
+
+    fn tile_state(
+        &self,
+        id: &I,
+        regular_visible: bool,
+        in_fullscreen_container: bool,
+    ) -> FullscreenTileState {
+        let client_fullscreen = self.fullscreen_id.as_ref().is_some_and(|other| other == id)
+            || self
+                .windowed_fullscreen_id
+                .as_ref()
+                .is_some_and(|other| other == id);
+        let visible = if self.container.is_some() {
+            in_fullscreen_container && regular_visible
+        } else if self.has_client_fullscreen() {
+            client_fullscreen
+        } else {
+            regular_visible
+        };
+        FullscreenTileState {
+            client_fullscreen,
+            visible,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -196,6 +244,35 @@ impl<W: LayoutElement> TreeSpace<W> {
         let key = self.tree.fullscreen_key()?;
         (self.tree.holds_node(key) && self.tree.branch_root(key) == self.tree.workspace_root())
             .then_some(key)
+    }
+
+    /// A tiled container that is currently the workspace fullscreen authority.
+    ///
+    /// Unlike a fullscreen leaf, this has no client commit to wait for: its descendants stay
+    /// ordinary tiled clients and the compositor makes their branch exclusive itself.
+    fn render_fullscreen_container(&self) -> Option<NodeKey> {
+        let key = self.tiled_fullscreen_key()?;
+        self.tree.container_info(key)?;
+        Some(key)
+    }
+
+    fn fullscreen_render_state(&self) -> FullscreenRenderState<W::Id> {
+        let container = self.render_fullscreen_container();
+        let fullscreen_id = self.render_fullscreen_window();
+        let windowed_fullscreen_id = if fullscreen_id.is_none() && container.is_none() {
+            self.focused_tile().and_then(|tile| {
+                tile.window()
+                    .is_pending_windowed_fullscreen()
+                    .then(|| tile.window().id().clone())
+            })
+        } else {
+            None
+        };
+        FullscreenRenderState {
+            container,
+            fullscreen_id,
+            windowed_fullscreen_id,
+        }
     }
 
     fn pending_fullscreen_window(&self) -> Option<&W::Id> {
@@ -747,10 +824,10 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     pub fn is_active_pending_fullscreen(&self) -> bool {
-        self.focused_tile().is_some_and(|tile| {
-            tile.window().pending_sizing_mode().is_fullscreen()
-                || tile.window().is_pending_windowed_fullscreen()
-        })
+        self.tiled_fullscreen_key().is_some()
+            || self
+                .focused_tile()
+                .is_some_and(|tile| tile.window().is_pending_windowed_fullscreen())
     }
 
     pub fn view_size(&self) -> Size<f64, Logical> {
@@ -913,17 +990,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         let scale = Scale::from(self.scale);
         let focused_key = self.focused_key();
         let selection_is_container = self.selected_is_container();
-        let fullscreen_id = self.render_fullscreen_window();
-        let windowed_fullscreen_id = if fullscreen_id.is_none() {
-            self.focused_tile().and_then(|tile| {
-                tile.window()
-                    .is_pending_windowed_fullscreen()
-                    .then(|| tile.window().id().clone())
-            })
-        } else {
-            None
-        };
-        let has_fullscreen_like = fullscreen_id.is_some() || windowed_fullscreen_id.is_some();
+        let fullscreen = self.fullscreen_render_state();
         let view_rect = Rectangle::from_size(self.view_size);
 
         for closing in self.closing_windows.iter().rev() {
@@ -964,26 +1031,21 @@ impl<W: LayoutElement> TreeSpace<W> {
         for info in render_layouts.iter().rev() {
             // Use O(1) key lookup instead of O(depth) path lookup.
             if let Some(tile) = self.tree.get_tile(info.key) {
-                let is_fullscreen_tile = fullscreen_id
-                    .as_ref()
-                    .is_some_and(|id| id == tile.window().id());
-                let is_windowed_fullscreen_tile = windowed_fullscreen_id
-                    .as_ref()
-                    .is_some_and(|id| id == tile.window().id());
-                let is_fullscreen_like_tile = is_fullscreen_tile || is_windowed_fullscreen_tile;
-                let show_tile = if has_fullscreen_like {
-                    is_fullscreen_like_tile
-                } else {
-                    info.visible
-                };
-
-                if !show_tile {
+                let in_fullscreen_container = fullscreen
+                    .container
+                    .is_some_and(|scope| self.tree.is_descendant(info.key, scope));
+                let state = fullscreen.tile_state(
+                    tile.window().id(),
+                    info.visible,
+                    in_fullscreen_container,
+                );
+                if !state.visible {
                     continue;
                 }
 
                 let mut pos = info.rect.loc + tile.render_offset();
                 pos = pos.to_physical_precise_round(scale).to_logical(scale);
-                if is_fullscreen_like_tile {
+                if state.client_fullscreen {
                     pos = Point::from((0.0, 0.0));
                 }
 
@@ -1005,7 +1067,7 @@ impl<W: LayoutElement> TreeSpace<W> {
 
         elements.extend(active_elements);
 
-        if !has_fullscreen_like && !self.options.layout.tab_bar.off {
+        if !fullscreen.has_client_fullscreen() && !self.options.layout.tab_bar.off {
             let tab_bar_infos = self.tree.tab_bar_layouts();
             let mut cache = self.tab_bar_cache.borrow_mut();
             let gles = ctx.renderer.as_gles_renderer();
@@ -1013,6 +1075,12 @@ impl<W: LayoutElement> TreeSpace<W> {
             let is_active_workspace = self.side_is_active(false);
             let target = ctx.target;
             for info in tab_bar_infos {
+                if fullscreen
+                    .container
+                    .is_some_and(|scope| !self.tree.is_descendant(info.key, scope))
+                {
+                    continue;
+                }
                 let state = tab_bar_state_from_info(
                     &info,
                     &tab_bar_config,
@@ -1216,19 +1284,9 @@ impl<W: LayoutElement> TreeSpace<W> {
         let focused_key = self.focused_key();
         let selection_is_container = self.selected_is_container();
         let scale = Scale::from(self.scale);
+        let fullscreen = self.fullscreen_render_state();
+        let fullscreen_container = fullscreen.container;
         let logical_fullscreen_id = self.pending_fullscreen_window().cloned();
-        let visual_fullscreen_id = self.render_fullscreen_window();
-        let windowed_fullscreen_id = if visual_fullscreen_id.is_none() {
-            self.focused_tile().and_then(|tile| {
-                tile.window()
-                    .is_pending_windowed_fullscreen()
-                    .then(|| tile.window().id().clone())
-            })
-        } else {
-            None
-        };
-        let has_fullscreen_like =
-            visual_fullscreen_id.is_some() || windowed_fullscreen_id.is_some();
         let layout_rect = self.tree.layout_area();
         let is_single_window = self.tree.window_count() <= 1;
         // Clone here because we need mutable access to tree in the loop below.
@@ -1256,7 +1314,8 @@ impl<W: LayoutElement> TreeSpace<W> {
             working_area_size: self.working_area.size,
             options: &self.options,
             fullscreen_id: logical_fullscreen_id.as_ref(),
-            windowed_fullscreen_id: windowed_fullscreen_id.as_ref(),
+            windowed_fullscreen_id: fullscreen.windowed_fullscreen_id.as_ref(),
+            has_fullscreen_container: fullscreen_container.is_some(),
             view_size: self.view_size,
         };
         // A stale snapshot describes a tree that no longer exists; driving window state
@@ -1268,43 +1327,40 @@ impl<W: LayoutElement> TreeSpace<W> {
             if skip_state_pass {
                 break;
             }
+            let in_fullscreen_container =
+                fullscreen_container.is_some_and(|scope| self.tree.is_descendant(info.key, scope));
             // Use O(1) key lookup instead of O(depth) path lookup.
             if let Some(tile) = self.tree.get_tile_mut(info.key) {
                 let resize = resize_data.get(&info.key).copied();
-                Self::update_window_state(tile, &info, resize, &ctx);
+                Self::update_window_state(tile, &info, resize, in_fullscreen_container, &ctx);
             }
         }
 
         for (info, (edges, indicator_edge)) in render_layouts.into_iter().zip(render_edges) {
+            let is_in_fullscreen_container =
+                fullscreen_container.is_some_and(|scope| self.tree.is_descendant(info.key, scope));
             // Use O(1) key lookup instead of O(depth) path lookup.
             if let Some(tile) = self.tree.get_tile_mut(info.key) {
-                let is_fullscreen_tile = visual_fullscreen_id
-                    .as_ref()
-                    .is_some_and(|id| id == tile.window().id());
-                let is_windowed_fullscreen_tile = windowed_fullscreen_id
-                    .as_ref()
-                    .is_some_and(|id| id == tile.window().id());
-                let is_fullscreen_like_tile = is_fullscreen_tile || is_windowed_fullscreen_tile;
+                let state = fullscreen.tile_state(
+                    tile.window().id(),
+                    info.visible,
+                    is_in_fullscreen_container,
+                );
 
                 let mut pos = info.rect.loc + tile.render_offset();
                 pos = pos.to_physical_precise_round(scale).to_logical(scale);
-                if is_fullscreen_like_tile {
+                if state.client_fullscreen {
                     pos = Point::from((0.0, 0.0));
                 }
 
                 let mut tile_view_rect = workspace_view;
                 tile_view_rect.loc -= pos;
 
-                if is_fullscreen_like_tile {
+                if state.client_fullscreen {
                     tile_view_rect = workspace_view;
                 }
 
-                let show_tile = if has_fullscreen_like {
-                    is_fullscreen_like_tile
-                } else {
-                    info.visible
-                };
-                if show_tile {
+                if state.visible {
                     let is_focused =
                         is_active && Some(info.key) == focused_key && !selection_is_container;
                     tile.update_render_elements(
@@ -1429,7 +1485,7 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     pub fn resize_hit_under(&mut self, pos: Point<f64, Logical>) -> Option<ResizeHit<W::Id>> {
-        let has_fullscreen_like = self.render_fullscreen_window().is_some()
+        let has_fullscreen_like = self.tiled_fullscreen_key().is_some()
             || self
                 .tree
                 .focused_tile()
@@ -1912,37 +1968,25 @@ impl<W: LayoutElement> TreeSpace<W> {
     /// The leaf under `pos`, or the nearest one: its node key, tree path and on-screen rect.
     fn closest_leaf_rect(&self, pos: Point<f64, Logical>) -> Option<LeafHit> {
         let scale = Scale::from(self.scale);
-        let fullscreen_id = self.render_fullscreen_window();
-        let windowed_fullscreen_id = if fullscreen_id.is_none() {
-            self.focused_tile().and_then(|tile| {
-                tile.window()
-                    .is_pending_windowed_fullscreen()
-                    .then(|| tile.window().id().clone())
-            })
-        } else {
-            None
-        };
-        let has_fullscreen_like = fullscreen_id.is_some() || windowed_fullscreen_id.is_some();
+        let fullscreen = self.fullscreen_render_state();
 
         let mut nearest: Option<(LeafHit, f64)> = None;
 
         for info in self.display_layouts() {
             if let Some(tile) = self.tree.get_tile(info.key) {
-                let is_fullscreen_tile = fullscreen_id
-                    .as_ref()
-                    .is_some_and(|id| id == tile.window().id());
-                let is_windowed_fullscreen_tile = windowed_fullscreen_id
-                    .as_ref()
-                    .is_some_and(|id| id == tile.window().id());
-                let is_fullscreen_like_tile = is_fullscreen_tile || is_windowed_fullscreen_tile;
-                if has_fullscreen_like && !is_fullscreen_like_tile {
-                    continue;
-                }
-                if !info.visible && !is_fullscreen_like_tile {
+                let in_fullscreen_container = fullscreen
+                    .container
+                    .is_some_and(|scope| self.tree.is_descendant(info.key, scope));
+                let state = fullscreen.tile_state(
+                    tile.window().id(),
+                    info.visible,
+                    in_fullscreen_container,
+                );
+                if !state.visible {
                     continue;
                 }
 
-                let base_pos = if is_fullscreen_like_tile {
+                let base_pos = if state.client_fullscreen {
                     Point::from((0.0, 0.0))
                 } else {
                     info.rect.loc
@@ -2162,8 +2206,14 @@ impl<W: LayoutElement> TreeSpace<W> {
         }
 
         let gap = self.branch_gap(branch);
+        let fullscreen_container = (branch == self.tiled_branch())
+            .then(|| self.render_fullscreen_container())
+            .flatten();
         let cache = self.tab_bar_cache.borrow();
         for mut info in self.tree.tab_bar_layouts_in_branch(branch) {
+            if fullscreen_container.is_some_and(|scope| !self.tree.is_descendant(info.key, scope)) {
+                continue;
+            }
             // A branch's outermost bar sits on the branch's edge, and the gap is outside it.
             if gap > 0.0 && info.path.is_empty() {
                 info.rect.loc.x -= gap;
@@ -2193,17 +2243,7 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     pub fn window_under(&self, pos: Point<f64, Logical>) -> Option<(&W, super::HitType)> {
         let scale = Scale::from(self.scale);
-        let fullscreen_id = self.render_fullscreen_window();
-        let windowed_fullscreen_id = if fullscreen_id.is_none() {
-            self.focused_tile().and_then(|tile| {
-                tile.window()
-                    .is_pending_windowed_fullscreen()
-                    .then(|| tile.window().id().clone())
-            })
-        } else {
-            None
-        };
-        let has_fullscreen_like = fullscreen_id.is_some() || windowed_fullscreen_id.is_some();
+        let fullscreen = self.fullscreen_render_state();
 
         if let Some(hit) = self.tab_bar_hit(pos) {
             return Some(hit);
@@ -2213,22 +2253,20 @@ impl<W: LayoutElement> TreeSpace<W> {
         for info in render_layouts.iter().rev() {
             // Use O(1) key lookup instead of O(depth) path lookup.
             if let Some(tile) = self.tree.get_tile(info.key) {
-                let is_fullscreen_tile = fullscreen_id
-                    .as_ref()
-                    .is_some_and(|id| id == tile.window().id());
-                let is_windowed_fullscreen_tile = windowed_fullscreen_id
-                    .as_ref()
-                    .is_some_and(|id| id == tile.window().id());
-                let is_fullscreen_like_tile = is_fullscreen_tile || is_windowed_fullscreen_tile;
-                if has_fullscreen_like && !is_fullscreen_like_tile {
-                    continue;
-                }
-                if !info.visible && !is_fullscreen_like_tile {
+                let in_fullscreen_container = fullscreen
+                    .container
+                    .is_some_and(|scope| self.tree.is_descendant(info.key, scope));
+                let state = fullscreen.tile_state(
+                    tile.window().id(),
+                    info.visible,
+                    in_fullscreen_container,
+                );
+                if !state.visible {
                     continue;
                 }
 
                 // Fullscreen-like tiles are rendered relative to the workspace origin.
-                let base_pos = if is_fullscreen_like_tile {
+                let base_pos = if state.client_fullscreen {
                     Point::from((0.0, 0.0))
                 } else {
                     info.rect.loc
@@ -2303,12 +2341,16 @@ impl<W: LayoutElement> TreeSpace<W> {
         &self,
     ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>, bool)> + '_ {
         let scale = Scale::from(self.scale);
+        let fullscreen_container = self.render_fullscreen_container();
         self.display_layouts().filter_map(move |info| {
             // Use O(1) key lookup instead of O(depth) path lookup.
             let tile = self.tree.get_tile(info.key)?;
             let pos = info.rect.loc + tile.render_offset();
             let pos = pos.to_physical_precise_round(scale).to_logical(scale);
-            Some((tile, pos, info.visible))
+            let visible = info.visible
+                && fullscreen_container
+                    .is_none_or(|scope| self.tree.is_descendant(info.key, scope));
+            Some((tile, pos, visible))
         })
     }
 
@@ -3254,6 +3296,10 @@ impl<W: LayoutElement> TreeSpace<W> {
             return;
         };
 
+        let visible = visible
+            && self
+                .render_fullscreen_container()
+                .is_none_or(|scope| self.tree.is_descendant(key, scope));
         if !visible {
             return;
         }
@@ -3313,8 +3359,9 @@ impl<W: LayoutElement> TreeSpace<W> {
         let tiled_root = self.tree.workspace_root();
         layouts.retain(|info| info.branch == tiled_root);
         let focused_key = self.focused_key();
+        let fullscreen_container = self.render_fullscreen_container();
         let fullscreen_id = self.pending_fullscreen_window().cloned();
-        let windowed_fullscreen_id = if fullscreen_id.is_none() {
+        let windowed_fullscreen_id = if fullscreen_id.is_none() && fullscreen_container.is_none() {
             self.focused_tile().and_then(|tile| {
                 tile.window()
                     .is_pending_windowed_fullscreen()
@@ -3333,6 +3380,7 @@ impl<W: LayoutElement> TreeSpace<W> {
             options: &self.options,
             fullscreen_id: fullscreen_id.as_ref(),
             windowed_fullscreen_id: windowed_fullscreen_id.as_ref(),
+            has_fullscreen_container: fullscreen_container.is_some(),
             view_size: self.view_size,
         };
         // See the other state pass: never drive window state from a stale snapshot.
@@ -3342,16 +3390,19 @@ impl<W: LayoutElement> TreeSpace<W> {
             if skip_state_pass {
                 break;
             }
+            let in_fullscreen_container =
+                fullscreen_container.is_some_and(|scope| self.tree.is_descendant(info.key, scope));
             // Use O(1) key lookup instead of O(depth) path lookup.
             if let Some(tile) = self.tree.get_tile_mut(info.key) {
                 let resize = resize_data.get(&info.key).copied();
-                Self::update_window_state(tile, &info, resize, &ctx);
+                Self::update_window_state(tile, &info, resize, in_fullscreen_container, &ctx);
             }
         }
     }
     pub fn render_above_top_layer(&self) -> bool {
-        // Render above the top layer (e.g. waybar) when a window is fullscreen
-        self.render_fullscreen_window().is_some()
+        // Render above the top layer (e.g. waybar) for either fullscreen authority.
+        self.render_fullscreen_container().is_some()
+            || self.render_fullscreen_window().is_some()
             || self
                 .focused_tile()
                 .is_some_and(|tile| tile.window().is_pending_windowed_fullscreen())
@@ -3470,6 +3521,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         tile: &mut Tile<W>,
         info: &LeafLayoutInfo,
         interactive_resize: Option<InteractiveResizeData>,
+        in_fullscreen_container: bool,
         ctx: &WindowStateContext<'_, W>,
     ) {
         let &WindowStateContext {
@@ -3481,6 +3533,7 @@ impl<W: LayoutElement> TreeSpace<W> {
             options,
             fullscreen_id,
             windowed_fullscreen_id,
+            has_fullscreen_container,
             view_size,
         } = ctx;
 
@@ -3489,7 +3542,9 @@ impl<W: LayoutElement> TreeSpace<W> {
         let is_fullscreen_tile = fullscreen_id.is_some_and(|id| id == &window_id);
         let is_windowed_fullscreen_tile = windowed_fullscreen_id.is_some_and(|id| id == &window_id);
         let is_fullscreen_like_tile = is_fullscreen_tile || is_windowed_fullscreen_tile;
-        let has_fullscreen_like = fullscreen_id.is_some() || windowed_fullscreen_id.is_some();
+        let has_fullscreen_like =
+            fullscreen_id.is_some() || windowed_fullscreen_id.is_some() || has_fullscreen_container;
+        let is_in_fullscreen_scope = is_fullscreen_like_tile || in_fullscreen_container;
 
         if request_size {
             if is_fullscreen_tile {
@@ -3504,13 +3559,13 @@ impl<W: LayoutElement> TreeSpace<W> {
 
         let mut active = workspace_active && is_focused_tile;
 
-        if has_fullscreen_like && !is_fullscreen_like_tile {
+        if has_fullscreen_like && !is_in_fullscreen_scope {
             active = false;
         } else if deactivate_unfocused {
             active &= info.visible;
         }
 
-        let active_in_column = is_focused_tile && (!has_fullscreen_like || is_fullscreen_like_tile);
+        let active_in_column = is_focused_tile && (!has_fullscreen_like || is_in_fullscreen_scope);
 
         let window = tile.window_mut();
         window.set_active_in_column(active_in_column);

@@ -404,10 +404,12 @@ impl CommandTarget {
         )
     }
 
-    fn has_window_target(self) -> bool {
+    fn can_fullscreen(self) -> bool {
         matches!(
             self,
-            CommandTarget::TilingWindow | CommandTarget::FloatingWindow
+            CommandTarget::TilingWindow
+                | CommandTarget::TilingContainer
+                | CommandTarget::FloatingWindow
         )
     }
 }
@@ -1029,10 +1031,10 @@ impl<W: LayoutElement> Workspace<W> {
             .targets_container()
     }
 
-    pub fn active_command_has_window_target(&self) -> bool {
+    pub fn active_command_can_fullscreen(&self) -> bool {
         self.resolved_command_route()
             .command_target
-            .has_window_target()
+            .can_fullscreen()
     }
 
     pub fn close_window_ids_for_active_selection(&self) -> Vec<W::Id> {
@@ -2494,15 +2496,24 @@ impl<W: LayoutElement> Workspace<W> {
             return;
         }
 
+        let tile = self
+            .tiles()
+            .find(|tile| tile.window().id() == window)
+            .unwrap();
+        // Use space.is_fullscreen() as the source of truth instead of pending_sizing_mode(),
+        // which updates asynchronously after animations complete.
+        let current = self.space.is_fullscreen(tile.window());
+        self.set_fullscreen(window, !current);
+    }
+
+    pub fn toggle_fullscreen_for_command(&mut self, window: &W::Id) {
+        if self.floating.has_window(&self.space, window) {
+            self.toggle_fullscreen(window);
+            return;
+        }
+
         if !self.space.selected_is_container() {
-            let tile = self
-                .tiles()
-                .find(|tile| tile.window().id() == window)
-                .unwrap();
-            // Use space.is_fullscreen() as the source of truth instead of
-            // pending_sizing_mode(), which updates asynchronously after animations complete.
-            let current = self.space.is_fullscreen(tile.window());
-            self.set_fullscreen(window, !current);
+            self.toggle_fullscreen(window);
             return;
         }
 
