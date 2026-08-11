@@ -404,6 +404,42 @@ fn floating_initial_size_is_stable_across_focus_changes_and_width_resize() {
 }
 
 #[test]
+fn floating_axis_resize_preserves_the_container_center() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::ToggleWindowFloating { id: None },
+    ]);
+
+    let before = layout.layout_tree().floating[0]
+        .rect
+        .expect("floating root geometry");
+    let before_center = (before.x + before.width / 2., before.y + before.height / 2.);
+    check_ops_on_layout(
+        &mut layout,
+        [
+            Op::SetWindowWidth {
+                id: None,
+                change: SizeChange::AdjustFixed(80),
+            },
+            Op::SetWindowHeight {
+                id: None,
+                change: SizeChange::AdjustFixed(100),
+            },
+        ],
+    );
+
+    let after = layout.layout_tree().floating[0]
+        .rect
+        .expect("floating root geometry");
+    let after_center = (after.x + after.width / 2., after.y + after.height / 2.);
+    assert!((after_center.0 - before_center.0).abs() < 0.001);
+    assert!((after_center.1 - before_center.1).abs() < 0.001);
+}
+
+#[test]
 fn floating_edge_resize_anchors_the_opposite_edge() {
     let mut layout = check_ops([
         Op::AddOutput(1),

@@ -23,20 +23,19 @@ pub const OUTPUT: (u32, u32) = (1280, 720);
 ///
 /// It matters because sway floats a window at the size it mapped with, so a client size that
 /// differs between the two sides would show up as a layout difference. The recorder asks
-/// `foot` for 400x300 and foot rounds down to whole character cells, which is why this is not
-/// 400x300 — and why [`CLIENT_COMMAND`] pins the font: the cell size is configuration exactly
-/// as gaps and borders are, and it was the one piece left to the machine. Unpinned, this
-/// moved between one recording session and the next.
+/// `foot` for 400x300 and disables its floating cell grid: arbitrary resize requests must be
+/// accepted exactly, or the differential would measure terminal policy as compositor behaviour.
 ///
 /// The authority for an individual recording is the stamp in the file, not this.
-pub const CLIENT: (i32, i32) = (400, 285);
+pub const CLIENT: (i32, i32) = (400, 300);
 
 /// The client the recorder opens windows with.
 ///
 /// Pinned down to the font, for the same reason the sway config is pinned bare: anything left
 /// to the machine shows up later as a difference that says nothing about behaviour.
 const CLIENT_COMMAND: &str = "foot --config=/dev/null --font=monospace:size=10 \
-                              --override=dpi-aware=no --window-size-pixels=400x300 \
+                              --override=dpi-aware=no --override=resize-by-cells=no \
+                              --window-size-pixels=400x300 \
                               sh -c 'while :; do sleep 1; done'";
 
 /// How long to wait for sway, or for a window to appear or vanish.

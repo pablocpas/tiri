@@ -100,6 +100,12 @@ enum FloatingRootKind {
     WorkspaceWrapper,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FloatingResizeAnchor {
+    Center,
+    KeepOrigin,
+}
+
 impl FloatingRootKind {
     fn is_workspace_wrapper(self) -> bool {
         self == Self::WorkspaceWrapper
@@ -1586,9 +1592,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
         space: &mut TreeSpace<W>,
         idx: usize,
         change: SizeChange,
-        is_width: bool,
-        animate: bool,
+        axis: ResizeAxis,
+        anchor: FloatingResizeAnchor,
     ) {
+        let is_width = axis == ResizeAxis::Horizontal;
         let available = if is_width {
             space.working_area().size.w
         } else {
@@ -1627,9 +1634,25 @@ impl<W: LayoutElement> FloatingSpace<W> {
             Size::from((current_area.size.w, new_size))
         };
         self.set_container_size(space, idx, size);
+        if anchor == FloatingResizeAnchor::Center {
+            let centered_pos = Point::from((
+                current_area.loc.x + (current_area.size.w - size.w) / 2.,
+                current_area.loc.y + (current_area.size.h - size.h) / 2.,
+            ));
+            self.set_container_logical_pos(space, idx, centered_pos);
+        }
         let root = self.containers[idx].root;
-        let _ = animate;
         space.tree_mut().layout_branch(root);
+    }
+
+    fn resize_container_around_center(
+        &mut self,
+        space: &mut TreeSpace<W>,
+        idx: usize,
+        change: SizeChange,
+        axis: ResizeAxis,
+    ) {
+        self.resize_container_dimension(space, idx, change, axis, FloatingResizeAnchor::Center);
     }
 
     pub fn set_window_width(
@@ -1646,7 +1669,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let idx = self.idx_of(space, target_id).unwrap();
         let selection_is_container = id.is_none() && self.selected_is_container_in(space, idx);
         if selection_is_container {
-            self.resize_container_dimension(space, idx, change, true, animate);
+            self.resize_container_around_center(space, idx, change, ResizeAxis::Horizontal);
             return;
         }
 
@@ -1669,11 +1692,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let Some((parent_path, child_idx, available, child_count, _)) =
             space.container_metrics_for(key, Layout::SplitH)
         else {
-            self.resize_container_dimension(space, idx, change, true, animate);
+            self.resize_container_around_center(space, idx, change, ResizeAxis::Horizontal);
             return;
         };
         if child_count <= 1 {
-            self.resize_container_dimension(space, idx, change, true, animate);
+            self.resize_container_around_center(space, idx, change, ResizeAxis::Horizontal);
             return;
         }
 
@@ -1761,7 +1784,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let idx = self.idx_of(space, target_id).unwrap();
         let selection_is_container = id.is_none() && self.selected_is_container_in(space, idx);
         if selection_is_container {
-            self.resize_container_dimension(space, idx, change, false, animate);
+            self.resize_container_around_center(space, idx, change, ResizeAxis::Vertical);
             return;
         }
 
@@ -1784,11 +1807,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let Some((parent_path, child_idx, available, child_count, _)) =
             space.container_metrics_for(key, Layout::SplitV)
         else {
-            self.resize_container_dimension(space, idx, change, false, animate);
+            self.resize_container_around_center(space, idx, change, ResizeAxis::Vertical);
             return;
         };
         if child_count <= 1 {
-            self.resize_container_dimension(space, idx, change, false, animate);
+            self.resize_container_around_center(space, idx, change, ResizeAxis::Vertical);
             return;
         }
 
@@ -2808,8 +2831,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
                     space,
                     idx,
                     SizeChange::SetFixed(target_width),
-                    true,
-                    false,
+                    ResizeAxis::Horizontal,
+                    FloatingResizeAnchor::KeepOrigin,
                 );
             } else {
                 self.set_window_width(
@@ -2827,8 +2850,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
                     space,
                     idx,
                     SizeChange::SetFixed(target_height),
-                    false,
-                    false,
+                    ResizeAxis::Vertical,
+                    FloatingResizeAnchor::KeepOrigin,
                 );
             } else {
                 self.set_window_height(
