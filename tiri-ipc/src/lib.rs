@@ -211,6 +211,22 @@ pub enum LayoutTreeLayout {
     Stacked,
 }
 
+/// What a root in [`LayoutTree::floating`] represents.
+///
+/// Tiri uses a container to address every floating group, including a lone window. Sway only
+/// has a container there when a real container was floated, so consumers need this provenance
+/// to distinguish semantic tree shape from Tiri's scaffolding.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub enum LayoutTreeFloatingRootKind {
+    /// A synthetic container used only to address one floating window.
+    ImplicitWindowGroup,
+    /// A real container moved from the tiled side.
+    FloatedContainer,
+    /// The real wrapper sway creates when the workspace itself is floated.
+    WorkspaceWrapper,
+}
+
 /// Node in the tiling layout tree.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
@@ -239,6 +255,9 @@ pub struct LayoutTreeNode {
     /// Whether this node is in the floating layer.
     #[serde(default)]
     pub is_floating: bool,
+    /// Provenance of this floating root. `None` for non-roots and older IPC producers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub floating_root_kind: Option<LayoutTreeFloatingRootKind>,
     /// Whether this node or one of its descendants is visible.
     #[serde(default)]
     pub visible: bool,

@@ -11,12 +11,6 @@ use super::NodeKey;
 use crate::layout::tile::Tile;
 
 impl<W: LayoutElement> ContainerTree<W> {
-    /// The implicit workspace-root container is an implementation detail and
-    /// should be ignored in inactive-tiling reference resolution.
-    pub(super) fn is_synthetic_root_container_key(&self, key: NodeKey) -> bool {
-        self.root == key
-    }
-
     /// Whether this arena still holds a node.
     pub(in crate::layout) fn holds_node(&self, key: NodeKey) -> bool {
         self.nodes.contains_key(key)

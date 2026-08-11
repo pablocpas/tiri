@@ -8,7 +8,9 @@
 
 use std::collections::HashMap;
 
-use tiri_ipc::{LayoutTree, LayoutTreeLayout, LayoutTreeNode, LayoutTreeRect};
+use tiri_ipc::{
+    LayoutTree, LayoutTreeFloatingRootKind, LayoutTreeLayout, LayoutTreeNode, LayoutTreeRect,
+};
 
 use crate::model::{Layout, Node};
 use crate::{erase_decoration, sway, tiri};
@@ -82,6 +84,7 @@ fn leaf(window_id: u64, focused: bool, rect: LayoutTreeRect) -> LayoutTreeNode {
         pid: None,
         focused,
         is_floating: false,
+        floating_root_kind: None,
         visible: true,
         is_urgent: false,
         is_sticky: false,
@@ -107,6 +110,7 @@ fn container(
         pid: None,
         focused: false,
         is_floating: false,
+        floating_root_kind: None,
         visible: true,
         is_urgent: false,
         is_sticky: false,
@@ -257,6 +261,53 @@ fn tiri_container_root_supplies_the_workspace_layout() {
         sway::normalize(SWAY_SPLITV_TWO_WINDOWS, &sway_order(&[(5, 1), (6, 2)])).unwrap();
 
     assert_eq!(from_tiri.diff(&from_sway), Vec::new());
+}
+
+#[test]
+fn floating_root_provenance_distinguishes_scaffolding_from_a_workspace_wrapper() {
+    let floating_rect = rect(160.0, 90.0, 800.0, 600.0);
+    let floating_root = LayoutTreeNode {
+        focused: true,
+        floating_root_kind: Some(LayoutTreeFloatingRootKind::ImplicitWindowGroup),
+        children: vec![leaf(10, false, floating_rect)],
+        ..container(LayoutTreeLayout::SplitH, floating_rect, Vec::new())
+    };
+    let tree = |floating_root| LayoutTree {
+        workspace_id: None,
+        workspace_name: None,
+        output: None,
+        root: None,
+        floating: vec![floating_root],
+    };
+    let order = tiri_order(&[(10, 1)]);
+
+    let implicit = tiri::normalize(
+        &tree(floating_root.clone()),
+        Layout::SplitH,
+        false,
+        AREA,
+        &order,
+    )
+    .unwrap();
+    assert_eq!(
+        implicit.render(),
+        "workspace splith focus=none\n\
+         \x20 window 1 0.083,0.083 0.417x0.556 floating\n"
+    );
+
+    // The tree is otherwise byte-for-byte equivalent. Its provenance makes the wrapper a
+    // real, addressable container instead of scaffolding around a lone floating window.
+    let wrapper = LayoutTreeNode {
+        floating_root_kind: Some(LayoutTreeFloatingRootKind::WorkspaceWrapper),
+        ..floating_root
+    };
+    let wrapper = tiri::normalize(&tree(wrapper), Layout::SplitH, false, AREA, &order).unwrap();
+    assert_eq!(
+        wrapper.render(),
+        "workspace splith focus=@0\n\
+         \x20 splith 0.083,0.083 0.417x0.556\n\
+         \x20   window 1 0.083,0.083 0.417x0.556 floating\n"
+    );
 }
 
 #[test]

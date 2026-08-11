@@ -1596,6 +1596,46 @@ impl<W: LayoutElement> Monitor<W> {
         }
     }
 
+    fn move_container_to_workspace_idx(&mut self, new_idx: usize, activate: bool) {
+        let source_workspace_idx = self.active_workspace_idx;
+        if new_idx == source_workspace_idx {
+            return;
+        }
+
+        let workspace = &mut self.workspaces[source_workspace_idx];
+        if workspace.floating_is_active() {
+            let activate = if activate {
+                ActivateWindow::Smart
+            } else {
+                ActivateWindow::No
+            };
+            self.move_to_workspace(None, new_idx, activate);
+            return;
+        }
+
+        let Some(mut subtree) = workspace.remove_active_tiling_subtree() else {
+            return;
+        };
+        subtree.prepare_for_workspace_move();
+
+        self.add_root_tiling_subtree(new_idx, subtree, activate);
+    }
+
+    pub fn move_container_to_workspace_up(&mut self, activate: bool) {
+        let new_idx = self.active_workspace_idx.saturating_sub(1);
+        self.move_container_to_workspace_idx(new_idx, activate);
+    }
+
+    pub fn move_container_to_workspace_down(&mut self, activate: bool) {
+        let new_idx = min(self.active_workspace_idx + 1, self.workspaces.len() - 1);
+        self.move_container_to_workspace_idx(new_idx, activate);
+    }
+
+    pub fn move_container_to_workspace(&mut self, idx: usize, activate: bool) {
+        let new_idx = min(idx, self.workspaces.len() - 1);
+        self.move_container_to_workspace_idx(new_idx, activate);
+    }
+
     pub fn move_column_to_workspace_up(&mut self, activate: bool) {
         let source_workspace_idx = self.active_workspace_idx;
 

@@ -502,6 +502,34 @@ impl<W: LayoutElement> ContainerTree<W> {
             .or_else(|| self.dfs_leaf_keys().first().copied())
     }
 
+    /// The most recently focused floating window in this workspace.
+    ///
+    /// This is another filtered read of the one seat order, not a floating-side MRU. A mode
+    /// switch must not need the layout-wide focus history to rediscover state already owned
+    /// by the workspace.
+    pub(in crate::layout) fn inactive_floating_window_id(&self) -> Option<W::Id> {
+        self.seat.order().iter().find_map(|key| {
+            self.is_floating(*key)
+                .then(|| self.get_tile(*key))
+                .flatten()
+                .map(|tile| tile.window().id().clone())
+        })
+    }
+
+    /// The floating view commands and rendering should treat as active.
+    ///
+    /// When keyboard focus is currently in the floating side, the focused leaf wins even for
+    /// `follow_without_raising`: focus and stacking are deliberately independent. When tiling is
+    /// active, filter the same seat order to recover the most recently focused floating view.
+    /// There is no floating-side focus cache to reconcile with either answer.
+    pub(in crate::layout) fn active_floating_window_id(&self) -> Option<W::Id> {
+        self.focused_key()
+            .filter(|key| self.is_floating(*key))
+            .and_then(|key| self.get_tile(key))
+            .map(|tile| tile.window().id().clone())
+            .or_else(|| self.inactive_floating_window_id())
+    }
+
     /// Focus what this workspace answers with when nothing has said otherwise.
     ///
     /// The tiled side first, because that is where a workspace's first window goes. Then any

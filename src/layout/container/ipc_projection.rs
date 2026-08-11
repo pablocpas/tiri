@@ -52,6 +52,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     pid: window.pid(),
                     focused: focused_key == Some(node_key),
                     is_floating,
+                    floating_root_kind: None,
                     visible: self
                         .leaf_layouts()
                         .iter()
@@ -92,6 +93,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     pid: None,
                     focused: focused_key == Some(node_key),
                     is_floating,
+                    floating_root_kind: None,
                     visible: children.iter().any(|child| child.visible),
                     is_urgent: children.iter().any(|child| child.is_urgent),
                     is_sticky: children.iter().any(|child| child.is_sticky),
@@ -111,6 +113,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                 pid: None,
                 focused: false,
                 is_floating,
+                floating_root_kind: None,
                 visible: false,
                 is_urgent: false,
                 is_sticky: false,

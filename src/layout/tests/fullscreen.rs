@@ -1522,6 +1522,43 @@ fn move_window_to_workspace_maximize_and_fullscreen() {
     // Unfullscreening should return to maximized because the window was maximized before.
     assert_eq!(win.pending_sizing_mode(), SizingMode::Maximized);
 }
+
+#[test]
+fn moving_pending_fullscreen_into_fullscreen_workspace_keeps_one_client() {
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::FullscreenWindow(1),
+        Op::FocusWorkspaceDown,
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::FullscreenWindow(2),
+        Op::FocusWorkspaceUp,
+        Op::MoveWindowToWorkspaceDown(true),
+    ]);
+
+    let workspace = layout.active_workspace().expect("destination workspace");
+    assert_eq!(
+        workspace.fullscreen_window_ids(),
+        vec![2],
+        "the destination workspace keeps its existing fullscreen owner"
+    );
+
+    let (_, moved) = layout
+        .windows()
+        .find(|(_, window)| *window.id() == 1)
+        .expect("moved window");
+    let (_, existing) = layout
+        .windows()
+        .find(|(_, window)| *window.id() == 2)
+        .expect("existing fullscreen window");
+    assert!(!moved.pending_sizing_mode().is_fullscreen());
+    assert!(existing.pending_sizing_mode().is_fullscreen());
+}
+
 #[test]
 fn expel_pending_left_from_fullscreen_tabbed_column() {
     let ops = [
@@ -1548,4 +1585,51 @@ fn expel_pending_left_from_fullscreen_tabbed_column() {
     ];
 
     check_ops(ops);
+}
+
+#[test]
+fn a_workspace_has_at_most_one_fullscreen_window() {
+    // `container_set_fullscreen` disables `ws->fullscreen` before setting the new one, and
+    // `ws->fullscreen` is a single pointer that does not care which of the workspace's two
+    // lists the container is in (sway/tree/container.c:1375-1377 and :1263,
+    // sway/tree/workspace.h:33). Fullscreening across the two sides therefore cannot leave
+    // sway with two.
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::SetWindowFloating {
+            id: Some(2),
+            floating: true,
+        },
+        Op::FullscreenWindow(1),
+        Op::Communicate(1),
+        Op::FullscreenWindow(2),
+        Op::Communicate(2),
+    ]);
+    layout.update_render_elements(None);
+
+    let fullscreen = layout
+        .active_workspace()
+        .expect("active workspace")
+        .fullscreen_window_ids();
+
+    assert_eq!(
+        fullscreen,
+        vec![2],
+        "fullscreening a floating window has to release the tiled one"
+    );
+
+    let (_, old_tiled) = layout
+        .windows()
+        .find(|(_, window)| *window.id() == 1)
+        .expect("old tiled fullscreen window");
+    assert!(
+        !old_tiled.pending_sizing_mode().is_fullscreen(),
+        "replacing workspace fullscreen must revoke the previous window state too"
+    );
 }

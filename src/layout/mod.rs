@@ -449,15 +449,11 @@ pub struct Layout<W: LayoutElement> {
     /// The workspace id does not necessarily point to a valid workspace. If it doesn't, then it is
     /// simply ignored.
     last_active_workspace_id: HashMap<String, WorkspaceId>,
-    /// MRU focus stack with seat focus semantics (single seat runtime).
-    /// MRU of focus targets across the whole layout, used to restore focus when a
-    /// workspace or output becomes active again.
+    /// MRU of workspaces and sticky windows across outputs.
     ///
-    /// Like [`Workspace::inactive_tiling_focus_stack`] this is a *lazy* cache: nodes are
-    /// pruned opportunistically (`seat_focus_after_mutation`) but not on every mutation, so
-    /// it may hold entries that no longer resolve and no invariant may assert otherwise.
-    /// Correctness comes from the restore path, which only commits a candidate after
-    /// actually managing to focus it.
+    /// Window/container focus inside a workspace belongs exclusively to its `ContainerTree`
+    /// seat. This history only chooses the workspace (or sticky layer) when an output becomes
+    /// active, so it cannot disagree with a workspace about its active tiling/floating node.
     seat_focus: SeatFocusStack<W::Id>,
     /// Ongoing interactive move.
     interactive_move: Option<InteractiveMoveState<W>>,
@@ -1177,11 +1173,11 @@ impl<W: LayoutElement> Layout<W> {
         is_full_width: bool,
         is_floating: bool,
         activate: ActivateWindow,
-    ) -> Option<&Output> {
+    ) -> Option<Output> {
         let tiling_height = height.map(SizeChange::from);
         let id = window.id().clone();
 
-        match &mut self.monitor_set {
+        let output = match &mut self.monitor_set {
             MonitorSet::Normal {
                 monitors,
                 active_monitor_idx,
@@ -1274,7 +1270,7 @@ impl<W: LayoutElement> Layout<W> {
                     }
                 }
 
-                Some(&mon.output)
+                Some(mon.output.clone())
             }
             MonitorSet::NoOutputs { workspaces } => {
                 let (ws_idx, target) = match target {
@@ -1351,10 +1347,24 @@ impl<W: LayoutElement> Layout<W> {
 
                 None
             }
-        }
+        };
+        self.seat_focus_after_mutation();
+        output
     }
 
     pub fn remove_window(
+        &mut self,
+        window: &W::Id,
+        transaction: Transaction,
+    ) -> Option<RemovedTile<W>> {
+        let removed = self.remove_window_inner(window, transaction);
+        if removed.is_some() {
+            self.seat_focus_after_mutation();
+        }
+        removed
+    }
+
+    fn remove_window_inner(
         &mut self,
         window: &W::Id,
         transaction: Transaction,
@@ -1751,28 +1761,25 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn unname_workspace_by_id(&mut self, id: WorkspaceId) {
-        match &mut self.monitor_set {
+        let changed = match &mut self.monitor_set {
             MonitorSet::Normal { monitors, .. } => {
-                for mon in monitors {
-                    if mon.unname_workspace(id) {
-                        return;
-                    }
-                }
+                monitors.iter_mut().any(|mon| mon.unname_workspace(id))
             }
             MonitorSet::NoOutputs { workspaces } => {
-                for (idx, ws) in workspaces.iter_mut().enumerate() {
-                    if ws.id() == id {
-                        ws.unname();
+                let Some(idx) = workspaces.iter().position(|ws| ws.id() == id) else {
+                    return;
+                };
+                workspaces[idx].unname();
 
-                        // Clean up empty workspaces.
-                        if !ws.has_windows() {
-                            workspaces.remove(idx);
-                        }
-
-                        return;
-                    }
+                // Clean up empty workspaces.
+                if !workspaces[idx].has_windows() {
+                    workspaces.remove(idx);
                 }
+                true
             }
+        };
+        if changed {
+            self.seat_focus_after_mutation();
         }
     }
 
@@ -2402,62 +2409,19 @@ impl<W: LayoutElement> Layout<W> {
         &self,
         workspace_id: WorkspaceId,
     ) -> Option<Vec<SeatFocusNode<W::Id>>> {
-        let (output_name, ws) = self
-            .workspaces()
+        self.workspaces()
             .find(|(_, _, ws)| ws.id() == workspace_id)
-            .map(|(monitor, _, ws)| (monitor.map(|mon| mon.output.name()), ws))?;
+            .map(|_| ())?;
 
-        let mut chain = Vec::new();
-        if ws.floating_is_active() {
-            chain.push(SeatFocusNode::Workspace {
-                workspace_id,
-                output_name,
-            });
-            if !ws.is_floating_workspace_context_active() {
-                if let Some(win) = ws.active_window() {
-                    chain.push(SeatFocusNode::Floating {
-                        workspace_id,
-                        window_id: win.id().clone(),
-                    });
-                }
-            }
-        } else if ws.is_tiling_workspace_context_active() {
-            chain.push(SeatFocusNode::Workspace {
-                workspace_id,
-                output_name,
-            });
-        } else {
-            let references = ws.seat_focus_tiling_chain();
-            if let Some((inner, ancestors)) = references.split_first() {
-                for reference in ancestors.iter().rev() {
-                    chain.push(SeatFocusNode::Tiling {
-                        workspace_id,
-                        reference: reference.clone(),
-                    });
-                }
-                chain.push(SeatFocusNode::Workspace {
-                    workspace_id,
-                    output_name,
-                });
-                chain.push(SeatFocusNode::Tiling {
-                    workspace_id,
-                    reference: inner.clone(),
-                });
-            } else {
-                chain.push(SeatFocusNode::Workspace {
-                    workspace_id,
-                    output_name,
-                });
-            }
-        }
-
-        Some(chain)
+        Some(vec![SeatFocusNode::Workspace { workspace_id }])
     }
 
     fn seat_focus_record_active_chain(&mut self) {
         if !self.seat_focus.has_layout_focus() {
             return;
         }
+
+        self.seat_focus_prune();
 
         let chain = match &self.monitor_set {
             MonitorSet::Normal {
@@ -2469,117 +2433,26 @@ impl<W: LayoutElement> Layout<W> {
                 let ws = mon.active_workspace_ref();
                 let ws_id = ws.id();
                 let output_name = mon.output.name();
-
-                let mut chain = Vec::new();
-
+                let mut chain = vec![SeatFocusNode::Workspace {
+                    workspace_id: ws_id,
+                }];
                 if mon.sticky_is_active() {
-                    chain.push(SeatFocusNode::Workspace {
-                        workspace_id: ws_id,
-                        output_name: Some(output_name.clone()),
-                    });
                     if let Some(window_id) = mon.sticky_active_window_id() {
                         chain.push(SeatFocusNode::Sticky {
                             output_name,
                             window_id: window_id.clone(),
                         });
                     }
-                    chain
-                } else if ws.floating_is_active() {
-                    chain.push(SeatFocusNode::Workspace {
-                        workspace_id: ws_id,
-                        output_name: Some(output_name.clone()),
-                    });
-                    if !ws.is_floating_workspace_context_active() {
-                        if let Some(win) = ws.active_window() {
-                            chain.push(SeatFocusNode::Floating {
-                                workspace_id: ws_id,
-                                window_id: win.id().clone(),
-                            });
-                        }
-                    }
-                    chain
-                } else if ws.is_tiling_workspace_context_active() {
-                    chain.push(SeatFocusNode::Workspace {
-                        workspace_id: ws_id,
-                        output_name: Some(output_name.clone()),
-                    });
-                    chain
-                } else {
-                    let references = ws.seat_focus_tiling_chain();
-                    if let Some((inner, ancestors)) = references.split_first() {
-                        for reference in ancestors.iter().rev() {
-                            chain.push(SeatFocusNode::Tiling {
-                                workspace_id: ws_id,
-                                reference: reference.clone(),
-                            });
-                        }
-                        chain.push(SeatFocusNode::Workspace {
-                            workspace_id: ws_id,
-                            output_name: Some(output_name.clone()),
-                        });
-                        chain.push(SeatFocusNode::Tiling {
-                            workspace_id: ws_id,
-                            reference: inner.clone(),
-                        });
-                    } else {
-                        chain.push(SeatFocusNode::Workspace {
-                            workspace_id: ws_id,
-                            output_name: Some(output_name.clone()),
-                        });
-                    }
-                    chain
                 }
+                chain
             }
             MonitorSet::NoOutputs { workspaces } => {
                 let Some(ws) = workspaces.first() else {
                     return;
                 };
-                let ws_id = ws.id();
-
-                let mut chain = Vec::new();
-                if ws.floating_is_active() {
-                    chain.push(SeatFocusNode::Workspace {
-                        workspace_id: ws_id,
-                        output_name: None,
-                    });
-                    if !ws.is_floating_workspace_context_active() {
-                        if let Some(win) = ws.active_window() {
-                            chain.push(SeatFocusNode::Floating {
-                                workspace_id: ws_id,
-                                window_id: win.id().clone(),
-                            });
-                        }
-                    }
-                } else if ws.is_tiling_workspace_context_active() {
-                    chain.push(SeatFocusNode::Workspace {
-                        workspace_id: ws_id,
-                        output_name: None,
-                    });
-                } else {
-                    let references = ws.seat_focus_tiling_chain();
-                    if let Some((inner, ancestors)) = references.split_first() {
-                        for reference in ancestors.iter().rev() {
-                            chain.push(SeatFocusNode::Tiling {
-                                workspace_id: ws_id,
-                                reference: reference.clone(),
-                            });
-                        }
-                        chain.push(SeatFocusNode::Workspace {
-                            workspace_id: ws_id,
-                            output_name: None,
-                        });
-                        chain.push(SeatFocusNode::Tiling {
-                            workspace_id: ws_id,
-                            reference: inner.clone(),
-                        });
-                    } else {
-                        chain.push(SeatFocusNode::Workspace {
-                            workspace_id: ws_id,
-                            output_name: None,
-                        });
-                    }
-                }
-                chain
+                vec![SeatFocusNode::Workspace {
+                    workspace_id: ws.id(),
+                }]
             }
         };
 
@@ -2593,6 +2466,8 @@ impl<W: LayoutElement> Layout<W> {
         if !self.seat_focus.has_layout_focus() {
             return;
         }
+
+        self.seat_focus_prune();
 
         let Some(chain) = self.seat_focus_chain_for_workspace(workspace_id) else {
             return;
@@ -2609,27 +2484,8 @@ impl<W: LayoutElement> Layout<W> {
         workspace_id: WorkspaceId,
         window_id: &W::Id,
     ) -> bool {
-        let Some(candidate) = self.seat_focus.focus_inactive_workspace(workspace_id) else {
-            return false;
-        };
-
-        match candidate {
-            SeatFocusNode::Floating {
-                workspace_id: candidate_workspace_id,
-                window_id: candidate_window_id,
-            } => candidate_workspace_id == workspace_id && candidate_window_id == *window_id,
-            SeatFocusNode::Tiling {
-                workspace_id: candidate_workspace_id,
-                reference,
-            } => self
-                .find_workspace_by_id(candidate_workspace_id)
-                .is_some_and(|(_, ws)| {
-                    candidate_workspace_id == workspace_id
-                        && (ws.tiling_reference_targets_window(&reference, true, window_id)
-                            || ws.tiling_reference_targets_window(&reference, false, window_id))
-                }),
-            SeatFocusNode::Workspace { .. } | SeatFocusNode::Sticky { .. } => false,
-        }
+        self.find_workspace_by_id(workspace_id)
+            .is_some_and(|(_, workspace)| workspace.focus_targets_window(window_id))
     }
 
     fn seat_focus_node_valid(&self, node: &SeatFocusNode<W::Id>) -> bool {
@@ -2637,18 +2493,6 @@ impl<W: LayoutElement> Layout<W> {
             SeatFocusNode::Workspace { workspace_id, .. } => {
                 self.find_workspace_by_id(*workspace_id).is_some()
             }
-            SeatFocusNode::Tiling {
-                workspace_id,
-                reference,
-            } => self
-                .find_workspace_by_id(*workspace_id)
-                .is_some_and(|(_, ws)| ws.has_tiling_reference(reference, true)),
-            SeatFocusNode::Floating {
-                workspace_id,
-                window_id,
-            } => self
-                .find_workspace_by_id(*workspace_id)
-                .is_some_and(|(_, ws)| ws.has_window(window_id) && ws.is_floating(window_id)),
             SeatFocusNode::Sticky {
                 output_name,
                 window_id,
@@ -2658,15 +2502,13 @@ impl<W: LayoutElement> Layout<W> {
         }
     }
 
-    /// What the seat's MRU is allowed to be.
-    ///
-    /// Not that it is fresh: it is pruned opportunistically rather than on every mutation, so
-    /// entries whose workspace has gone are expected and the restore path drops them. What it
-    /// must be is coherent about the workspaces that are still here — an entry naming a live
-    /// workspace is one a restore will pick, and if what it says about that workspace is no
-    /// longer true the restore lands on a real window that is simply not the right one. That
-    /// is the one failure this cache can have that leaves nothing behind: no crash, no
-    /// assertion, and nothing on screen to tell you.
+    fn seat_focus_prune(&mut self) {
+        let mut snapshot = self.seat_focus.snapshot();
+        snapshot.retain(|node| self.seat_focus_node_valid(node));
+        self.seat_focus.replace_from_snapshot(snapshot);
+    }
+
+    /// The layout-wide history owns scopes only; node focus is verified by each workspace.
     #[cfg(test)]
     fn verify_seat_focus(&self) {
         assert!(
@@ -2685,113 +2527,45 @@ impl<W: LayoutElement> Layout<W> {
                 "a focus target must appear once: with the same one twice, \
                  \"most recently focused\" does not name anything"
             );
+            assert!(
+                self.seat_focus_node_valid(node),
+                "layout focus history may only retain live workspace/sticky scopes: {node:?}"
+            );
         }
     }
 
     fn seat_focus_after_mutation(&mut self) {
-        let mut snapshot = self.seat_focus.snapshot();
-        snapshot.retain(|node| self.seat_focus_node_valid(node));
-        self.seat_focus.replace_from_snapshot(snapshot);
-
-        // The one moment the MRU is meant to be wholly true, so the one place it can be said.
-        // Between these calls it is deliberately not: `seat_focus_node_valid` is stricter than
-        // what a restore accepts — it wants the node itself, while a restore will settle for
-        // whoever now stands where that node used to — and pruning on every mutation would
-        // throw away entries the restore could still have used. Which is why the global
-        // invariant checks the shape of this cache and not the truth of it.
-        debug_assert!(
-            self.seat_focus
-                .snapshot()
-                .iter()
-                .all(|node| self.seat_focus_node_valid(node)),
-            "pruning the seat's MRU must leave every entry valid"
-        );
-
+        // Mutations may remove a workspace even while focus is outside the layout.
+        // Prune independently from recording the active chain so the history never
+        // becomes a second source of truth for workspace lifetime.
+        self.seat_focus_prune();
         self.seat_focus_record_active_chain();
-    }
-
-    fn seat_focus_restore_workspace(&mut self, workspace_id: WorkspaceId) {
-        let Some(candidate) = self.seat_focus.focus_inactive_workspace(workspace_id) else {
-            return;
-        };
-
-        let mut restored = false;
-        match &candidate {
-            SeatFocusNode::Workspace { .. } => {
-                restored = true;
-            }
-            SeatFocusNode::Tiling {
-                workspace_id,
-                reference,
-            } => {
-                let reference = self
-                    .seat_focus
-                    .focus_inactive_tiling(*workspace_id)
-                    .unwrap_or_else(|| reference.clone());
-                if let Some((monitor_idx, workspace_idx)) =
-                    self.find_workspace_location_by_id(*workspace_id)
-                {
-                    if let MonitorSet::Normal { monitors, .. } = &mut self.monitor_set {
-                        let ws = &mut monitors[monitor_idx].workspaces[workspace_idx];
-                        restored = ws.focus_tiling_reference(&reference, true)
-                            || ws.focus_tiling_reference(&reference, false);
-                    }
-                }
-            }
-            SeatFocusNode::Floating {
-                workspace_id,
-                window_id,
-            } => {
-                let window_id = self
-                    .seat_focus
-                    .focus_inactive_floating(*workspace_id)
-                    .unwrap_or_else(|| window_id.clone());
-                if let Some((monitor_idx, workspace_idx)) =
-                    self.find_workspace_location_by_id(*workspace_id)
-                {
-                    if let MonitorSet::Normal { monitors, .. } = &mut self.monitor_set {
-                        let ws = &mut monitors[monitor_idx].workspaces[workspace_idx];
-                        restored = ws.focus_floating_window(&window_id, false);
-                    }
-                }
-            }
-            SeatFocusNode::Sticky {
-                output_name,
-                window_id,
-            } => {
-                if let MonitorSet::Normal {
-                    monitors,
-                    active_monitor_idx,
-                    ..
-                } = &mut self.monitor_set
-                {
-                    if let Some(monitor_idx) = monitors
-                        .iter()
-                        .position(|mon| mon.output.name() == *output_name)
-                    {
-                        restored = monitors[monitor_idx].activate_sticky_window(window_id, false);
-                        if restored {
-                            *active_monitor_idx = monitor_idx;
-                        }
-                    }
-                }
-            }
-        }
-
-        if restored {
-            self.seat_focus.set_raw_focus(candidate);
-        }
     }
 
     fn seat_focus_restore_output(&mut self, output: &Output) {
         let output_name = output.name();
-        let Some(candidate) = self.seat_focus.focus_inactive_output(&output_name) else {
+        let Some(candidate) = self
+            .seat_focus
+            .snapshot()
+            .into_iter()
+            .find(|node| match node {
+                SeatFocusNode::Workspace { workspace_id } => self
+                    .find_workspace_location_by_id(*workspace_id)
+                    .is_some_and(|(monitor_idx, _)| match &self.monitor_set {
+                        MonitorSet::Normal { monitors, .. } => {
+                            monitors[monitor_idx].output.name() == output_name
+                        }
+                        MonitorSet::NoOutputs { .. } => false,
+                    }),
+                SeatFocusNode::Sticky {
+                    output_name: name, ..
+                } => *name == output_name,
+            })
+        else {
             return;
         };
         let candidate_workspace_location = match &candidate {
-            SeatFocusNode::Workspace { workspace_id, .. }
-            | SeatFocusNode::Tiling { workspace_id, .. }
-            | SeatFocusNode::Floating { workspace_id, .. } => self
+            SeatFocusNode::Workspace { workspace_id, .. } => self
                 .find_workspace_location_by_id(*workspace_id)
                 .map(|(monitor_idx, workspace_idx)| (*workspace_id, monitor_idx, workspace_idx)),
             SeatFocusNode::Sticky { .. } => None,
@@ -2818,9 +2592,7 @@ impl<W: LayoutElement> Layout<W> {
                         *active_monitor_idx = target_monitor_idx;
                     }
                 }
-                SeatFocusNode::Workspace { workspace_id, .. }
-                | SeatFocusNode::Tiling { workspace_id, .. }
-                | SeatFocusNode::Floating { workspace_id, .. } => {
+                SeatFocusNode::Workspace { workspace_id, .. } => {
                     if let Some((candidate_workspace_id, monitor_idx, workspace_idx)) =
                         candidate_workspace_location
                     {
@@ -2836,10 +2608,7 @@ impl<W: LayoutElement> Layout<W> {
             }
         }
 
-        if let Some(workspace_id) = target_workspace {
-            self.seat_focus_restore_workspace(workspace_id);
-            self.seat_focus.set_raw_focus(candidate);
-        } else if restored_sticky {
+        if target_workspace.is_some() || restored_sticky {
             self.seat_focus.set_raw_focus(candidate);
         }
     }
@@ -3200,10 +2969,7 @@ impl<W: LayoutElement> Layout<W> {
             return;
         };
         monitor.focus_window_or_workspace_down();
-        if let Some(workspace) = self.active_workspace() {
-            self.seat_focus_restore_workspace(workspace.id());
-            self.seat_focus_record_active_chain();
-        }
+        self.seat_focus_record_active_chain();
     }
 
     pub fn focus_window_or_workspace_up(&mut self) {
@@ -3212,10 +2978,7 @@ impl<W: LayoutElement> Layout<W> {
             return;
         };
         monitor.focus_window_or_workspace_up();
-        if let Some(workspace) = self.active_workspace() {
-            self.seat_focus_restore_workspace(workspace.id());
-            self.seat_focus_record_active_chain();
-        }
+        self.seat_focus_record_active_chain();
     }
 
     pub fn focus_window_top(&mut self) {
@@ -3289,15 +3052,27 @@ impl<W: LayoutElement> Layout<W> {
         let Some(monitor) = self.active_monitor() else {
             return;
         };
-        monitor.move_column_to_workspace_up(activate);
+        monitor.move_container_to_workspace_up(activate);
         self.seat_focus_after_mutation();
     }
 
     pub fn move_column_to_workspace_up(&mut self, activate: bool) {
-        self.move_container_to_workspace_up(activate);
+        let Some(monitor) = self.active_monitor() else {
+            return;
+        };
+        monitor.move_column_to_workspace_up(activate);
+        self.seat_focus_after_mutation();
     }
 
     pub fn move_container_to_workspace_down(&mut self, activate: bool) {
+        let Some(monitor) = self.active_monitor() else {
+            return;
+        };
+        monitor.move_container_to_workspace_down(activate);
+        self.seat_focus_after_mutation();
+    }
+
+    pub fn move_column_to_workspace_down(&mut self, activate: bool) {
         let Some(monitor) = self.active_monitor() else {
             return;
         };
@@ -3305,20 +3080,20 @@ impl<W: LayoutElement> Layout<W> {
         self.seat_focus_after_mutation();
     }
 
-    pub fn move_column_to_workspace_down(&mut self, activate: bool) {
-        self.move_container_to_workspace_down(activate);
+    pub fn move_container_to_workspace(&mut self, idx: usize, activate: bool) {
+        let Some(monitor) = self.active_monitor() else {
+            return;
+        };
+        monitor.move_container_to_workspace(idx, activate);
+        self.seat_focus_after_mutation();
     }
 
-    pub fn move_container_to_workspace(&mut self, idx: usize, activate: bool) {
+    pub fn move_column_to_workspace(&mut self, idx: usize, activate: bool) {
         let Some(monitor) = self.active_monitor() else {
             return;
         };
         monitor.move_column_to_workspace(idx, activate);
         self.seat_focus_after_mutation();
-    }
-
-    pub fn move_column_to_workspace(&mut self, idx: usize, activate: bool) {
-        self.move_container_to_workspace(idx, activate);
     }
 
     pub fn move_container_to_workspace_by_id(
@@ -3351,7 +3126,24 @@ impl<W: LayoutElement> Layout<W> {
         workspace_id: WorkspaceId,
         focus: bool,
     ) -> Option<Option<Output>> {
-        self.move_container_to_workspace_by_id(workspace_id, focus)
+        let (idx, mut output) = {
+            let (idx, ws) = self.find_workspace_by_id(workspace_id)?;
+            (idx, ws.current_output().cloned())
+        };
+
+        if let Some(active) = self.active_output() {
+            if output.as_ref() == Some(active) {
+                output = None;
+            }
+        }
+
+        if let Some(target_output) = output.as_ref() {
+            self.move_column_to_output(target_output, Some(idx), focus);
+        } else {
+            self.move_column_to_workspace(idx, focus);
+        }
+
+        Some(output)
     }
 
     pub fn switch_workspace_up(&mut self) {
@@ -3359,10 +3151,7 @@ impl<W: LayoutElement> Layout<W> {
             return;
         };
         monitor.switch_workspace_up();
-        if let Some(workspace) = self.active_workspace() {
-            self.seat_focus_restore_workspace(workspace.id());
-            self.seat_focus_record_active_chain();
-        }
+        self.seat_focus_record_active_chain();
     }
 
     pub fn switch_workspace_down(&mut self) {
@@ -3370,10 +3159,7 @@ impl<W: LayoutElement> Layout<W> {
             return;
         };
         monitor.switch_workspace_down();
-        if let Some(workspace) = self.active_workspace() {
-            self.seat_focus_restore_workspace(workspace.id());
-            self.seat_focus_record_active_chain();
-        }
+        self.seat_focus_record_active_chain();
     }
 
     pub fn switch_workspace(&mut self, idx: usize) {
@@ -3381,10 +3167,7 @@ impl<W: LayoutElement> Layout<W> {
             return;
         };
         monitor.switch_workspace(idx);
-        if let Some(workspace) = self.active_workspace() {
-            self.seat_focus_restore_workspace(workspace.id());
-            self.seat_focus_record_active_chain();
-        }
+        self.seat_focus_record_active_chain();
     }
 
     pub fn switch_workspace_auto_back_and_forth(&mut self, idx: usize) {
@@ -3392,10 +3175,7 @@ impl<W: LayoutElement> Layout<W> {
             return;
         };
         monitor.switch_workspace_auto_back_and_forth(idx);
-        if let Some(workspace) = self.active_workspace() {
-            self.seat_focus_restore_workspace(workspace.id());
-            self.seat_focus_record_active_chain();
-        }
+        self.seat_focus_record_active_chain();
     }
 
     pub fn switch_workspace_previous(&mut self) {
@@ -3403,10 +3183,7 @@ impl<W: LayoutElement> Layout<W> {
             return;
         };
         monitor.switch_workspace_previous();
-        if let Some(workspace) = self.active_workspace() {
-            self.seat_focus_restore_workspace(workspace.id());
-            self.seat_focus_record_active_chain();
-        }
+        self.seat_focus_record_active_chain();
     }
 
     pub fn focus_workspace_by_id(
@@ -3434,7 +3211,6 @@ impl<W: LayoutElement> Layout<W> {
         } else {
             monitor.switch_workspace(idx);
         }
-        self.seat_focus_restore_workspace(workspace_id);
 
         self.seat_focus_record_active_chain();
 
@@ -4079,6 +3855,9 @@ impl<W: LayoutElement> Layout<W> {
         }
 
         self.scratchpad.advance_animations();
+        // A completed workspace-switch animation may have removed transient empty
+        // workspaces. Keep the layout-wide scope history live at the same mutation boundary.
+        self.seat_focus_prune();
     }
 
     pub fn are_animations_ongoing(&self, output: Option<&Output>) -> bool {
@@ -4353,6 +4132,7 @@ impl<W: LayoutElement> Layout<W> {
         }
 
         self.options = options;
+        self.seat_focus_after_mutation();
     }
 
     pub fn toggle_width(&mut self, forwards: bool) {
@@ -4730,41 +4510,21 @@ impl<W: LayoutElement> Layout<W> {
             return false;
         }
 
-        let Some(workspace_id) = self.active_workspace().map(|ws| ws.id()) else {
-            return false;
-        };
-
         if floating {
-            if let Some(window_id) = self.seat_focus.focus_inactive_floating(workspace_id) {
-                let Some(workspace) = self.active_workspace_mut() else {
-                    return false;
-                };
-                return workspace.focus_floating_window(&window_id, false);
-            }
-
             let was_floating_active = self
                 .active_workspace()
                 .is_some_and(|ws| ws.floating_is_active());
             let Some(workspace) = self.active_workspace_mut() else {
                 return false;
             };
+            if workspace.restore_inactive_floating() {
+                return true;
+            }
             workspace.focus_floating();
             return !was_floating_active
                 && self
                     .active_workspace()
                     .is_some_and(|ws| ws.floating_is_active());
-        }
-
-        if let Some(reference) = self.seat_focus.focus_inactive_tiling(workspace_id) {
-            if self.active_workspace().is_some_and(|ws| {
-                ws.floating_is_active() && !ws.tiling_reference_focusable(&reference, true)
-            }) {
-                return false;
-            }
-            let Some(workspace) = self.active_workspace_mut() else {
-                return false;
-            };
-            return workspace.focus_tiling_reference(&reference, true);
         }
 
         let was_floating_active = self
@@ -4773,6 +4533,9 @@ impl<W: LayoutElement> Layout<W> {
         let Some(workspace) = self.active_workspace_mut() else {
             return false;
         };
+        if let Some(restored) = workspace.restore_inactive_tiling() {
+            return restored;
+        }
         workspace.focus_tiling();
         was_floating_active
             && self
@@ -4837,6 +4600,7 @@ impl<W: LayoutElement> Layout<W> {
                 workspaces.retain(|ws| ws.has_windows_or_persistent_identity());
             }
         }
+        self.seat_focus_after_mutation();
     }
 
     pub fn scratchpad_show(&mut self) {
@@ -4871,6 +4635,7 @@ impl<W: LayoutElement> Layout<W> {
                     .and_then(|workspace| workspace.take_tile_for_scratchpad(&visible_id));
                 if let Some(tile) = tile {
                     self.scratchpad.hide_in_scratchpad(tile);
+                    self.seat_focus_after_mutation();
                 }
                 return;
             }
@@ -4895,6 +4660,7 @@ impl<W: LayoutElement> Layout<W> {
             if let (Some(tile), Some(monitor)) = (tile, self.active_monitor()) {
                 monitor.add_scratchpad_tile(tile, true);
             }
+            self.seat_focus_after_mutation();
             return;
         }
 
@@ -4904,6 +4670,7 @@ impl<W: LayoutElement> Layout<W> {
         let tile = self.scratchpad.take_tile_for_scratchpad(&next);
         if let (Some(tile), Some(monitor)) = (tile, self.active_monitor()) {
             monitor.add_scratchpad_tile(tile, true);
+            self.seat_focus_after_mutation();
         }
     }
 
@@ -5032,16 +4799,13 @@ impl<W: LayoutElement> Layout<W> {
             };
 
             let mut restored_tiling = false;
-            if let Some(reference) = self.seat_focus.focus_inactive_tiling(workspace_id) {
-                if let Some((monitor_idx, workspace_idx)) =
-                    self.find_workspace_location_by_id(workspace_id)
-                {
-                    if monitor_idx == target_monitor_idx {
-                        if let MonitorSet::Normal { monitors, .. } = &mut self.monitor_set {
-                            let ws = &mut monitors[monitor_idx].workspaces[workspace_idx];
-                            restored_tiling = ws.focus_tiling_reference(&reference, true)
-                                || ws.focus_tiling_reference(&reference, false);
-                        }
+            if let Some((monitor_idx, workspace_idx)) =
+                self.find_workspace_location_by_id(workspace_id)
+            {
+                if monitor_idx == target_monitor_idx {
+                    if let MonitorSet::Normal { monitors, .. } = &mut self.monitor_set {
+                        let ws = &mut monitors[monitor_idx].workspaces[workspace_idx];
+                        restored_tiling = ws.restore_inactive_tiling().unwrap_or(false);
                     }
                 }
             }
@@ -5242,6 +5006,16 @@ impl<W: LayoutElement> Layout<W> {
         target_ws_idx: Option<usize>,
         activate: bool,
     ) {
+        self.move_tiling_target_to_output(output, target_ws_idx, activate, false);
+    }
+
+    fn move_tiling_target_to_output(
+        &mut self,
+        output: &Output,
+        target_ws_idx: Option<usize>,
+        activate: bool,
+        root_child: bool,
+    ) {
         if let MonitorSet::Normal {
             monitors,
             active_monitor_idx,
@@ -5261,7 +5035,12 @@ impl<W: LayoutElement> Layout<W> {
                 return;
             }
 
-            let Some(mut subtree) = ws.remove_active_root_tiling_subtree() else {
+            let subtree = if root_child {
+                ws.remove_active_root_tiling_subtree()
+            } else {
+                ws.remove_active_tiling_subtree()
+            };
+            let Some(mut subtree) = subtree else {
                 return;
             };
             subtree.prepare_for_workspace_move();
@@ -5280,7 +5059,7 @@ impl<W: LayoutElement> Layout<W> {
         target_ws_idx: Option<usize>,
         activate: bool,
     ) {
-        self.move_container_to_output(output, target_ws_idx, activate);
+        self.move_tiling_target_to_output(output, target_ws_idx, activate, true);
     }
 
     pub fn move_workspace_to_output(&mut self, output: &Output) -> bool {
@@ -5384,6 +5163,7 @@ impl<W: LayoutElement> Layout<W> {
             *active_monitor_idx = target_idx;
         }
 
+        self.seat_focus_after_mutation();
         activate
     }
 
@@ -6776,6 +6556,7 @@ impl<W: LayoutElement> Layout<W> {
             return;
         };
         monitor.move_workspace_down();
+        self.seat_focus_after_mutation();
     }
 
     pub fn move_workspace_up(&mut self) {
@@ -6783,6 +6564,7 @@ impl<W: LayoutElement> Layout<W> {
             return;
         };
         monitor.move_workspace_up();
+        self.seat_focus_after_mutation();
     }
 
     pub fn move_workspace_to_idx(
@@ -6814,6 +6596,7 @@ impl<W: LayoutElement> Layout<W> {
         };
 
         monitor.move_workspace_to_idx(old_idx, new_idx);
+        self.seat_focus_after_mutation();
     }
 
     pub fn move_workspace_to_idx_by_workspace_id(
@@ -6846,6 +6629,7 @@ impl<W: LayoutElement> Layout<W> {
                 workspaces.insert(new_idx, ws);
             }
         }
+        self.seat_focus_after_mutation();
     }
 
     pub fn set_workspace_name(&mut self, name: String, reference: Option<WorkspaceReference>) {

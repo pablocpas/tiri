@@ -27,8 +27,8 @@ use tiri_ipc::{ColumnDisplay, LayoutTreeNode, LayoutTreeRect, SizeChange};
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::container::{
-    ContainerMetrics, ContainerTree, DetachedContainer, DetachedNode, Direction, Layout,
-    LeafLayoutInfo, NodeKey, ResizeDelta, ResizeReach, ResizeSpace, ResizeTarget,
+    ContainerMetrics, ContainerTree, DetachedContainer, DetachedNode, Direction, InsertParentInfo,
+    Layout, LeafLayoutInfo, NodeKey, ResizeDelta, ResizeReach, ResizeSpace, ResizeTarget,
     TreeCommandTarget,
 };
 use super::focus_ring::{
@@ -110,8 +110,6 @@ pub struct TreeSpace<W: LayoutElement> {
     /// their own answer — which is what two `is_active` fields were for before they were
     /// merged into one that could only be right for whichever side wrote it last.
     floating_has_focus: bool,
-    /// Currently fullscreen window (if any)
-    fullscreen_window: Option<W::Id>,
     /// Windows in the closing animation.
     closing_windows: Vec<ClosingWindow>,
     /// Cached offscreen texture for overview rendering.
@@ -185,7 +183,7 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     fn render_fullscreen_window(&self) -> Option<W::Id> {
-        let id = self.fullscreen_window.as_ref()?;
+        let id = self.pending_fullscreen_window()?;
         let key = self.tiled_window_key(id)?;
         let tile = self.tree.get_tile(key)?;
         tile.window()
@@ -195,7 +193,10 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     fn pending_fullscreen_window(&self) -> Option<&W::Id> {
-        self.fullscreen_window.as_ref()
+        let key = self.tree.fullscreen_key()?;
+        (self.tree.branch_root(key) == self.tree.workspace_root())
+            .then(|| self.tree.fullscreen_window_id())
+            .flatten()
     }
 
     /// The workspace's arena, holding both of its sides.
@@ -261,27 +262,22 @@ impl<W: LayoutElement> TreeSpace<W> {
         available_span(self.branch_gap(branch), total, child_count)
     }
 
-    fn percent_from_size_change(current_percent: f64, available: f64, change: SizeChange) -> f64 {
-        if available <= 0.0 {
-            return current_percent;
-        }
-
-        let to_proportion = |value: f64| {
-            if value.abs() > 1.0 {
-                value / 100.0
-            } else {
-                value
-            }
-        };
-
-        let percent = match change {
-            SizeChange::SetFixed(px) => px as f64 / available,
-            SizeChange::AdjustFixed(delta) => current_percent + (delta as f64 / available),
-            SizeChange::SetProportion(prop) => to_proportion(prop),
-            SizeChange::AdjustProportion(delta) => current_percent + to_proportion(delta),
-        };
-
-        percent.clamp(0.0, 1.0)
+    /// What a `resize` in hundredths is measured against.
+    ///
+    /// sway climbs from the node's parent to the nearest ancestor whose layout is parallel to
+    /// the axis and takes *its* width, falling back to the workspace's when there is none
+    /// (`resize_set_tiled`, sway/commands/resize.c:290-300 and :315-325). That ancestor is not
+    /// necessarily the container that will pay for the resize, so this is a separate climb
+    /// from `find_resize_parent`.
+    pub(super) fn ppt_reference(&self, key: NodeKey, layout: Layout) -> f64 {
+        self.tree
+            .find_parent_with_layout(key, layout)
+            .and_then(|(parent, _)| self.tree.node_span(parent, layout))
+            .unwrap_or_else(|| match layout {
+                Layout::SplitH => self.working_area().size.w,
+                Layout::SplitV => self.working_area().size.h,
+                Layout::Tabbed | Layout::Stacked => 0.0,
+            })
     }
 
     fn resolve_preset_dimension(available: f64, preset: PresetSize) -> f64 {
@@ -614,7 +610,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         Some((key, rect))
     }
 
-    /// Stop publishing tiled fullscreen before its node moves to `ws->floating`.
+    /// Revoke fullscreen before its tiled node moves to `ws->floating`.
     ///
     /// `container_set_floating` hands the same container to `workspace_add_floating`
     /// (`sway/tree/container.c:1004`), but tiri also asks a fullscreen view to return to its
@@ -622,12 +618,11 @@ impl<W: LayoutElement> TreeSpace<W> {
     /// must therefore stop governing arrange before the shared tree lays out the moved branch.
     pub(super) fn prepare_subtree_for_floating(&mut self, key: NodeKey) {
         let contains_fullscreen = self
-            .fullscreen_window
-            .as_ref()
-            .and_then(|id| self.tiled_window_key(id))
+            .tree
+            .fullscreen_key()
             .is_some_and(|fullscreen| self.tree.is_descendant(fullscreen, key));
         if contains_fullscreen {
-            self.set_fullscreen_window(None);
+            self.tree.set_fullscreen_key(None);
         }
     }
 
@@ -691,9 +686,10 @@ impl<W: LayoutElement> TreeSpace<W> {
         let delta = if inverted { -delta } else { delta };
         let new_span = (target.original_span.max(1.0) + delta).round() as i32;
         let current_percent = self.tree.resize_current_percent(target);
-        let percent = Self::percent_from_size_change(
+        let percent = percent_from_size_change(
             current_percent,
             available,
+            || self.ppt_reference(target.child, layout),
             SizeChange::SetFixed(new_span),
         );
 
@@ -722,7 +718,6 @@ impl<W: LayoutElement> TreeSpace<W> {
             tab_bar_cache: RefCell::new(HashMap::new()),
             is_active: false,
             floating_has_focus: false,
-            fullscreen_window: None,
             closing_windows: Vec::new(),
             overview_offscreen: OffscreenBuffer::default(),
             overview_background: SolidColorBuffer::new(view_size, background_color),
@@ -873,16 +868,7 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     pub fn remove_window(&mut self, window: &W) -> Option<RemovedTile<W>> {
-        let window_id = window.id();
-        let tile = self.tree.remove_window(window_id)?;
-
-        if self
-            .fullscreen_window
-            .as_ref()
-            .is_some_and(|id| id == window_id)
-        {
-            self.set_fullscreen_window(None);
-        }
+        let tile = self.tree.remove_window(window.id())?;
 
         // Create RemovedTile
         Some(RemovedTile {
@@ -1517,7 +1503,7 @@ impl<W: LayoutElement> TreeSpace<W> {
     ) -> bool {
         // Model rule: with active fullscreen in tiling, directional focus can move inside the
         // fullscreen subtree, but must not escape to another root sibling.
-        let fullscreen_scope = self.fullscreen_window.as_ref().map(|id| {
+        let fullscreen_scope = self.pending_fullscreen_window().map(|id| {
             let root_idx = self
                 .tree
                 .find_window(id)
@@ -1587,14 +1573,14 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     /// sway's `focus next|prev [sibling]`.
     pub fn focus_along_parent(&mut self, forward: bool, descend: bool) -> bool {
-        if self.fullscreen_window.is_some() {
+        if self.has_fullscreen_window() {
             return false;
         }
         self.tree.focus_along_parent(forward, descend)
     }
 
     pub fn focus_parent(&mut self) -> bool {
-        if self.fullscreen_window.is_some() {
+        if self.has_fullscreen_window() {
             return false;
         }
 
@@ -1606,7 +1592,7 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     pub fn focus_parent_targets_workspace(&self) -> bool {
-        if self.fullscreen_window.is_some() {
+        if self.has_fullscreen_window() {
             return false;
         }
 
@@ -1631,88 +1617,28 @@ impl<W: LayoutElement> TreeSpace<W> {
         self.tree.select_root_container()
     }
 
-    pub(super) fn inactive_tiling_reference_for_parent_of_selected_reference(
-        &self,
-    ) -> Option<super::container::InactiveTilingReference> {
-        self.tree
-            .inactive_tiling_reference_for_parent_of_selected_reference()
+    pub(super) fn inactive_tiling_key(&self) -> Option<NodeKey> {
+        self.tree.inactive_tiling_key()
     }
 
-    pub(super) fn inactive_tiling_reference_for_selected_or_focused(
-        &self,
-    ) -> Option<super::container::InactiveTilingReference> {
-        self.tree
-            .inactive_tiling_reference_for_selected_or_focused()
+    pub(super) fn inactive_tiling_restore_target(&self) -> Option<InsertParentInfo> {
+        self.tree.inactive_tiling_restore_target()
     }
 
-    pub(super) fn inactive_tiling_reference_for_parent_of_window(
-        &self,
-        window: &W::Id,
-    ) -> Option<super::container::InactiveTilingReference> {
-        self.tree
-            .inactive_tiling_reference_for_parent_of_window(window)
+    pub(super) fn inactive_floating_window_id(&self) -> Option<W::Id> {
+        self.tree.inactive_floating_window_id()
     }
 
-    pub(super) fn inactive_tiling_reference_chain_for_focused_reference(
-        &self,
-    ) -> Vec<super::container::InactiveTilingReference> {
-        self.tree
-            .inactive_tiling_reference_chain_for_focused_reference()
+    pub(super) fn active_floating_window_id(&self) -> Option<W::Id> {
+        self.tree.active_floating_window_id()
     }
 
-    pub(super) fn inactive_tiling_reference_chain_for_focused_leaf(
-        &self,
-    ) -> Vec<super::container::InactiveTilingReference> {
-        self.tree.inactive_tiling_reference_chain_for_focused_leaf()
+    pub(super) fn focus_inactive_tiling_key(&mut self, key: NodeKey) -> bool {
+        self.tree.focus_inactive_tiling_key(key)
     }
 
-    pub(super) fn insert_parent_info_from_inactive_tiling_reference(
-        &self,
-        reference: &super::container::InactiveTilingReference,
-    ) -> Option<super::container::InsertParentInfo> {
-        self.tree
-            .insert_parent_info_from_inactive_tiling_reference(reference)
-    }
-
-    pub(super) fn insert_parent_info_from_inactive_tiling_reference_strict(
-        &self,
-        reference: &super::container::InactiveTilingReference,
-    ) -> Option<super::container::InsertParentInfo> {
-        self.tree
-            .insert_parent_info_from_inactive_tiling_reference_strict(reference)
-    }
-
-    pub(super) fn inactive_tiling_reference_is_root_container_strict(
-        &self,
-        reference: &super::container::InactiveTilingReference,
-    ) -> bool {
-        self.tree
-            .inactive_tiling_reference_is_root_container_strict(reference)
-    }
-
-    pub(super) fn has_inactive_tiling_reference(
-        &self,
-        reference: &super::container::InactiveTilingReference,
-        strict: bool,
-    ) -> bool {
-        self.tree.has_inactive_tiling_reference(reference, strict)
-    }
-
-    pub(super) fn focus_inactive_tiling_reference(
-        &mut self,
-        reference: &super::container::InactiveTilingReference,
-        strict: bool,
-    ) -> bool {
-        self.tree.focus_inactive_tiling_reference(reference, strict)
-    }
-
-    pub(super) fn window_for_inactive_tiling_reference(
-        &self,
-        reference: &super::container::InactiveTilingReference,
-        strict: bool,
-    ) -> Option<&W> {
-        self.tree
-            .window_for_inactive_tiling_reference(reference, strict)
+    pub(super) fn window_for_inactive_tiling_key(&self, key: NodeKey) -> Option<&W> {
+        self.tree.window_for_inactive_tiling_key(key)
     }
 
     /// The branch the tiled commands act on: sway's `ws->tiling`.
@@ -1877,7 +1803,8 @@ impl<W: LayoutElement> TreeSpace<W> {
         }
 
         let current_percent = self.tree.child_percent(root_key, idx).unwrap_or(1.0);
-        let new_percent = Self::percent_from_size_change(current_percent, available_width, change);
+        let new_percent =
+            percent_from_size_change(current_percent, available_width, || rect.size.w, change);
 
         if self
             .tree
@@ -2359,13 +2286,11 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     pub fn is_fullscreen(&self, window: &W) -> bool {
-        self.fullscreen_window
-            .as_ref()
-            .is_some_and(|id| id == window.id())
+        self.tiled_window_key(window.id()).is_some() && self.tree.is_fullscreen_window(window.id())
     }
 
     pub fn has_fullscreen_window(&self) -> bool {
-        self.fullscreen_window.is_some()
+        self.pending_fullscreen_window().is_some()
     }
 
     /// Set the display mode for the focused container
@@ -2723,14 +2648,6 @@ impl<W: LayoutElement> TreeSpace<W> {
             .remove_window(window)
             .expect("attempted to remove missing window");
 
-        if self
-            .fullscreen_window
-            .as_ref()
-            .is_some_and(|id| id == window)
-        {
-            self.set_fullscreen_window(None);
-        }
-
         RemovedTile {
             tile,
             width: ColumnWidth::default(),
@@ -2740,26 +2657,21 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
     pub fn remove_active_tile(&mut self, transaction: Transaction) -> Option<RemovedTile<W>> {
         let id = self.focused_tile()?.window().id().clone();
-        let removed = self.remove_tile(&id, transaction);
-        if self
-            .fullscreen_window
-            .as_ref()
-            .is_some_and(|win_id| win_id == &id)
-        {
-            self.set_fullscreen_window(None);
-        }
-        Some(removed)
+        Some(self.remove_tile(&id, transaction))
     }
     pub fn remove_active_root_tiling_subtree(&mut self) -> Option<RootTilingSubtree<W>> {
         let idx = self.tree.focused_root_index()?;
         let subtree = self.tree.take_root_child_subtree(idx)?;
         let subtree = RootTilingSubtree::from_subtree(subtree);
 
-        if let Some(full_id) = self.fullscreen_window.clone() {
-            if self.tiled_window_key(&full_id).is_none() {
-                self.set_fullscreen_window(None);
-            }
-        }
+        self.tree.layout();
+        Some(subtree)
+    }
+
+    /// Remove the leaf or explicitly selected parent addressed by `move container`.
+    pub fn remove_active_tiling_subtree(&mut self) -> Option<RootTilingSubtree<W>> {
+        let subtree = self.tree.take_command_target_subtree()?;
+        let subtree = RootTilingSubtree::from_subtree(subtree);
 
         self.tree.layout();
         Some(subtree)
@@ -2983,10 +2895,7 @@ impl<W: LayoutElement> TreeSpace<W> {
             return;
         };
         let id = tile.window().id().clone();
-        let currently_fullscreen = self
-            .fullscreen_window
-            .as_ref()
-            .is_some_and(|win_id| win_id == tile.window().id());
+        let currently_fullscreen = self.tree.is_fullscreen_window(tile.window().id());
         let _ = self.set_fullscreen(&id, !currently_fullscreen);
     }
 
@@ -3113,22 +3022,17 @@ impl<W: LayoutElement> TreeSpace<W> {
         // Reading the current size off the ancestor instead is the whole of the divergence in
         // `resize-a-branch-inside-a-stacked`: two levels of climb there, and tiri was setting
         // the workspace's split to the number the user asked of a window inside a stacked.
+        // A ppt is read against the nearest ancestor parallel to the axis, which is a
+        // different node from the one `find_resize_parent` climbed to, and then spent as a
+        // delta from the target's own span. `resize set width 50 ppt` therefore means "half of
+        // whatever holds me", not "half of whoever pays".
         let target_span = self.tree.node_span(key, layout).unwrap_or(0.0);
+        let reference = self.ppt_reference(key, layout);
         let pixels = match change {
-            SizeChange::AdjustFixed(delta) => delta as f64,
-            SizeChange::SetFixed(px) => px as f64 - target_span,
-            // The proportional forms have no measurement behind them yet: sway reads a ppt
-            // against the nearest parallel ancestor, which is not this container. Kept as they
-            // were rather than guessed at.
-            SizeChange::SetProportion(_) | SizeChange::AdjustProportion(_) => {
-                let current_percent = self
-                    .tree
-                    .child_percent(parent_path, child_idx)
-                    .unwrap_or(1.0);
-                (Self::percent_from_size_change(current_percent, available, change)
-                    - current_percent)
-                    * available
-            }
+            SizeChange::AdjustFixed(delta) => f64::from(delta),
+            SizeChange::SetFixed(px) => f64::from(px) - target_span,
+            SizeChange::AdjustProportion(ppt) => reference * ppt / 100.,
+            SizeChange::SetProportion(ppt) => reference * ppt / 100. - target_span,
         };
         let delta = ResizeDelta { pixels };
 
@@ -3167,13 +3071,13 @@ impl<W: LayoutElement> TreeSpace<W> {
         let selected_container = self.tree.selected_container_key();
 
         if is_fullscreen {
-            if self
-                .fullscreen_window
-                .as_ref()
-                .is_some_and(|id| id == window)
-            {
+            if self.tree.is_fullscreen_window(window) {
                 return false;
             }
+
+            let Some(key) = self.tiled_window_key(window) else {
+                return false;
+            };
 
             let already_focused = self
                 .tree
@@ -3186,14 +3090,12 @@ impl<W: LayoutElement> TreeSpace<W> {
                 return false;
             }
 
-            if let Some(key) = self.tiled_window_key(window) {
-                if let Some(tile) = self.tree.get_tile_mut(key) {
-                    tile.pending_maximized |= tile.window().pending_sizing_mode().is_maximized();
-                    tile.request_fullscreen(!self.options.animations.off, None);
-                }
+            if let Some(tile) = self.tree.get_tile_mut(key) {
+                tile.pending_maximized |= tile.window().pending_sizing_mode().is_maximized();
+                tile.request_fullscreen(!self.options.animations.off, None);
             }
 
-            self.set_fullscreen_window(Some(window.clone()));
+            self.tree.set_fullscreen_key(Some(key));
             self.tree.layout();
             if let Some(selected_key) = selected_container {
                 self.tree.select_container(selected_key);
@@ -3203,14 +3105,11 @@ impl<W: LayoutElement> TreeSpace<W> {
             let Some(key) = self.tiled_window_key(window) else {
                 return false;
             };
+            let fullscreen_matches = self.tree.is_fullscreen_window(window);
             let Some(tile) = self.tree.get_tile_mut(key) else {
                 return false;
             };
             let is_window_fullscreen = tile.window().pending_sizing_mode().is_fullscreen();
-            let fullscreen_matches = self
-                .fullscreen_window
-                .as_ref()
-                .is_some_and(|id| id == window);
             if !is_window_fullscreen && !fullscreen_matches {
                 return false;
             }
@@ -3226,7 +3125,9 @@ impl<W: LayoutElement> TreeSpace<W> {
                 tile.request_tile_size(self.working_area.size, !self.options.animations.off, None);
             }
 
-            self.set_fullscreen_window(None);
+            if fullscreen_matches {
+                self.tree.set_fullscreen_key(None);
+            }
             self.tree.layout();
             if let Some(selected_key) = selected_container {
                 self.tree.select_container(selected_key);
@@ -3236,42 +3137,36 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     fn sync_fullscreen_window(&mut self) {
-        if let Some(id) = self.fullscreen_window.as_ref() {
-            // Keep compositor-level fullscreen sticky while the tracked window still exists.
-            // This matches sway behavior better than relying on pending_sizing_mode() snapshots.
-            if self.tiled_window_key(id).is_some() {
-                self.publish_fullscreen_key();
-                return;
+        // A detached subtree carries client sizing state, but the destination workspace keeps
+        // its own fullscreen pointer. Adopt the arriving fullscreen only when the destination
+        // has none; otherwise revoke the stale request. This makes the single pointer true at
+        // the protocol boundary too, rather than leaving two clients pending fullscreen.
+        let tiled_root = self.tree.workspace_root();
+        let pending_keys: Vec<_> = self
+            .tree
+            .tiles_in_branch(tiled_root)
+            .into_iter()
+            .filter(|tile| tile.window().pending_sizing_mode().is_fullscreen())
+            .map(Tile::node_key)
+            .collect();
+        let authority = self.tree.fullscreen_key();
+        let keep = authority.or_else(|| pending_keys.first().copied());
+        if authority.is_none() {
+            if let Some(key) = keep {
+                self.tree.set_fullscreen_key(Some(key));
             }
         }
 
-        let next_fullscreen = self
-            .tiles()
-            .find(|tile| tile.window().pending_sizing_mode().is_fullscreen())
-            .map(|tile| tile.window().id().clone());
-        self.fullscreen_window = next_fullscreen;
-        self.publish_fullscreen_key();
-    }
-
-    /// Set, or clear, the window covering the output.
-    ///
-    /// The only writer of `fullscreen_window`, because it is two pieces of state and they have
-    /// to move together: the space knows a *window* is fullscreen — compositor state, not tree
-    /// shape — while the arrange pass needs the *node*, which is sway's `workspace->fullscreen`
-    /// and the thing that decides whether the tiled tree gets laid out at all. Left to
-    /// separate assignments the two disagree for exactly as long as it takes something to
-    /// arrange in between.
-    fn set_fullscreen_window(&mut self, window: Option<W::Id>) {
-        self.fullscreen_window = window;
-        self.publish_fullscreen_key();
-    }
-
-    fn publish_fullscreen_key(&mut self) {
-        let key = self
-            .fullscreen_window
-            .as_ref()
-            .and_then(|id| self.tiled_window_key(id));
-        self.tree.set_fullscreen_key(key);
+        for key in pending_keys.into_iter().filter(|key| Some(*key) != keep) {
+            let Some(tile) = self.tree.get_tile_mut(key) else {
+                continue;
+            };
+            if tile.pending_maximized {
+                tile.request_maximized(self.working_area.size, !self.options.animations.off, None);
+            } else {
+                tile.request_tile_size(self.working_area.size, !self.options.animations.off, None);
+            }
+        }
     }
 
     pub fn set_maximized(&mut self, window: &W::Id, maximize: bool) -> bool {
@@ -3804,6 +3699,49 @@ pub(super) fn available_span(gap: f64, total: f64, child_count: usize) -> f64 {
         return 0.0;
     }
     (total - gap * (child_count as f64 - 1.0)).max(0.0)
+}
+
+/// The share of `available` a size request asks for.
+///
+/// One rule for both sides of the workspace, because sway has one. `container_is_floating`
+/// (sway/tree/container.c:1104-1113) is true only for a floating *root* — a node with no
+/// parent sitting in `ws->floating` — so every child inside a floating group goes through
+/// `resize_set_tiled`/`resize_adjust_tiled` exactly like a tiled one. Only the group itself
+/// takes the floating path, and that one is measured in pixels against
+/// `floating_calculate_constraints`, not in shares.
+///
+/// A proportion is always hundredths. The unit is lexical in sway (`MOVEMENT_UNIT_PPT`, from
+/// the `ppt` suffix) and lexical here too — `SizeChange` is built by the `%` suffix in
+/// `tiri-ipc/src/lib.rs:2136`. Deducing it from the magnitude instead, which both copies of
+/// this used to do and disagreed about, made `0.5%` mean either 0.5% or 50%.
+///
+/// `ppt_reference` is the extent hundredths are read against, which is not `available`: see
+/// [`TreeSpace::ppt_reference`].
+///
+/// There is no floor here. sway's minimum is `MIN_SANE_W`/`MIN_SANE_H` (sway/tree/node.h:8-9)
+/// in pixels, checked while the space is moved and aborting the whole resize rather than
+/// clamping it — so a floor in share space would be a second, invented minimum.
+pub(super) fn percent_from_size_change(
+    current_percent: f64,
+    available: f64,
+    ppt_reference: impl FnOnce() -> f64,
+    change: SizeChange,
+) -> f64 {
+    if available <= 0.0 {
+        return current_percent;
+    }
+
+    // Taken lazily: the pixel forms never read it, and working it out means climbing the
+    // tree, which interactive resize would otherwise pay for on every pointer motion.
+    let hundredths = |ppt: f64| ppt_reference() * ppt / 100. / available;
+    let percent = match change {
+        SizeChange::SetFixed(px) => f64::from(px) / available,
+        SizeChange::AdjustFixed(delta) => current_percent + f64::from(delta) / available,
+        SizeChange::SetProportion(ppt) => hundredths(ppt),
+        SizeChange::AdjustProportion(ppt) => current_percent + hundredths(ppt),
+    };
+
+    percent.clamp(0.0, 1.0)
 }
 
 /// What a tile needs to know about the space it is in: see [`TreeSpace::tile_config`].

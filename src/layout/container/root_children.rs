@@ -120,6 +120,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         subtree: DetachedNode<W>,
         focus: bool,
     ) {
+        // A pending arrange of the destination predates this entire branch. Waiting for it
+        // would leave the transferred container (including its tab bar) absent until another
+        // commit or command invalidated the layout.
+        self.discard_layout_superseded_by_transfer();
         let node_key = self.insert_subtree(subtree);
         self.insert_key_at_root(index, node_key, focus);
     }

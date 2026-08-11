@@ -17,6 +17,9 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Remove a window by ID, returns the removed tile
     pub(in crate::layout) fn remove_window(&mut self, window_id: &W::Id) -> Option<Tile<W>> {
         let node_key = self.window_key(window_id)?;
+        if self.fullscreen_key == Some(node_key) {
+            self.fullscreen_key = None;
+        }
         let cleanup_key = self.parent_of(node_key);
         let was_focused = self.focused_key() == Some(node_key);
         let former_ancestors = cleanup_key
@@ -67,6 +70,33 @@ impl<W: LayoutElement> ContainerTree<W> {
             .branch_relative_path(node_key)
             .and_then(|path| self.insert_parent_info_for_path(branch_root, &path));
 
+        let subtree = self.take_tiling_subtree(node_key)?;
+        Some((subtree, insert_info))
+    }
+
+    /// Detach the command target for `move container`, preserving the addressed subtree.
+    ///
+    /// With no selected parent this is the focused leaf, including under tabbed/stacked. A
+    /// parent selected through `focus parent` is intentionally moved as a group. The workspace
+    /// itself is not a container target and therefore cannot be detached here.
+    pub(in crate::layout) fn take_command_target_subtree(&mut self) -> Option<DetachedNode<W>> {
+        let key = match self.command_target_in(self.root) {
+            super::TreeCommandTarget::Workspace => return None,
+            super::TreeCommandTarget::Container(key) | super::TreeCommandTarget::Leaf(key) => key,
+        };
+        self.take_tiling_subtree(key)
+    }
+
+    fn take_tiling_subtree(&mut self, node_key: NodeKey) -> Option<DetachedNode<W>> {
+        self.get_node(node_key)?;
+        if node_key == self.root || self.branch_root(node_key) != self.root {
+            return None;
+        }
+
+        // Any outstanding layout describes a branch that still contains the node being
+        // transferred. It cannot govern either the source after detachment or the destination.
+        self.discard_layout_superseded_by_transfer();
+
         let focused_in_subtree = self
             .focused_key()
             .is_some_and(|key| self.is_descendant_of(key, node_key));
@@ -81,25 +111,16 @@ impl<W: LayoutElement> ContainerTree<W> {
             }
         }
 
-        // Taking the workspace itself is not one of these operations.
-        let parent_key = Some(self.parent_of(node_key)?);
-        let cleanup_key = match parent_key {
-            None => None,
-            Some(parent_key) => {
-                if let Some(idx) = self.child_index(parent_key, node_key) {
-                    if let Some(container) = self.get_container_mut(parent_key) {
-                        container.remove_child(idx);
-                    }
-                }
-                self.set_parent(node_key, None);
-                Some(parent_key)
+        let parent_key = self.parent_of(node_key)?;
+        if let Some(idx) = self.child_index(parent_key, node_key) {
+            if let Some(container) = self.get_container_mut(parent_key) {
+                container.remove_child(idx);
             }
-        };
+        }
+        self.set_parent(node_key, None);
 
         let subtree = self.extract_subtree(node_key);
-        if let Some(cleanup_key) = cleanup_key {
-            self.reap_empty(cleanup_key);
-        }
+        self.reap_empty(parent_key);
         self.prune_leaf_layouts();
 
         self.prune_selected_key();
@@ -107,11 +128,14 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         self.layout();
 
-        Some((subtree, insert_info))
+        Some(subtree)
     }
 
     /// Extract a subtree rooted at the given key into a detached representation.
     pub(super) fn extract_subtree(&mut self, key: NodeKey) -> DetachedNode<W> {
+        if self.fullscreen_key == Some(key) {
+            self.fullscreen_key = None;
+        }
         let node_data = self
             .nodes
             .remove(key)

@@ -147,13 +147,39 @@ impl<W: LayoutElement> ContainerTree<W> {
         })
     }
 
-    /// Point `workspace->fullscreen` at a node, or at nothing.
+    /// The one node currently owning workspace fullscreen.
     ///
-    /// Whoever grants or revokes fullscreen is the one who knows; the arrange pass only reads
-    /// this. Setting it does not itself arrange — the caller was in the middle of a command
-    /// and will.
-    pub(in crate::layout) fn set_fullscreen_key(&mut self, key: Option<NodeKey>) {
+    /// This is sway's `workspace->fullscreen`: it spans both the tiled tree and the floating
+    /// roots. The window id and its side are projections of this key, never parallel state.
+    pub(in crate::layout) fn fullscreen_key(&self) -> Option<NodeKey> {
+        self.fullscreen_key
+    }
+
+    pub(in crate::layout) fn fullscreen_window_id(&self) -> Option<&W::Id> {
+        self.fullscreen_key
+            .and_then(|key| self.get_tile(key))
+            .map(|tile| tile.window().id())
+    }
+
+    pub(in crate::layout) fn is_fullscreen_window(&self, id: &W::Id) -> bool {
+        self.fullscreen_window_id()
+            .is_some_and(|current| current == id)
+    }
+
+    /// Point `workspace->fullscreen` at a live leaf, or at nothing.
+    ///
+    /// Setting it does not arrange: callers still have side-specific window state to request
+    /// before arranging. Refusing a stale/container key keeps the authority meaningful even in
+    /// release builds; structural removal clears it centrally in `detach`.
+    pub(in crate::layout) fn set_fullscreen_key(&mut self, key: Option<NodeKey>) -> bool {
+        if key.is_some_and(|key| self.get_tile(key).is_none()) {
+            return false;
+        }
+        if self.fullscreen_key == key {
+            return false;
+        }
         self.fullscreen_key = key;
+        true
     }
 
     fn layout_atomic(&mut self, animate_resize: bool) {
@@ -273,11 +299,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         let mut out = vec![(root_key, self.collect_layout_data(root_key))];
-        for root in self.floating_roots_with_areas() {
-            out.push((
-                root.key,
-                self.collect_branch_layout_data(root.key, root.area),
-            ));
+        for (root, area) in self.floating_roots_with_areas() {
+            out.push((root, self.collect_branch_layout_data(root, area)));
         }
         out
     }
@@ -336,7 +359,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Every floating group with the box it is laid out in.
-    fn floating_roots_with_areas(&self) -> Vec<super::FloatingRoot> {
+    fn floating_roots_with_areas(&self) -> Vec<(NodeKey, Rectangle<f64, Logical>)> {
         self.floating_roots_snapshot()
     }
 

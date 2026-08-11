@@ -25,8 +25,10 @@ use super::TreeCommandTarget;
 /// ancestor, does the opposite: it keeps the moved node's and invalidates *the ancestor's*,
 /// which never moved at all.
 ///
-///     ancestor->pending.height = ancestor->pending.width = 0;
-///     ancestor->height_fraction = ancestor->width_fraction = 0;   // move.c:408
+/// ```text
+/// ancestor->pending.height = ancestor->pending.width = 0;
+/// ancestor->height_fraction = ancestor->width_fraction = 0;   // move.c:408
+/// ```
 ///
 /// i3 does what the six do. This follows sway, because the corpus is of sway, and
 /// `promotion-invalidates-escaped-ancestor` is the recording that settles it.

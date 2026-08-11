@@ -1,19 +1,9 @@
-use super::container::InactiveTilingReference;
 use super::workspace::WorkspaceId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SeatFocusNode<WindowId> {
     Workspace {
         workspace_id: WorkspaceId,
-        output_name: Option<String>,
-    },
-    Tiling {
-        workspace_id: WorkspaceId,
-        reference: InactiveTilingReference,
-    },
-    Floating {
-        workspace_id: WorkspaceId,
-        window_id: WindowId,
     },
     Sticky {
         output_name: String,
@@ -24,34 +14,9 @@ pub enum SeatFocusNode<WindowId> {
 impl<WindowId: PartialEq> SeatFocusNode<WindowId> {
     fn same_identity(&self, other: &Self) -> bool {
         match (self, other) {
-            (
-                Self::Workspace {
-                    workspace_id: lhs, ..
-                },
-                Self::Workspace {
-                    workspace_id: rhs, ..
-                },
-            ) => lhs == rhs,
-            (
-                Self::Tiling {
-                    workspace_id: lhs_ws,
-                    reference: lhs_ref,
-                },
-                Self::Tiling {
-                    workspace_id: rhs_ws,
-                    reference: rhs_ref,
-                },
-            ) => lhs_ws == rhs_ws && lhs_ref.node_key() == rhs_ref.node_key(),
-            (
-                Self::Floating {
-                    workspace_id: lhs_ws,
-                    window_id: lhs_win,
-                },
-                Self::Floating {
-                    workspace_id: rhs_ws,
-                    window_id: rhs_win,
-                },
-            ) => lhs_ws == rhs_ws && lhs_win == rhs_win,
+            (Self::Workspace { workspace_id: lhs }, Self::Workspace { workspace_id: rhs }) => {
+                lhs == rhs
+            }
             (
                 Self::Sticky {
                     output_name: lhs_out,
@@ -139,66 +104,5 @@ impl<WindowId: Clone + PartialEq> SeatFocusStack<WindowId> {
         if self.stack_mru.len() > self.max_len {
             self.stack_mru.truncate(self.max_len);
         }
-    }
-
-    pub fn focus_inactive_workspace(
-        &self,
-        workspace_id: WorkspaceId,
-    ) -> Option<SeatFocusNode<WindowId>> {
-        self.stack_mru.iter().find_map(|node| match node {
-            SeatFocusNode::Workspace {
-                workspace_id: ws_id,
-                ..
-            }
-            | SeatFocusNode::Tiling {
-                workspace_id: ws_id,
-                ..
-            }
-            | SeatFocusNode::Floating {
-                workspace_id: ws_id,
-                ..
-            } if *ws_id == workspace_id => Some(node.clone()),
-            _ => None,
-        })
-    }
-
-    pub fn focus_inactive_tiling(
-        &self,
-        workspace_id: WorkspaceId,
-    ) -> Option<InactiveTilingReference> {
-        self.stack_mru.iter().find_map(|node| match node {
-            SeatFocusNode::Tiling {
-                workspace_id: ws_id,
-                reference,
-            } if *ws_id == workspace_id
-                && matches!(reference, InactiveTilingReference::Leaf { .. }) =>
-            {
-                Some(reference.clone())
-            }
-            _ => None,
-        })
-    }
-
-    pub fn focus_inactive_floating(&self, workspace_id: WorkspaceId) -> Option<WindowId> {
-        self.stack_mru.iter().find_map(|node| match node {
-            SeatFocusNode::Floating {
-                workspace_id: ws_id,
-                window_id,
-            } if *ws_id == workspace_id => Some(window_id.clone()),
-            _ => None,
-        })
-    }
-
-    pub fn focus_inactive_output(&self, output_name: &str) -> Option<SeatFocusNode<WindowId>> {
-        self.stack_mru.iter().find_map(|node| match node {
-            SeatFocusNode::Workspace {
-                output_name: Some(name),
-                ..
-            } if name == output_name => Some(node.clone()),
-            SeatFocusNode::Sticky {
-                output_name: name, ..
-            } if name == output_name => Some(node.clone()),
-            _ => None,
-        })
     }
 }

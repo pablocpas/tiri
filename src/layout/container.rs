@@ -19,10 +19,10 @@ use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::rc::Rc;
 
-use smithay::utils::{Logical, Rectangle, Size};
+use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use super::tile::Tile;
-use super::{LayoutElement, Options};
+use super::{LayoutElement, Options, SizeFrac};
 use crate::utils::id::IdCounter;
 use crate::utils::transaction::Transaction;
 use tiri_config::BlockOutFrom;
@@ -53,6 +53,7 @@ mod tab_bar_model;
 mod tree_store;
 
 pub(super) use command::TreeCommandTarget;
+pub(super) use floating_region::{floating_position_from_logical, scale_floating_position};
 use geometry::PendingLayout;
 pub(super) use resize::ResizeTarget;
 
@@ -122,13 +123,6 @@ pub(in crate::layout) struct ResizeSpace {
 #[derive(Debug, Clone, Copy)]
 pub(in crate::layout) struct ResizeDelta {
     pub pixels: f64,
-}
-
-/// A floating group: a branch of the tree, and the box it occupies.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct FloatingRoot {
-    pub(super) key: NodeKey,
-    pub(super) area: Rectangle<f64, Logical>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -264,6 +258,26 @@ pub struct ContainerData {
     sizing: NodeSizing,
     /// Cached geometry for rendering
     geometry: Rectangle<f64, Logical>,
+    /// The complete geometry state when this node is a floating root.
+    ///
+    /// Its presence is also the root-membership marker. `FloatingSpace` owns only stacking and
+    /// semantic metadata; it never stores a second position, size, or root collection.
+    floating_geometry: Option<FloatingGeometry>,
+}
+
+/// The single geometry authority for a floating root.
+///
+/// `target` must be distinct from the last arranged `ContainerData::geometry`: completing an
+/// older transaction may replace that cache while a newer compositor target still has to be
+/// requested. `resize_base_size` similarly records a client-observed size without overwriting
+/// the newer target. They are different meanings, but they live together on the root that owns
+/// both rather than being coordinated across `ContainerTree` and `FloatingSpace`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct FloatingGeometry {
+    pos: Point<f64, SizeFrac>,
+    working_area: Rectangle<f64, Logical>,
+    target: Rectangle<f64, Logical>,
+    resize_base_size: Size<f64, Logical>,
 }
 
 /// Cached layout information for a leaf tile.
@@ -295,28 +309,6 @@ pub(super) struct InsertParentInfo {
 
 /// Container key, child index, available span, child count and rect of a window's container.
 pub(super) type ContainerMetrics = (NodeKey, usize, f64, usize, Rectangle<f64, Logical>);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum InactiveTilingReference {
-    Leaf { key: NodeKey, path_hint: Vec<usize> },
-    Container { key: NodeKey, path_hint: Vec<usize> },
-}
-
-impl InactiveTilingReference {
-    pub(super) fn node_key(&self) -> NodeKey {
-        match self {
-            InactiveTilingReference::Leaf { key, .. } => *key,
-            InactiveTilingReference::Container { key, .. } => *key,
-        }
-    }
-}
-
-/// A reference resolved against the live tree: the node it names, plus its path for the
-/// path-shaped `InsertParentInfo` the restore path still speaks.
-enum ResolvedInactiveTilingReference {
-    Leaf { key: NodeKey, path: Vec<usize> },
-    Container { key: NodeKey, path: Vec<usize> },
-}
 
 /// Workspace-local ownership of globally identified nodes.
 #[derive(Debug)]
@@ -420,17 +412,6 @@ pub struct ContainerTree<W: LayoutElement> {
     /// — which tab a switcher shows, which window a descent lands on — was therefore right
     /// for the commands whose authors remembered and wrong for the rest.
     seat: seat::SeatFocus,
-    /// Roots of the floating groups — sway's `ws->floating`, in this arena.
-    ///
-    /// The tiled side hangs off `root`; these hang off nothing. A container moves between the
-    /// two by changing which list holds it, never by being rebuilt, so its key — and anything
-    /// keyed by it — survives the crossing the way it does in sway.
-    ///
-    /// Each carries the box it is laid out in, because a floating group is not laid out in
-    /// the workspace's. `arrange_workspace` makes the same distinction with two calls —
-    /// `arrange_children` for the tiling list against the workspace box, `arrange_floating`
-    /// for these against their own.
-    floating_roots: Vec<FloatingRoot>,
     fullscreen_key: Option<NodeKey>,
     /// Cached layout info for leaves
     leaf_layouts: Vec<LeafLayoutInfo>,
@@ -477,6 +458,7 @@ impl ContainerData {
             prev_split_layout: None,
             sizing: NodeSizing::default(),
             geometry: Rectangle::from_size(Size::from((0.0, 0.0))),
+            floating_geometry: None,
         }
     }
 
@@ -678,7 +660,6 @@ impl<W: LayoutElement> ContainerTree<W> {
             parents,
             root,
             seat,
-            floating_roots: Vec::new(),
             fullscreen_key: None,
             leaf_layouts: Vec::new(),
             pending_layouts: Vec::new(),

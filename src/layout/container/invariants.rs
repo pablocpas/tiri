@@ -19,6 +19,12 @@ impl<W: LayoutElement> ContainerTree<W> {
             None,
             "root parent must be None"
         );
+        if let Some(fullscreen_key) = self.fullscreen_key {
+            assert!(
+                matches!(self.get_node(fullscreen_key), Some(NodeData::Leaf(_))),
+                "workspace fullscreen must point to one live leaf"
+            );
+        }
 
         self.verify_floating_region();
 
@@ -240,6 +246,42 @@ impl<W: LayoutElement> ContainerTree<W> {
             assert!(
                 seen.insert(key),
                 "a node must not be listed as a floating root twice"
+            );
+
+            let container = self
+                .get_container(key)
+                .expect("every floating root must be a container");
+            let geometry = container
+                .floating_geometry
+                .expect("every floating root must own geometry state");
+            let target = geometry.target;
+            assert!(
+                target.loc.x.is_finite()
+                    && target.loc.y.is_finite()
+                    && target.size.w.is_finite()
+                    && target.size.h.is_finite()
+                    && target.size.w >= 0.0
+                    && target.size.h >= 0.0,
+                "a floating target geometry must be finite and non-negative"
+            );
+            let resize_base = geometry.resize_base_size;
+            assert!(
+                resize_base.w.is_finite()
+                    && resize_base.h.is_finite()
+                    && resize_base.w >= 0.0
+                    && resize_base.h >= 0.0,
+                "a floating resize base must be finite and non-negative"
+            );
+            assert!(
+                geometry.pos.x.is_finite()
+                    && geometry.pos.y.is_finite()
+                    && geometry.working_area.loc.x.is_finite()
+                    && geometry.working_area.loc.y.is_finite()
+                    && geometry.working_area.size.w.is_finite()
+                    && geometry.working_area.size.h.is_finite()
+                    && geometry.working_area.size.w >= 0.0
+                    && geometry.working_area.size.h >= 0.0,
+                "floating relative geometry must be finite with a non-negative working area"
             );
         }
     }

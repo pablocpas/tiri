@@ -117,6 +117,104 @@ fn moving_a_container_between_workspaces_keeps_all_node_identities() {
     assert_eq!(tree.parent_of(second), Some(container));
 }
 
+fn assert_moving_window_out_of_workspace_group_moves_one(
+    layout_mode: ContainerLayout,
+    container_action: bool,
+) {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+    ]);
+    layout.set_layout_mode(layout_mode);
+
+    if container_action {
+        layout.move_container_to_workspace_down(false);
+    } else {
+        layout.move_to_workspace_down(false);
+    }
+    layout.verify_invariants();
+
+    let source = layout
+        .workspaces()
+        .find_map(|(_, _, workspace)| workspace.has_window(&1).then_some(workspace))
+        .expect("source workspace");
+    let target = layout
+        .workspaces()
+        .find_map(|(_, _, workspace)| workspace.has_window(&2).then_some(workspace))
+        .expect("target workspace");
+    assert_ne!(source.id(), target.id(), "only the active window must move");
+    assert!(!source.has_window(&2));
+    assert!(!target.has_window(&1));
+
+    let tab_bars = source.tiling().tree().tab_bar_layouts();
+    assert_eq!(
+        tab_bars.len(),
+        1,
+        "the explicit tabbed/stacked container must remain rendered after the move"
+    );
+    assert_eq!(
+        tab_bars[0].tabs.len(),
+        1,
+        "the tab bar model must be refreshed at the same mutation boundary"
+    );
+}
+
+#[test]
+fn moving_window_out_of_tabbed_workspace_moves_one_and_refreshes_tab_bar() {
+    assert_moving_window_out_of_workspace_group_moves_one(ContainerLayout::Tabbed, false);
+}
+
+#[test]
+fn moving_window_out_of_stacked_workspace_moves_one_and_refreshes_tab_bar() {
+    assert_moving_window_out_of_workspace_group_moves_one(ContainerLayout::Stacked, false);
+}
+
+#[test]
+fn moving_focused_container_out_of_tabbed_workspace_moves_one_and_refreshes_tab_bar() {
+    assert_moving_window_out_of_workspace_group_moves_one(ContainerLayout::Tabbed, true);
+}
+
+#[test]
+fn moving_focused_container_out_of_stacked_workspace_moves_one_and_refreshes_tab_bar() {
+    assert_moving_window_out_of_workspace_group_moves_one(ContainerLayout::Stacked, true);
+}
+
+#[test]
+fn moving_selected_tabbed_parent_to_workspace_moves_the_group() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::SetLayoutTabbed,
+        Op::FocusParent,
+    ]);
+
+    layout.move_container_to_workspace_down(false);
+    layout.verify_invariants();
+
+    let first_workspace = layout
+        .workspaces()
+        .find_map(|(_, _, workspace)| workspace.has_window(&1).then_some(workspace.id()))
+        .expect("first window workspace");
+    let second_workspace = layout
+        .workspaces()
+        .find_map(|(_, _, workspace)| workspace.has_window(&2).then_some(workspace.id()))
+        .expect("second window workspace");
+    assert_eq!(
+        first_workspace, second_workspace,
+        "an explicitly selected parent remains the move-container target"
+    );
+}
+
 #[test]
 fn moving_a_window_between_outputs_keeps_its_node_identity() {
     let mut layout = check_ops([

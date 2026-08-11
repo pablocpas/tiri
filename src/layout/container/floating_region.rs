@@ -15,66 +15,180 @@
 //!
 //! sway/commands/move.c:198-239
 
-use smithay::utils::{Logical, Rectangle};
+use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use super::{
-    ContainerData, ContainerTree, FloatingRoot, InsertParentInfo, Layout, LayoutElement, NodeData,
-    NodeKey,
+    ContainerData, ContainerTree, FloatingGeometry, InsertParentInfo, Layout, LayoutElement,
+    NodeData, NodeKey,
 };
 use crate::layout::tile::Tile;
+use crate::layout::SizeFrac;
+
+pub(in crate::layout) fn scale_floating_position(
+    area: Rectangle<f64, Logical>,
+    pos: Point<f64, SizeFrac>,
+) -> Point<f64, Logical> {
+    let mut logical_pos = Point::from((pos.x, pos.y));
+    logical_pos.x *= area.size.w;
+    logical_pos.y *= area.size.h;
+    logical_pos + area.loc
+}
+
+pub(in crate::layout) fn floating_position_from_logical(
+    area: Rectangle<f64, Logical>,
+    logical_pos: Point<f64, Logical>,
+) -> Point<f64, SizeFrac> {
+    let pos = logical_pos - area.loc;
+    let mut pos = Point::from((pos.x, pos.y));
+    pos.x /= f64::max(area.size.w, 1.0);
+    pos.y /= f64::max(area.size.h, 1.0);
+    pos
+}
+
+impl FloatingGeometry {
+    fn new(working_area: Rectangle<f64, Logical>, area: Rectangle<f64, Logical>) -> Self {
+        let mut geometry = Self {
+            pos: floating_position_from_logical(working_area, area.loc),
+            working_area,
+            target: area,
+            resize_base_size: area.size,
+        };
+        geometry.target.loc = geometry.logical_pos(area.size);
+        geometry
+    }
+
+    fn logical_pos(&self, size: Size<f64, Logical>) -> Point<f64, Logical> {
+        let mut logical_pos = scale_floating_position(self.working_area, self.pos);
+
+        // Make sure the window doesn't go too much off-screen. Numbers taken from Mutter.
+        let min_on_screen_hor = f64::clamp(size.w / 4., 10., 75.);
+        let min_on_screen_ver = f64::clamp(size.h / 4., 10., 75.);
+        let max_off_screen_hor = f64::max(0., size.w - min_on_screen_hor);
+        let max_off_screen_ver = f64::max(0., size.h - min_on_screen_ver);
+
+        logical_pos -= self.working_area.loc;
+        logical_pos.x = f64::max(logical_pos.x, -max_off_screen_hor);
+        logical_pos.y = f64::max(logical_pos.y, -max_off_screen_ver);
+        logical_pos.x = f64::min(
+            logical_pos.x,
+            self.working_area.size.w - size.w + max_off_screen_hor,
+        );
+        logical_pos.y = f64::min(
+            logical_pos.y,
+            self.working_area.size.h - size.h + max_off_screen_ver,
+        );
+        logical_pos + self.working_area.loc
+    }
+
+    fn effective_area(&self) -> Rectangle<f64, Logical> {
+        Rectangle::new(
+            self.logical_pos(self.resize_base_size),
+            self.resize_base_size,
+        )
+    }
+
+    fn retarget_from_base(&mut self) -> Rectangle<f64, Logical> {
+        let area = self.effective_area();
+        self.target = area;
+        area
+    }
+}
 
 impl<W: LayoutElement> ContainerTree<W> {
-    /// The roots of the floating groups — sway's `ws->floating`.
+    /// Floating roots discovered from their own root state.
+    ///
+    /// Stacking belongs to `FloatingSpace`; the tree deliberately has no parallel root list.
     pub(in crate::layout) fn floating_roots(&self) -> impl Iterator<Item = NodeKey> + '_ {
-        self.floating_roots.iter().map(|root| root.key)
+        self.nodes.iter().filter_map(|(key, node)| match node {
+            NodeData::Container(container) if container.floating_geometry.is_some() => Some(key),
+            _ => None,
+        })
     }
 
     /// Every floating group with its box, for the arrange pass.
-    pub(super) fn floating_roots_snapshot(&self) -> Vec<FloatingRoot> {
-        self.floating_roots.clone()
+    pub(super) fn floating_roots_snapshot(&self) -> Vec<(NodeKey, Rectangle<f64, Logical>)> {
+        self.floating_roots()
+            .filter_map(|key| Some((key, self.floating_area(key)?)))
+            .collect()
     }
 
     /// The box a floating group is laid out in.
     pub(in crate::layout) fn floating_area(&self, key: NodeKey) -> Option<Rectangle<f64, Logical>> {
-        self.floating_roots
-            .iter()
-            .find(|root| root.key == key)
-            .map(|root| root.area)
+        self.get_container(key)?
+            .floating_geometry
+            .map(|geometry| geometry.target)
     }
 
-    /// Move a floating group, or resize it.
-    pub(in crate::layout) fn set_floating_area(
+    /// Effective box used to compose the next move or resize.
+    pub(in crate::layout) fn floating_container_area(
+        &self,
+        key: NodeKey,
+    ) -> Option<Rectangle<f64, Logical>> {
+        Some(self.get_container(key)?.floating_geometry?.effective_area())
+    }
+
+    pub(in crate::layout) fn floating_position(
+        &self,
+        key: NodeKey,
+    ) -> Option<Point<f64, SizeFrac>> {
+        Some(self.get_container(key)?.floating_geometry?.pos)
+    }
+
+    /// Move a floating root and retarget its layout from the same authoritative state.
+    pub(in crate::layout) fn set_floating_logical_pos(
         &mut self,
         key: NodeKey,
-        area: Rectangle<f64, Logical>,
-    ) -> bool {
-        match self.floating_roots.iter_mut().find(|root| root.key == key) {
-            Some(root) => {
-                root.area = area;
-                self.give_floating_root_its_box(key, area);
-                true
-            }
-            None => false,
-        }
+        logical_pos: Point<f64, Logical>,
+    ) -> Point<f64, Logical> {
+        let geometry = self
+            .get_container_mut(key)
+            .and_then(|container| container.floating_geometry.as_mut())
+            .expect("floating geometry can only be written for a floating root");
+        geometry.pos = floating_position_from_logical(geometry.working_area, logical_pos);
+        geometry.retarget_from_base().loc
     }
 
-    /// Put the box on the group's root as well as in the list.
+    /// Resize a floating root and retarget its layout from the same authoritative state.
+    pub(in crate::layout) fn set_floating_size(
+        &mut self,
+        key: NodeKey,
+        size: Size<f64, Logical>,
+    ) -> Rectangle<f64, Logical> {
+        let geometry = self
+            .get_container_mut(key)
+            .and_then(|container| container.floating_geometry.as_mut())
+            .expect("floating geometry can only be written for a floating root");
+        geometry.resize_base_size = size;
+        geometry.retarget_from_base()
+    }
+
+    /// Re-anchor a root after its output working area changes.
+    pub(in crate::layout) fn update_floating_working_area(
+        &mut self,
+        key: NodeKey,
+        working_area: Rectangle<f64, Logical>,
+    ) -> Rectangle<f64, Logical> {
+        let geometry = self
+            .get_container_mut(key)
+            .and_then(|container| container.floating_geometry.as_mut())
+            .expect("a floating stack entry must name a floating root");
+        geometry.working_area = working_area;
+        geometry.retarget_from_base()
+    }
+
+    /// Record what a one-window client commit contributes to the next resize.
     ///
-    /// A group's root is a container tiri creates, and a fresh container's box is zero until
-    /// an arrange fills it in. The next arrange is not always the next thing that happens:
-    /// it can be deferred behind a client that has not acked its configure yet, and until
-    /// then everything asking the tree where the group is gets the zero — an invisible
-    /// window on the workspace, and a workspace whose layout looks frozen because what is on
-    /// screen is the answer from before.
-    ///
-    /// The same reason `container_split` copies `pending.x/y/width/height` off the child
-    /// before replacing it: the arrange will agree, and this is the answer in between.
-    ///
-    /// sway/tree/container.c:1571-1626
-    fn give_floating_root_its_box(&mut self, key: NodeKey, area: Rectangle<f64, Logical>) {
-        if let Some(container) = self.get_container_mut(key) {
-            container.set_geometry(area);
-        }
+    /// This must not replace `geometry`: a client can commit an older or deliberately different
+    /// size while a newer compositor target still needs to be requested.
+    pub(in crate::layout) fn record_floating_resize_base(
+        &mut self,
+        key: NodeKey,
+        size: Size<f64, Logical>,
+    ) {
+        self.get_container_mut(key)
+            .and_then(|container| container.floating_geometry.as_mut())
+            .expect("a resize base can only be recorded for a floating root")
+            .resize_base_size = size;
     }
 
     /// Whether a node is floating, which in sway is a question about ancestry.
@@ -84,7 +198,8 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// is one of the floating ones.
     pub(in crate::layout) fn is_floating(&self, key: NodeKey) -> bool {
         let branch = self.branch_root(key);
-        self.floating_roots.iter().any(|root| root.key == branch)
+        self.get_container(branch)
+            .is_some_and(|container| container.floating_geometry.is_some())
     }
 
     /// The topmost ancestor of a node — the workspace root, or a floating root.
@@ -96,6 +211,24 @@ impl<W: LayoutElement> ContainerTree<W> {
         current
     }
 
+    fn register_floating_root(&mut self, key: NodeKey, area: Rectangle<f64, Logical>) {
+        assert_ne!(key, self.root, "the workspace root cannot become floating");
+        assert_eq!(
+            self.parent_of(key),
+            None,
+            "a floating root must be detached before registration"
+        );
+        let working_area = self.working_area;
+        let container = self
+            .get_container_mut(key)
+            .expect("a floating root is always a container");
+        assert!(
+            container.floating_geometry.is_none(),
+            "a floating root can only be registered once"
+        );
+        container.floating_geometry = Some(FloatingGeometry::new(working_area, area));
+    }
+
     /// Move a subtree from the tiled side to the floating side, keeping its identity.
     ///
     /// sway's `container_set_floating` does `container_detach` then
@@ -104,22 +237,25 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// which is the whole point of doing it this way rather than by taking the subtree out and
     /// building it again.
     ///
-    /// Returns false when there is nothing to float: the workspace root itself, or a key the
-    /// tree does not hold.
+    /// Returns false when there is nothing to float: the workspace root itself, a leaf (which
+    /// must first go through `float_as_group`), or a key the tree does not hold. Requiring a
+    /// container root gives every floating group one authoritative geometry field.
     pub(in crate::layout) fn float_subtree(
         &mut self,
         key: NodeKey,
         area: Rectangle<f64, Logical>,
     ) -> bool {
-        if key == self.root || !self.nodes.contains_key(key) || self.is_floating(key) {
+        if key == self.root
+            || !matches!(self.get_node(key), Some(NodeData::Container(_)))
+            || self.is_floating(key)
+        {
             return false;
         }
         self.discard_layout_superseded_by_transfer();
         let old_parent = self.parent_of(key);
         self.detach_child(key);
         self.set_parent(key, None);
-        self.floating_roots.push(FloatingRoot { key, area });
-        self.give_floating_root_its_box(key, area);
+        self.register_floating_root(key, area);
         if let Some(old_parent) = old_parent {
             self.reap_empty(old_parent);
         }
@@ -134,13 +270,20 @@ impl<W: LayoutElement> ContainerTree<W> {
         parent: NodeKey,
         index: usize,
     ) -> bool {
-        let Some(position) = self.floating_roots.iter().position(|root| root.key == key) else {
+        if key == self.root
+            || self.parent_of(key).is_some()
+            || !self
+                .get_container(key)
+                .is_some_and(|container| container.floating_geometry.is_some())
+        {
             return false;
-        };
+        }
         if !matches!(self.get_node(parent), Some(NodeData::Container(_))) {
             return false;
         }
-        self.floating_roots.remove(position);
+        self.get_container_mut(key)
+            .expect("a floating root is always a container")
+            .floating_geometry = None;
         if let Some(container) = self.get_container_mut(parent) {
             let index = index.min(container.child_count());
             container.insert_child(index, key);
@@ -157,7 +300,9 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Drop a floating root that is going away.
     pub(in crate::layout) fn forget_floating_root(&mut self, key: NodeKey) {
-        self.floating_roots.retain(|root| root.key != key);
+        if let Some(container) = self.get_container_mut(key) {
+            container.floating_geometry = None;
+        }
         if self.branch_is_empty(key) {
             self.nodes.remove(key);
             self.parents.remove(key);
@@ -203,8 +348,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.discard_layout_superseded_by_transfer();
         let group = self.insert_node(NodeData::Container(ContainerData::new(Layout::SplitH)));
         self.set_parent(group, None);
-        self.floating_roots.push(FloatingRoot { key: group, area });
-        self.give_floating_root_its_box(group, area);
+        self.register_floating_root(group, area);
         let leaf = self.insert_node(NodeData::Leaf(tile));
         if let Some(container) = self.get_container_mut(group) {
             container.insert_child(0, leaf);
@@ -360,20 +504,19 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.place_unfloated(group, root, end, focus)
     }
 
-    /// Put back a group that *was* the workspace: its contents become the workspace's again.
+    /// Put back the wrapper that was built when the workspace itself was floated.
+    ///
+    /// Sway creates this container in `workspace_wrap_children` and disabling floating moves
+    /// that same container back. It remains addressable even with one child.
     pub(in crate::layout) fn unfloat_as_workspace(&mut self, group: NodeKey, focus: bool) -> bool {
         let root = self.root;
         if !self.unfloat_subtree(group, root, 0) {
             return false;
         }
-        let landed = if self.absorb_lone_child_into_branch_root(root) {
-            self.first_leaf_key()
+        if focus {
+            self.select_container(group);
         } else {
-            Some(group)
-        };
-        match landed {
-            Some(key) => self.settle_focus_after_insert(key, focus),
-            None => self.resync_focus(),
+            self.resync_focus();
         }
         true
     }
@@ -389,45 +532,6 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         };
         self.settle_focus_after_insert(landed, focus);
-        true
-    }
-
-    /// Take a branch root's only child's place: its layout, its children, its shares.
-    ///
-    /// The workspace outlives what is in it, so a subtree that *was* the workspace cannot be
-    /// put back by making it the root — it has to be poured into the root that stayed. sway
-    /// unfloating a wrapped workspace does the same thing from the other end, with
-    /// `container_replace` on a workspace it never destroyed.
-    pub(in crate::layout) fn absorb_lone_child_into_branch_root(
-        &mut self,
-        branch_root: NodeKey,
-    ) -> bool {
-        let Some(child) = self
-            .get_container(branch_root)
-            .filter(|root| root.child_count() == 1)
-            .and_then(|root| root.child_key(0))
-        else {
-            return false;
-        };
-        let Some(container) = self.get_container(child) else {
-            return false;
-        };
-
-        let layout = container.layout();
-        let children = container.children().to_vec();
-        let prev_split_layout = container.prev_split_layout();
-
-        if let Some(root) = self.get_container_mut(branch_root) {
-            root.set_layout(layout);
-            root.children = children.clone();
-            root.prev_split_layout = prev_split_layout;
-        }
-        for grandchild in children {
-            self.set_parent(grandchild, Some(branch_root));
-        }
-        self.nodes.remove(child);
-        self.parents.remove(child);
-        self.prune_focus_order();
         true
     }
 }

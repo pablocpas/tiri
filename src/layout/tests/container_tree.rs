@@ -125,6 +125,48 @@ fn moving_a_leaf_between_workspace_stores_keeps_its_identity() {
 }
 
 #[test]
+fn removing_fullscreen_leaf_clears_workspace_pointer() {
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+
+    let key = harness.tree.window_key(&1).expect("fullscreen leaf");
+    assert!(harness.tree.set_fullscreen_key(Some(key)));
+    assert_eq!(harness.tree.fullscreen_key(), Some(key));
+
+    harness.tree.remove_window(&1).expect("removed leaf");
+    assert_eq!(
+        harness.tree.fullscreen_key(),
+        None,
+        "removing the owning leaf must not leave a stale workspace pointer"
+    );
+}
+
+#[test]
+fn extracting_parent_of_fullscreen_leaf_clears_workspace_pointer() {
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+    harness.add_window(2);
+
+    let root = harness.tree.root_node_key().expect("workspace root");
+    let key = harness.tree.window_key(&1).expect("fullscreen leaf");
+    let wrapper = harness
+        .tree
+        .wrap_child_in_new_container(root, key, ContainerData::new(ContainerLayout::SplitV))
+        .expect("wrapper");
+    assert!(harness.tree.set_fullscreen_key(Some(key)));
+
+    harness
+        .tree
+        .take_subtree_at(wrapper)
+        .expect("detached fullscreen subtree");
+    assert_eq!(
+        harness.tree.fullscreen_key(),
+        None,
+        "recursive extraction must clear a fullscreen descendant"
+    );
+}
+
+#[test]
 fn moving_a_leaf_between_workspace_stores_carries_its_size_state() {
     let mut source = TreeHarness::new();
     let mut target = TreeHarness::new();
@@ -1842,7 +1884,10 @@ fn floating_a_subtree_keeps_its_identity() {
 
     assert!(!harness.tree.is_floating(key));
     let box_of_its_own = Rectangle::new(Point::from((100.0, 50.0)), Size::from((300.0, 200.0)));
-    assert!(harness.tree.float_subtree(key, box_of_its_own));
+    let floating_root = harness
+        .tree
+        .float_as_group(key, box_of_its_own)
+        .expect("the window should become a floating group");
     // Arranged before asking: a detach leaves the siblings' fractions raw on purpose, and the
     // arrange pass is what resolves them. Checking in between asks the tree to be settled
     // halfway through a command.
@@ -1858,11 +1903,20 @@ fn floating_a_subtree_keeps_its_identity() {
         Some(key),
         "the same key, because the node was moved and not rebuilt",
     );
-    assert_eq!(harness.tree.floating_roots().collect::<Vec<_>>(), [key]);
-    assert_eq!(harness.tree.floating_area(key), Some(box_of_its_own));
+    assert_eq!(
+        harness.tree.floating_roots().collect::<Vec<_>>(),
+        [floating_root]
+    );
+    assert_eq!(
+        harness.tree.floating_area(floating_root),
+        Some(box_of_its_own)
+    );
 
     let root = harness.tree.root_node_key().expect("a workspace root");
-    assert!(harness.tree.unfloat_subtree(key, root, 0));
+    assert_eq!(
+        harness.tree.unfloat_group(floating_root, root, 0),
+        Some(key)
+    );
     assert_eq!(
         harness.tree.window_key(&1),
         Some(key),
@@ -1890,10 +1944,15 @@ fn a_floating_branch_is_arranged_in_its_own_rectangle() {
         .window_key(&1)
         .expect("window 1 is in the tree");
     let box_of_its_own = Rectangle::new(Point::from((100.0, 50.0)), Size::from((300.0, 200.0)));
-    assert!(harness.tree.float_subtree(key, box_of_its_own));
+    let floating_root = harness
+        .tree
+        .float_as_group(key, box_of_its_own)
+        .expect("the window should become a floating group");
     harness.tree.layout();
 
-    let data = harness.tree.collect_branch_layout_data(key, box_of_its_own);
+    let data = harness
+        .tree
+        .collect_branch_layout_data(floating_root, box_of_its_own);
 
     let laid_out = data
         .leaf_layouts
@@ -1917,12 +1976,15 @@ fn one_pass_arranges_the_tiled_side_and_the_floating_side() {
     harness.add_window(1);
     harness.add_window(2);
 
-    let floated = harness
+    let floated_leaf = harness
         .tree
         .window_key(&1)
         .expect("window 1 is in the tree");
     let box_of_its_own = Rectangle::new(Point::from((120.0, 60.0)), Size::from((240.0, 180.0)));
-    assert!(harness.tree.float_subtree(floated, box_of_its_own));
+    harness
+        .tree
+        .float_as_group(floated_leaf, box_of_its_own)
+        .expect("the window should become a floating group");
     harness.tree.layout();
     harness.tree.verify_invariants();
 
@@ -1936,7 +1998,7 @@ fn one_pass_arranges_the_tiled_side_and_the_floating_side() {
     };
 
     assert_eq!(
-        rect_of(floated),
+        rect_of(floated_leaf),
         Some(box_of_its_own),
         "the floating group takes its own box",
     );
@@ -1962,12 +2024,15 @@ fn a_branch_answers_for_itself_and_the_leaf_sweep_answers_for_both() {
     harness.add_window(2);
     harness.add_window(3);
 
-    let floated = harness
+    let floated_leaf = harness
         .tree
         .window_key(&1)
         .expect("window 1 is in the tree");
     let area = Rectangle::new(Point::from((0.0, 0.0)), Size::from((200.0, 200.0)));
-    assert!(harness.tree.float_subtree(floated, area));
+    let floating_root = harness
+        .tree
+        .float_as_group(floated_leaf, area)
+        .expect("the window should become a floating group");
     harness.tree.layout();
 
     let workspace = harness.tree.root_node_key().expect("a workspace root");
@@ -1977,7 +2042,7 @@ fn a_branch_answers_for_itself_and_the_leaf_sweep_answers_for_both() {
         "the tiled side kept the two that stayed",
     );
     assert_eq!(
-        harness.tree.windows_in_branch(floated).len(),
+        harness.tree.windows_in_branch(floating_root).len(),
         1,
         "and the floating group answers for itself",
     );

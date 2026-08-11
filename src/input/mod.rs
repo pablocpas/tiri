@@ -1501,21 +1501,51 @@ impl State {
                     }
                 }
             }
-            Action::MoveColumnToWorkspaceDown(focus)
-            | Action::MoveContainerToWorkspaceDown(focus) => {
+            Action::MoveColumnToWorkspaceDown(focus) => {
+                self.niri.layout.move_column_to_workspace_down(focus);
+                self.maybe_warp_cursor_to_focus();
+                // FIXME: granular
+                self.niri.queue_redraw_all();
+            }
+            Action::MoveContainerToWorkspaceDown(focus) => {
                 self.niri.layout.move_container_to_workspace_down(focus);
                 self.maybe_warp_cursor_to_focus();
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
-            Action::MoveColumnToWorkspaceUp(focus) | Action::MoveContainerToWorkspaceUp(focus) => {
+            Action::MoveColumnToWorkspaceUp(focus) => {
+                self.niri.layout.move_column_to_workspace_up(focus);
+                self.maybe_warp_cursor_to_focus();
+                // FIXME: granular
+                self.niri.queue_redraw_all();
+            }
+            Action::MoveContainerToWorkspaceUp(focus) => {
                 self.niri.layout.move_container_to_workspace_up(focus);
                 self.maybe_warp_cursor_to_focus();
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
-            Action::MoveColumnToWorkspace(reference, focus)
-            | Action::MoveContainerToWorkspace(reference, focus) => {
+            Action::MoveColumnToWorkspace(reference, focus) => {
+                if let Some(workspace_id) = self.niri.find_workspace_id(reference) {
+                    if let Some(output) = self
+                        .niri
+                        .layout
+                        .move_column_to_workspace_by_id(workspace_id, focus)
+                    {
+                        if let Some(output) = output {
+                            if focus && !self.maybe_warp_cursor_to_focus_centered() {
+                                self.move_cursor_to_output(&output);
+                            }
+                        } else if focus {
+                            self.maybe_warp_cursor_to_focus();
+                        }
+
+                        // FIXME: granular
+                        self.niri.queue_redraw_all();
+                    }
+                }
+            }
+            Action::MoveContainerToWorkspace(reference, focus) => {
                 if let Some(workspace_id) = self.niri.find_workspace_id(reference) {
                     if let Some(output) = self
                         .niri
@@ -1982,103 +2012,142 @@ impl State {
                     }
                 }
             }
-            Action::MoveColumnToMonitorLeft | Action::MoveContainerToMonitorLeft => {
+            action @ (Action::MoveColumnToMonitorLeft | Action::MoveContainerToMonitorLeft) => {
                 if let Some(current_output) = self.niri.screenshot_ui.selection_output() {
                     if let Some(target_output) = self.niri.output_left_of(current_output) {
                         self.move_cursor_to_output(&target_output);
                         self.niri.screenshot_ui.move_to_output(target_output);
                     }
                 } else if let Some(output) = self.niri.output_left() {
-                    self.niri
-                        .layout
-                        .move_container_to_output(&output, None, true);
+                    if matches!(action, Action::MoveColumnToMonitorLeft) {
+                        self.niri.layout.move_column_to_output(&output, None, true);
+                    } else {
+                        self.niri
+                            .layout
+                            .move_container_to_output(&output, None, true);
+                    }
                     self.niri.layout.focus_output(&output);
                     if !self.maybe_warp_cursor_to_focus_centered() {
                         self.move_cursor_to_output(&output);
                     }
                 }
             }
-            Action::MoveColumnToMonitorRight | Action::MoveContainerToMonitorRight => {
+            action @ (Action::MoveColumnToMonitorRight | Action::MoveContainerToMonitorRight) => {
                 if let Some(current_output) = self.niri.screenshot_ui.selection_output() {
                     if let Some(target_output) = self.niri.output_right_of(current_output) {
                         self.move_cursor_to_output(&target_output);
                         self.niri.screenshot_ui.move_to_output(target_output);
                     }
                 } else if let Some(output) = self.niri.output_right() {
-                    self.niri
-                        .layout
-                        .move_container_to_output(&output, None, true);
+                    if matches!(action, Action::MoveColumnToMonitorRight) {
+                        self.niri.layout.move_column_to_output(&output, None, true);
+                    } else {
+                        self.niri
+                            .layout
+                            .move_container_to_output(&output, None, true);
+                    }
                     self.niri.layout.focus_output(&output);
                     if !self.maybe_warp_cursor_to_focus_centered() {
                         self.move_cursor_to_output(&output);
                     }
                 }
             }
-            Action::MoveColumnToMonitorDown | Action::MoveContainerToMonitorDown => {
+            action @ (Action::MoveColumnToMonitorDown | Action::MoveContainerToMonitorDown) => {
                 if let Some(current_output) = self.niri.screenshot_ui.selection_output() {
                     if let Some(target_output) = self.niri.output_down_of(current_output) {
                         self.move_cursor_to_output(&target_output);
                         self.niri.screenshot_ui.move_to_output(target_output);
                     }
                 } else if let Some(output) = self.niri.output_down() {
-                    self.niri
-                        .layout
-                        .move_container_to_output(&output, None, true);
+                    if matches!(action, Action::MoveColumnToMonitorDown) {
+                        self.niri.layout.move_column_to_output(&output, None, true);
+                    } else {
+                        self.niri
+                            .layout
+                            .move_container_to_output(&output, None, true);
+                    }
                     self.niri.layout.focus_output(&output);
                     if !self.maybe_warp_cursor_to_focus_centered() {
                         self.move_cursor_to_output(&output);
                     }
                 }
             }
-            Action::MoveColumnToMonitorUp | Action::MoveContainerToMonitorUp => {
+            action @ (Action::MoveColumnToMonitorUp | Action::MoveContainerToMonitorUp) => {
                 if let Some(current_output) = self.niri.screenshot_ui.selection_output() {
                     if let Some(target_output) = self.niri.output_up_of(current_output) {
                         self.move_cursor_to_output(&target_output);
                         self.niri.screenshot_ui.move_to_output(target_output);
                     }
                 } else if let Some(output) = self.niri.output_up() {
-                    self.niri
-                        .layout
-                        .move_container_to_output(&output, None, true);
+                    if matches!(action, Action::MoveColumnToMonitorUp) {
+                        self.niri.layout.move_column_to_output(&output, None, true);
+                    } else {
+                        self.niri
+                            .layout
+                            .move_container_to_output(&output, None, true);
+                    }
                     self.niri.layout.focus_output(&output);
                     if !self.maybe_warp_cursor_to_focus_centered() {
                         self.move_cursor_to_output(&output);
                     }
                 }
             }
-            Action::MoveColumnToMonitorPrevious | Action::MoveContainerToMonitorPrevious => {
+            action @ (Action::MoveColumnToMonitorPrevious
+            | Action::MoveContainerToMonitorPrevious) => {
                 if let Some(current_output) = self.niri.screenshot_ui.selection_output() {
                     if let Some(target_output) = self.niri.output_previous_of(current_output) {
                         self.move_cursor_to_output(&target_output);
                         self.niri.screenshot_ui.move_to_output(target_output);
                     }
                 } else if let Some(output) = self.niri.output_previous() {
-                    self.niri
-                        .layout
-                        .move_container_to_output(&output, None, true);
+                    if matches!(action, Action::MoveColumnToMonitorPrevious) {
+                        self.niri.layout.move_column_to_output(&output, None, true);
+                    } else {
+                        self.niri
+                            .layout
+                            .move_container_to_output(&output, None, true);
+                    }
                     self.niri.layout.focus_output(&output);
                     if !self.maybe_warp_cursor_to_focus_centered() {
                         self.move_cursor_to_output(&output);
                     }
                 }
             }
-            Action::MoveColumnToMonitorNext | Action::MoveContainerToMonitorNext => {
+            action @ (Action::MoveColumnToMonitorNext | Action::MoveContainerToMonitorNext) => {
                 if let Some(current_output) = self.niri.screenshot_ui.selection_output() {
                     if let Some(target_output) = self.niri.output_next_of(current_output) {
                         self.move_cursor_to_output(&target_output);
                         self.niri.screenshot_ui.move_to_output(target_output);
                     }
                 } else if let Some(output) = self.niri.output_next() {
-                    self.niri
-                        .layout
-                        .move_container_to_output(&output, None, true);
+                    if matches!(action, Action::MoveColumnToMonitorNext) {
+                        self.niri.layout.move_column_to_output(&output, None, true);
+                    } else {
+                        self.niri
+                            .layout
+                            .move_container_to_output(&output, None, true);
+                    }
                     self.niri.layout.focus_output(&output);
                     if !self.maybe_warp_cursor_to_focus_centered() {
                         self.move_cursor_to_output(&output);
                     }
                 }
             }
-            Action::MoveColumnToMonitor(output) | Action::MoveContainerToMonitor(output) => {
+            Action::MoveColumnToMonitor(output) => {
+                if let Some(output) = self.niri.output_by_name_match(&output).cloned() {
+                    if self.niri.screenshot_ui.is_open() {
+                        self.move_cursor_to_output(&output);
+                        self.niri.screenshot_ui.move_to_output(output);
+                    } else {
+                        self.niri.layout.move_column_to_output(&output, None, true);
+                        self.niri.layout.focus_output(&output);
+                        if !self.maybe_warp_cursor_to_focus_centered() {
+                            self.move_cursor_to_output(&output);
+                        }
+                    }
+                }
+            }
+            Action::MoveContainerToMonitor(output) => {
                 if let Some(output) = self.niri.output_by_name_match(&output).cloned() {
                     if self.niri.screenshot_ui.is_open() {
                         self.move_cursor_to_output(&output);

@@ -26,21 +26,7 @@ pub(super) struct Divergence {
 /// compared, and other fixtures are untouched. Without this the choice would be between a
 /// red suite and deleting the fixture that found the problem, and both of those end with
 /// nobody recording anything.
-pub(super) const KNOWN: &[Divergence] = &[Divergence {
-    fixture: "floating-the-workspace.parity",
-    step: 3,
-    reason: "\
-`floating toggle` with the workspace selected. sway's `cmd_floating` has no container to act \
-on, so `workspace_wrap_children` builds one, the workspace goes splith, and the wrapper is \
-what gets focused and floated — a container, even around a single window. The geometry now \
-agrees exactly; what is left is the wrapper itself and the focus that sits on it.
-
-That last piece is not in the layout, it is in what the two publish. tiri gives *every* \
-floating group a container root and sway only has one when the group really is a container, \
-so the tiri normalizer unwraps a lone floating group to keep the ordinary case comparable — \
-and unwraps this one with it, where the container is real and addressable. Closing it means \
-tiri's IPC saying which of the two it has, not the normalizer guessing from the child count.",
-}];
+pub(super) const KNOWN: &[Divergence] = &[];
 
 /// What makes two divergences "the same one".
 ///

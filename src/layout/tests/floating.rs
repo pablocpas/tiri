@@ -593,7 +593,7 @@ fn floating_toggle_selected_tiling_container_roundtrips_through_workspace_contex
     }
 }
 #[test]
-fn floating_toggle_workspace_subtree_roundtrips_all_windows_back_to_tiling() {
+fn floating_toggle_workspace_subtree_returns_all_windows_inside_the_sway_wrapper() {
     let mut layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow {
@@ -611,17 +611,11 @@ fn floating_toggle_workspace_subtree_roundtrips_all_windows_back_to_tiling() {
         Op::FocusParent,
     ]);
 
-    let tree_before = layout
-        .active_workspace()
-        .expect("active workspace")
-        .tiling()
-        .debug_tree()
-        .replace(" *", "");
     let selected_ids = layout.close_window_ids_for_active_selection();
     assert_eq!(
         selected_ids,
         vec![1, 2, 3],
-        "precondition: focus-parent twice should target the whole tiling workspace subtree",
+        "precondition: focus-parent should target the whole tiling workspace subtree",
     );
 
     layout.toggle_window_floating(None);
@@ -653,8 +647,8 @@ fn floating_toggle_workspace_subtree_roundtrips_all_windows_back_to_tiling() {
     assert_eq!(workspace.floating().tiles().count(), 0);
     assert_eq!(workspace.tiling().tiles().count(), 3);
     assert_eq!(
-        tree_after, tree_before,
-        "restoring the whole workspace subtree should recover the original tiling tree",
+        tree_after, "SplitH\n  SplitH\n    Window 1\n    SplitV\n      Window 2\n      Window 3\n",
+        "sway moves the workspace wrapper back into tiling instead of dissolving it",
     );
     for id in selected_ids {
         assert!(
@@ -1905,7 +1899,7 @@ fn floating_workspace_context_toggle_floating_uses_selected_floating_container_l
     assert_eq!(workspace.tiling().tiles().count(), 1);
 }
 #[test]
-fn focus_stack_head_is_workspace_in_floating_workspace_context() {
+fn layout_focus_history_keeps_workspace_scope_and_workspace_restores_floating_node() {
     let mut layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow {
@@ -1921,19 +1915,61 @@ fn focus_stack_head_is_workspace_in_floating_workspace_context() {
         "workspace-context focus must record Workspace at seat-focus head",
     );
     assert!(
-        snapshot.iter().any(
-            |node| matches!(node, SeatFocusNode::Floating { window_id, .. } if *window_id == 1)
-        ),
-        "floating node should remain in inactive MRU history",
+        snapshot
+            .iter()
+            .all(|node| matches!(node, SeatFocusNode::Workspace { .. })),
+        "layout history must not duplicate node focus owned by the workspace",
     );
 
     layout.switch_focus_floating_tiling();
-    let snapshot = layout.seat_focus.snapshot();
     assert!(
-        matches!(snapshot.first(), Some(SeatFocusNode::Floating { window_id, .. }) if *window_id == 1),
-        "switching back to floating target should restore Floating at seat-focus head",
+        layout
+            .active_workspace()
+            .and_then(|workspace| workspace.active_window())
+            .is_some_and(|window| *window.id() == 1),
+        "the workspace seat must restore its own floating target",
     );
 }
+
+#[test]
+fn floating_active_window_is_filtered_from_workspace_seat_mru() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams {
+                is_floating: true,
+                ..TestWindowParams::new(2)
+            },
+        },
+        Op::AddWindow {
+            params: TestWindowParams {
+                is_floating: true,
+                ..TestWindowParams::new(3)
+            },
+        },
+        Op::FocusWindow(2),
+        Op::FocusWindow(1),
+    ]);
+
+    let workspace = layout.active_workspace().expect("active workspace");
+    assert_eq!(
+        workspace.floating().active_window().map(LayoutElement::id),
+        Some(&2),
+        "while tiling has focus, floating must use the same seat's filtered MRU"
+    );
+
+    check_ops_on_layout(&mut layout, [Op::CloseWindow(2)]);
+    let workspace = layout.active_workspace().expect("active workspace");
+    assert_eq!(
+        workspace.floating().active_window().map(LayoutElement::id),
+        Some(&3),
+        "removing the inactive MRU must reveal the next live seat entry, not a stale cache"
+    );
+}
+
 #[test]
 fn floating_workspace_context_layout_all_preserves_context_like_split_toggle() {
     let mut layout = check_ops([
