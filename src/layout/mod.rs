@@ -3934,6 +3934,7 @@ impl<W: LayoutElement> Layout<W> {
                 move_.tile.update_render_elements(
                     true,
                     true,
+                    true,
                     crate::layout::focus_ring::FocusRingEdges::all(),
                     None,
                     view_rect,
@@ -6830,6 +6831,7 @@ impl<W: LayoutElement> Layout<W> {
                     Rectangle::new(pos_within_output.upscale(-1.), output_size(&move_.output))
                         .downscale(zoom);
                 move_.tile.update_render_elements(
+                    false,
                     false,
                     false,
                     crate::layout::focus_ring::FocusRingEdges::all(),

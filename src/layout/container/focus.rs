@@ -677,12 +677,15 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// descendant — a child. That single word is the whole of the rule: a node moved deeper
     /// into a switcher stops answering for the one it left, without the move touching any
     /// focus state at all.
+    ///
+    /// At the workspace the search skips floats, as sway's does: the children it walks are
+    /// `ws->tiling`, and a floating node is in `ws->floating` instead. One arena holds both
+    /// here, so the same distinction is a question about the branch a child roots.
     pub(in crate::layout) fn active_tiling_child(&self, parent: NodeKey) -> Option<NodeKey> {
-        self.seat
-            .order()
-            .iter()
-            .copied()
-            .find(|key| self.parent_of(*key) == Some(parent))
+        self.seat.order().iter().copied().find(|key| {
+            self.parent_of(*key) == Some(parent)
+                && (parent != self.root || self.branch_root(*key) == self.root)
+        })
     }
 
     /// Which child of `parent` is the active one, the only question either order is asked.
@@ -693,8 +696,32 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// around a node the seat already knows — so it has no rule for it and neither is this
     /// one; it is where tiri builds containers before anything has been focused into them.
     pub(in crate::layout) fn active_child(&self, parent: NodeKey) -> Option<NodeKey> {
-        self.active_tiling_child(parent)
-            .or_else(|| self.get_container(parent)?.children().first().copied())
+        self.active_tiling_child(parent).or_else(|| {
+            self.get_container(parent)?
+                .children()
+                .iter()
+                .copied()
+                .find(|key| parent != self.root || self.branch_root(*key) == self.root)
+        })
+    }
+
+    /// Whether `key` is the child its parent would descend to — sway's
+    /// `seat_get_focus_inactive` answer, asked one level up.
+    ///
+    /// This is the whole of the `focused_inactive` decoration state. sway renders a level at
+    /// a time (`render_container_simple`) and compares each child against the focus-inactive
+    /// child of *that* level, so the question is local: a node is `focused_inactive` when its
+    /// own parent would come back to it, whatever is happening above the parent. The focus
+    /// head of a container nested inside a container nobody has focused still shows it,
+    /// because its parent still points at it.
+    ///
+    /// It is deliberately not "is anything in here focused": the globally focused leaf is
+    /// also its parent's active child, and callers pick `Focused` for it first.
+    pub(in crate::layout) fn is_focus_head(&self, key: NodeKey) -> bool {
+        let Some(parent) = self.parent_of(key) else {
+            return false;
+        };
+        self.active_child(parent) == Some(key)
     }
 
     /// Where [`Self::active_child`] sits in its parent's child list.

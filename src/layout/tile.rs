@@ -675,6 +675,7 @@ impl<W: LayoutElement> Tile<W> {
         &mut self,
         is_active_workspace: bool,
         is_focused: bool,
+        is_focus_head: bool,
         edges: FocusRingEdges,
         indicator_edge: Option<FocusRingIndicatorEdge>,
         view_rect: Rectangle<f64, Logical>,
@@ -683,11 +684,16 @@ impl<W: LayoutElement> Tile<W> {
         let rules = self.window.rules();
         let animated_tile_size = self.animated_tile_size();
         let expanded_progress = self.expanded_progress();
+        // The i3/sway decoration states. `focused` is the one window holding focus;
+        // `focused_inactive` is a window its own parent would come back to while the focus is
+        // elsewhere (`ContainerTree::is_focus_head`); everything else is `unfocused`. Which
+        // workspace is active does not enter into it — sway compares against the seat, so the
+        // active window of another monitor is `focused_inactive` there too.
         let state = if self.window.is_urgent() {
             FocusRingState::Urgent
         } else if is_focused {
             FocusRingState::Focused
-        } else if is_active_workspace {
+        } else if is_focus_head {
             FocusRingState::FocusedInactive
         } else {
             FocusRingState::Unfocused
@@ -1024,6 +1030,12 @@ impl<W: LayoutElement> Tile<W> {
 
     pub fn window_mut(&mut self) -> &mut W {
         &mut self.window
+    }
+
+    /// The border color the last render update resolved for this tile.
+    #[cfg(test)]
+    pub(super) fn debug_border_color(&self) -> smithay::backend::renderer::Color32F {
+        self.border.debug_color()
     }
 
     pub(super) fn is_scratchpad(&self) -> bool {

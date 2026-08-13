@@ -6,6 +6,7 @@ mod server;
 
 mod animations;
 mod containers;
+mod decorations;
 mod floating;
 mod fullscreen;
 mod layer_shell;

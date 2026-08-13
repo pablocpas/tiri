@@ -1404,6 +1404,8 @@ impl<W: LayoutElement> TreeSpace<W> {
         for (info, (edges, indicator_edge)) in render_layouts.into_iter().zip(render_edges) {
             let is_in_fullscreen_container =
                 fullscreen_container.is_some_and(|scope| self.tree.is_descendant(info.key, scope));
+            // Asked before the tile is borrowed mutably below.
+            let is_focus_head = self.tree.is_focus_head(info.key);
             // Use O(1) key lookup instead of O(depth) path lookup.
             if let Some(tile) = self.tree.get_tile_mut(info.key) {
                 let state = fullscreen.tile_state(
@@ -1431,6 +1433,7 @@ impl<W: LayoutElement> TreeSpace<W> {
                     tile.update_render_elements(
                         is_active,
                         is_focused,
+                        is_focus_head,
                         edges,
                         indicator_edge,
                         tile_view_rect,

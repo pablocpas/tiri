@@ -531,6 +531,13 @@ impl FocusRing {
     pub fn config(&self) -> &tiri_config::FocusRing {
         &self.config
     }
+
+    /// The color the last update resolved, so a test can assert what is on screen rather
+    /// than which branch was taken to get there.
+    #[cfg(test)]
+    pub fn debug_color(&self) -> smithay::backend::renderer::Color32F {
+        self.buffers[0].color()
+    }
 }
 
 #[cfg(test)]

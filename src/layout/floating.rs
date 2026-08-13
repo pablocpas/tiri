@@ -318,6 +318,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             .active_container_idx(space)
             .is_some_and(|idx| self.selected_is_container_in(space, idx));
         let scale = space.scale();
+        let floating_has_focus = space.side_is_active(true);
         let applied = space.tree_mut().apply_pending_layouts_if_ready();
         if applied && space.tree_mut().take_pending_relayout() {
             space.tree_mut().layout();
@@ -327,7 +328,15 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 super::tree_space::branch_display_layouts(space.tree(), container.root)
                     .cloned()
                     .collect();
+            // sway's `render_floating_container`: a float holding a single view is `focused`,
+            // `urgent` or `unfocused`, and nothing else — the focus-inactive comparison never
+            // runs on it, because that view *is* the floating con and floating cons are not
+            // compared against each other. Only when the float holds a real sub-layout does
+            // sway recurse into `render_container`, and then the per-level rule applies to the
+            // windows inside it as it would anywhere else.
+            let float_has_sublayout = space.tree().window_count_in_branch(container.root) > 1;
             for info in layouts {
+                let is_focus_head = float_has_sublayout && space.tree().is_focus_head(info.key);
                 if let Some(tile) = space.tree_mut().get_tile_mut(info.key) {
                     let is_fullscreen_tile = fullscreen_id
                         .as_ref()
@@ -343,16 +352,21 @@ impl<W: LayoutElement> FloatingSpace<W> {
                         r
                     };
 
+                    // `is_active` is the workspace, not the focus: the floating side owns
+                    // the focus only when the workspace says it does. Reading it as focus
+                    // painted this space's active window `focused` while a tiled window
+                    // held the keyboard, so both wore the focused border at once.
                     let is_focused = if is_fullscreen_tile {
-                        is_active
+                        floating_has_focus
                     } else {
-                        is_active
+                        floating_has_focus
                             && Some(tile.window().id()) == active.as_ref()
                             && !selection_is_container
                     };
                     tile.update_render_elements(
                         is_active,
                         is_focused,
+                        is_focus_head,
                         FocusRingEdges::all(),
                         None,
                         tile_view_rect,

@@ -2391,3 +2391,164 @@ fn i3_550_layout_tabbed_flattens_the_lone_split_like_sway_112() {
     "
     );
 }
+/// Border colors that name the state they came from, so a failure reads as the state that
+/// was painted rather than as four floats.
+fn decoration_options() -> Options {
+    let color = |r, g, b| tiri_config::Color::from_rgba8_unpremul(r, g, b, 255);
+    Options {
+        layout: tiri_config::Layout {
+            border: tiri_config::Border {
+                off: false,
+                width: 2.,
+                // The sway defaults, which is what this is about.
+                active_color: color(0x28, 0x55, 0x77),
+                focused_inactive_color: color(0x5f, 0x67, 0x6a),
+                inactive_color: color(0x22, 0x22, 0x22),
+                ..Default::default()
+            },
+            focus_ring: tiri_config::FocusRing {
+                off: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Decoration {
+    Focused,
+    FocusedInactive,
+    Unfocused,
+    Other,
+}
+
+fn decorations(layout: &Layout<TestWindow>) -> HashMap<usize, Decoration> {
+    let borders = &layout.options.layout.border;
+    let matches = |color: smithay::backend::renderer::Color32F, expected: tiri_config::Color| {
+        let expected: [f32; 4] = expected.to_array_unpremul();
+        (0..4).all(|i| (color.components()[i] - expected[i]).abs() < 1e-3)
+    };
+
+    let workspace = layout.active_workspace().expect("active workspace");
+    workspace
+        .tiles_with_render_positions()
+        .map(|(tile, _, _)| {
+            let color = tile.debug_border_color();
+            let state = if matches(color, borders.active_color) {
+                Decoration::Focused
+            } else if matches(color, borders.focused_inactive_color) {
+                Decoration::FocusedInactive
+            } else if matches(color, borders.inactive_color) {
+                Decoration::Unfocused
+            } else {
+                Decoration::Other
+            };
+            (*tile.window().id(), state)
+        })
+        .collect()
+}
+
+#[test]
+fn focused_inactive_is_the_focus_head_of_a_non_focused_container() {
+    // SplitH[ SplitV[win1, win3], win2 ] with the focus on win2. sway renders a level at a
+    // time: at the root, win2 is the focus-inactive child and is also focused; inside the
+    // SplitV nobody is focused, but the container still points at win3, so win3 is
+    // `focused_inactive` and win1 — which its parent would not come back to — is not.
+    let mut layout = check_ops_with_options(
+        decoration_options(),
+        [
+            Op::AddOutput(1),
+            Op::AddWindow {
+                params: TestWindowParams::new(1),
+            },
+            Op::AddWindow {
+                params: TestWindowParams::new(2),
+            },
+            Op::FocusColumnLeft,
+            Op::SplitVertical,
+            Op::AddWindow {
+                params: TestWindowParams::new(3),
+            },
+            Op::FocusWindow(2),
+        ],
+    );
+    layout.update_render_elements(None);
+
+    let workspace = layout.active_workspace().expect("active workspace");
+    assert_snapshot!(
+        workspace.tiling().debug_tree().as_str(),
+        @"
+    SplitH
+      SplitV
+        Window 1
+        Window 3
+      Window 2 *
+    "
+    );
+
+    let decorations = decorations(&layout);
+    assert_eq!(decorations[&2], Decoration::Focused);
+    assert_eq!(decorations[&3], Decoration::FocusedInactive);
+    assert_eq!(decorations[&1], Decoration::Unfocused);
+}
+
+#[test]
+fn focusing_a_float_leaves_the_tiled_window_focused_inactive() {
+    // The state the flat "everything on the active workspace" model could not express: with
+    // the focus on a float, the workspace still points at the window that had it, and that
+    // one window — not every tiled window — is `focused_inactive`.
+    let mut layout = check_ops_with_options(
+        decoration_options(),
+        [
+            Op::AddOutput(1),
+            Op::AddWindow {
+                params: TestWindowParams::new(1),
+            },
+            Op::AddWindow {
+                params: TestWindowParams::new(2),
+            },
+            Op::AddWindow {
+                params: TestWindowParams::new(3),
+            },
+            Op::ToggleWindowFloating { id: Some(3) },
+            Op::FocusWindow(3),
+        ],
+    );
+    layout.update_render_elements(None);
+
+    let decorations = decorations(&layout);
+    // The float itself: sway's `render_floating_container` only ever paints a lone float
+    // focused, urgent or unfocused.
+    assert_eq!(decorations[&3], Decoration::Focused);
+    // The tiled window the workspace would return to.
+    assert_eq!(decorations[&2], Decoration::FocusedInactive);
+    // Its sibling, which nothing points at.
+    assert_eq!(decorations[&1], Decoration::Unfocused);
+}
+
+#[test]
+fn a_lone_float_is_never_focused_inactive() {
+    let mut layout = check_ops_with_options(
+        decoration_options(),
+        [
+            Op::AddOutput(1),
+            Op::AddWindow {
+                params: TestWindowParams::new(1),
+            },
+            Op::AddWindow {
+                params: TestWindowParams::new(2),
+            },
+            Op::ToggleWindowFloating { id: Some(2) },
+            Op::FocusWindow(1),
+        ],
+    );
+    layout.update_render_elements(None);
+
+    let decorations = decorations(&layout);
+    assert_eq!(decorations[&1], Decoration::Focused);
+    // sway never compares a lone float against the workspace's focus-inactive child, so it
+    // drops straight to unfocused however recently it was focused.
+    assert_eq!(decorations[&2], Decoration::Unfocused);
+}
