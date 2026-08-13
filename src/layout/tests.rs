@@ -598,6 +598,7 @@ enum Op {
     ConsumeWindowIntoColumn,
     ExpelWindowFromColumn,
     SwapWindowInDirection(#[proptest(strategy = "arbitrary_swap_direction()")] Direction),
+    SwapWithWindow(#[proptest(strategy = "1..=5usize")] usize),
     ToggleColumnTabbedDisplay,
     SetColumnDisplay(#[proptest(strategy = "arbitrary_column_display()")] ColumnDisplay),
     CenterColumn,
@@ -618,10 +619,15 @@ enum Op {
         window_id: Option<usize>,
         #[proptest(strategy = "0..=4usize")]
         workspace_idx: usize,
+        /// Whether the focus follows the window, as tiri's own action does by default.
+        /// i3 and sway leave it behind, so the parity replayer asks for `false`.
+        focus: bool,
     },
     MoveColumnToWorkspaceDown(bool),
     MoveColumnToWorkspaceUp(bool),
     MoveColumnToWorkspace(#[proptest(strategy = "0..=4usize")] usize, bool),
+    /// i3's `move container to workspace`: whatever the seat has selected, leaf or container.
+    MoveContainerToWorkspace(#[proptest(strategy = "0..=4usize")] usize, bool),
     MoveWorkspaceDown,
     MoveWorkspaceUp,
     MoveWorkspaceToIndex {
@@ -1310,6 +1316,11 @@ impl Op {
             Op::ConsumeWindowIntoColumn => layout.consume_into_column(),
             Op::ExpelWindowFromColumn => layout.expel_from_column(),
             Op::SwapWindowInDirection(direction) => layout.swap_window_in_direction(direction),
+            Op::SwapWithWindow(id) => {
+                if layout.has_window(&id) {
+                    layout.swap_window_with(&id);
+                }
+            }
             Op::ToggleColumnTabbedDisplay => layout.toggle_column_tabbed_display(),
             Op::SetColumnDisplay(display) => layout.set_column_display(display),
             Op::CenterColumn => layout.center_column(),
@@ -1330,13 +1341,22 @@ impl Op {
             Op::MoveWindowToWorkspace {
                 window_id,
                 workspace_idx,
+                focus,
             } => {
                 let window_id = window_id.filter(|id| layout.has_window(id));
-                layout.move_to_workspace(window_id.as_ref(), workspace_idx, ActivateWindow::Smart);
+                let activate = if focus {
+                    ActivateWindow::Smart
+                } else {
+                    ActivateWindow::No
+                };
+                layout.move_to_workspace(window_id.as_ref(), workspace_idx, activate);
             }
             Op::MoveColumnToWorkspaceDown(focus) => layout.move_column_to_workspace_down(focus),
             Op::MoveColumnToWorkspaceUp(focus) => layout.move_column_to_workspace_up(focus),
             Op::MoveColumnToWorkspace(idx, focus) => layout.move_column_to_workspace(idx, focus),
+            Op::MoveContainerToWorkspace(idx, focus) => {
+                layout.move_container_to_workspace(idx, focus)
+            }
             Op::MoveWindowToOutput {
                 window_id,
                 output_id: id,
@@ -2585,10 +2605,12 @@ fn operations_dont_panic() {
         Op::MoveWindowToWorkspace {
             window_id: None,
             workspace_idx: 1,
+            focus: true,
         },
         Op::MoveWindowToWorkspace {
             window_id: None,
             workspace_idx: 2,
+            focus: true,
         },
         Op::MoveColumnToWorkspaceDown(true),
         Op::MoveColumnToWorkspaceUp(true),
@@ -2760,14 +2782,17 @@ fn operations_from_starting_state_dont_panic() {
         Op::MoveWindowToWorkspace {
             window_id: None,
             workspace_idx: 1,
+            focus: true,
         },
         Op::MoveWindowToWorkspace {
             window_id: None,
             workspace_idx: 2,
+            focus: true,
         },
         Op::MoveWindowToWorkspace {
             window_id: None,
             workspace_idx: 3,
+            focus: true,
         },
         Op::MoveColumnToWorkspaceDown(true),
         Op::MoveColumnToWorkspaceUp(true),

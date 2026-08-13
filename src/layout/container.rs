@@ -49,6 +49,7 @@ mod root_children;
 mod seat;
 mod split;
 mod state;
+mod swap;
 mod tab_bar_model;
 mod tree_store;
 

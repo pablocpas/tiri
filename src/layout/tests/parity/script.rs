@@ -230,6 +230,45 @@ fn op_for(command: &str, next_id: &mut usize, client: (i32, i32)) -> Result<Op, 
         ["floating", "toggle"] => Op::ToggleWindowFloating { id: None },
         ["fullscreen", "toggle"] => Op::ToggleFullscreenFocused,
 
+        // sway's `swap container with id|con_id|mark <arg>`. The script says which window in
+        // the only vocabulary it has — the order it opened them — and the recorder turns
+        // that into the `con_id` sway knows it by, the same way `open` and `close` are the
+        // harness's words for spawning a client and `kill`.
+        //
+        // What is swapped is the *selection*, so after `focus parent` this trades whole
+        // subtrees, which is `cmd_swap` operating on `handler_context.container`.
+        ["swap", "container", "with", id] | ["swap", "with", id] => {
+            Op::SwapWithWindow(id.parse().map_err(|_| Reason::BadArgument)?)
+        }
+
+        // Workspaces are numbered *within the script*: 1 is the one it starts on. sway names
+        // them, tiri indexes them per output, and neither name is something a script could
+        // write down and still mean the same thing on both sides — the recorder maps this
+        // number onto a name unique to the recording, the replayer onto the index.
+        //
+        // The model only ever renders the focused workspace, so `move to workspace` is
+        // observed as the window leaving and `workspace` is how the recording gets to look
+        // at where it went.
+        //
+        // What moves is the selection, so this is the container move rather than the window
+        // one: after `focus parent` sway takes the whole subtree with it. And the focus stays
+        // where it was — `cmd_move_container` restores it to what the container left behind
+        // (`move.c:598`), while tiri's own action follows the window by default.
+        ["move", "container", "to", "workspace", target] | ["move", "to", "workspace", target] => {
+            Op::MoveContainerToWorkspace(workspace_index(target)?, false)
+        }
+        ["workspace", target] => Op::FocusWorkspace(workspace_index(target)?),
+
         _ => return Err(Reason::Unsupported),
     })
+}
+
+/// The script's own workspace numbering, as a tiri workspace index.
+///
+/// 1 is where every script starts, so the numbers are 1-based and the indices are not. A
+/// script that says `workspace 0` means nothing, and saying nothing is how a typo turns into
+/// a test that passes for the wrong reason.
+fn workspace_index(target: &str) -> Result<usize, Reason> {
+    let number: usize = target.parse().map_err(|_| Reason::BadArgument)?;
+    number.checked_sub(1).ok_or(Reason::BadArgument)
 }

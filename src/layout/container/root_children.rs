@@ -137,7 +137,64 @@ impl<W: LayoutElement> ContainerTree<W> {
         // commit or command invalidated the layout.
         self.discard_layout_superseded_by_transfer();
         let node_key = self.insert_subtree(subtree);
+        if self.unwrap_into_empty_workspace(node_key, focus) {
+            return;
+        }
         self.insert_key_at_root(index, node_key, focus);
+    }
+
+    /// A container arriving at an empty workspace becomes the workspace.
+    ///
+    /// sway's `container_move_to_workspace` (`sway/commands/move.c:222`) branches on exactly
+    /// this: an empty destination and a node with children take
+    /// `workspace_unwrap_children` followed by `container_reap_empty`, so the workspace
+    /// adopts the container's layout and its children, and the container itself is gone.
+    /// Anything else is added as a child with its shares cleared, because a fraction is
+    /// relative to a parent the node has left.
+    ///
+    /// Without it a workspace that has never held anything comes out one level deeper than
+    /// the one the container was on, which is a difference in the tree the user can see the
+    /// moment they split something there.
+    fn unwrap_into_empty_workspace(&mut self, node_key: NodeKey, focus: bool) -> bool {
+        let root = self.root;
+        if self
+            .get_container(root)
+            .is_none_or(|workspace| workspace.child_count() != 0)
+        {
+            return false;
+        }
+        let Some(container) = self.get_real_container(node_key) else {
+            return false;
+        };
+        if container.child_count() == 0 {
+            return false;
+        }
+
+        let layout = container.layout();
+        let children: Vec<NodeKey> = container.children().to_vec();
+        if let Some(workspace) = self.get_container_mut(root) {
+            workspace.set_layout(layout);
+        }
+        for (idx, child) in children.iter().enumerate() {
+            if let Some(workspace) = self.get_container_mut(root) {
+                workspace.insert_child(idx, *child);
+            }
+            self.set_parent(*child, Some(root));
+        }
+        // Its children have already left, so the wrapper goes on its own — this is
+        // `container_reap_empty` on a container nothing is left inside.
+        if let Some(container) = self.get_container_mut(node_key) {
+            while container.remove_child(0).is_some() {}
+        }
+        self.remove_node_from_store(node_key);
+        self.prune_focus_order();
+
+        // The seat has to be told where the focus went: the node it was pointing at no
+        // longer exists, and the children arrived without anything focusing them.
+        if let Some(&first) = children.first() {
+            self.settle_focus_after_insert(first, focus);
+        }
+        true
     }
 
     /// Focus nth (1-based) leaf within the given root child.

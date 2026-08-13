@@ -1,0 +1,14 @@
+# moving the only window away leaves the workspace empty rather than destroying it under the focus
+# recorded from sway version 1.11
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ move container to workspace 2
+workspace splith focus=@
+
+$ workspace 2
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000

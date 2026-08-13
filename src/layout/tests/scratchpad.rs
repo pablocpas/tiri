@@ -258,6 +258,7 @@ fn move_window_to_workspace_ignores_hidden_scratchpad_window() {
         Op::MoveWindowToWorkspace {
             window_id: Some(5),
             workspace_idx: 0,
+            focus: true,
         },
     ]);
 

@@ -3380,6 +3380,11 @@ impl<W: LayoutElement> TreeSpace<W> {
         self.move_command_target(direction);
     }
 
+    /// sway's `swap container with`: exchange the selected node and the window `target`.
+    pub fn swap_selected_with_window(&mut self, target: &W::Id) -> bool {
+        self.mutate_tree(|tree| tree.swap_selected_with_window(target))
+    }
+
     pub fn start_open_animation(&mut self, id: &W::Id) -> bool {
         let Some(key) = self.tiled_window_key(id) else {
             return false;

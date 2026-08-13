@@ -1555,6 +1555,7 @@ fn move_window_to_workspace_up_after_maximize_keeps_floating_normal() {
         Op::MoveWindowToWorkspace {
             window_id: None,
             workspace_idx: 1,
+            focus: true,
         },
         Op::MaximizeWindowToEdges { id: None },
         Op::MoveWindowToWorkspaceUp(false),

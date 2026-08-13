@@ -2033,6 +2033,15 @@ impl<W: LayoutElement> Workspace<W> {
         self.expel_from_container();
     }
 
+    /// sway's `swap container with id|con_id|mark <arg>`, addressed by window.
+    ///
+    /// One arena holds both sides of the workspace, so this needs no routing: the tree
+    /// answers for the selected node wherever it sits, and refuses the pairs it cannot
+    /// honour.
+    pub fn swap_window_with(&mut self, target: &W::Id) -> bool {
+        self.space.swap_selected_with_window(target)
+    }
+
     pub fn swap_window_in_direction(&mut self, direction: Direction) {
         self.dispatch_move_directional(
             |f, tree| f.swap_window_in_direction(tree, direction),

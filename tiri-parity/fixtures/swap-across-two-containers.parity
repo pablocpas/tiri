@@ -1,0 +1,44 @@
+# swapping across two parents: each node lands in the other's slot without either parent being reaped or squashed
+# recorded from sway version 1.11
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splith focus=2
+  window 1 0.000,0.000 0.500x1.000
+  window 2 0.500,0.000 0.500x1.000
+
+$ focus left
+workspace splith focus=1
+  window 1 0.000,0.000 0.500x1.000
+  window 2 0.500,0.000 0.500x1.000
+
+$ split v
+workspace splith focus=1
+  splitv 0.000,0.000 0.500x1.000
+    window 1 0.000,0.000 0.500x1.000
+  window 2 0.500,0.000 0.500x1.000
+
+$ open
+workspace splith focus=3
+  splitv 0.000,0.000 0.500x1.000
+    window 1 0.000,0.000 0.500x0.500
+    window 3 0.000,0.500 0.500x0.500
+  window 2 0.500,0.000 0.500x1.000
+
+$ focus right
+workspace splith focus=2
+  splitv 0.000,0.000 0.500x1.000
+    window 1 0.000,0.000 0.500x0.500
+    window 3 0.000,0.500 0.500x0.500
+  window 2 0.500,0.000 0.500x1.000
+
+$ swap container with 3
+workspace splith focus=2
+  splitv 0.000,0.000 0.500x1.000
+    window 1 0.000,0.000 0.500x0.500
+    window 2 0.000,0.500 0.500x0.500
+  window 3 0.500,0.000 0.500x1.000

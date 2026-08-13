@@ -81,6 +81,14 @@ fn moving_a_tiled_window_to_another_workspace_derives_a_new_share() {
 fn moving_a_container_between_workspaces_keeps_all_node_identities() {
     let mut layout = check_ops([
         Op::AddOutput(1),
+        // The workspace below already holds a window, so the container arriving there stays
+        // a container. An empty one absorbs it instead, which is
+        // `moving_a_container_to_an_empty_workspace_unwraps_it_like_sway`.
+        Op::FocusWorkspaceDown,
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::FocusWorkspaceUp,
         Op::AddWindow {
             params: TestWindowParams::new(1),
         },
@@ -115,6 +123,46 @@ fn moving_a_container_between_workspaces_keeps_all_node_identities() {
     assert_eq!(tree.window_key(&2), Some(second));
     assert_eq!(tree.parent_of(first), Some(container));
     assert_eq!(tree.parent_of(second), Some(container));
+}
+
+/// sway's `container_move_to_workspace`: a container moved to an *empty* workspace is
+/// unwrapped into it — the workspace takes its layout and its children, and the container is
+/// reaped. Recorded in
+/// `tiri-parity/fixtures/move-a-selected-container-to-another-workspace.parity`.
+#[test]
+fn moving_a_container_to_an_empty_workspace_unwraps_it_like_sway() {
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::FocusColumnLeft,
+        Op::SplitVertical,
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::FocusParent,
+        Op::MoveContainerToWorkspace(1, false),
+        Op::FocusWorkspaceDown,
+    ]);
+
+    let workspace = layout.active_workspace().expect("active workspace");
+    assert_eq!(
+        workspace.debug_workspace_layout(),
+        ContainerLayout::SplitV,
+        "the empty workspace takes the arriving container's layout"
+    );
+    assert_snapshot!(
+        workspace.tiling().debug_tree().as_str(),
+        @"
+    SplitV
+      Window 1
+      Window 3 *
+    "
+    );
 }
 
 fn assert_moving_window_out_of_workspace_group_moves_one(
@@ -880,6 +928,7 @@ fn move_to_workspace_by_idx_does_not_leave_empty_workspaces() {
         Op::MoveWindowToWorkspace {
             window_id: Some(0),
             workspace_idx: 2,
+            focus: true,
         },
     ];
 
@@ -1653,6 +1702,7 @@ fn move_window_to_workspace_with_different_active_output() {
         Op::MoveWindowToWorkspace {
             window_id: Some(0),
             workspace_idx: 2,
+            focus: true,
         },
     ];
 

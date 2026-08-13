@@ -254,6 +254,10 @@ fn moving_a_subtree_between_workspace_stores_keeps_every_identity() {
     let mut source = TreeHarness::new();
     let mut target = TreeHarness::new();
     source.add_window(1);
+    // The destination holds something, so the container arriving stays a container. An
+    // empty one absorbs it instead — see
+    // `moving_a_container_to_an_empty_workspace_unwraps_it`.
+    target.add_window(2);
 
     let first = source.tree.window_key(&1).expect("first leaf");
     let container = source
@@ -274,6 +278,58 @@ fn moving_a_subtree_between_workspace_stores_keeps_every_identity() {
 
     assert_eq!(target.tree.window_key(&1), Some(first));
     assert_eq!(target.tree.parent_of(first), Some(container));
+}
+
+/// sway's `container_move_to_workspace`: a container landing on an empty workspace is
+/// unwrapped into it, the workspace takes its layout, and the container is reaped.
+///
+/// Measured in `tiri-parity/fixtures/move-a-selected-container-to-another-workspace.parity`,
+/// where the destination comes out `splitv` with two windows rather than a `splith`
+/// workspace holding a `splitv`.
+#[test]
+fn moving_a_container_to_an_empty_workspace_unwraps_it() {
+    let mut source = TreeHarness::new();
+    let mut target = TreeHarness::new();
+    source.add_window(1);
+    source.append_window(2);
+
+    let first = source.tree.window_key(&1).expect("first leaf");
+    let second = source.tree.window_key(&2).expect("second leaf");
+    let container = source
+        .tree
+        .wrap_child_in_new_container(
+            source.tree.workspace_root(),
+            first,
+            ContainerData::new(ContainerLayout::SplitV),
+        )
+        .expect("container");
+    assert_eq!(source.tree.parent_of(first), Some(container));
+
+    assert!(source.tree.focus_window_by_id(&1));
+    let idx = source.tree.focused_root_index().expect("root child");
+    let subtree = source
+        .tree
+        .take_root_child_subtree(idx)
+        .expect("detached subtree");
+    target.tree.insert_subtree_at_root(0, subtree, true);
+
+    let root = target.tree.workspace_root();
+    assert_eq!(
+        target.tree.window_key(&1),
+        Some(first),
+        "the leaf keeps its identity across the stores"
+    );
+    assert_eq!(
+        target.tree.parent_of(first),
+        Some(root),
+        "the wrapper is gone and its child hangs off the workspace"
+    );
+    assert!(
+        !target.tree.holds_node(container),
+        "the emptied container is reaped, not left in the arena"
+    );
+    assert_eq!(target.tree.workspace_layout(), ContainerLayout::SplitV);
+    let _ = second;
 }
 
 #[test]

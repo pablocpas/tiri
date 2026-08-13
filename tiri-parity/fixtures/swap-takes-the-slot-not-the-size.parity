@@ -1,0 +1,22 @@
+# cmd_swap copies each container's fraction onto the other, so a window takes the size of the slot it lands in, not the one it left
+# recorded from sway version 1.11
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splith focus=2
+  window 1 0.000,0.000 0.500x1.000
+  window 2 0.500,0.000 0.500x1.000
+
+$ resize grow width 200 px
+workspace splith focus=2
+  window 1 0.000,0.000 0.344x1.000
+  window 2 0.344,0.000 0.656x1.000
+
+$ swap container with 1
+workspace splith focus=2
+  window 2 0.000,0.000 0.344x1.000
+  window 1 0.344,0.000 0.656x1.000

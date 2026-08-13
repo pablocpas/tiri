@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use crate::model::Workspace;
 use crate::sway;
+use crate::WindowId;
 
 /// The output every recording runs on. Must match what the tiri replayer pins, or geometry
 /// differences would only be reporting a difference in configuration.
@@ -65,6 +66,62 @@ fn i3msg_binary() -> String {
 fn is_command_syntax_error(detail: &str) -> bool {
     let lower = detail.to_ascii_lowercase();
     lower.contains("unknown") || lower.contains("invalid") || lower.contains("expected")
+}
+
+/// Rewrite the harness's own words into the compositor's.
+///
+/// Two of the things a script names cannot be spelled the way a compositor spells them. A
+/// window is the order the script opened it in, and each compositor knows it by a node id
+/// that differs between runs. A workspace is the script's own count, and it has to become a
+/// name no other script in the session uses: `reset` leaves the last script's layout on the
+/// workspace it was using, so sharing one would hand the next script a tree it did not
+/// build.
+///
+/// Everything else passes through untouched, which is the point of writing scripts in i3's
+/// grammar to begin with.
+fn translate(command: &str, order: &sway::OpenOrder, script: u32) -> String {
+    let words: Vec<&str> = command.split_whitespace().collect();
+    match words.as_slice() {
+        ["swap", "container", "with", window] | ["swap", "with", window] => {
+            // A window the script never opened, or has since closed, has no node. Name one
+            // the compositor cannot find: it answers "failed to find", which is a refusal it
+            // is allowed to make, and tiri does nothing there either — so the two still
+            // agree. Inventing a syntax error instead would fail the run.
+            let node = window
+                .parse()
+                .ok()
+                .and_then(|window| node_for_window(order, window));
+            format!("swap container with con_id {}", node.unwrap_or(0))
+        }
+        ["move", "container", "to", "workspace", target] | ["move", "to", "workspace", target] => {
+            format!(
+                "move container to workspace {}",
+                workspace_name(target, script)
+            )
+        }
+        ["workspace", target] => format!("workspace {}", workspace_name(target, script)),
+        _ => command.to_owned(),
+    }
+}
+
+fn node_for_window(order: &sway::OpenOrder, window: WindowId) -> Option<i64> {
+    order
+        .iter()
+        .find(|(_, id)| **id == window)
+        .map(|(node, _)| *node)
+}
+
+/// What this script's `n`th workspace is called in the compositor.
+///
+/// Workspace 1 is the one `reset` left the session on, so it is the script's prefix itself
+/// and the rest hang off it. That keeps every name inside the script's own namespace without
+/// a second counter to keep in step with the first.
+fn workspace_name(target: &str, script: u32) -> String {
+    match target.parse::<u32>() {
+        Ok(1) => format!("fuzz{script}"),
+        Ok(n) => format!("fuzz{script}.{n}"),
+        Err(_) => target.to_owned(),
+    }
 }
 
 /// Commands whose valid spelling sway reports with its syntax error class when the current
@@ -265,8 +322,8 @@ impl Sway {
         // A workspace keeps its layout after its last window closes, so move to a new one
         // rather than trust the old one to be blank.
         self.workspace += 1;
-        let workspace = self.workspace;
-        self.msg(&["workspace", &format!("fuzz{workspace}")])?;
+        let workspace = workspace_name("1", self.workspace);
+        self.msg(&["workspace", &workspace])?;
         Ok(())
     }
 
@@ -336,7 +393,7 @@ impl Sway {
             match command.as_str() {
                 "open" => self.open(),
                 "close" => self.close(),
-                other => self.command(other),
+                other => self.command(&translate(other, &self.order, self.workspace)),
             }
             .map_err(|err| format!("while running `{command}`: {err}"))?;
             let observed = self
@@ -557,7 +614,10 @@ impl I3 {
         self.order.clear();
         self.opened = 0;
         self.workspace += 1;
-        self.command(&format!("workspace fuzz{}", self.workspace))
+        self.command(&format!(
+            "workspace {}",
+            workspace_name("1", self.workspace)
+        ))
     }
 
     pub fn stop(&mut self) {
@@ -623,7 +683,7 @@ impl I3 {
             match command.as_str() {
                 "open" => self.open()?,
                 "close" => self.close()?,
-                other => self.command(other)?,
+                other => self.command(&translate(other, &self.order, self.workspace))?,
             }
             steps.push((command.clone(), self.observe()?));
         }

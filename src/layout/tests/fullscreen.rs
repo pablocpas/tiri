@@ -374,6 +374,7 @@ fn move_unfocused_pending_unfullscreen_window_out_of_active_column() {
         Op::MoveWindowToWorkspace {
             window_id: Some(1),
             workspace_idx: 1,
+            focus: true,
         },
     ];
 

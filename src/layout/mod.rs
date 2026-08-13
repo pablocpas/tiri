@@ -3288,6 +3288,18 @@ impl<W: LayoutElement> Layout<W> {
         workspace.swap_window_in_direction(direction);
     }
 
+    /// sway's `swap container with`, addressed by window rather than by direction.
+    ///
+    /// Only within the active workspace, which is where sway's own refusals leave the
+    /// interesting cases anyway; a target on another workspace is left alone rather than
+    /// dragged across one.
+    pub fn swap_window_with(&mut self, target: &W::Id) -> bool {
+        let Some(workspace) = self.active_workspace_mut() else {
+            return false;
+        };
+        workspace.swap_window_with(target)
+    }
+
     pub fn toggle_column_tabbed_display(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
