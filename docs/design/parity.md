@@ -469,6 +469,21 @@ whole suite — the other half of the whack-a-mole.
    parity script grammar, and neither is the edge form of `resize` in hundredths, whose `Op`
    carries pixels.
 
+   `swap container with` and `move container to workspace` joined them, and both had to be
+   built before they could be said. `swap` had no implementation — `container_swap` is now
+   ported, including the rule that the shares travel with the slot rather than the node —
+   and `move container to workspace` was aimed at the focused window rather than at the
+   selection, which hid the fact that a container arriving at an empty workspace is
+   unwrapped into it. Neither reaches across the tiled and floating sides yet: a swap
+   between them is refused, and moving across is what `float_subtree` is for.
+
+   These two also mark where scripts stop being pure i3 grammar. A window is named by the
+   order the script opened it and a workspace by the script's own count, because a `con_id`
+   and a workspace name are not things a script can write down and still mean on both
+   sides; `tiri-parity::session::translate` is where each becomes the compositor's word for
+   it. `open` and `close` were already this, and the same rule applies: the harness owns
+   identity, and nothing else.
+
 The seven `parity_seed*` tests that used to be the pilot for step 5 are gone. They came out
 of the whack-a-mole attempt, so their expectations were snapshots of whatever tiri did at
 the time rather than anything measured — several of them turned out to encode the stale

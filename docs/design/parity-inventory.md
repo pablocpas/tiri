@@ -15,8 +15,8 @@ not of the ground.
 | | |
 |---|---|
 | sway functions in the domain | 93 |
-| cited in tiri | 26 |
-| not yet cited | 67 |
+| cited in tiri | 31 |
+| not yet cited | 62 |
 
 Domain: `sway/tree/{container,workspace,arrange}.c` and the commands that reshape the
 tree — `move`, `split`, `layout`, `focus`, `resize`, `fullscreen`, `swap`. Excluded:
@@ -30,6 +30,7 @@ seat device configuration, marks, scratchpad, criteria, bars, output layout.
 - `arrange_workspace`
 - `container_create`
 - `container_detach`
+- `container_flatten`
 - `container_floating_move_to_center`
 - `container_floating_resize_and_center`
 - `container_floating_set_default_size`
@@ -42,13 +43,17 @@ seat device configuration, marks, scratchpad, criteria, bars, output layout.
 - `container_replace`
 - `container_resize_tiled`
 - `container_set_floating`
+- `container_set_fullscreen`
 - `container_set_geometry_from_content`
 - `container_split`
 - `container_squash`
+- `container_swap`
 - `workspace_add_floating`
 - `workspace_add_tiling`
+- `workspace_split`
 - `workspace_squash`
 - `workspace_switch`
+- `workspace_unwrap_children`
 - `workspace_wrap_children`
 
 ## Not yet cited
@@ -65,7 +70,6 @@ one that does not is worth a line saying so, here or at its call site.
 - `container_find_and_unmark`
 - `container_find_child`
 - `container_find_resize_parent`
-- `container_flatten`
 - `container_floating_find_output`
 - `container_floating_move_to`
 - `container_floating_translate`
@@ -95,11 +99,9 @@ one that does not is worth a line saying so, here or at its call site.
 - `container_move_to_workspace_from_direction`
 - `container_obstructing_fullscreen_container`
 - `container_raise_floating`
-- `container_set_fullscreen`
 - `container_set_resizing`
 - `container_sibling_index`
 - `container_squash_children`
-- `container_swap`
 - `container_titlebar_height`
 - `container_toplevel_ancestor`
 - `container_update`
@@ -121,5 +123,3 @@ one that does not is worth a line saying so, here or at its call site.
 - `workspace_num_sticky_containers`
 - `workspace_num_tiling_views`
 - `workspace_prev`
-- `workspace_split`
-- `workspace_unwrap_children`
