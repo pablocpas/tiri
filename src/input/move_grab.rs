@@ -23,6 +23,7 @@ use crate::utils::get_monotonic_time;
 pub struct MoveGrab {
     start_data: PointerOrTouchStartData<State>,
     start_output: Output,
+    last_output: Output,
     start_pos_within_output: Point<f64, Logical>,
     last_location: Point<f64, Logical>,
     window: Window,
@@ -58,6 +59,7 @@ impl MoveGrab {
             last_location: location,
             start_data,
             start_output: output.clone(),
+            last_output: output.clone(),
             start_pos_within_output: pos_within_output,
             window,
             gesture: GestureState::Recognizing,
@@ -104,6 +106,7 @@ impl MoveGrab {
                 layout.horizontal_view_gesture_end(Some(false));
             }
         }
+        data.niri.invalidate_layout();
 
         if self.start_data.is_pointer() {
             data.niri
@@ -111,8 +114,14 @@ impl MoveGrab {
                 .clear_override_cursor(crate::cursor::CursorOverride::PointerGrab);
         }
 
-        // FIXME: only redraw the window output.
-        data.niri.queue_redraw_all();
+        let current_output = data
+            .niri
+            .layout
+            .windows()
+            .find(|(_, mapped)| mapped.window == self.window)
+            .and_then(|(monitor, _)| monitor.map(|monitor| monitor.output().clone()));
+        data.niri
+            .queue_redraw_output_pair(Some(self.last_output.clone()), current_output);
     }
 
     fn begin_move(&mut self, data: &mut State) -> bool {
@@ -126,6 +135,7 @@ impl MoveGrab {
         }
 
         self.gesture = GestureState::Move;
+        data.niri.invalidate_layout();
 
         if self.start_data.is_pointer() {
             data.niri.cursor_manager.set_override_cursor(
@@ -160,6 +170,7 @@ impl MoveGrab {
         layout.horizontal_view_gesture_begin(&self.start_output, Some(ws_idx), false);
 
         self.gesture = GestureState::HorizontalView;
+        data.niri.invalidate_layout();
 
         if self.start_data.is_pointer() {
             data.niri.cursor_manager.set_override_cursor(
@@ -227,18 +238,20 @@ impl MoveGrab {
                     return true;
                 };
                 let output = output.clone();
+                let previous_output = std::mem::replace(&mut self.last_output, output.clone());
 
                 // Interactive move always uses absolute delta since the window must remain pinned
                 // to the cursor even when it's clamped to monitor bounds.
                 let ongoing = data.niri.layout.interactive_move_update(
                     &self.window,
                     delta,
-                    output,
+                    output.clone(),
                     pos_within_output,
                 );
                 if ongoing {
-                    // FIXME: only redraw the previous and the new output.
-                    data.niri.queue_redraw_all();
+                    data.niri.invalidate_layout();
+                    data.niri
+                        .queue_redraw_output_pair(Some(previous_output), Some(output));
                     return true;
                 }
             }
@@ -249,6 +262,7 @@ impl MoveGrab {
                     false,
                 );
                 if let Some(output) = res {
+                    data.niri.invalidate_layout();
                     if let Some(output) = output {
                         data.niri.queue_redraw(&output);
                     }
@@ -290,7 +304,9 @@ impl MoveGrab {
         }
 
         data.niri.layout.toggle_window_floating(Some(&self.window));
-        data.niri.queue_redraw_all();
+        data.niri.invalidate_layout();
+        data.niri
+            .queue_redraw_output_pair(Some(self.last_output.clone()), None);
 
         true
     }

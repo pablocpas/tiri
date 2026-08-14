@@ -3256,6 +3256,7 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn refresh(&mut self, is_active: bool, is_focused: bool) {
+        let _span = tracy_client::span!("Workspace::refresh");
         self.space
             .refresh(is_active && !self.floating_is_active.get(), is_focused);
         self.floating.refresh(

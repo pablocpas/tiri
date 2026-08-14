@@ -1,0 +1,41 @@
+{
+  "name": "multi-output-workflow",
+  "initial_windows": 4,
+  "steps": [
+    {
+      "kind": "action",
+      "name": "MoveWindowToMonitorNext",
+      "label": "move_window_next"
+    },
+    {
+      "kind": "action",
+      "name": "MoveColumnToMonitorNext",
+      "label": "move_column_next"
+    },
+    {
+      "kind": "action",
+      "name": "FocusMonitorPrevious",
+      "label": "focus_previous_output"
+    },
+    {
+      "kind": "action",
+      "name": "FocusMonitorPrevious",
+      "label": "focus_source_output"
+    },
+    {
+      "kind": "action",
+      "name": "MoveWorkspaceToMonitorNext",
+      "label": "move_workspace_next"
+    },
+    {
+      "kind": "action",
+      "name": "FocusMonitorNext",
+      "label": "focus_next_output"
+    },
+    {
+      "kind": "wait",
+      "seconds": 2,
+      "label": "steady_three_outputs"
+    }
+  ]
+}

@@ -238,9 +238,10 @@ impl XdgShellHandler for State {
             return;
         };
 
-        let Some((mapped, _)) = self.niri.layout.find_window_and_output(wl_surface) else {
+        let Some((mapped, output)) = self.niri.layout.find_window_and_output(wl_surface) else {
             return;
         };
+        let output = output.cloned();
 
         let edges = ResizeEdge::from(edges);
         let window = mapped.window.clone();
@@ -274,8 +275,8 @@ impl XdgShellHandler for State {
                     self.niri.layer_shell_on_demand_focus = None;
                     self.niri.layout.reset_window_height(Some(&window));
                 }
-                // FIXME: granular.
-                self.niri.queue_redraw_all();
+                self.niri.invalidate_layout();
+                self.niri.queue_redraw_output_pair(output, None);
                 return;
             }
         }
@@ -297,6 +298,7 @@ impl XdgShellHandler for State {
         if !began {
             return;
         }
+        self.niri.invalidate_layout();
 
         match start_data {
             PointerOrTouchStartData::Pointer(start_data) => {
@@ -478,6 +480,7 @@ impl XdgShellHandler for State {
 
             let window = mapped.window.clone();
             self.niri.layout.set_maximized(&window, true);
+            self.niri.invalidate_layout();
         } else if let Some(unmapped) = self.niri.unmapped_windows.get_mut(toplevel.wl_surface()) {
             match &mut unmapped.state {
                 InitialConfigureState::NotConfigured {
@@ -535,6 +538,7 @@ impl XdgShellHandler for State {
 
             let window = mapped.window.clone();
             self.niri.layout.set_maximized(&window, false);
+            self.niri.invalidate_layout();
         } else if let Some(unmapped) = self.niri.unmapped_windows.get_mut(toplevel.wl_surface()) {
             match &mut unmapped.state {
                 InitialConfigureState::NotConfigured {
@@ -639,6 +643,7 @@ impl XdgShellHandler for State {
             }
 
             self.niri.layout.set_windowed_fullscreen(&window, true);
+            self.niri.invalidate_layout();
         } else if let Some(unmapped) = self.niri.unmapped_windows.get_mut(toplevel.wl_surface()) {
             match &mut unmapped.state {
                 InitialConfigureState::NotConfigured {
@@ -687,6 +692,7 @@ impl XdgShellHandler for State {
 
             let window = mapped.window.clone();
             self.niri.layout.set_windowed_fullscreen(&window, false);
+            self.niri.invalidate_layout();
         } else if let Some(unmapped) = self.niri.unmapped_windows.get_mut(toplevel.wl_surface()) {
             match &mut unmapped.state {
                 InitialConfigureState::NotConfigured {
@@ -822,6 +828,7 @@ impl XdgShellHandler for State {
             self.niri.queue_redraw(&output);
             self.niri.queue_redraw_mru_output();
         }
+        self.niri.invalidate_layout();
     }
 
     fn popup_destroyed(&mut self, surface: PopupSurface) {
@@ -847,6 +854,7 @@ impl XdgShellHandler for State {
             let output = output.cloned();
             let window = mapped.window.clone();
             if self.niri.layout.descendants_added(&window) {
+                self.niri.invalidate_layout();
                 if let Some(output) = output {
                     self.niri.queue_redraw(&output);
                 }
@@ -885,6 +893,7 @@ impl XdgDecorationHandler for State {
             let surface = toplevel.wl_surface();
             if let Some((mapped, _)) = self.niri.layout.find_window_and_output_mut(surface) {
                 mapped.set_needs_configure();
+                self.niri.invalidate_configures();
             } else {
                 toplevel.send_configure();
             }
@@ -904,6 +913,7 @@ impl XdgDecorationHandler for State {
             let surface = toplevel.wl_surface();
             if let Some((mapped, _)) = self.niri.layout.find_window_and_output_mut(surface) {
                 mapped.set_needs_configure();
+                self.niri.invalidate_configures();
             } else {
                 toplevel.send_configure();
             }
@@ -1302,6 +1312,7 @@ impl State {
     }
 
     pub fn update_window_rules(&mut self, toplevel: &ToplevelSurface) {
+        self.niri.invalidate_window_metadata();
         let config = self.niri.config.borrow();
         let window_rules = &config.window_rules;
 
@@ -1324,6 +1335,7 @@ impl State {
                 let output = output.cloned();
                 let window = mapped.window.clone();
                 self.niri.layout.update_window(&window, None);
+                self.niri.invalidate_layout();
 
                 if let Some(output) = output {
                     self.niri.queue_redraw(&output);

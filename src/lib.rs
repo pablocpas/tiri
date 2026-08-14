@@ -15,6 +15,8 @@ pub mod input;
 pub mod ipc;
 pub mod layer;
 pub mod layout;
+#[cfg(feature = "profile-with-tracy")]
+pub mod perceptual_latency;
 pub mod protocols;
 pub mod render_helpers;
 pub mod render_time_estimator;

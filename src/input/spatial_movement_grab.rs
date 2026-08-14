@@ -136,6 +136,7 @@ impl SpatialMovementGrab {
         };
 
         if let Some(output) = res {
+            data.niri.invalidate_layout();
             if let Some(output) = output {
                 data.niri.queue_redraw(&output);
             }
@@ -154,7 +155,10 @@ impl SpatialMovementGrab {
         };
 
         if let Some(output) = res {
+            state.niri.invalidate_layout();
             state.niri.queue_redraw(&output);
+        } else if !matches!(self.gesture, GestureState::Recognizing) {
+            state.niri.invalidate_layout();
         }
 
         state

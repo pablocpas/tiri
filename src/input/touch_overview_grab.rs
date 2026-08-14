@@ -109,6 +109,7 @@ impl TouchOverviewGrab {
             }
         };
 
+        state.niri.invalidate_layout();
         state.niri.queue_redraw_all();
     }
 }
@@ -131,6 +132,7 @@ impl TouchGrab<State> for TouchOverviewGrab {
         if matches!(self.gesture, GestureState::InteractiveMove) {
             if let Some(window) = &self.window.as_ref() {
                 data.niri.layout.toggle_window_floating(Some(window));
+                data.niri.invalidate_layout();
                 data.niri.queue_redraw_all();
             }
         }
@@ -240,6 +242,7 @@ impl TouchGrab<State> for TouchOverviewGrab {
         };
 
         if ongoing {
+            data.niri.invalidate_layout();
             data.niri.queue_redraw_all();
         } else {
             handle.unset_grab(self, data);

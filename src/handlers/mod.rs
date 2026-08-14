@@ -109,8 +109,11 @@ impl SeatHandler for State {
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
         self.niri.cursor_manager.set_client_cursor(image);
-        // FIXME: more granular
-        self.niri.queue_redraw_all();
+        // Smithay invokes this callback while holding the pointer's internal mutex. Use the last
+        // compositor-observed location instead of trying to lock the pointer recursively. Motion
+        // itself redraws again at the new position after Smithay releases the mutex.
+        let location = self.niri.pointer_contents_last_location.unwrap_or_default();
+        self.niri.queue_redraw_cursor_output_at(location);
     }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
@@ -143,8 +146,7 @@ impl TabletSeatHandler for State {
     fn tablet_tool_image(&mut self, _tool: &TabletToolDescriptor, image: CursorImageStatus) {
         // FIXME: tablet tools should have their own cursors.
         self.niri.cursor_manager.set_client_cursor(image);
-        // FIXME: granular.
-        self.niri.queue_redraw_all();
+        self.niri.queue_redraw_cursor_output();
     }
 }
 delegate_tablet_manager!(State);
@@ -207,8 +209,7 @@ impl PointerConstraintsHandler for State {
 
         // Redraw to update the cursor position if it's visible.
         if self.niri.pointer_visibility.is_visible() {
-            // FIXME: redraw only outputs overlapping the cursor.
-            self.niri.queue_redraw_all();
+            self.niri.queue_redraw_cursor_output();
         }
     }
 }
@@ -339,8 +340,7 @@ impl WaylandDndGrabHandler for State {
             }
         }
 
-        // FIXME: more granular
-        self.niri.queue_redraw_all();
+        self.niri.queue_redraw_cursor_output();
     }
 }
 
@@ -378,6 +378,7 @@ impl DndGrabHandler for State {
                 self.niri.layout.focus_output(&output);
             }
         }
+        self.niri.invalidate_layout();
     }
 
     fn cancelled(&mut self, _seat: Seat<Self>, _location: Point<f64, Logical>) {
@@ -391,8 +392,8 @@ impl crate::tiri::Niri {
     fn on_maybe_dnd_ended(&mut self) {
         self.layout.dnd_end();
         self.dnd_icon = None;
-        // FIXME: more granular
-        self.queue_redraw_all();
+        self.invalidate_layout();
+        self.queue_redraw_cursor_output();
     }
 }
 
@@ -535,9 +536,13 @@ impl ForeignToplevelHandler for State {
     fn activate(&mut self, wl_surface: WlSurface) {
         if let Some((mapped, _)) = self.niri.layout.find_window_and_output(&wl_surface) {
             let window = mapped.window.clone();
+            let previous_output = self.niri.layout.active_output().cloned();
             self.niri.layout.activate_window(&window);
             self.niri.layer_shell_on_demand_focus = None;
-            self.niri.queue_redraw_all();
+            self.niri.invalidate_layout();
+            let current_output = self.niri.layout.active_output().cloned();
+            self.niri
+                .queue_redraw_output_pair(previous_output, current_output);
         }
     }
 
@@ -566,6 +571,7 @@ impl ForeignToplevelHandler for State {
             }
 
             self.niri.layout.set_windowed_fullscreen(&window, true);
+            self.niri.invalidate_layout();
         }
     }
 
@@ -573,6 +579,7 @@ impl ForeignToplevelHandler for State {
         if let Some((mapped, _)) = self.niri.layout.find_window_and_output(&wl_surface) {
             let window = mapped.window.clone();
             self.niri.layout.set_windowed_fullscreen(&window, false);
+            self.niri.invalidate_layout();
         }
     }
 
@@ -580,6 +587,7 @@ impl ForeignToplevelHandler for State {
         if let Some((mapped, _)) = self.niri.layout.find_window_and_output(&wl_surface) {
             let window = mapped.window.clone();
             self.niri.layout.set_maximized(&window, true);
+            self.niri.invalidate_layout();
         }
     }
 
@@ -587,6 +595,7 @@ impl ForeignToplevelHandler for State {
         if let Some((mapped, _)) = self.niri.layout.find_window_and_output(&wl_surface) {
             let window = mapped.window.clone();
             self.niri.layout.set_maximized(&window, false);
+            self.niri.invalidate_layout();
         }
     }
 }
@@ -598,11 +607,14 @@ impl ExtWorkspaceHandler for State {
     }
 
     fn activate_workspace(&mut self, id: WorkspaceId) {
+        let previous_output = self.niri.layout.active_output().cloned();
         if self.niri.layout.focus_workspace_by_id(id, false).is_some() {
             // No mouse warp: assuming the layer-shell bar workspaces use-case.
 
-            // FIXME: granular
-            self.niri.queue_redraw_all();
+            self.niri.invalidate_layout();
+            let current_output = self.niri.layout.active_output().cloned();
+            self.niri
+                .queue_redraw_output_pair(previous_output, current_output);
         }
     }
 
@@ -610,6 +622,7 @@ impl ExtWorkspaceHandler for State {
         self.niri
             .layout
             .move_workspace_to_output_by_workspace_id(ws_id, &output);
+        self.niri.invalidate_layout();
     }
 }
 delegate_ext_workspace!(State);
@@ -803,15 +816,21 @@ impl XdgActivationHandler for State {
         surface: WlSurface,
     ) {
         if token_data.timestamp.elapsed() < XDG_ACTIVATION_TOKEN_TIMEOUT {
-            if let Some((mapped, _)) = self.niri.layout.find_window_and_output_mut(&surface) {
+            if let Some((mapped, output)) = self.niri.layout.find_window_and_output_mut(&surface) {
                 let window = mapped.window.clone();
+                let output = output.cloned();
                 if token_data.user_data.get::<UrgentOnlyMarker>().is_some() {
                     mapped.set_urgent(true);
-                    self.niri.queue_redraw_all();
+                    self.niri.invalidate_layout();
+                    self.niri.queue_redraw_output_pair(output, None);
                 } else {
+                    let previous_output = self.niri.layout.active_output().cloned();
                     self.niri.layout.activate_window(&window);
                     self.niri.layer_shell_on_demand_focus = None;
-                    self.niri.queue_redraw_all();
+                    self.niri.invalidate_layout();
+                    let current_output = self.niri.layout.active_output().cloned();
+                    self.niri
+                        .queue_redraw_output_pair(previous_output, current_output);
                 }
             } else if let Some(unmapped) = self.niri.unmapped_windows.get_mut(&surface) {
                 unmapped.activation_token_data = Some(token_data);

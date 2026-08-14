@@ -493,6 +493,11 @@ pub struct Layout<W: LayoutElement> {
     scratchpad: Workspace<W>,
     /// Configurable properties of the layout.
     options: Rc<Options>,
+    /// A semantic layout mutation happened since the compositor last refreshed projections.
+    ///
+    /// Niri also classifies its public action/protocol entry points, but this bit is the
+    /// authoritative signal for callers that intentionally operate on Layout directly.
+    refresh_requested: bool,
 }
 
 #[derive(Debug)]
@@ -934,6 +939,7 @@ impl<W: LayoutElement> Layout<W> {
             overview_open: false,
             overview_progress: None,
             options,
+            refresh_requested: false,
         }
     }
 
@@ -961,7 +967,16 @@ impl<W: LayoutElement> Layout<W> {
             overview_open: false,
             overview_progress: None,
             options: opts,
+            refresh_requested: false,
         }
+    }
+
+    fn request_refresh(&mut self) {
+        self.refresh_requested = true;
+    }
+
+    pub(crate) fn take_refresh_request(&mut self) -> bool {
+        mem::take(&mut self.refresh_requested)
     }
 
     pub fn add_output(&mut self, output: Output, layout_config: Option<LayoutPart>) {
@@ -3007,6 +3022,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn move_to_workspace_up(&mut self, focus: bool) {
+        self.request_refresh();
         let Some(monitor) = self.active_monitor() else {
             return;
         };
@@ -3015,6 +3031,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn move_to_workspace_down(&mut self, focus: bool) {
+        self.request_refresh();
         let Some(monitor) = self.active_monitor() else {
             return;
         };
@@ -3028,6 +3045,7 @@ impl<W: LayoutElement> Layout<W> {
         idx: usize,
         activate: ActivateWindow,
     ) {
+        self.request_refresh();
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if window.is_none() || window == Some(move_.tile.window().id()) {
                 return;
@@ -3232,6 +3250,7 @@ impl<W: LayoutElement> Layout<W> {
         workspace_id: WorkspaceId,
         activate: ActivateWindow,
     ) -> Option<Option<Output>> {
+        self.request_refresh();
         let (idx, mut output) = {
             let (idx, ws) = self.find_workspace_by_id(workspace_id)?;
             (idx, ws.current_output().cloned())
@@ -4313,6 +4332,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn resize_window(&mut self, window: Option<&W::Id>, request: ResizeRequest) {
+        self.request_refresh();
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if window.is_none() || window == Some(move_.tile.window().id()) {
                 return;
@@ -4332,6 +4352,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn reset_window_height(&mut self, window: Option<&W::Id>) {
+        self.request_refresh();
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if window.is_none() || window == Some(move_.tile.window().id()) {
                 return;
@@ -4358,6 +4379,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn toggle_window_floating(&mut self, window: Option<&W::Id>) {
+        self.request_refresh();
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if window.is_none() || window == Some(move_.tile.window().id()) {
                 move_.is_floating = !move_.is_floating;
@@ -4432,6 +4454,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn toggle_window_sticky(&mut self, window: Option<&W::Id>) {
+        self.request_refresh();
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
             if window.is_none() || window == Some(move_.tile.window().id()) {
                 return;
@@ -4466,6 +4489,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn set_window_floating(&mut self, window: Option<&W::Id>, floating: bool) {
+        self.request_refresh();
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if window.is_none() || window == Some(move_.tile.window().id()) {
                 if move_.is_floating != floating {
@@ -4782,6 +4806,7 @@ impl<W: LayoutElement> Layout<W> {
         y: PositionChange,
         animate: bool,
     ) {
+        self.request_refresh();
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if id.is_none() || id == Some(move_.tile.window().id()) {
                 return;
@@ -4920,6 +4945,7 @@ impl<W: LayoutElement> Layout<W> {
         target_ws_idx: Option<usize>,
         activate: ActivateWindow,
     ) {
+        self.request_refresh();
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if window.is_none() || window == Some(move_.tile.window().id()) {
                 return;
@@ -5239,6 +5265,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn set_fullscreen(&mut self, id: &W::Id, is_fullscreen: bool) {
+        self.request_refresh();
         // Check if this is a request to unset the windowed fullscreen state.
         if !is_fullscreen {
             let mut handled = false;
@@ -5266,6 +5293,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn toggle_fullscreen(&mut self, id: &W::Id) {
+        self.request_refresh();
         if self.interactive_move_targets_window(id) {
             return;
         }
@@ -5279,6 +5307,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn toggle_fullscreen_for_active_command(&mut self, id: &W::Id) {
+        self.request_refresh();
         if self.interactive_move_targets_window(id) {
             return;
         }
@@ -5292,6 +5321,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn set_windowed_fullscreen(&mut self, id: &W::Id, is_fullscreen: bool) {
+        self.request_refresh();
         if self.interactive_move_targets_window(id) {
             return;
         }
@@ -5337,6 +5367,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn set_maximized(&mut self, id: &W::Id, maximize: bool) {
+        self.request_refresh();
         if self.interactive_move_targets_window(id) {
             return;
         }
@@ -5350,6 +5381,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn toggle_maximized(&mut self, id: &W::Id) {
+        self.request_refresh();
         if self.interactive_move_targets_window(id) {
             return;
         }
@@ -5580,6 +5612,7 @@ impl<W: LayoutElement> Layout<W> {
         output: &Output,
         start_pos_within_output: Point<f64, Logical>,
     ) -> bool {
+        self.request_refresh();
         if self.interactive_move.is_some() {
             return false;
         }
@@ -5736,6 +5769,7 @@ impl<W: LayoutElement> Layout<W> {
         output: Output,
         pointer_pos_within_output: Point<f64, Logical>,
     ) -> bool {
+        self.request_refresh();
         let Some(state) = self.interactive_move.take() else {
             return false;
         };
@@ -6070,6 +6104,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn interactive_move_end(&mut self, window: &W::Id) {
+        self.request_refresh();
         let Some(move_) = &self.interactive_move else {
             return;
         };
@@ -6498,6 +6533,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn interactive_resize_begin(&mut self, window: W::Id, edges: ResizeEdge) -> bool {
+        self.request_refresh();
         match &mut self.monitor_set {
             MonitorSet::Normal { monitors, .. } => {
                 for mon in monitors.iter_mut() {
@@ -6532,6 +6568,7 @@ impl<W: LayoutElement> Layout<W> {
         output: &Output,
         pos_within_output: Point<f64, Logical>,
     ) -> bool {
+        self.request_refresh();
         match &mut self.monitor_set {
             MonitorSet::Normal { monitors, .. } => {
                 let mon = monitors.iter_mut().find(|mon| &mon.output == output);
@@ -6568,6 +6605,7 @@ impl<W: LayoutElement> Layout<W> {
         window: &W::Id,
         delta: Point<f64, Logical>,
     ) -> bool {
+        self.request_refresh();
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
             if move_.tile.window().id() == window {
                 return false;
@@ -6602,6 +6640,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn interactive_resize_end(&mut self, window: &W::Id) {
+        self.request_refresh();
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
             if move_.tile.window().id() == window {
                 return;

@@ -40,6 +40,7 @@ class StepSpec:
     label: str
     action_name: str | None = None
     action_args: dict[str, JsonValue] | None = None
+    wait_seconds: float | None = None
 
 
 @dataclass
@@ -48,6 +49,7 @@ class StepResult:
     label: str
     kind: str
     action_name: str | None
+    requested_wait_seconds: float | None
     duration_ms: float
     total_windows: int
     workspace_windows: int
@@ -71,8 +73,9 @@ class ScenarioSpec:
 
 
 class EventMonitor:
-    def __init__(self, socket_path: Path) -> None:
+    def __init__(self, socket_path: Path, ipc_timeout: float) -> None:
         self._socket_path = socket_path
+        self._ipc_timeout = ipc_timeout
         self._sock: socket.socket | None = None
         self._file = None
         self._thread: threading.Thread | None = None
@@ -83,6 +86,7 @@ class EventMonitor:
 
     def start(self) -> None:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(self._ipc_timeout)
         sock.connect(os.fspath(self._socket_path))
         file = sock.makefile("rwb", buffering=0)
         file.write(b'"EventStream"\n')
@@ -92,6 +96,7 @@ class EventMonitor:
         reply = json.loads(reply_line)
         if reply != {"Ok": "Handled"}:
             raise RunnerError(f"unexpected event stream reply: {reply!r}")
+        sock.settimeout(None)
 
         self._sock = sock
         self._file = file
@@ -157,7 +162,7 @@ class Runner:
         self.scenario = scenario
         self.socket_path = self._resolve_socket_path(args.socket)
         self.output_dir = args.output_dir.resolve()
-        self.event_monitor = EventMonitor(self.socket_path)
+        self.event_monitor = EventMonitor(self.socket_path, args.ipc_timeout)
 
     @staticmethod
     def _resolve_socket_path(explicit_socket: str | None) -> Path:
@@ -227,6 +232,7 @@ class Runner:
                     label=step.label,
                     action_name=step.action_name,
                     action_args=step.action_args,
+                    wait_seconds=step.wait_seconds,
                 )
                 result, snapshot = self._run_step(
                     step=adjusted_step,
@@ -282,6 +288,15 @@ class Runner:
         elif step.kind == "action":
             assert step.action_name is not None
             self._send_action(step.action_name, step.action_args)
+        elif step.kind == "wait":
+            assert step.wait_seconds is not None
+            deadline = time.monotonic() + step.wait_seconds
+            while True:
+                self.event_monitor.raise_if_failed()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(remaining, 0.05))
         else:
             raise RunnerError(f"unsupported step kind: {step.kind}")
 
@@ -301,6 +316,7 @@ class Runner:
             label=step.label,
             kind=step.kind,
             action_name=step.action_name,
+            requested_wait_seconds=step.wait_seconds,
             duration_ms=duration_ms,
             total_windows=snapshot["window_count"],
             workspace_windows=snapshot["workspace_window_count"],
@@ -363,14 +379,20 @@ class Runner:
         return normalized
 
     def _request(self, request: JsonValue) -> JsonValue:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.connect(os.fspath(self.socket_path))
-            file = sock.makefile("rwb", buffering=0)
-            payload = json.dumps(request, separators=(",", ":")).encode("utf-8")
-            file.write(payload + b"\n")
-            reply_line = file.readline()
-            if not reply_line:
-                raise RunnerError(f"empty reply for request {request!r}")
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.settimeout(self.args.ipc_timeout)
+                sock.connect(os.fspath(self.socket_path))
+                file = sock.makefile("rwb", buffering=0)
+                payload = json.dumps(request, separators=(",", ":")).encode("utf-8")
+                file.write(payload + b"\n")
+                reply_line = file.readline()
+                if not reply_line:
+                    raise RunnerError(f"empty reply for request {request!r}")
+        except TimeoutError as err:
+            raise RunnerError(
+                f"IPC timed out after {self.args.ipc_timeout:.1f}s for request {request!r}"
+            ) from err
         reply = json.loads(reply_line)
         if not isinstance(reply, dict) or len(reply) != 1:
             raise RunnerError(f"unexpected reply shape: {reply!r}")
@@ -654,6 +676,7 @@ class Runner:
             "aggregates_exclude_warmup": bool(measured_runs),
             "settle_timeout_s": self.args.settle_timeout,
             "settle_interval_s": self.args.settle_interval,
+            "ipc_timeout_s": self.args.ipc_timeout,
             "idle_grace_s": self.args.idle_grace,
             "workspace_prefix": self.args.workspace_prefix,
             "cleanup": self.args.cleanup,
@@ -677,6 +700,7 @@ class Runner:
                     "label",
                     "kind",
                     "action_name",
+                    "requested_wait_seconds",
                     "duration_ms",
                     "total_windows",
                     "workspace_windows",
@@ -695,6 +719,7 @@ class Runner:
                             "label": step["label"],
                             "kind": step["kind"],
                             "action_name": step["action_name"],
+                            "requested_wait_seconds": step["requested_wait_seconds"],
                             "duration_ms": f"{step['duration_ms']:.3f}",
                             "total_windows": step["total_windows"],
                             "workspace_windows": step["workspace_windows"],
@@ -753,7 +778,7 @@ def load_scenario(path: Path) -> ScenarioSpec:
             raise RunnerError(f"step {sequence} must be an object")
 
         kind = raw_step.get("kind")
-        if kind not in {"spawn_window", "action"}:
+        if kind not in {"spawn_window", "action", "wait"}:
             raise RunnerError(f"step {sequence} has invalid kind: {kind!r}")
 
         label = raw_step.get("label")
@@ -764,6 +789,20 @@ def load_scenario(path: Path) -> ScenarioSpec:
 
         if kind == "spawn_window":
             steps.append(StepSpec(sequence=sequence, kind=kind, label=label))
+            continue
+
+        if kind == "wait":
+            seconds = raw_step.get("seconds")
+            if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or seconds <= 0:
+                raise RunnerError(f"step {sequence} wait needs positive numeric seconds")
+            steps.append(
+                StepSpec(
+                    sequence=sequence,
+                    kind=kind,
+                    label=label,
+                    wait_seconds=float(seconds),
+                )
+            )
             continue
 
         action_name = raw_step.get("name")
@@ -792,6 +831,8 @@ def default_step_label(sequence: int, kind: str, action_name: str | None) -> str
         return f"spawn_window_{sequence + 1}"
     if action_name:
         return f"{action_name}_{sequence + 1}"
+    if kind == "wait":
+        return f"wait_{sequence + 1}"
     return f"step_{sequence + 1}"
 
 
@@ -902,6 +943,7 @@ def step_result_to_json(step: StepResult) -> dict[str, JsonValue]:
         "label": step.label,
         "kind": step.kind,
         "action_name": step.action_name,
+        "requested_wait_seconds": step.requested_wait_seconds,
         "duration_ms": step.duration_ms,
         "total_windows": step.total_windows,
         "workspace_windows": step.workspace_windows,
@@ -947,6 +989,12 @@ def parse_args() -> argparse.Namespace:
         help="Required quiet period with no IPC events before a step is stable (default: 0.10)",
     )
     parser.add_argument(
+        "--ipc-timeout",
+        type=float,
+        default=5.0,
+        help="Maximum seconds for one IPC request or handshake (default: 5.0)",
+    )
+    parser.add_argument(
         "--workspace-prefix",
         default="PERF",
         help="Prefix used for temporary workspace names (default: PERF)",
@@ -974,6 +1022,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--settle-timeout must be > 0")
     if args.settle_interval <= 0:
         parser.error("--settle-interval must be > 0")
+    if args.ipc_timeout <= 0:
+        parser.error("--ipc-timeout must be > 0")
     if args.idle_grace < 0:
         parser.error("--idle-grace must be >= 0")
     if not args.validate_only and not args.window_cmd:

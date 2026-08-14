@@ -242,8 +242,9 @@ impl CompositorHandler for State {
                             self.niri.layer_shell_on_demand_focus = None;
                         }
 
-                        self.niri.queue_redraw(&output);
+                        self.niri.queue_redraw_for_surface_commit(&output);
                     }
+                    self.niri.invalidate_layout();
                     return;
                 }
 
@@ -306,9 +307,10 @@ impl CompositorHandler for State {
                     self.niri.unmapped_windows.insert(surface.clone(), unmapped);
 
                     if let Some(output) = output {
-                        self.niri.queue_redraw(&output);
+                        self.niri.queue_redraw_for_surface_commit(&output);
                         self.niri.queue_redraw_mru_output();
                     }
+                    self.niri.invalidate_layout();
                     return;
                 }
 
@@ -354,9 +356,10 @@ impl CompositorHandler for State {
                 self.update_reactive_popups(&window);
 
                 if let Some(output) = output {
-                    self.niri.queue_redraw(&output);
+                    self.niri.queue_redraw_for_surface_commit(&output);
                     self.niri.queue_redraw_mru_output();
                 }
+                self.niri.invalidate_layout();
                 return;
             }
 
@@ -374,9 +377,10 @@ impl CompositorHandler for State {
                 .update_window(&self.niri.layout, mapped.id());
             self.niri.layout.update_window(&window, None);
             if let Some(output) = output {
-                self.niri.queue_redraw(&output);
+                self.niri.queue_redraw_for_surface_commit(&output);
                 self.niri.queue_redraw_mru_output();
             }
+            self.niri.invalidate_layout();
             return;
         }
 
@@ -384,7 +388,7 @@ impl CompositorHandler for State {
         self.popups_handle_commit(surface);
         if let Some(popup) = self.niri.popups.find_popup(surface) {
             if let Some(output) = self.output_for_popup(&popup) {
-                self.niri.queue_redraw(&output.clone());
+                self.niri.queue_redraw_for_surface_commit(&output.clone());
             }
             return;
         }
@@ -421,8 +425,7 @@ impl CompositorHandler for State {
                 });
             }
 
-            // FIXME: granular redraws for cursors.
-            self.niri.queue_redraw_all();
+            self.niri.queue_redraw_cursor_output();
             return;
         }
 
@@ -445,8 +448,7 @@ impl CompositorHandler for State {
                 });
             }
 
-            // FIXME: granular redraws for cursors.
-            self.niri.queue_redraw_all();
+            self.niri.queue_redraw_cursor_output();
             return;
         }
 
@@ -457,7 +459,7 @@ impl CompositorHandler for State {
                     if matches!(self.niri.lock_state, LockState::WaitingForSurfaces { .. }) {
                         self.niri.maybe_continue_to_locking();
                     } else {
-                        self.niri.queue_redraw(&output.clone());
+                        self.niri.queue_redraw_for_surface_commit(&output.clone());
                     }
 
                     return;

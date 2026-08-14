@@ -32,7 +32,7 @@ impl PickColorGrab {
             .niri
             .cursor_manager
             .clear_override_cursor(crate::cursor::CursorOverride::PointerGrab);
-        state.niri.queue_redraw_all();
+        state.niri.queue_redraw_cursor_output();
     }
 
     fn pick_color_at_point(location: Point<f64, Logical>, data: &mut State) -> Option<PickedColor> {

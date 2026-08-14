@@ -1,0 +1,11 @@
+{
+  "name": "terminal-idle",
+  "initial_windows": 1,
+  "steps": [
+    {
+      "kind": "wait",
+      "seconds": 6,
+      "label": "idle_terminal"
+    }
+  ]
+}

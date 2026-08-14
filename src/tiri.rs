@@ -12,6 +12,7 @@ use std::{env, mem, thread};
 
 use _server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as KdeDecorationsMode;
 use anyhow::{bail, ensure, Context};
+use bitflags::bitflags;
 use calloop::futures::Scheduler;
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::input::Keycode;
@@ -144,6 +145,11 @@ use crate::layout::{
     HitType, Layout, LayoutElement as _, LayoutElementRenderElement, MonitorRenderElement,
 };
 use crate::niri_render_elements;
+#[cfg(feature = "profile-with-tracy")]
+use crate::perceptual_latency::{
+    emit_coalesced_sample, emit_no_damage_sample, FrameLatencySample, LatencySource,
+    PerceptualLatency,
+};
 use crate::protocols::ext_workspace::{self, ExtWorkspaceManagerState};
 use crate::protocols::foreign_toplevel::{self, ForeignToplevelManagerState};
 use crate::protocols::gamma_control::GammaControlManagerState;
@@ -191,6 +197,40 @@ const DEFAULT_FRAME_SCHEDULE_MARGIN_MS: u16 = 0;
 // second, so with the worst timing the maximum interval between two frame callbacks for a surface
 // should be ~1.995 seconds.
 const FRAME_CALLBACK_THROTTLE: Option<Duration> = Some(Duration::from_millis(995));
+
+bitflags! {
+    /// Expensive state projections that must be rebuilt before clients are flushed.
+    ///
+    /// These flags deliberately describe *what changed*, rather than where the invalidation came
+    /// from.  Mutation entry points expand their semantic change into the dependent projections;
+    /// the event-loop tail then consumes exactly those projections in protocol order.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    struct RefreshFlags: u16 {
+        const WINDOW_STATES = 1 << 0;
+        const LAYOUT = 1 << 1;
+        const POINTER = 1 << 2;
+        const GLOBAL_SPACE = 1 << 3;
+        const FOREIGN_TOPLEVEL = 1 << 4;
+        const EXT_WORKSPACE = 1 << 5;
+        const WINDOW_RULES = 1 << 6;
+        const IPC_OUTPUTS = 1 << 7;
+        const IPC_LAYOUT = 1 << 8;
+        const A11Y = 1 << 9;
+
+        const LAYOUT_CHANGE = Self::WINDOW_STATES.bits()
+            | Self::LAYOUT.bits()
+            | Self::POINTER.bits()
+            | Self::FOREIGN_TOPLEVEL.bits()
+            | Self::EXT_WORKSPACE.bits()
+            | Self::WINDOW_RULES.bits()
+            | Self::IPC_LAYOUT.bits()
+            | Self::A11Y.bits();
+
+        const OUTPUT_CHANGE = Self::LAYOUT_CHANGE.bits()
+            | Self::GLOBAL_SPACE.bits()
+            | Self::IPC_OUTPUTS.bits();
+    }
+}
 
 pub struct Niri {
     pub config: Rc<RefCell<Config>>,
@@ -257,6 +297,9 @@ pub struct Niri {
     pub blocker_cleared_rx: Receiver<Client>,
 
     pub output_state: HashMap<Output, OutputState>,
+
+    #[cfg(feature = "profile-with-tracy")]
+    perceptual_latency: PerceptualLatency,
 
     // When false, we're idling with monitors powered off.
     pub monitors_active: bool,
@@ -342,6 +385,8 @@ pub struct Niri {
     pub cursor_texture_cache: CursorTextureCache,
     pub cursor_shape_manager_state: CursorShapeManagerState,
     pub dnd_icon: Option<DndIcon>,
+    /// Outputs intersected by the cursor or DnD icon at the previous redraw request.
+    cursor_redraw_outputs: Vec<Output>,
     /// Contents under pointer.
     ///
     /// Periodically updated: on motion and other events and in the loop callback. If you require
@@ -415,6 +460,9 @@ pub struct Niri {
     pub ipc_server: Option<IpcServer>,
     pub ipc_outputs_changed: bool,
 
+    /// State projections invalidated by mutations since the previous event-loop flush.
+    pending_refresh: RefreshFlags,
+
     pub satellite: Option<Satellite>,
 
     #[cfg(feature = "xdp-gnome-screencast")]
@@ -459,6 +507,10 @@ pub struct OutputState {
     pub unfinished_animations_remain: bool,
     /// Last sequence received in a vblank event.
     pub last_drm_sequence: Option<u32>,
+    #[cfg(feature = "profile-with-tracy")]
+    pub pending_latency_sample: Option<FrameLatencySample>,
+    #[cfg(feature = "profile-with-tracy")]
+    pub last_latched_latency_id: u64,
     pub vblank_throttle: VBlankThrottle,
     /// Sequence for frame callback throttling.
     ///
@@ -771,6 +823,13 @@ impl KeyboardFocus {
     }
 }
 
+fn keyboard_focus_is_global(focus: &KeyboardFocus) -> bool {
+    matches!(
+        focus,
+        KeyboardFocus::ScreenshotUi | KeyboardFocus::ExitConfirmDialog | KeyboardFocus::Overview
+    )
+}
+
 pub struct State {
     pub backend: Backend,
     pub niri: Niri,
@@ -899,23 +958,96 @@ impl State {
             self.notify_blocker_cleared();
         }
 
-        // These should be called periodically, before flushing the clients.
+        // These should be called periodically, before flushing the clients. Focus is derived from
+        // the layout and layer-shell state, so a change here invalidates the projections that
+        // expose focus even when the originating mutation did not know its final target.
         {
             let _span = tracy_client::span!("State::refresh::input_and_popups");
             self.niri.popups.cleanup();
             self.refresh_popup_grab();
-            self.update_keyboard_focus();
+            if self.update_keyboard_focus() {
+                self.niri.invalidate_layout();
+            }
+        }
+
+        // Layout also records semantic mutations at its own public boundary. The
+        // compositor-level classification is more precise, while this signal keeps direct
+        // internal/test callers correct without guessing from pending protocol state.
+        let layout_requested_refresh = self.niri.layout.take_refresh_request();
+        let layout_self_invalidation =
+            layout_requested_refresh && !self.niri.pending_refresh.contains(RefreshFlags::LAYOUT);
+        if layout_requested_refresh {
+            self.niri.invalidate_layout();
+        }
+        #[cfg(not(feature = "profile-with-tracy"))]
+        let _ = layout_self_invalidation;
+
+        // Pending configure state remains an authoritative last-line correctness condition. Keep
+        // this path separately observable: production campaigns should not normally need it.
+        let configure_self_invalidation =
+            if self.niri.pending_refresh.contains(RefreshFlags::LAYOUT) {
+                false
+            } else {
+                self.niri
+                    .layout
+                    .windows()
+                    .any(|(_, mapped)| mapped.has_sendable_configure_pending())
+            };
+        if configure_self_invalidation {
+            // A pending configure proves that Layout changed outside a classified mutation
+            // boundary. Rebuild every layout-derived projection as well: IPC and protocol state
+            // must describe the same revision as the configure sent below.
+            self.niri.invalidate_layout();
+        }
+
+        let refresh = self.niri.take_pending_refresh();
+
+        #[cfg(debug_assertions)]
+        if !refresh.contains(RefreshFlags::LAYOUT) {
+            debug_assert!(
+                !self
+                    .niri
+                    .layout
+                    .windows()
+                    .any(|(_, mapped)| mapped.has_sendable_configure_pending()),
+                "sendable configure pending without layout invalidation"
+            );
+        }
+
+        #[cfg(feature = "profile-with-tracy")]
+        {
+            tracy_client::plot!(
+                "refresh.layout_self_invalidation",
+                f64::from(layout_self_invalidation)
+            );
+            tracy_client::plot!(
+                "refresh.configure_self_invalidation",
+                f64::from(configure_self_invalidation)
+            );
+            tracy_client::plot!("refresh.flags", refresh.bits() as f64);
+            tracy_client::plot!(
+                "refresh.layout",
+                f64::from(refresh.contains(RefreshFlags::LAYOUT))
+            );
+            tracy_client::plot!(
+                "refresh.foreign_toplevel",
+                f64::from(refresh.contains(RefreshFlags::FOREIGN_TOPLEVEL))
+            );
+            tracy_client::plot!(
+                "refresh.ipc_layout",
+                f64::from(refresh.contains(RefreshFlags::IPC_LAYOUT))
+            );
         }
 
         // Should be called before refresh_layout() because that one will refresh other window
         // states and then send a pending configure.
-        {
+        if refresh.contains(RefreshFlags::WINDOW_STATES) {
             let _span = tracy_client::span!("State::refresh::refresh_window_states");
             self.niri.refresh_window_states();
         }
 
         // Needs to be called after updating the keyboard focus.
-        {
+        if refresh.contains(RefreshFlags::LAYOUT) {
             let _span = tracy_client::span!("State::refresh::refresh_layout");
             self.niri.refresh_layout();
         }
@@ -923,16 +1055,14 @@ impl State {
         {
             let _span = tracy_client::span!("State::refresh::pointer_and_space");
             self.niri.cursor_manager.check_cursor_image_surface_alive();
-            self.niri.refresh_pointer_outputs();
-            self.niri.global_space.refresh();
+            if refresh.intersects(RefreshFlags::POINTER | RefreshFlags::GLOBAL_SPACE) {
+                self.niri.refresh_pointer_outputs();
+            }
+            if refresh.contains(RefreshFlags::GLOBAL_SPACE) {
+                self.niri.global_space.refresh();
+            }
             self.niri.refresh_idle_inhibit();
             self.refresh_pointer_contents();
-        }
-
-        {
-            let _span = tracy_client::span!("State::refresh::protocols");
-            foreign_toplevel::refresh(self);
-            ext_workspace::refresh(self);
         }
 
         #[cfg(feature = "xdp-gnome-screencast")]
@@ -952,17 +1082,37 @@ impl State {
             self.ipc_refresh_casts();
         }
 
-        {
-            let _span = tracy_client::span!("State::refresh::window_rules_and_ipc");
+        if refresh.contains(RefreshFlags::WINDOW_RULES) {
+            let _span = tracy_client::span!("State::refresh::window_rules");
             self.niri.refresh_window_rules();
-            self.refresh_ipc_outputs();
-            self.ipc_refresh_layout();
+        }
+
+        {
+            let _span = tracy_client::span!("State::refresh::protocols");
+            if refresh.contains(RefreshFlags::FOREIGN_TOPLEVEL) {
+                foreign_toplevel::refresh(self);
+            }
+            if refresh.contains(RefreshFlags::EXT_WORKSPACE) {
+                ext_workspace::refresh(self);
+            }
+        }
+
+        {
+            let _span = tracy_client::span!("State::refresh::ipc");
+            // refresh_ipc_outputs() has its own change bit because the backend may update its
+            // shared output snapshot. Keep both conditions explicit while that storage is shared.
+            if refresh.contains(RefreshFlags::IPC_OUTPUTS) || self.niri.ipc_outputs_changed {
+                self.refresh_ipc_outputs();
+            }
+            if refresh.contains(RefreshFlags::IPC_LAYOUT) {
+                self.ipc_refresh_layout();
+            }
             self.ipc_refresh_keyboard_layout_index();
         }
 
         // Needs to be called after updating the keyboard focus.
         #[cfg(feature = "dbus")]
-        {
+        if refresh.contains(RefreshFlags::A11Y) {
             let _span = tracy_client::span!("State::refresh::refresh_a11y");
             self.niri.refresh_a11y();
         }
@@ -1011,8 +1161,7 @@ impl State {
 
         // We do not show the pointer on programmatic or keyboard movement.
 
-        // FIXME: granular
-        self.niri.queue_redraw_all();
+        self.niri.queue_redraw_cursor_output();
         self.niri.pointer_contents_dirty = false;
         self.niri.pointer_contents_last_location = Some(location);
     }
@@ -1100,8 +1249,12 @@ impl State {
         }
         drop(config);
 
+        let previous_output = self.niri.layout.active_output().cloned();
         self.niri.layout.focus_output(&target);
         self.move_cursor_to_output(&target);
+        self.niri.invalidate_layout();
+        self.niri
+            .queue_redraw_output_pair(previous_output, Some(target));
     }
 
     /// Focus a specific window, taking care of a potential active output change and cursor
@@ -1114,7 +1267,7 @@ impl State {
         let new_active = self.niri.layout.active_output().cloned();
         if new_active != active_output {
             if !self.maybe_warp_cursor_to_focus_centered() {
-                self.move_cursor_to_output(&new_active.unwrap());
+                self.move_cursor_to_output(new_active.as_ref().unwrap());
             }
         } else {
             self.maybe_warp_cursor_to_focus();
@@ -1122,13 +1275,29 @@ impl State {
 
         self.niri.layer_shell_on_demand_focus = None;
 
-        // FIXME: granular
-        self.niri.queue_redraw_all();
+        self.niri.invalidate_layout();
+        self.niri
+            .queue_redraw_output_pair(active_output, new_active);
+    }
+
+    /// Focus an output and redraw both sides of the focus transition.
+    pub fn focus_output(&mut self, output: &Output) {
+        let previous_output = self.niri.layout.active_output().cloned();
+        self.niri.layout.focus_output(output);
+        if !self.maybe_warp_cursor_to_focus_centered() {
+            self.move_cursor_to_output(output);
+        }
+        self.niri.layer_shell_on_demand_focus = None;
+        self.niri.invalidate_layout();
+        self.niri
+            .queue_redraw_output_pair(previous_output, Some(output.clone()));
     }
 
     pub fn confirm_mru(&mut self) {
         if let Some(window) = self.niri.close_mru(MruCloseRequest::Confirm) {
-            self.update_keyboard_focus();
+            if self.update_keyboard_focus() {
+                self.niri.invalidate_layout();
+            }
             self.focus_window(&window);
         }
     }
@@ -1193,8 +1362,7 @@ impl State {
         // Pointer motion from a surface to nothing triggers a cursor change to default, which
         // means we may need to redraw.
 
-        // FIXME: granular
-        self.niri.queue_redraw_all();
+        self.niri.queue_redraw_cursor_output();
         self.niri.pointer_contents_dirty = false;
         self.niri.pointer_contents_last_location = Some(location);
     }
@@ -1258,7 +1426,7 @@ impl State {
         }
     }
 
-    pub fn update_keyboard_focus(&mut self) {
+    pub fn update_keyboard_focus(&mut self) -> bool {
         self.niri.layout.refresh_seat_focus();
 
         // Clean up on-demand layer surface focus if necessary.
@@ -1405,6 +1573,12 @@ impl State {
                 self.niri.keyboard_focus,
                 focus
             );
+            let redraw_all = keyboard_focus_is_global(&self.niri.keyboard_focus)
+                || keyboard_focus_is_global(&focus);
+            let previous_output = self
+                .niri
+                .output_for_keyboard_focus(&self.niri.keyboard_focus);
+            let current_output = self.niri.output_for_keyboard_focus(&focus);
 
             // Tell the windows their new focus state for window rule purposes.
             if let KeyboardFocus::Layout {
@@ -1515,8 +1689,15 @@ impl State {
             self.niri.keyboard_focus.clone_from(&focus);
             keyboard.set_focus(self, focus.into_surface(), SERIAL_COUNTER.next_serial());
 
-            // FIXME: can be more granular.
-            self.niri.queue_redraw_all();
+            if redraw_all {
+                self.niri.queue_redraw_all();
+            } else {
+                self.niri
+                    .queue_redraw_output_pair(previous_output, current_output);
+            }
+            true
+        } else {
+            false
         }
     }
 
@@ -1886,6 +2067,7 @@ impl State {
         // global suddenly appearing? Either way, right now it's live-reloaded in a sense that new
         // clients will use the new xdg-decoration setting.
 
+        self.niri.invalidate_all();
         self.niri.queue_redraw_all();
     }
 
@@ -2140,7 +2322,7 @@ impl State {
         // Redraw the pointer if hidden through cursor{} options
         if self.niri.pointer_visibility == PointerVisibility::Hidden {
             self.niri.pointer_visibility = PointerVisibility::Visible;
-            self.niri.queue_redraw_all();
+            self.niri.queue_redraw_cursor_output();
         }
 
         let default_output = self
@@ -2197,7 +2379,7 @@ impl State {
             CursorOverride::PointerGrab,
             CursorImageStatus::Named(CursorIcon::Crosshair),
         );
-        self.niri.queue_redraw_all();
+        self.niri.queue_redraw_cursor_output();
     }
 
     pub fn confirm_screenshot(&mut self, write_to_disk: bool) {
@@ -2408,6 +2590,49 @@ impl State {
 }
 
 impl Niri {
+    /// Invalidate every projection derived from the layout, including window state, focus,
+    /// workspace/toplevel protocols and IPC snapshots.
+    pub(crate) fn invalidate_layout(&mut self) {
+        self.pending_refresh.insert(RefreshFlags::LAYOUT_CHANGE);
+        self.pointer_contents_dirty = true;
+    }
+
+    /// Invalidate projections whose inputs include output topology or logical geometry.
+    pub(crate) fn invalidate_outputs(&mut self) {
+        self.pending_refresh.insert(RefreshFlags::OUTPUT_CHANGE);
+        self.pointer_contents_dirty = true;
+    }
+
+    /// Invalidate only the IPC layout snapshot. This is used for metadata such as marks that does
+    /// not affect layout, configure state or foreign-toplevel protocol state.
+    pub(crate) fn invalidate_ipc_layout(&mut self) {
+        self.pending_refresh.insert(RefreshFlags::IPC_LAYOUT);
+    }
+
+    /// Invalidate projections fed directly by toplevel metadata (title/app-id) without forcing a
+    /// geometry/configure pass when window rules did not change.
+    pub(crate) fn invalidate_window_metadata(&mut self) {
+        self.pending_refresh
+            .insert(RefreshFlags::FOREIGN_TOPLEVEL | RefreshFlags::IPC_LAYOUT);
+    }
+
+    /// Request the configure-producing layout pass for a pending toplevel state change.
+    pub(crate) fn invalidate_configures(&mut self) {
+        self.pending_refresh
+            .insert(RefreshFlags::WINDOW_STATES | RefreshFlags::LAYOUT);
+    }
+
+    /// Invalidate every projection after a genuinely global state replacement, such as a config
+    /// reload. This is intentionally not used as a generic fallback for ordinary mutations.
+    pub(crate) fn invalidate_all(&mut self) {
+        self.pending_refresh.insert(RefreshFlags::all());
+        self.pointer_contents_dirty = true;
+    }
+
+    fn take_pending_refresh(&mut self) -> RefreshFlags {
+        mem::take(&mut self.pending_refresh)
+    }
+
     pub fn new(
         config: Rc<RefCell<Config>>,
         event_loop: LoopHandle<'static, State>,
@@ -2693,6 +2918,8 @@ impl Niri {
             global_space: Space::default(),
             sorted_outputs: Vec::default(),
             output_state: HashMap::new(),
+            #[cfg(feature = "profile-with-tracy")]
+            perceptual_latency: PerceptualLatency::default(),
             unmapped_windows: HashMap::new(),
             unmapped_layer_surfaces: HashSet::new(),
             mapped_layer_surfaces: HashMap::new(),
@@ -2765,6 +2992,7 @@ impl Niri {
             cursor_texture_cache: Default::default(),
             cursor_shape_manager_state,
             dnd_icon: None,
+            cursor_redraw_outputs: Vec::new(),
             pointer_contents: PointContents::default(),
             pointer_contents_dirty: true,
             pointer_contents_last_location: None,
@@ -2816,6 +3044,8 @@ impl Niri {
 
             ipc_server,
             ipc_outputs_changed: false,
+            // Build every externally visible projection once during startup.
+            pending_refresh: RefreshFlags::all(),
 
             satellite: None,
 
@@ -2997,6 +3227,8 @@ impl Niri {
                 self.queue_redraw(&output);
             }
         }
+
+        self.invalidate_outputs();
     }
 
     pub fn add_output(&mut self, output: Output, refresh_interval: Option<Duration>, vrr: bool) {
@@ -3076,6 +3308,10 @@ impl Niri {
             unfinished_animations_remain: false,
             frame_clock: FrameClock::new(refresh_interval, vrr),
             last_drm_sequence: None,
+            #[cfg(feature = "profile-with-tracy")]
+            pending_latency_sample: None,
+            #[cfg(feature = "profile-with-tracy")]
+            last_latched_latency_id: 0,
             vblank_throttle: VBlankThrottle::new(self.event_loop.clone(), name.connector.clone()),
             frame_callback_sequence: 0,
             backdrop_buffer: SolidColorBuffer::new(size, backdrop_color),
@@ -3202,6 +3438,7 @@ impl Niri {
         }
 
         self.layout.update_output_size(output);
+        self.invalidate_outputs();
 
         if let Some(state) = self.output_state.get_mut(output) {
             state.backdrop_buffer.resize(output_size);
@@ -3858,6 +4095,124 @@ impl Niri {
         self.layout.outputs().find(has_layer_surface)
     }
 
+    #[cfg(feature = "profile-with-tracy")]
+    pub fn latency_note_input(&mut self, source: LatencySource) {
+        self.perceptual_latency
+            .note_trigger(source, get_monotonic_time());
+    }
+
+    #[cfg(feature = "profile-with-tracy")]
+    pub fn latency_note_ipc_action(&mut self) {
+        self.perceptual_latency
+            .note_trigger(LatencySource::IpcAction, get_monotonic_time());
+    }
+
+    #[cfg(feature = "profile-with-tracy")]
+    fn latency_note_surface_commit(&mut self, output: &Output) {
+        let Some(state) = self.output_state.get(output) else {
+            return;
+        };
+        let sample = self
+            .perceptual_latency
+            .surface_commit_sample(get_monotonic_time(), state.last_latched_latency_id);
+
+        let state = self.output_state.get_mut(output).unwrap();
+        if state
+            .pending_latency_sample
+            .is_some_and(|pending| pending.id != sample.id)
+        {
+            emit_coalesced_sample();
+        }
+        if state
+            .pending_latency_sample
+            .is_none_or(|pending| pending.id <= sample.id)
+        {
+            state.pending_latency_sample = Some(sample);
+        }
+    }
+
+    #[cfg(feature = "profile-with-tracy")]
+    fn latency_note_redraw_queued(&mut self, output: &Output) {
+        let now = get_monotonic_time();
+        let Some(state) = self.output_state.get(output) else {
+            return;
+        };
+        let trigger = self
+            .perceptual_latency
+            .trigger_sample(now, state.last_latched_latency_id);
+
+        let state = self.output_state.get_mut(output).unwrap();
+        if let Some(trigger) = trigger {
+            let replace = state
+                .pending_latency_sample
+                .is_none_or(|pending| pending.id < trigger.id);
+            if replace {
+                if state.pending_latency_sample.is_some() {
+                    emit_coalesced_sample();
+                }
+                state.pending_latency_sample = Some(trigger);
+            }
+        }
+        if let Some(sample) = &mut state.pending_latency_sample {
+            sample.mark_queued(now);
+        }
+    }
+
+    #[cfg(feature = "profile-with-tracy")]
+    fn latency_mark_render_started(&mut self, output: &Output) {
+        if let Some(sample) = self
+            .output_state
+            .get_mut(output)
+            .and_then(|state| state.pending_latency_sample.as_mut())
+        {
+            sample.mark_render_started(get_monotonic_time());
+        }
+    }
+
+    #[cfg(feature = "profile-with-tracy")]
+    pub fn latency_prepare_submission(&self, output: &Output) -> Option<FrameLatencySample> {
+        self.output_state
+            .get(output)?
+            .pending_latency_sample
+            .map(|sample| sample.prepare_submission(get_monotonic_time()))
+    }
+
+    #[cfg(feature = "profile-with-tracy")]
+    pub fn latency_submission_committed(
+        &mut self,
+        output: &Output,
+        submitted: Option<FrameLatencySample>,
+    ) {
+        let Some(submitted) = submitted else {
+            return;
+        };
+        let state = self.output_state.get_mut(output).unwrap();
+        if state
+            .pending_latency_sample
+            .is_some_and(|pending| pending.id == submitted.id)
+        {
+            state.pending_latency_sample = None;
+            state.last_latched_latency_id = submitted.id;
+        }
+    }
+
+    #[cfg(feature = "profile-with-tracy")]
+    pub fn latency_discard_no_damage(&mut self, output: &Output) {
+        let state = self.output_state.get_mut(output).unwrap();
+        if let Some(sample) = state.pending_latency_sample.take() {
+            state.last_latched_latency_id = sample.id;
+            emit_no_damage_sample(sample);
+        }
+    }
+
+    /// Queue a redraw caused by a client surface commit and retain the commit timestamp for the
+    /// physical presentation-latency trace.
+    pub fn queue_redraw_for_surface_commit(&mut self, output: &Output) {
+        #[cfg(feature = "profile-with-tracy")]
+        self.latency_note_surface_commit(output);
+        self.queue_redraw(output);
+    }
+
     pub fn lock_surface_focus(&self) -> Option<WlSurface> {
         let output_under_cursor = self.output_under_cursor();
         let output = output_under_cursor
@@ -3871,17 +4226,208 @@ impl Niri {
 
     /// Schedules an immediate redraw on all outputs if one is not already scheduled.
     pub fn queue_redraw_all(&mut self) {
+        let _span = tracy_client::span!("Niri::queue_redraw_all");
         self.pointer_contents_dirty = true;
+        #[cfg(feature = "profile-with-tracy")]
+        {
+            let outputs = self.output_state.keys().cloned().collect::<Vec<_>>();
+            for output in outputs {
+                self.latency_note_redraw_queued(&output);
+            }
+        }
+        #[cfg(feature = "profile-with-tracy")]
+        let mut newly_queued = 0usize;
         for state in self.output_state.values_mut() {
+            #[cfg(feature = "profile-with-tracy")]
+            let was_queued = matches!(
+                state.redraw_state,
+                RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
+            );
             state.redraw_state = mem::take(&mut state.redraw_state).queue_redraw();
+            #[cfg(feature = "profile-with-tracy")]
+            {
+                newly_queued += usize::from(!was_queued);
+            }
+        }
+        #[cfg(feature = "profile-with-tracy")]
+        {
+            tracy_client::plot!("redraw.outputs_requested", self.output_state.len() as f64);
+            tracy_client::plot!("redraw.outputs_newly_queued", newly_queued as f64);
+            tracy_client::plot!("redraw.scope_all", 1.0);
+        }
+    }
+
+    /// Schedules redraws for up to two known affected outputs.
+    ///
+    /// This is intentionally not a best-effort fallback to `queue_redraw_all()`: no active output
+    /// means there is no visible layout to redraw, and equal outputs are coalesced here before they
+    /// reach the per-output redraw state.
+    pub fn queue_redraw_output_pair(&mut self, first: Option<Output>, second: Option<Output>) {
+        if let Some(output) = first {
+            if self.output_state.contains_key(&output) {
+                self.queue_redraw(&output);
+            }
+            if second.as_ref() == Some(&output) {
+                return;
+            }
+        }
+
+        if let Some(output) = second {
+            if self.output_state.contains_key(&output) {
+                self.queue_redraw(&output);
+            }
+        }
+    }
+
+    /// Schedules a redraw only for the output containing the active workspace.
+    pub fn queue_redraw_active_output(&mut self) {
+        let output = self.layout.active_output().cloned();
+        self.queue_redraw_output_pair(output, None);
+    }
+
+    /// Schedules redraws only on outputs intersected by the cursor or DnD icon.
+    ///
+    /// The previous intersection set is included so moving or shrinking a cursor also clears its
+    /// old pixels. Surface cursors and DnD icons use their real surface-tree bounds; named cursors
+    /// use the frame and hotspot selected for each output scale.
+    pub fn queue_redraw_cursor_output(&mut self) {
+        let location = self
+            .tablet_cursor_location
+            .unwrap_or_else(|| self.seat.get_pointer().unwrap().current_location());
+        self.queue_redraw_cursor_output_at(location);
+    }
+
+    /// Variant for callbacks that already know the cursor location.
+    ///
+    /// In particular, `SeatHandler::cursor_image()` runs while Smithay holds the pointer's
+    /// internal mutex, so asking the pointer for its current location there would deadlock.
+    pub fn queue_redraw_cursor_output_at(&mut self, location: Point<f64, Logical>) {
+        let location = location.to_i32_round();
+
+        let surface_cursor_bbox = self
+            .pointer_visibility
+            .is_visible()
+            .then(|| match self.cursor_manager.cursor_image() {
+                CursorImageStatus::Surface(surface) => {
+                    let hotspot = with_states(surface, |states| {
+                        states
+                            .data_map
+                            .get::<CursorImageSurfaceData>()
+                            .unwrap()
+                            .lock()
+                            .unwrap()
+                            .hotspot
+                    });
+                    Some(bbox_from_surface_tree(surface, location - hotspot))
+                }
+                _ => None,
+            })
+            .flatten();
+        let dnd_bbox = self
+            .dnd_icon
+            .as_ref()
+            .map(|icon| bbox_from_surface_tree(&icon.surface, location + icon.offset));
+
+        let mut current = Vec::new();
+        for output in self.global_space.outputs() {
+            let Some(geometry) = self.global_space.output_geometry(output) else {
+                continue;
+            };
+
+            let cursor_overlaps = if !self.pointer_visibility.is_visible() {
+                false
+            } else if let Some(bbox) = surface_cursor_bbox {
+                geometry.overlaps(bbox)
+            } else if let CursorImageStatus::Named(icon) = self.cursor_manager.cursor_image() {
+                let scale = output.current_scale().integer_scale();
+                let cursor = self
+                    .cursor_manager
+                    .get_cursor_with_name(*icon, scale)
+                    .unwrap_or_else(|| self.cursor_manager.get_default_cursor(scale));
+                let (_, frame) = cursor.frame(self.start_time.elapsed().as_millis() as u32);
+                let hotspot = XCursor::hotspot(frame).to_logical(scale);
+                let size = Size::<i32, Physical>::from((frame.width as i32, frame.height as i32))
+                    .to_logical(scale);
+                geometry.overlaps(Rectangle::new(location - hotspot, size))
+            } else {
+                false
+            };
+
+            if cursor_overlaps || dnd_bbox.is_some_and(|bbox| geometry.overlaps(bbox)) {
+                current.push(output.clone());
+            }
+        }
+
+        let previous = mem::replace(&mut self.cursor_redraw_outputs, current.clone());
+        let mut queued = Vec::new();
+        for output in previous.into_iter().chain(current) {
+            if !queued.contains(&output) && self.output_state.contains_key(&output) {
+                self.queue_redraw(&output);
+                queued.push(output);
+            }
+        }
+    }
+
+    /// Schedules a redraw only for the output currently showing the requested window.
+    pub fn queue_redraw_window_by_id(&mut self, id: u64) {
+        let output = self
+            .layout
+            .windows()
+            .find(|(_, mapped)| mapped.id().get() == id)
+            .and_then(|(monitor, _)| monitor.map(|monitor| monitor.output().clone()));
+        self.queue_redraw_output_pair(output, None);
+    }
+
+    /// Schedules a redraw only for the output owning the requested workspace.
+    pub fn queue_redraw_workspace_by_id(&mut self, id: WorkspaceId) {
+        let output = self
+            .layout
+            .workspaces()
+            .find(|(_, _, workspace)| workspace.id() == id)
+            .and_then(|(monitor, _, _)| monitor.map(|monitor| monitor.output().clone()));
+        self.queue_redraw_output_pair(output, None);
+    }
+
+    fn output_for_keyboard_focus(&self, focus: &KeyboardFocus) -> Option<Output> {
+        match focus {
+            KeyboardFocus::Layout {
+                surface: Some(surface),
+            }
+            | KeyboardFocus::LayerShell { surface }
+            | KeyboardFocus::LockScreen {
+                surface: Some(surface),
+            } => self.output_for_root(surface).cloned(),
+            KeyboardFocus::Layout { surface: None }
+            | KeyboardFocus::LockScreen { surface: None } => self.layout.active_output().cloned(),
+            KeyboardFocus::Mru => self.window_mru_ui.output().cloned(),
+            KeyboardFocus::ScreenshotUi
+            | KeyboardFocus::ExitConfirmDialog
+            | KeyboardFocus::Overview => None,
         }
     }
 
     /// Schedules an immediate redraw if one is not already scheduled.
     pub fn queue_redraw(&mut self, output: &Output) {
+        let _span = tracy_client::span!("Niri::queue_redraw");
         self.pointer_contents_dirty = true;
+        #[cfg(feature = "profile-with-tracy")]
+        self.latency_note_redraw_queued(output);
         let state = self.output_state.get_mut(output).unwrap();
+        #[cfg(feature = "profile-with-tracy")]
+        let was_queued = matches!(
+            state.redraw_state,
+            RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
+        );
         state.redraw_state = mem::take(&mut state.redraw_state).queue_redraw();
+        #[cfg(feature = "profile-with-tracy")]
+        {
+            tracy_client::plot!("redraw.outputs_requested", 1.0);
+            tracy_client::plot!(
+                "redraw.outputs_newly_queued",
+                usize::from(!was_queued) as f64
+            );
+            tracy_client::plot!("redraw.scope_all", 0.0);
+        }
     }
 
     fn next_output_with_queued_redraw(&self) -> Option<Output> {
@@ -4872,6 +5418,9 @@ impl Niri {
 
         // Freeze the clock at the target time.
         self.clock.set_unadjusted(target_presentation_time);
+
+        #[cfg(feature = "profile-with-tracy")]
+        self.latency_mark_render_started(output);
 
         self.update_render_elements(Some(output));
 
@@ -6396,15 +6945,20 @@ impl Niri {
     }
 
     pub fn focus_layer_surface_if_on_demand(&mut self, surface: Option<LayerSurface>) {
+        let previous_output = self
+            .layer_shell_on_demand_focus
+            .as_ref()
+            .and_then(|surface| self.output_for_root(surface.wl_surface()))
+            .cloned();
         if let Some(surface) = surface {
             if surface.cached_state().keyboard_interactivity
                 == wlr_layer::KeyboardInteractivity::OnDemand
             {
                 if self.layer_shell_on_demand_focus.as_ref() != Some(&surface) {
+                    let current_output = self.output_for_root(surface.wl_surface()).cloned();
                     self.layer_shell_on_demand_focus = Some(surface);
-
-                    // FIXME: granular.
-                    self.queue_redraw_all();
+                    self.invalidate_layout();
+                    self.queue_redraw_output_pair(previous_output, current_output);
                 }
 
                 return;
@@ -6414,9 +6968,8 @@ impl Niri {
         // Something else got clicked, clear on-demand layer-shell focus.
         if self.layer_shell_on_demand_focus.is_some() {
             self.layer_shell_on_demand_focus = None;
-
-            // FIXME: granular.
-            self.queue_redraw_all();
+            self.invalidate_layout();
+            self.queue_redraw_output_pair(previous_output, None);
         }
     }
 
@@ -6491,9 +7044,12 @@ impl Niri {
         // Recompute the current pointer focus because we don't update it during animations.
         let current_focus = self.contents_under(pointer.current_location());
 
+        let mut changed = false;
+
         if let Some(output) = &new_focus.output {
             if current_focus.output.as_ref() != Some(output) {
                 self.layout.focus_output(output);
+                changed = true;
             }
         }
 
@@ -6523,13 +7079,19 @@ impl Niri {
 
                 self.layout.activate_window_without_raising(window);
                 self.layer_shell_on_demand_focus = None;
+                changed = true;
             }
         }
 
         if let Some(layer) = &new_focus.layer {
             if current_focus.layer.as_ref() != Some(layer) {
                 self.layer_shell_on_demand_focus = Some(layer.clone());
+                changed = true;
             }
+        }
+
+        if changed {
+            self.invalidate_layout();
         }
     }
 
@@ -6644,7 +7206,8 @@ impl Niri {
         };
 
         if changed {
-            // FIXME: granular.
+            self.invalidate_layout();
+            // Rules are global configuration and may have changed windows on every output.
             self.queue_redraw_all();
         }
     }
@@ -6666,7 +7229,8 @@ impl Niri {
         }
 
         if changed {
-            // FIXME: granular.
+            self.invalidate_layout();
+            // Layer rules are global configuration and may affect every output.
             self.queue_redraw_all();
         }
     }
@@ -6697,7 +7261,7 @@ impl Niri {
                 // frame of hover.
                 if state.niri.pointer_visibility.is_visible() {
                     state.niri.pointer_visibility = PointerVisibility::Hidden;
-                    state.niri.queue_redraw_all();
+                    state.niri.queue_redraw_cursor_output();
                 }
 
                 TimeoutAction::Drop
@@ -6724,7 +7288,7 @@ impl Niri {
         if !self.window_mru_ui.is_open() {
             return None;
         }
-        self.queue_redraw_all();
+        self.queue_redraw_mru_output();
 
         let id = self.window_mru_ui.close(close_request)?;
         self.find_window_by_id(id)

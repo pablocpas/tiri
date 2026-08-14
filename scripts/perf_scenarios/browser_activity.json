@@ -1,0 +1,28 @@
+{
+  "name": "browser-activity",
+  "initial_windows": 1,
+  "steps": [
+    {
+      "kind": "wait",
+      "seconds": 8,
+      "label": "scroll_and_canvas"
+    },
+    {
+      "kind": "action",
+      "name": "FullscreenWindow",
+      "args": { "id": null },
+      "label": "fullscreen_on"
+    },
+    {
+      "kind": "wait",
+      "seconds": 4,
+      "label": "scroll_fullscreen"
+    },
+    {
+      "kind": "action",
+      "name": "FullscreenWindow",
+      "args": { "id": null },
+      "label": "fullscreen_off"
+    }
+  ]
+}

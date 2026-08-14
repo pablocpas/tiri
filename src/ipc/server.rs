@@ -397,6 +397,8 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
                 if let Some(client) = tracy_client::Client::running() {
                     client.message(&format!("IPC::Action {action_name}"), 0);
                 }
+                #[cfg(feature = "profile-with-tracy")]
+                state.niri.latency_note_ipc_action();
                 // Make sure some logic like workspace clean-up has a chance to run before doing
                 // actions.
                 state.niri.advance_animations();

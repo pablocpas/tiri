@@ -1,0 +1,28 @@
+{
+  "name": "terminal-activity",
+  "initial_windows": 1,
+  "steps": [
+    {
+      "kind": "wait",
+      "seconds": 6,
+      "label": "stream_output"
+    },
+    {
+      "kind": "action",
+      "name": "FullscreenWindow",
+      "args": { "id": null },
+      "label": "fullscreen_on"
+    },
+    {
+      "kind": "wait",
+      "seconds": 3,
+      "label": "stream_fullscreen"
+    },
+    {
+      "kind": "action",
+      "name": "FullscreenWindow",
+      "args": { "id": null },
+      "label": "fullscreen_off"
+    }
+  ]
+}

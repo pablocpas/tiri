@@ -28,8 +28,7 @@ impl PickWindowGrab {
             .niri
             .cursor_manager
             .clear_override_cursor(crate::cursor::CursorOverride::PointerGrab);
-        // Redraw to update the cursor.
-        state.niri.queue_redraw_all();
+        state.niri.queue_redraw_cursor_output();
     }
 }
 

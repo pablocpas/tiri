@@ -64,6 +64,8 @@ use wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 use super::{IpcOutputMap, RenderResult};
 use crate::backend::OutputId;
 use crate::frame_clock::FrameClock;
+#[cfg(feature = "profile-with-tracy")]
+use crate::perceptual_latency::FrameLatencySample;
 use crate::render_helpers::debug::draw_damage;
 use crate::render_helpers::renderer::AsGlesRenderer;
 use crate::render_helpers::{resources, shaders, RenderCtx, RenderTarget};
@@ -124,10 +126,19 @@ pub type TtyFrame<'render, 'frame, 'buffer> = MultiFrame<
 
 pub type TtyRendererError<'render> = <TtyRenderer<'render> as RendererSuper>::Error;
 
+#[cfg(feature = "profile-with-tracy")]
+type GbmFrameData = (
+    OutputPresentationFeedback,
+    Duration,
+    Option<FrameLatencySample>,
+);
+#[cfg(not(feature = "profile-with-tracy"))]
+type GbmFrameData = (OutputPresentationFeedback, Duration);
+
 type GbmDrmCompositor = DrmCompositor<
     GbmAllocator<DrmDeviceFd>,
     GbmFramebufferExporter<DrmDeviceFd>,
-    (OutputPresentationFeedback, Duration),
+    GbmFrameData,
     DrmDeviceFd,
 >;
 
@@ -1739,7 +1750,12 @@ impl Tty {
 
         // Mark the last frame as submitted.
         match surface.compositor.frame_submitted() {
-            Ok(Some((mut feedback, target_presentation_time))) => {
+            Ok(Some(frame_data)) => {
+                #[cfg(feature = "profile-with-tracy")]
+                let (mut feedback, target_presentation_time, latency_sample) = frame_data;
+                #[cfg(not(feature = "profile-with-tracy"))]
+                let (mut feedback, target_presentation_time) = frame_data;
+
                 let refresh = match refresh_interval {
                     Some(refresh) => {
                         if output_state.frame_clock.vrr() {
@@ -1768,6 +1784,18 @@ impl Tty {
                     tracy_client::Client::running().unwrap().plot(
                         surface.presentation_misprediction_plot_name,
                         misprediction_s * 1000.,
+                    );
+                }
+
+                #[cfg(feature = "profile-with-tracy")]
+                if let Some(sample) = latency_sample {
+                    sample.emit_presented(
+                        "drm",
+                        name,
+                        time,
+                        target_presentation_time,
+                        refresh_interval,
+                        meta.sequence,
                     );
                 }
             }
@@ -1966,10 +1994,21 @@ impl Tty {
                 if !res.is_empty {
                     let presentation_feedbacks =
                         niri.take_presentation_feedbacks(output, &res.states);
+                    #[cfg(feature = "profile-with-tracy")]
+                    let latency_sample = niri.latency_prepare_submission(output);
+                    #[cfg(feature = "profile-with-tracy")]
+                    let data = (
+                        presentation_feedbacks,
+                        target_presentation_time,
+                        latency_sample,
+                    );
+                    #[cfg(not(feature = "profile-with-tracy"))]
                     let data = (presentation_feedbacks, target_presentation_time);
 
                     match drm_compositor.queue_frame(data) {
                         Ok(()) => {
+                            #[cfg(feature = "profile-with-tracy")]
+                            niri.latency_submission_committed(output, latency_sample);
                             let render_elapsed = render_start.elapsed();
 
                             let output_state = niri.output_state.get_mut(output).unwrap();
@@ -2006,6 +2045,8 @@ impl Tty {
                         }
                     }
                 } else {
+                    #[cfg(feature = "profile-with-tracy")]
+                    niri.latency_discard_no_damage(output);
                     rv = RenderResult::NoDamage;
                 }
             }

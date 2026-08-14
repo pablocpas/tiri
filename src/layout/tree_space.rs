@@ -115,10 +115,39 @@ pub struct TreeSpace<W: LayoutElement> {
     overview_offscreen: OffscreenBuffer,
     /// Stable workspace-sized background used under the overview offscreen.
     overview_background: SolidColorBuffer,
+    /// Copy-only state projection reused while mutably visiting tiles.
+    state_layout_scratch: Vec<LeafFrameInfo>,
+    /// Displayed geometry can differ from pending state while a transaction is open.
+    render_layout_scratch: Vec<LeafFrameInfo>,
+    /// Edge projection parallel to `render_layout_scratch`.
+    render_edges_scratch: Vec<(FocusRingEdges, Option<FocusRingIndicatorEdge>)>,
 }
 
 /// A leaf identified for hit-testing: stable node identity and on-screen rect.
 type LeafHit = (NodeKey, Rectangle<f64, Logical>);
+
+/// Copyable geometry needed while the tree is borrowed mutably.
+///
+/// The owned `LeafLayoutInfo::path` is intentionally absent: paths belong to tree addressing and
+/// IPC, while state and render passes use stable `NodeKey`s.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct LeafFrameInfo {
+    pub(super) key: NodeKey,
+    branch: NodeKey,
+    pub(super) rect: Rectangle<f64, Logical>,
+    pub(super) visible: bool,
+}
+
+impl From<&LeafLayoutInfo> for LeafFrameInfo {
+    fn from(info: &LeafLayoutInfo) -> Self {
+        Self {
+            key: info.key,
+            branch: info.branch,
+            rect: info.rect,
+            visible: info.visible,
+        }
+    }
+}
 
 /// Workspace-wide context shared by every tile in an `update_window_state` pass.
 struct WindowStateContext<'a, W: LayoutElement> {
@@ -791,7 +820,7 @@ impl<W: LayoutElement> TreeSpace<W> {
     /// Computed up front so the caller can hold mutable tile borrows while iterating.
     fn interactive_resize_data_by_leaf(
         &self,
-        layouts: &[LeafLayoutInfo],
+        layouts: &[LeafFrameInfo],
     ) -> HashMap<NodeKey, InteractiveResizeData> {
         let Some(resize) = self.interactive_resize.as_ref() else {
             return HashMap::new();
@@ -865,6 +894,9 @@ impl<W: LayoutElement> TreeSpace<W> {
             closing_windows: Vec::new(),
             overview_offscreen: OffscreenBuffer::default(),
             overview_background: SolidColorBuffer::new(view_size, background_color),
+            state_layout_scratch: Vec::new(),
+            render_layout_scratch: Vec::new(),
+            render_edges_scratch: Vec::new(),
         }
     }
 
@@ -1325,6 +1357,7 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     pub fn update_render_elements(&mut self) {
+        let _span = tracy_client::span!("TreeSpace::update_render_elements");
         let is_active = self.side_is_active(false);
         // Once a frame, and for both sides: a container that has left the tree will not be
         // asked for again, and its texture is the largest thing an entry holds.
@@ -1336,13 +1369,20 @@ impl<W: LayoutElement> TreeSpace<W> {
             self.tree.layout();
         }
         let has_pending = self.tree.has_pending_layouts();
-        let mut state_layouts = if has_pending {
-            self.tree
-                .pending_leaf_layouts_cloned()
-                .unwrap_or_else(|| self.tree.leaf_layouts_cloned())
-        } else {
-            self.tree.leaf_layouts_cloned()
-        };
+        let mut state_layouts = std::mem::take(&mut self.state_layout_scratch);
+        state_layouts.clear();
+        {
+            let _span = tracy_client::span!("TreeSpace::project_state_layouts_for_render");
+            if has_pending {
+                state_layouts.extend(self.tree.pending_leaf_layouts().map(LeafFrameInfo::from));
+            } else {
+                state_layouts.extend(self.tree.leaf_layouts().iter().map(LeafFrameInfo::from));
+            }
+        }
+        #[cfg(feature = "profile-with-tracy")]
+        {
+            tracy_client::plot!("layout.state_leaf_projections", state_layouts.len() as f64);
+        }
         let tiled_root = self.tree.workspace_root();
         state_layouts.retain(|info| info.branch == tiled_root);
         let workspace_view = Rectangle::from_size(self.view_size);
@@ -1354,11 +1394,24 @@ impl<W: LayoutElement> TreeSpace<W> {
         let logical_fullscreen_id = self.pending_fullscreen_window().cloned();
         let layout_rect = self.tree.layout_area();
         let is_single_window = self.tree.window_count() <= 1;
-        // Clone here because we need mutable access to tree in the loop below.
-        let render_layouts: Vec<LeafLayoutInfo> = self.display_layouts().cloned().collect();
-        let render_edges: Vec<(FocusRingEdges, Option<FocusRingIndicatorEdge>)> = render_layouts
-            .iter()
-            .map(|info| {
+        let mut render_layouts = std::mem::take(&mut self.render_layout_scratch);
+        render_layouts.clear();
+        {
+            let _span = tracy_client::span!("TreeSpace::project_display_layouts_for_render");
+            render_layouts.extend(self.display_layouts().map(LeafFrameInfo::from));
+        }
+        #[cfg(feature = "profile-with-tracy")]
+        {
+            tracy_client::plot!(
+                "layout.render_leaf_projections",
+                render_layouts.len() as f64
+            );
+        }
+        let mut render_edges = std::mem::take(&mut self.render_edges_scratch);
+        render_edges.clear();
+        {
+            let _span = tracy_client::span!("TreeSpace::collect_render_edges");
+            render_edges.extend(render_layouts.iter().map(|info| {
                 let edges = edge_visibility_for_tile(
                     &self.options,
                     layout_rect,
@@ -1368,8 +1421,8 @@ impl<W: LayoutElement> TreeSpace<W> {
                 );
                 let indicator_edge = split_indicator_edge_for_tile(&self.tree, info.key, edges);
                 (edges, indicator_edge)
-            })
-            .collect();
+            }));
+        }
 
         let ctx = WindowStateContext {
             focused_key,
@@ -1388,7 +1441,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         // relayout will run this pass again once the transaction resolves.
         let skip_state_pass = self.tree.pending_layout_is_stale();
         let resize_data = self.interactive_resize_data_by_leaf(&state_layouts);
-        for info in state_layouts {
+        for info in &state_layouts {
             if skip_state_pass {
                 break;
             }
@@ -1397,11 +1450,15 @@ impl<W: LayoutElement> TreeSpace<W> {
             // Use O(1) key lookup instead of O(depth) path lookup.
             if let Some(tile) = self.tree.get_tile_mut(info.key) {
                 let resize = resize_data.get(&info.key).copied();
-                Self::update_window_state(tile, &info, resize, in_fullscreen_container, &ctx);
+                Self::update_window_state(tile, info, resize, in_fullscreen_container, &ctx);
             }
         }
 
-        for (info, (edges, indicator_edge)) in render_layouts.into_iter().zip(render_edges) {
+        for (info, (edges, indicator_edge)) in render_layouts
+            .iter()
+            .copied()
+            .zip(render_edges.iter().copied())
+        {
             let is_in_fullscreen_container =
                 fullscreen_container.is_some_and(|scope| self.tree.is_descendant(info.key, scope));
             // Asked before the tile is borrowed mutably below.
@@ -1441,6 +1498,10 @@ impl<W: LayoutElement> TreeSpace<W> {
                 }
             }
         }
+
+        self.state_layout_scratch = state_layouts;
+        self.render_layout_scratch = render_layouts;
+        self.render_edges_scratch = render_edges;
     }
 
     pub fn interactive_resize_begin(&mut self, window: W::Id, edges: ResizeEdge) -> bool {
@@ -3459,18 +3520,26 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     pub fn refresh(&mut self, is_active: bool, is_focused: bool) {
+        let _span = tracy_client::span!("TreeSpace::refresh");
         let applied = self.tree.apply_pending_layouts_if_ready();
         if applied && self.tree.take_pending_relayout() {
             self.tree.layout();
         }
         let has_pending = self.tree.has_pending_layouts();
-        let mut layouts = if has_pending {
-            self.tree
-                .pending_leaf_layouts_cloned()
-                .unwrap_or_else(|| self.tree.leaf_layouts_cloned())
-        } else {
-            self.tree.leaf_layouts_cloned()
-        };
+        let mut layouts = std::mem::take(&mut self.state_layout_scratch);
+        layouts.clear();
+        {
+            let _span = tracy_client::span!("TreeSpace::project_state_layouts_for_refresh");
+            if has_pending {
+                layouts.extend(self.tree.pending_leaf_layouts().map(LeafFrameInfo::from));
+            } else {
+                layouts.extend(self.tree.leaf_layouts().iter().map(LeafFrameInfo::from));
+            }
+        }
+        #[cfg(feature = "profile-with-tracy")]
+        {
+            tracy_client::plot!("layout.refresh_leaf_projections", layouts.len() as f64);
+        }
         let tiled_root = self.tree.workspace_root();
         layouts.retain(|info| info.branch == tiled_root);
         let focused_key = self.focused_key();
@@ -3501,7 +3570,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         // See the other state pass: never drive window state from a stale snapshot.
         let skip_state_pass = self.tree.pending_layout_is_stale();
         let resize_data = self.interactive_resize_data_by_leaf(&layouts);
-        for info in layouts {
+        for info in &layouts {
             if skip_state_pass {
                 break;
             }
@@ -3510,9 +3579,10 @@ impl<W: LayoutElement> TreeSpace<W> {
             // Use O(1) key lookup instead of O(depth) path lookup.
             if let Some(tile) = self.tree.get_tile_mut(info.key) {
                 let resize = resize_data.get(&info.key).copied();
-                Self::update_window_state(tile, &info, resize, in_fullscreen_container, &ctx);
+                Self::update_window_state(tile, info, resize, in_fullscreen_container, &ctx);
             }
         }
+        self.state_layout_scratch = layouts;
     }
     pub fn render_above_top_layer(&self) -> bool {
         // Render above the top layer (e.g. waybar) for either fullscreen authority.
@@ -3661,7 +3731,7 @@ impl<W: LayoutElement> TreeSpace<W> {
 impl<W: LayoutElement> TreeSpace<W> {
     fn update_window_state(
         tile: &mut Tile<W>,
-        info: &LeafLayoutInfo,
+        info: &LeafFrameInfo,
         interactive_resize: Option<InteractiveResizeData>,
         in_fullscreen_container: bool,
         ctx: &WindowStateContext<'_, W>,

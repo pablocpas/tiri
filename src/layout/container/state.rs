@@ -72,11 +72,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         &self.leaf_layouts
     }
 
-    /// Clone of the cached leaf layout information
-    pub(in crate::layout) fn leaf_layouts_cloned(&self) -> Vec<LeafLayoutInfo> {
-        self.leaf_layouts.clone()
-    }
-
     /// The leaves one waiting branch describes.
     pub(in crate::layout) fn pending_leaf_layouts_for(
         &self,
@@ -88,20 +83,11 @@ impl<W: LayoutElement> ContainerTree<W> {
             .map(|pending| pending.data.leaf_layouts.as_slice())
     }
 
-    /// The leaves every waiting branch describes, together.
-    ///
-    /// Read by the consumers that mean "what will be on screen once the outstanding
-    /// configures land", which does not care which branch each leaf came from.
-    pub(in crate::layout) fn pending_leaf_layouts_cloned(&self) -> Option<Vec<LeafLayoutInfo>> {
-        if self.pending_layouts.is_empty() {
-            return None;
-        }
-        Some(
-            self.pending_layouts
-                .iter()
-                .flat_map(|pending| pending.data.leaf_layouts.iter().cloned())
-                .collect(),
-        )
+    /// Cached leaves from every layout transaction that is still waiting for clients.
+    pub(in crate::layout) fn pending_leaf_layouts(&self) -> impl Iterator<Item = &LeafLayoutInfo> {
+        self.pending_layouts
+            .iter()
+            .flat_map(|pending| pending.data.leaf_layouts.iter())
     }
 
     pub(in crate::layout) fn set_pending_transaction(&mut self, transaction: Transaction) {

@@ -281,6 +281,17 @@ enum RequestSizeOnce {
 }
 
 impl Mapped {
+    /// Whether skipping the next layout refresh would leave a sendable configure pending.
+    ///
+    /// Used by the incremental-refresh debug oracle. Throttled size-only configures are excluded:
+    /// they become sendable after the client commits, and that commit invalidates the layout.
+    pub(crate) fn has_sendable_configure_pending(&self) -> bool {
+        matches!(
+            self.configure_intent(),
+            ConfigureIntent::CanSend | ConfigureIntent::ShouldSend
+        )
+    }
+
     pub fn new(window: Window, rules: ResolvedWindowRules, hook: HookId, config: &Config) -> Self {
         let surface = window.wl_surface().expect("no X11 support");
         let credentials = get_credentials_for_surface(&surface);
@@ -1114,6 +1125,7 @@ impl LayoutElement for Mapped {
     }
 
     fn send_pending_configure(&mut self) {
+        let _tracy_span = tracy_client::span!("Mapped::send_pending_configure");
         let toplevel = self.toplevel();
         let _span =
             trace_span!("send_pending_configure", surface = ?toplevel.wl_surface().id()).entered();
@@ -1140,6 +1152,7 @@ impl LayoutElement for Mapped {
             });
 
         if has_pending_changes {
+            let _tracy_span = tracy_client::span!("Mapped::send_configure");
             // If needed, replace the pending size with the current window size.
             if let Some(RequestSizeOnce::UseWindowSize) = self.request_size_once {
                 let size = self.window.geometry().size;

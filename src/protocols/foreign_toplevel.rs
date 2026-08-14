@@ -228,7 +228,10 @@ fn refresh_toplevel(
     has_focus: bool,
 ) {
     let states = to_state_vec(&current.states, has_focus);
-    let state_bytes = serialize_states(&states);
+    let state_bytes = {
+        let _span = tracy_client::span!("foreign_toplevel::serialize_states");
+        serialize_states(&states)
+    };
 
     match protocol_state.toplevels.entry(wl_surface.clone()) {
         Entry::Occupied(entry) => {

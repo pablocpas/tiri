@@ -15,14 +15,14 @@ use tiri_ipc::{
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::container::{
     floating_position_from_logical, scale_floating_position, Direction, InactiveTilingReference,
-    InsertParentInfo, Layout, LeafLayoutInfo, NodeKey, TabBarInfo,
+    InsertParentInfo, Layout, NodeKey, TabBarInfo,
 };
 use super::focus_ring::{
     render_container_selection, ContainerSelectionStyle, FocusRingEdges, FocusRingRenderElement,
 };
 use super::legacy_column::ColumnWidth;
 use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
-use super::tree_space::{percent_from_size_change, TileConfig, TreeSpace};
+use super::tree_space::{percent_from_size_change, LeafFrameInfo, TileConfig, TreeSpace};
 use super::workspace::{InteractiveResize, ResolvedSize};
 use super::{
     resize_edges_for_point, ConfigureIntent, InteractiveResizeData, LayoutCycleEntry,
@@ -69,6 +69,9 @@ pub struct FloatingSpace<W: LayoutElement> {
 
     /// Windows in the closing animation.
     closing_windows: Vec<ClosingWindow>,
+
+    /// Copy-only projection reused while rendering floating branches.
+    render_layout_scratch: Vec<LeafFrameInfo>,
 }
 
 niri_render_elements! {
@@ -229,6 +232,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             next_container_id: 1,
             interactive_resize: None,
             closing_windows: Vec::new(),
+            render_layout_scratch: Vec::new(),
         }
     }
 
@@ -312,6 +316,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         is_active: bool,
         view_rect: Rectangle<f64, Logical>,
     ) {
+        let _span = tracy_client::span!("FloatingSpace::update_render_elements");
         let active = self.active_window_id(space);
         let fullscreen_id = self.fullscreen_window_id(space).cloned();
         let selection_is_container = self
@@ -323,11 +328,21 @@ impl<W: LayoutElement> FloatingSpace<W> {
         if applied && space.tree_mut().take_pending_relayout() {
             space.tree_mut().layout();
         }
+        let mut layouts = std::mem::take(&mut self.render_layout_scratch);
         for container in &mut self.containers {
-            let layouts: Vec<LeafLayoutInfo> =
-                super::tree_space::branch_display_layouts(space.tree(), container.root)
-                    .cloned()
-                    .collect();
+            layouts.clear();
+            {
+                let _span =
+                    tracy_client::span!("FloatingSpace::project_display_layouts_for_render");
+                layouts.extend(
+                    super::tree_space::branch_display_layouts(space.tree(), container.root)
+                        .map(LeafFrameInfo::from),
+                );
+            }
+            #[cfg(feature = "profile-with-tracy")]
+            {
+                tracy_client::plot!("layout.floating_leaf_projections", layouts.len() as f64);
+            }
             // sway's `render_floating_container`: a float holding a single view is `focused`,
             // `urgent` or `unfocused`, and nothing else — the focus-inactive comparison never
             // runs on it, because that view *is* the floating con and floating cons are not
@@ -335,7 +350,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             // sway recurse into `render_container`, and then the per-level rule applies to the
             // windows inside it as it would anywhere else.
             let float_has_sublayout = space.tree().window_count_in_branch(container.root) > 1;
-            for info in layouts {
+            for info in layouts.iter().copied() {
                 let is_focus_head = float_has_sublayout && space.tree().is_focus_head(info.key);
                 if let Some(tile) = space.tree_mut().get_tile_mut(info.key) {
                     let is_fullscreen_tile = fullscreen_id
@@ -374,6 +389,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 }
             }
         }
+        self.render_layout_scratch = layouts;
     }
 
     pub fn tiles<'a>(&'a self, space: &'a TreeSpace<W>) -> impl Iterator<Item = &'a Tile<W>> + 'a {
@@ -3022,6 +3038,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     }
 
     pub fn refresh(&mut self, space: &mut TreeSpace<W>, is_active: bool, is_focused: bool) {
+        let _span = tracy_client::span!("FloatingSpace::refresh");
         let active = self.active_window_id(space);
         let deactivate_unfocused = space.options().deactivate_unfocused_windows;
         let disable_resize_throttling = space.options().disable_resize_throttling;
