@@ -69,7 +69,11 @@ def read_plots(path: Path) -> dict[str, dict[str, float | int]]:
     with path.open(encoding="utf-8", newline="") as handle:
         for row in csv.DictReader(handle):
             name = row["name"]
-            if not name.startswith(("layout.", "redraw.", "refresh.", "latency.")):
+            if not (
+                name.startswith(("layout.", "redraw.", "refresh.", "latency."))
+                or "frame schedule" in name
+                or "predicted render time" in name
+            ):
                 continue
             try:
                 values[name].append(float(row["value"]))
@@ -120,7 +124,7 @@ def print_analysis(analyses: list[dict[str, Any]]) -> None:
         for name, plot in analysis["plots"].items():
             print(
                 f"  {name[:45]:45} events={plot['events']:6d} "
-                f"sum={plot['sum']:10.0f} mean={plot['mean']:8.2f} max={plot['max']:8.0f}"
+                f"sum={plot['sum']:10.3f} mean={plot['mean']:8.3f} max={plot['max']:8.3f}"
             )
 
 

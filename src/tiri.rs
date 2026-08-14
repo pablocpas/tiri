@@ -191,7 +191,25 @@ use crate::window::mapped::MappedId;
 use crate::window::{InitialConfigureState, Mapped, ResolvedWindowRules, Unmapped, WindowRef};
 
 const CLEAR_COLOR_LOCKED: [f32; 4] = [0.3, 0.1, 0.1, 1.];
-const DEFAULT_FRAME_SCHEDULE_MARGIN_MS: u16 = 0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameSchedulingMode {
+    Off,
+    Fixed(Duration),
+    Adaptive,
+}
+
+fn frame_scheduling_mode(config: &Config) -> FrameSchedulingMode {
+    if config.debug.disable_frame_scheduling {
+        return FrameSchedulingMode::Off;
+    }
+
+    match config.debug.frame_schedule_margin_ms {
+        None => FrameSchedulingMode::Adaptive,
+        Some(0) => FrameSchedulingMode::Off,
+        Some(millis) => FrameSchedulingMode::Fixed(Duration::from_millis(millis.into())),
+    }
+}
 
 // We'll try to send frame callbacks at least once a second. We'll make a timer that fires once a
 // second, so with the worst timing the maximum interval between two frame callbacks for a surface
@@ -497,11 +515,25 @@ pub struct DndIcon {
     pub offset: Point<i32, Logical>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct PendingRenderTiming {
+    pub duration: Duration,
+    pub target_was_predicted: bool,
+}
+
 pub struct OutputState {
     pub global: GlobalId,
     pub frame_clock: FrameClock,
     pub redraw_state: RedrawState,
     pub render_time_estimator: crate::render_time_estimator::RenderTimeEstimator,
+    /// Start of the critical path for a render released by the deadline timer.
+    pub scheduled_render_started_at: Option<Instant>,
+    /// CPU-side render timing waiting to be associated with presentation feedback.
+    pub pending_render_timing: Option<PendingRenderTiming>,
+    pub frame_schedule_margin_plot_name: tracy_client::PlotName,
+    pub frame_schedule_delay_plot_name: tracy_client::PlotName,
+    pub frame_schedule_render_time_plot_name: tracy_client::PlotName,
+    pub frame_schedule_late_penalty_plot_name: tracy_client::PlotName,
     pub on_demand_vrr_enabled: bool,
     // After the last redraw, some ongoing animations still remain.
     pub unfinished_animations_remain: bool,
@@ -778,6 +810,35 @@ mod redraw_state_tests {
             state,
             RedrawState::WaitingForEstimatedVBlankAndQueued(_)
         ));
+    }
+
+    #[test]
+    fn frame_scheduling_defaults_to_adaptive() {
+        assert_eq!(
+            frame_scheduling_mode(&Config::default()),
+            FrameSchedulingMode::Adaptive
+        );
+    }
+
+    #[test]
+    fn fixed_frame_margin_is_an_explicit_override() {
+        let mut config = Config::default();
+        config.debug.frame_schedule_margin_ms = Some(3);
+        assert_eq!(
+            frame_scheduling_mode(&config),
+            FrameSchedulingMode::Fixed(Duration::from_millis(3))
+        );
+    }
+
+    #[test]
+    fn zero_frame_margin_and_disable_flag_turn_scheduling_off() {
+        let mut config = Config::default();
+        config.debug.frame_schedule_margin_ms = Some(0);
+        assert_eq!(frame_scheduling_mode(&config), FrameSchedulingMode::Off);
+
+        config.debug.frame_schedule_margin_ms = None;
+        config.debug.disable_frame_scheduling = true;
+        assert_eq!(frame_scheduling_mode(&config), FrameSchedulingMode::Off);
     }
 }
 
@@ -1948,10 +2009,8 @@ impl State {
             xwls_changed = true;
         }
 
-        let frame_schedule_margin_ms = config
-            .debug
-            .frame_schedule_margin_ms
-            .unwrap_or(DEFAULT_FRAME_SCHEDULE_MARGIN_MS);
+        let old_frame_scheduling_mode = frame_scheduling_mode(&old_config);
+        let new_frame_scheduling_mode = frame_scheduling_mode(&config);
 
         *old_config = config;
 
@@ -1962,11 +2021,18 @@ impl State {
         // Release the borrow.
         drop(old_config);
 
-        let frame_schedule_margin = Duration::from_millis(frame_schedule_margin_ms.into());
-        for state in self.niri.output_state.values_mut() {
-            state
-                .render_time_estimator
-                .set_fixed_margin(frame_schedule_margin);
+        if old_frame_scheduling_mode != new_frame_scheduling_mode {
+            for state in self.niri.output_state.values_mut() {
+                let redraw_state = mem::take(&mut state.redraw_state);
+                state.redraw_state = match redraw_state {
+                    RedrawState::WaitingForRenderDeadline(token) => {
+                        self.niri.event_loop.remove(token);
+                        state.scheduled_render_started_at = None;
+                        RedrawState::Queued
+                    }
+                    other => other,
+                };
+            }
         }
 
         // Now with a &mut self we can reload the xkb config.
@@ -3291,19 +3357,33 @@ impl Niri {
         if let Some(interval) = refresh_interval {
             render_time_estimator.set_refresh_interval(interval);
         }
-        let frame_schedule_margin_ms = self
-            .config
-            .borrow()
-            .debug
-            .frame_schedule_margin_ms
-            .unwrap_or(DEFAULT_FRAME_SCHEDULE_MARGIN_MS);
-        render_time_estimator
-            .set_fixed_margin(Duration::from_millis(frame_schedule_margin_ms.into()));
+        let frame_schedule_margin_plot_name = tracy_client::PlotName::new_leak(format!(
+            "{} frame schedule margin, ms",
+            name.connector
+        ));
+        let frame_schedule_delay_plot_name = tracy_client::PlotName::new_leak(format!(
+            "{} frame schedule delay, ms",
+            name.connector
+        ));
+        let frame_schedule_render_time_plot_name = tracy_client::PlotName::new_leak(format!(
+            "{} predicted render time, ms",
+            name.connector
+        ));
+        let frame_schedule_late_penalty_plot_name = tracy_client::PlotName::new_leak(format!(
+            "{} frame schedule late penalty, ms",
+            name.connector
+        ));
 
         let state = OutputState {
             global,
             redraw_state: RedrawState::Idle,
             render_time_estimator,
+            scheduled_render_started_at: None,
+            pending_render_timing: None,
+            frame_schedule_margin_plot_name,
+            frame_schedule_delay_plot_name,
+            frame_schedule_render_time_plot_name,
+            frame_schedule_late_penalty_plot_name,
             on_demand_vrr_enabled: false,
             unfinished_animations_remain: false,
             frame_clock: FrameClock::new(refresh_interval, vrr),
@@ -4446,33 +4526,61 @@ impl Niri {
         let _span = tracy_client::span!("Niri::redraw_queued_outputs");
 
         let is_tty = matches!(backend, Backend::Tty(_));
-        let (disable_frame_scheduling, frame_schedule_margin_ms) = {
-            let config = self.config.borrow();
-            (
-                config.debug.disable_frame_scheduling,
-                config
-                    .debug
-                    .frame_schedule_margin_ms
-                    .unwrap_or(DEFAULT_FRAME_SCHEDULE_MARGIN_MS),
-            )
-        };
+        let frame_scheduling_mode = frame_scheduling_mode(&self.config.borrow());
 
         while let Some(output) = self.next_output_with_queued_redraw() {
             // Try frame scheduling: delay render until just before vblank.
             let state = self.output_state.get_mut(&output).unwrap();
             let should_schedule = is_tty
-                && !disable_frame_scheduling
-                && frame_schedule_margin_ms > 0
+                && frame_scheduling_mode != FrameSchedulingMode::Off
                 && !state.frame_clock.vrr()
+                && state.frame_clock.has_presentation_history()
                 && matches!(state.redraw_state, RedrawState::Queued);
 
             if should_schedule {
                 let now = crate::utils::get_monotonic_time();
                 let next_vblank = state.frame_clock.next_presentation_time();
+                let margin = match frame_scheduling_mode {
+                    FrameSchedulingMode::Off => unreachable!(),
+                    FrameSchedulingMode::Fixed(margin) => margin,
+                    FrameSchedulingMode::Adaptive => state
+                        .render_time_estimator
+                        .adaptive_margin(now, state.frame_clock.last_presentation_time()),
+                };
 
-                if let Some(deadline) = state.render_time_estimator.deadline(next_vblank, now) {
+                let client = tracy_client::Client::running().unwrap();
+                client.plot(
+                    state.frame_schedule_margin_plot_name,
+                    margin.as_secs_f64() * 1000.0,
+                );
+                client.plot(
+                    state.frame_schedule_render_time_plot_name,
+                    state
+                        .render_time_estimator
+                        .predicted_render_time()
+                        .as_secs_f64()
+                        * 1000.0,
+                );
+                client.plot(
+                    state.frame_schedule_late_penalty_plot_name,
+                    state
+                        .render_time_estimator
+                        .late_presentation_penalty()
+                        .as_secs_f64()
+                        * 1000.0,
+                );
+
+                if let Some(deadline) = crate::render_time_estimator::RenderTimeEstimator::deadline(
+                    next_vblank,
+                    now,
+                    margin,
+                ) {
                     let delay = deadline.saturating_sub(now);
                     trace!("scheduling render deadline in {delay:?}");
+                    client.plot(
+                        state.frame_schedule_delay_plot_name,
+                        delay.as_secs_f64() * 1000.0,
+                    );
 
                     let output_clone = output.clone();
                     let timer = calloop::timer::Timer::from_duration(delay);
@@ -4483,6 +4591,7 @@ impl Niri {
                                 data.niri.output_state.get_mut(&output_clone).unwrap();
                             match mem::take(&mut output_state.redraw_state) {
                                 RedrawState::WaitingForRenderDeadline(_) => {
+                                    output_state.scheduled_render_started_at = Some(Instant::now());
                                     output_state.redraw_state = RedrawState::Queued;
                                 }
                                 other => {
@@ -4490,7 +4599,8 @@ impl Niri {
                                         "unexpected redraw state in render deadline timer: \
                                          {other:?}"
                                     );
-                                    output_state.redraw_state = RedrawState::Queued;
+                                    output_state.redraw_state = other;
+                                    return calloop::timer::TimeoutAction::Drop;
                                 }
                             }
                             // The deadline timer is the last chance to pick up fresh client
@@ -4502,6 +4612,9 @@ impl Niri {
                     state.redraw_state = RedrawState::WaitingForRenderDeadline(token);
                     continue;
                 }
+
+                trace!("render deadline elapsed or is too close; rendering immediately");
+                client.plot(state.frame_schedule_delay_plot_name, 0.0);
             }
 
             trace!("redrawing output");
@@ -5406,6 +5519,7 @@ impl Niri {
 
     fn redraw(&mut self, backend: &mut Backend, output: &Output) {
         let _span = tracy_client::span!("Niri::redraw");
+        let is_tty = matches!(backend, Backend::Tty(_));
 
         // Verify our invariant.
         let state = self.output_state.get_mut(output).unwrap();
@@ -5414,6 +5528,11 @@ impl Niri {
             RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
         ));
 
+        let render_started_at = state
+            .scheduled_render_started_at
+            .take()
+            .unwrap_or_else(Instant::now);
+        let target_was_predicted = state.frame_clock.has_presentation_history();
         let target_presentation_time = state.frame_clock.next_presentation_time();
 
         // Freeze the clock at the target time.
@@ -5425,6 +5544,7 @@ impl Niri {
         self.update_render_elements(Some(output));
 
         let mut res = RenderResult::Skipped;
+        let mut pending_render_timing = None;
         if self.monitors_active {
             let state = self.output_state.get_mut(output).unwrap();
             state.unfinished_animations_remain = self.layout.are_animations_ongoing(Some(output));
@@ -5450,10 +5570,24 @@ impl Niri {
 
             // Render.
             res = backend.render(self, output, target_presentation_time);
+            if is_tty && res == RenderResult::Submitted {
+                pending_render_timing = Some(PendingRenderTiming {
+                    duration: render_started_at.elapsed(),
+                    target_was_predicted,
+                });
+            }
         }
 
         let is_locked = self.is_locked();
         let state = self.output_state.get_mut(output).unwrap();
+
+        if let Some(timing) = pending_render_timing {
+            if state.pending_render_timing.replace(timing).is_some() {
+                error!(
+                    "submitted a frame while previous render timing was still awaiting presentation"
+                );
+            }
+        }
 
         if res == RenderResult::Skipped {
             // Update the redraw state on failed render.

@@ -1730,16 +1730,24 @@ impl Tty {
 
         let redraw_needed = match mem::replace(&mut output_state.redraw_state, RedrawState::Idle) {
             RedrawState::WaitingForVBlank { redraw_needed } => redraw_needed,
-            state @ (RedrawState::Idle
-            | RedrawState::Queued
-            | RedrawState::WaitingForRenderDeadline(_)
-            | RedrawState::WaitingForEstimatedVBlank(_)
-            | RedrawState::WaitingForEstimatedVBlankAndQueued(_)) => {
+            RedrawState::WaitingForRenderDeadline(token) => {
+                niri.event_loop.remove(token);
+                output_state.scheduled_render_started_at = None;
                 // This is an error!() because it shouldn't happen, but on some systems it somehow
                 // does. Kernel sending rogue vblank events?
                 //
                 // https://github.com/niri-wm/niri/issues/556
                 // https://github.com/niri-wm/niri/issues/615
+                error!(
+                    "unexpected redraw state for output {name} (should be WaitingForVBlank); \
+                     cancelled a pending render deadline after a rogue vblank"
+                );
+                true
+            }
+            state @ (RedrawState::Idle
+            | RedrawState::Queued
+            | RedrawState::WaitingForEstimatedVBlank(_)
+            | RedrawState::WaitingForEstimatedVBlankAndQueued(_)) => {
                 error!(
                     "unexpected redraw state for output {name} (should be WaitingForVBlank); \
                      can happen when resuming from sleep or powering on monitors: {state:?}"
@@ -1787,6 +1795,40 @@ impl Tty {
                     );
                 }
 
+                if let Some(timing) = output_state.pending_render_timing.take() {
+                    output_state
+                        .render_time_estimator
+                        .record_render_time(timing.duration, time);
+                    if timing.target_was_predicted && !presentation_time.is_zero() {
+                        output_state
+                            .render_time_estimator
+                            .record_presentation_timing(
+                                target_presentation_time,
+                                presentation_time,
+                            );
+                    }
+
+                    let client = tracy_client::Client::running().unwrap();
+                    client.plot(
+                        output_state.frame_schedule_render_time_plot_name,
+                        output_state
+                            .render_time_estimator
+                            .predicted_render_time()
+                            .as_secs_f64()
+                            * 1000.0,
+                    );
+                    client.plot(
+                        output_state.frame_schedule_late_penalty_plot_name,
+                        output_state
+                            .render_time_estimator
+                            .late_presentation_penalty()
+                            .as_secs_f64()
+                            * 1000.0,
+                    );
+                } else {
+                    warn!("presented frame on {name} had no pending render timing");
+                }
+
                 #[cfg(feature = "profile-with-tracy")]
                 if let Some(sample) = latency_sample {
                     sample.emit_presented(
@@ -1799,8 +1841,13 @@ impl Tty {
                     );
                 }
             }
-            Ok(None) => (),
+            Ok(None) => {
+                if output_state.pending_render_timing.take().is_some() {
+                    warn!("vblank on {name} had render timing but no submitted frame data");
+                }
+            }
             Err(err) => {
+                output_state.pending_render_timing = None;
                 warn!("error marking frame as submitted: {err}");
             }
         }
@@ -1814,9 +1861,6 @@ impl Tty {
         output_state.last_drm_sequence = Some(meta.sequence);
 
         output_state.frame_clock.presented(presentation_time);
-
-        // Update the render time estimator for frame drop detection.
-        output_state.render_time_estimator.on_vblank(meta.sequence);
 
         if redraw_needed || output_state.unfinished_animations_remain {
             let vblank_frame = tracy_client::Client::running()
@@ -1886,7 +1930,6 @@ impl Tty {
         target_presentation_time: Duration,
     ) -> RenderResult {
         let span = tracy_client::span!("Tty::render");
-        let render_start = std::time::Instant::now();
 
         let mut rv = RenderResult::Skipped;
 
@@ -2009,14 +2052,8 @@ impl Tty {
                         Ok(()) => {
                             #[cfg(feature = "profile-with-tracy")]
                             niri.latency_submission_committed(output, latency_sample);
-                            let render_elapsed = render_start.elapsed();
 
                             let output_state = niri.output_state.get_mut(output).unwrap();
-
-                            // Record render+commit time for frame scheduling.
-                            output_state
-                                .render_time_estimator
-                                .record_render_time(render_elapsed);
 
                             let new_state = RedrawState::WaitingForVBlank {
                                 redraw_needed: false,

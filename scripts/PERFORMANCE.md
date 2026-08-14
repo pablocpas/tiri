@@ -124,6 +124,19 @@ scripts/analyze_tiri_perceptual.py compare \
   --candidate target/perceptual-after/perceptual.json
 ```
 
+On fixed-refresh DRM outputs, Tracy also exports four adaptive-scheduler plots per output:
+
+- `<output> frame schedule margin, ms`: total render budget before vblank.
+- `<output> frame schedule delay, ms`: how long the queued redraw was coalesced before rendering.
+- `<output> predicted render time, ms`: time-weighted render estimate plus positive deviation.
+- `<output> frame schedule late penalty, ms`: extra budget learned from missed presentation targets.
+
+After warm-up, the render estimate and margin should stabilize, `submit_ms` should move close to the
+predicted vblank, and `late_ms`/missed-deadline rate must not regress. A late penalty that remains
+near a whole refresh interval indicates repeated misses and fails the optimization even if median
+input latency improved. The first frame after output initialization and frames after long idle are
+deliberately rendered immediately and must not be treated as scheduler fallbacks.
+
 This measures from the compositor receiving a libinput event to the DRM vblank.
 It includes the application's response when the resulting surface commit arrives
 within 750 ms. It does not include the device-to-kernel delay or panel scanout;
