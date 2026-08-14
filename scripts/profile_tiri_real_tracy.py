@@ -230,6 +230,13 @@ def run(args: argparse.Namespace) -> int:
         raise ProfileError(
             f"capture did not contain only physical DRM presentations: {report.get('backends')}"
         )
+    if args.require_adaptive_scheduler and not report.get("adaptive_scheduler", {}).get(
+        "complete"
+    ):
+        raise ProfileError(
+            "capture did not contain all adaptive-scheduler plots; check the binary, ensure frame "
+            "scheduling is not disabled, and use a fixed-refresh non-VRR output"
+        )
 
     print(report_path)
     return 0
@@ -257,6 +264,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="reject the capture unless TIRI_SOCKET belongs to this exact executable hash",
     )
+    parser.add_argument("--require-adaptive-scheduler", action="store_true")
     return parser.parse_args()
 
 

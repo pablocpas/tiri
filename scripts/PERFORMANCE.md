@@ -114,15 +114,22 @@ scripts/profile_tiri_real_tracy.py \
 The runner refuses captures that do not contain DRM vblank samples. Its
 `perceptual.json` report contains p50/p95/p99 for input-to-presentation,
 commit-to-presentation, queue/render/submit-to-presentation, latency in refresh
-intervals, deadline misses, sources, and outputs.
+intervals, deadline misses, sources, outputs, and adaptive-scheduler telemetry.
 
 Compare two captures made with the same output mode, workload and sample count:
 
 ```sh
 scripts/analyze_tiri_perceptual.py compare \
   --baseline target/perceptual-before/perceptual.json \
-  --candidate target/perceptual-after/perceptual.json
+  --candidate target/perceptual-after/perceptual.json \
+  --require-adaptive-candidate
 ```
+
+The first comparison block reports `improvement=...`: positive values mean that the candidate is
+faster. It covers physical input and the commit, queue, render and submit distances to physical
+presentation, followed by the missed-deadline change. Candidate scheduler delay, margin, render
+estimate and late-penalty percentiles are printed separately. Requiring adaptive telemetry prevents
+an accidentally stale binary from producing a plausible but invalid result.
 
 On fixed-refresh DRM outputs, Tracy also exports four adaptive-scheduler plots per output:
 
@@ -143,10 +150,11 @@ within 750 ms. It does not include the device-to-kernel delay or panel scanout;
 an LED/photodiode or high-speed-camera A/B test is still required for a literal
 input-to-photon claim.
 
-### P1 A-B-A protocol
+### Adaptive scheduler A-B-A protocol
 
 The two prepared executables are recorded in
-`target/perceptual-binaries/manifest.json`. The complete campaign is driven by
+`target/perceptual-binaries/manifest.json`: `063ab706` is the optimized parent immediately before
+the scheduler and `832f7f9c` adds adaptive scheduling. The complete campaign is driven by
 one Bash launcher. Switch from KDE to a spare text VT (for example,
 `Ctrl+Alt+F3`), log in, and run:
 
@@ -161,9 +169,9 @@ does not replace KDE's systemd graphical session. Before any workload, it also
 requires two consecutive Tracy connections; this catches a non-on-demand binary
 before spending time on the campaign. The order is:
 
-1. `target/perceptual-binaries/before/tiri`
-2. `target/perceptual-binaries/after/tiri`
-3. `target/perceptual-binaries/before/tiri` again
+1. `target/perceptual-binaries/adaptive-off/tiri`
+2. `target/perceptual-binaries/adaptive-on/tiri`
+3. `target/perceptual-binaries/adaptive-off/tiri` again
 
 For each compositor it first runs deterministic open/close, terminal and local
 browser workloads without user interaction. It then asks for 120 seconds of

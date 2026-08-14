@@ -32,6 +32,12 @@ PHYSICAL_SOURCES = {
     "gesture",
     "tablet",
 }
+SCHEDULER_PLOT_SUFFIXES = {
+    "margin_ms": " frame schedule margin, ms",
+    "delay_ms": " frame schedule delay, ms",
+    "predicted_render_ms": " predicted render time, ms",
+    "late_penalty_ms": " frame schedule late penalty, ms",
+}
 
 
 class AnalysisError(RuntimeError):
@@ -126,6 +132,55 @@ def read_records(directory: Path) -> tuple[list[dict[str, Any]], int]:
     return records, no_damage
 
 
+def read_scheduler_plots(directory: Path) -> dict[str, Any]:
+    path = directory / "plots.csv"
+    by_output: dict[str, dict[str, list[float]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    try:
+        with path.open(encoding="utf-8", newline="") as handle:
+            for row in csv.DictReader(handle):
+                name = row["name"]
+                value = row["value"]
+                if not value:
+                    continue
+                for metric, suffix in SCHEDULER_PLOT_SUFFIXES.items():
+                    if name.endswith(suffix):
+                        output = name.removesuffix(suffix)
+                        by_output[output][metric].append(float(value))
+                        break
+    except FileNotFoundError as error:
+        raise AnalysisError(f"missing Tracy plot export: {path}") from error
+    except (KeyError, ValueError) as error:
+        raise AnalysisError(f"invalid Tracy plot export {path}: {error}") from error
+
+    def summarize(series: dict[str, list[float]]) -> dict[str, Any]:
+        result = {
+            metric: metric_summary(values) for metric, values in sorted(series.items())
+        }
+        penalty = series.get("late_penalty_ms", [])
+        result["penalty_active_rate"] = (
+            sum(value > 0.0 for value in penalty) / len(penalty) if penalty else 0.0
+        )
+        return result
+
+    combined: dict[str, list[float]] = defaultdict(list)
+    for series in by_output.values():
+        for metric, values in series.items():
+            combined[metric].extend(values)
+
+    complete = all(metric in combined for metric in SCHEDULER_PLOT_SUFFIXES)
+    return {
+        "available": bool(by_output),
+        "complete": complete,
+        "scheduled_redraws": len(combined.get("margin_ms", [])),
+        "combined": summarize(combined) if combined else {},
+        "by_output": {
+            output: summarize(series) for output, series in sorted(by_output.items())
+        },
+    }
+
+
 def metric_summary(values: list[float]) -> dict[str, float | int]:
     return {
         "samples": len(values),
@@ -183,7 +238,7 @@ def analyze(directory: Path) -> dict[str, Any]:
         by_output[record["output"]].append(record)
 
     return {
-        "format": 2,
+        "format": 3,
         "directory": str(directory),
         "backends": sorted({record["backend"] for record in records}),
         "outputs": sorted(by_output),
@@ -193,6 +248,7 @@ def analyze(directory: Path) -> dict[str, Any]:
         "overall": summarize_group(unique_records),
         "all_output_presentations": summarize_group(records),
         "physical_input": summarize_group(physical),
+        "adaptive_scheduler": read_scheduler_plots(directory),
         "by_source": {
             name: summarize_group(group) for name, group in sorted(by_source.items())
         },
@@ -223,6 +279,28 @@ def print_analysis(report: dict[str, Any]) -> None:
     print_group("physical-input", report["physical_input"])
     for name, group in report["by_source"].items():
         print_group(f"source:{name}", group)
+    print_scheduler(report.get("adaptive_scheduler", {}))
+
+
+def print_scheduler(scheduler: dict[str, Any]) -> None:
+    if not scheduler.get("available"):
+        print("adaptive-scheduler       unavailable")
+        return
+    if not scheduler.get("complete"):
+        print("adaptive-scheduler       incomplete telemetry")
+        return
+    metrics = scheduler["combined"]
+    margin = metrics["margin_ms"]
+    delay = metrics["delay_ms"]
+    predicted = metrics["predicted_render_ms"]
+    penalty = metrics["late_penalty_ms"]
+    print(
+        f"adaptive-scheduler       redraws={scheduler['scheduled_redraws']:5d} "
+        f"delay p50/p95={delay['p50']:.2f}/{delay['p95']:.2f} ms "
+        f"margin p50/p95={margin['p50']:.2f}/{margin['p95']:.2f} ms "
+        f"render-est p95={predicted['p95']:.2f} ms "
+        f"penalty p95/max={penalty['p95']:.2f}/{penalty['max']:.2f} ms"
+    )
 
 
 def percent_delta(baseline: float, candidate: float) -> float:
@@ -231,11 +309,74 @@ def percent_delta(baseline: float, candidate: float) -> float:
     return (candidate - baseline) / baseline * 100.0
 
 
+def print_improvement(
+    label: str,
+    baseline: float,
+    candidate: float,
+    *,
+    unit: str = "ms",
+) -> None:
+    improvement = baseline - candidate
+    improvement_pct = -percent_delta(baseline, candidate)
+    print(
+        f"  {label:31} {baseline:8.2f} -> {candidate:8.2f} {unit}  "
+        f"improvement={improvement:+8.2f} {unit} ({improvement_pct:+7.1f}%)"
+    )
+
+
+def print_adaptive_impact(baseline: dict[str, Any], candidate: dict[str, Any]) -> None:
+    print("Adaptive scheduling impact (positive improvement is better):")
+    for group_name, label in (("overall", "all visual work"), ("physical_input", "physical input")):
+        base_group = baseline[group_name]
+        cand_group = candidate[group_name]
+        if min(base_group["samples"], cand_group["samples"]) == 0:
+            continue
+        metric_names = ["commit_ms", "queue_ms", "render_ms", "submit_ms"]
+        if group_name == "physical_input":
+            metric_names.insert(0, "input_ms")
+        for metric_name in metric_names:
+            base_metric = base_group["metrics"][metric_name]
+            cand_metric = cand_group["metrics"][metric_name]
+            if min(base_metric["samples"], cand_metric["samples"]) == 0:
+                continue
+            for percentile_name in ("p50", "p95"):
+                print_improvement(
+                    f"{label} {metric_name} {percentile_name}",
+                    float(base_metric[percentile_name]),
+                    float(cand_metric[percentile_name]),
+                )
+
+        base_missed = float(base_group["missed_deadline_rate"]) * 100.0
+        cand_missed = float(cand_group["missed_deadline_rate"]) * 100.0
+        print_improvement(
+            f"{label} missed deadlines",
+            base_missed,
+            cand_missed,
+            unit="%",
+        )
+
+    scheduler = candidate.get("adaptive_scheduler", {})
+    if scheduler.get("complete"):
+        print("Candidate adaptive telemetry:")
+        print_scheduler(scheduler)
+    else:
+        print("WARNING: candidate has no adaptive-scheduler plots; this is not an adaptive A/B.")
+
+
 def compare_reports(args: argparse.Namespace) -> int:
     baseline = json.loads(args.baseline.read_text(encoding="utf-8"))
     candidate = json.loads(args.candidate.read_text(encoding="utf-8"))
+    if args.require_adaptive_candidate and not candidate.get("adaptive_scheduler", {}).get(
+        "complete"
+    ):
+        raise AnalysisError(
+            "candidate has no adaptive-scheduler plots; rebuild it from the adaptive commit"
+        )
     regressions = []
     comparisons = []
+
+    print_adaptive_impact(baseline, candidate)
+    print()
 
     base_sources = baseline.get("by_source", {})
     cand_sources = candidate.get("by_source", {})
@@ -321,6 +462,7 @@ def parse_args() -> argparse.Namespace:
     compare_parser.add_argument("--latency-pct", type=float, default=10.0)
     compare_parser.add_argument("--latency-abs-ms", type=float, default=2.0)
     compare_parser.add_argument("--missed-abs-rate", type=float, default=0.01)
+    compare_parser.add_argument("--require-adaptive-candidate", action="store_true")
     return parser.parse_args()
 
 

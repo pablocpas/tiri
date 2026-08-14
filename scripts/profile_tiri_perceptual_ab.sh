@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run a physical-backend P1 A-B-A campaign from one spare Linux VT.
+# Measure the physical-backend effect of adaptive frame scheduling from one spare Linux VT.
 
 set -Eeuo pipefail
 
@@ -7,8 +7,8 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$ROOT/scripts/profile_tiri_perceptual_ab.sh"
 REAL_PROFILER="$ROOT/scripts/profile_tiri_real_tracy.py"
 ANALYZER="$ROOT/scripts/analyze_tiri_perceptual.py"
-BEFORE_BIN="$ROOT/target/perceptual-binaries/before/tiri"
-AFTER_BIN="$ROOT/target/perceptual-binaries/after/tiri"
+BEFORE_BIN="$ROOT/target/perceptual-binaries/adaptive-off/tiri"
+AFTER_BIN="$ROOT/target/perceptual-binaries/adaptive-on/tiri"
 
 die() {
     echo "error: $*" >&2
@@ -35,6 +35,10 @@ run_real_scenario() {
     local window_cmd=$3
     local repeat=$4
     local output_dir="$INSIDE_OUTPUT/$name"
+    local adaptive_args=()
+    if [[ $INSIDE_LABEL == after ]]; then
+        adaptive_args+=(--require-adaptive-scheduler)
+    fi
 
     echo
     echo "== Deterministic workload: $name =="
@@ -43,6 +47,7 @@ run_real_scenario() {
         --window-cmd "$window_cmd" \
         --repeat "$repeat" \
         --expected-exe "$INSIDE_BINARY" \
+        "${adaptive_args[@]}" \
         --output-dir "$output_dir"
     # Tracy may still be finishing asynchronous source-code transfers after the capture
     # process has written the trace.  Give the on-demand client time to return to its
@@ -90,6 +95,7 @@ probe_tracy_reconnect() {
 inside_main() {
     [[ $# -eq 5 ]] || die "invalid internal invocation"
     local label=$1
+    INSIDE_LABEL=$label
     INSIDE_BINARY=$2
     INSIDE_OUTPUT=$3
     local manual_duration=$4
@@ -99,7 +105,7 @@ inside_main() {
     mkdir -p "$INSIDE_OUTPUT"
     trap inside_finish EXIT
 
-    echo "P1 physical presentation campaign: $label"
+    echo "Adaptive frame-scheduling campaign: $label"
     echo "Executable: $INSIDE_BINARY"
     echo "Output:     $INSIDE_OUTPUT"
     echo
@@ -145,11 +151,16 @@ inside_main() {
     echo "the two BEFORE passes bracket AFTER to expose human/thermal drift."
     read -r -p "Press Enter when your terminal and browser are ready... "
 
+    local adaptive_args=()
+    if [[ $INSIDE_LABEL == after ]]; then
+        adaptive_args+=(--require-adaptive-scheduler)
+    fi
     python3 "$REAL_PROFILER" \
         --duration "$manual_duration" \
         --capture-warmup 3 \
         --manual-task "normal terminal, browser and window-management work ($label)" \
         --expected-exe "$INSIDE_BINARY" \
+        "${adaptive_args[@]}" \
         --output-dir "$INSIDE_OUTPUT/manual-normal"
 
     python3 - "$INSIDE_OUTPUT/manual-normal/perceptual.json" <<'PY'
@@ -187,6 +198,8 @@ The order is BEFORE-A -> AFTER -> BEFORE-B.
 Options:
   --duration SECONDS       normal-work capture per compositor (default: 120)
   --scenario-repeat COUNT  deterministic scenario repetitions (default: 3)
+  --before-bin PATH        binary immediately before adaptive scheduling
+  --after-bin PATH         binary with adaptive scheduling enabled
   --output-dir PATH        campaign directory (default: timestamp under target/)
   -h, --help               show this help
 EOF
@@ -205,6 +218,16 @@ while [[ $# -gt 0 ]]; do
         --scenario-repeat)
             [[ $# -ge 2 ]] || die "--scenario-repeat requires a value"
             SCENARIO_REPEAT=$2
+            shift 2
+            ;;
+        --before-bin)
+            [[ $# -ge 2 ]] || die "--before-bin requires a value"
+            BEFORE_BIN=$2
+            shift 2
+            ;;
+        --after-bin)
+            [[ $# -ge 2 ]] || die "--after-bin requires a value"
+            AFTER_BIN=$2
             shift 2
             ;;
         --output-dir)
@@ -237,6 +260,12 @@ done
 for path in "$BEFORE_BIN" "$AFTER_BIN" "$REAL_PROFILER" "$ANALYZER"; do
     [[ -e $path ]] || die "required file not found: $path"
 done
+[[ -x $BEFORE_BIN ]] || die "before binary is not executable: $BEFORE_BIN"
+[[ -x $AFTER_BIN ]] || die "after binary is not executable: $AFTER_BIN"
+
+before_sha256="$(sha256sum "$BEFORE_BIN" | cut -d ' ' -f 1)"
+after_sha256="$(sha256sum "$AFTER_BIN" | cut -d ' ' -f 1)"
+[[ $before_sha256 != "$after_sha256" ]] || die "before and after binaries are identical"
 
 if [[ -z $OUTPUT_DIR ]]; then
     OUTPUT_DIR="$ROOT/target/perceptual-runs/aba-$(date +%Y%m%d-%H%M%S)"
@@ -266,7 +295,7 @@ run_variant() {
     set +e
     env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET \
         "$binary" -- \
-        foot --app-id=tiri-perceptual-controller --title="P1 campaign: $label" \
+        foot --app-id=tiri-perceptual-controller --title="Adaptive scheduling: $label" \
         bash "$SCRIPT" --inside "$label" "$binary" "$variant_dir" \
         "$MANUAL_DURATION" "$SCENARIO_REPEAT"
     local compositor_result=$?
@@ -283,10 +312,13 @@ run_variant() {
 
 cat >"$OUTPUT_DIR/campaign.txt" <<EOF
 order=before-a,after,before-b
+comparison=adaptive-frame-scheduling
 manual_duration_seconds=$MANUAL_DURATION
 scenario_repeat=$SCENARIO_REPEAT
 before_binary=$BEFORE_BIN
+before_sha256=$before_sha256
 after_binary=$AFTER_BIN
+after_sha256=$after_sha256
 tty=$current_tty
 EOF
 
@@ -306,7 +338,8 @@ for workload in open-close terminal-activity browser-activity manual-normal; do
             echo "============================================================"
             python3 "$ANALYZER" compare \
                 --baseline "$OUTPUT_DIR/$baseline/$workload/perceptual.json" \
-                --candidate "$OUTPUT_DIR/after/$workload/perceptual.json"
+                --candidate "$OUTPUT_DIR/after/$workload/perceptual.json" \
+                --require-adaptive-candidate
         } >>"$comparison_file" 2>&1 || comparison_failed=1
     done
 done
