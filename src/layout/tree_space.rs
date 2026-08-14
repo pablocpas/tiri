@@ -3376,10 +3376,6 @@ impl<W: LayoutElement> TreeSpace<W> {
         }
     }
 
-    pub fn swap_window_in_direction(&mut self, direction: Direction) {
-        self.move_command_target(direction);
-    }
-
     /// sway's `swap container with`: exchange the selected node and the window `target`.
     pub fn swap_selected_with_window(&mut self, target: &W::Id) -> bool {
         self.mutate_tree(|tree| tree.swap_selected_with_window(target))

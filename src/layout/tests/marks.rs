@@ -128,7 +128,7 @@ fn marks_unique_across_windows() {
     assert_eq!(marks_for(&layout, id2), vec![String::from("unique_mark")]);
 }
 #[test]
-fn unmark_removes_specific_mark_and_clears_focused_window_marks() {
+fn unmark_takes_a_named_mark_off_its_holder_and_bare_unmark_clears_every_window() {
     let options = Options::from_config(&Config::default());
     let mut layout = Layout::with_options(Clock::with_time(Duration::ZERO), options);
 
@@ -172,12 +172,15 @@ fn unmark_removes_specific_mark_and_clears_focused_window_marks() {
     assert_eq!(marks_for(&layout, id1), vec![String::from("beta")]);
     assert_eq!(marks_for(&layout, id2), vec![String::from("gamma")]);
 
+    // Bare `unmark` is i3's sweeping form: every mark in the layout goes, not just the ones
+    // on whatever happens to be focused. Recorded in
+    // `tiri-parity/fixtures/unmark-one-and-unmark-all.parity`.
     let workspace = layout.active_workspace_mut().expect("active workspace");
     assert!(workspace.focus_window_by_id(&id1));
     layout.unmark(None);
 
     assert!(marks_for(&layout, id1).is_empty());
-    assert_eq!(marks_for(&layout, id2), vec![String::from("gamma")]);
+    assert!(marks_for(&layout, id2).is_empty());
 }
 #[test]
 fn urgent_propagates_to_workspace() {

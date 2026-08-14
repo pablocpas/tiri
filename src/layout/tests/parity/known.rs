@@ -26,7 +26,19 @@ pub(super) struct Divergence {
 /// compared, and other fixtures are untouched. Without this the choice would be between a
 /// red suite and deleting the fixture that found the problem, and both of those end with
 /// nobody recording anything.
-pub(super) const KNOWN: &[Divergence] = &[];
+pub(super) const KNOWN: &[Divergence] = &[Divergence {
+    fixture: "mark-with-a-container-selected.parity",
+    step: 7,
+    reason: "\
+`mark` applies to what the seat has selected, and after `focus parent` that is a container. \
+sway marks the container: `cmd_mark` takes `handler_context.container` whatever kind of node \
+it is. tiri keeps marks on the tile, which only a leaf has, so the mark lands on the focused \
+window inside the selection instead — a window the user did not name. Closing this means \
+moving marks off the tile and onto the node, and teaching the observable model to carry a \
+container's marks: it has `marks` on `Window` and nothing on `Container`, so even a fixed \
+tiri could only be compared by the mark *not* appearing on a leaf, which is what this \
+fixture pins in the meantime. Found by the differential fuzz, seed 0x7.",
+}];
 
 /// What makes two divergences "the same one".
 ///

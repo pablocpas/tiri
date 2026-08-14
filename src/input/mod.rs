@@ -1695,14 +1695,22 @@ impl State {
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
-            Action::SwapWindowRight => {
-                self.niri.layout.swap_window_in_direction(Direction::Right);
+            Action::SwapWindowWithMark(mark) => {
+                self.niri.layout.swap_window_with_mark(&mark);
                 self.maybe_warp_cursor_to_focus();
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
-            Action::SwapWindowLeft => {
-                self.niri.layout.swap_window_in_direction(Direction::Left);
+            Action::SwapWindowWithId(id) => {
+                let target = self
+                    .niri
+                    .layout
+                    .windows()
+                    .find(|(_, mapped)| mapped.id().get() == id)
+                    .map(|(_, mapped)| mapped.window.clone());
+                if let Some(target) = target {
+                    self.niri.layout.swap_window_with(&target);
+                }
                 self.maybe_warp_cursor_to_focus();
                 // FIXME: granular
                 self.niri.queue_redraw_all();

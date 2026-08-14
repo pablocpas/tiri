@@ -238,8 +238,9 @@ pub enum Action {
     ExpelWindowFromColumn,
     ConsumeWindowIntoContainer,
     ExpelWindowFromContainer,
-    SwapWindowLeft,
-    SwapWindowRight,
+    SwapWindowWithMark(#[knuffel(argument)] String),
+    #[knuffel(skip)]
+    SwapWindowWithId(u64),
     ToggleColumnTabbedDisplay,
     SetColumnDisplay(#[knuffel(argument, str)] ColumnDisplay),
     CenterColumn,
@@ -616,8 +617,8 @@ impl From<tiri_ipc::Action> for Action {
             | tiri_ipc::Action::ConsumeWindowIntoContainer {} => Self::ConsumeWindowIntoContainer,
             tiri_ipc::Action::ExpelWindowFromColumn {}
             | tiri_ipc::Action::ExpelWindowFromContainer {} => Self::ExpelWindowFromContainer,
-            tiri_ipc::Action::SwapWindowRight {} => Self::SwapWindowRight,
-            tiri_ipc::Action::SwapWindowLeft {} => Self::SwapWindowLeft,
+            tiri_ipc::Action::SwapWindowWithMark { mark } => Self::SwapWindowWithMark(mark),
+            tiri_ipc::Action::SwapWindowWithId { id } => Self::SwapWindowWithId(id),
             tiri_ipc::Action::ToggleColumnTabbedDisplay {} => Self::ToggleColumnTabbedDisplay,
             tiri_ipc::Action::SetColumnDisplay { display } => Self::SetColumnDisplay(display),
             tiri_ipc::Action::ToggleLayoutAll {} => Self::ToggleLayoutAll,

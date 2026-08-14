@@ -79,7 +79,7 @@ fn opening_tiling_next_to_floating_clears_stale_floating_workspace_context() {
         },
         Op::ToggleWindowFloating { id: None },
         Op::FocusParent,
-        Op::SwapWindowInDirection(Direction::Left),
+        Op::MoveColumnLeft,
         Op::AddWindowNextTo {
             params: TestWindowParams::new(1),
             next_to_id: 2,

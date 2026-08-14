@@ -3281,13 +3281,6 @@ impl<W: LayoutElement> Layout<W> {
         self.expel_from_container();
     }
 
-    pub fn swap_window_in_direction(&mut self, direction: Direction) {
-        let Some(workspace) = self.active_workspace_mut() else {
-            return;
-        };
-        workspace.swap_window_in_direction(direction);
-    }
-
     /// sway's `swap container with`, addressed by window rather than by direction.
     ///
     /// Only within the active workspace, which is where sway's own refusals leave the
@@ -4738,14 +4731,47 @@ impl<W: LayoutElement> Layout<W> {
         self.add_mark_to_tile(&focused, mark);
     }
 
-    pub fn unmark(&mut self, mark: Option<&str>) {
-        let Some(focused) = self.focus().map(|win| win.id().clone()) else {
-            return;
-        };
+    /// The window carrying `mark`, if any.
+    ///
+    /// A mark names at most one window: [`Self::mark_focused`] takes it off everything else
+    /// before granting it, which is i3's rule and what makes a mark usable as an address.
+    pub fn window_id_with_mark(&self, mark: &str) -> Option<W::Id> {
+        if let Some(tile) = self.scratchpad.tiles().find(|tile| tile.has_mark(mark)) {
+            return Some(tile.window().id().clone());
+        }
 
+        for mon in self.monitors() {
+            if let Some(tile) = mon.sticky_tiles().find(|tile| tile.has_mark(mark)) {
+                return Some(tile.window().id().clone());
+            }
+        }
+
+        self.workspaces().find_map(|(_, _, ws)| {
+            ws.tiles()
+                .find(|tile| tile.has_mark(mark))
+                .map(|tile| tile.window().id().clone())
+        })
+    }
+
+    /// sway's `swap container with mark <mark>`.
+    pub fn swap_window_with_mark(&mut self, mark: &str) -> bool {
+        let Some(target) = self.window_id_with_mark(mark) else {
+            return false;
+        };
+        self.swap_window_with(&target)
+    }
+
+    /// i3's `unmark`: named, it takes that mark off whichever window holds it; bare, it
+    /// clears every mark in the layout.
+    ///
+    /// The bare form really is the sweeping one — `sway/commands/unmark.c` says "remove all
+    /// marks from all views", and it is the criteria in front of the command, which tiri has
+    /// no equivalent of, that narrows it to one window. Clearing only the focused window's
+    /// marks would leave no way to say the thing the command exists to say.
+    pub fn unmark(&mut self, mark: Option<&str>) {
         match mark {
             Some(mark) => self.remove_mark_everywhere(mark),
-            None => self.clear_marks_on_tile(&focused),
+            None => self.clear_marks_everywhere(),
         }
     }
 
@@ -7258,6 +7284,24 @@ impl<W: LayoutElement> Layout<W> {
 
     fn clear_marks_on_tile(&mut self, id: &W::Id) {
         let _ = self.with_tile_mut_by_id(id, |tile| tile.clear_marks());
+    }
+
+    fn clear_marks_everywhere(&mut self) {
+        for tile in self.scratchpad.tiles_mut() {
+            tile.clear_marks();
+        }
+
+        for mon in self.monitors_mut() {
+            for tile in mon.sticky_tiles_mut() {
+                tile.clear_marks();
+            }
+        }
+
+        for ws in self.workspaces_mut() {
+            for tile in ws.tiles_mut() {
+                tile.clear_marks();
+            }
+        }
     }
 
     fn remove_mark_everywhere(&mut self, mark: &str) {

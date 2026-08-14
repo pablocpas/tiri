@@ -464,10 +464,17 @@ whole suite — the other half of the whack-a-mole.
 5. **Widen the scripts** to the areas still only covered by hand-written expectations.
    *(partly done)* Floating transport and fullscreen are both in the script grammar, fixture
    corpus and differential generator. `resize` in hundredths joined them: the corpus had been
-   entirely `px`, so the whole proportional half of resize was unmeasured. Scratchpad and
-   marks already have typed `Op` variants and direct tests, but are not yet accepted by the
-   parity script grammar, and neither is the edge form of `resize` in hundredths, whose `Op`
-   carries pixels.
+   entirely `px`, so the whole proportional half of resize was unmeasured. Scratchpad is
+   still outside the script grammar, as is the edge form of `resize` in hundredths, whose
+   `Op` carries pixels.
+
+   Marks joined the grammar — `mark [--add|--replace] [--toggle] <id>` and `unmark [<id>]` —
+   and the observable model already carried them, so they were recordable the moment the
+   script could say them. Bare `unmark` turned out to be the sweeping form in i3 ("remove all
+   marks from all views"), where tiri had cleared only the focused window's; that is fixed.
+   The first fuzz campaign with marks in the vocabulary found the next one straight away and
+   it is in `KNOWN`: `mark` applies to the *selection*, so after `focus parent` sway marks
+   the container, while tiri's marks live on the tile and land on a leaf instead.
 
    `swap container with` and `move container to workspace` joined them, and both had to be
    built before they could be said. `swap` had no implementation — `container_swap` is now
@@ -476,6 +483,12 @@ whole suite — the other half of the whack-a-mole.
    selection, which hid the fact that a container arriving at an empty workspace is
    unwrapped into it. Neither reaches across the tiled and floating sides yet: a swap
    between them is refused, and moving across is what `float_subtree` is for.
+
+   The swap the grammar addresses by mark is a real action now: `swap-window-with-mark` for
+   a keybind and `swap-window-with-id` for `tiri msg`, which is what `mark` and `con_id` are
+   in sway. The directional `swap-window-left`/`-right` inherited from niri are gone: they
+   were `move` under a name that promised `container_swap`, nothing shipped bound them, and
+   `move left` onto a sibling is how i3 swaps two neighbours.
 
    These two also mark where scripts stop being pure i3 grammar. A window is named by the
    order the script opened it and a workspace by the script's own count, because a `con_id`

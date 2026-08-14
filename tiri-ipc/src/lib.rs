@@ -464,9 +464,10 @@ pub enum Action {
     },
     /// Remove marks.
     Unmark {
-        /// Mark name to remove.
+        /// Mark name to remove, from whichever window holds it.
         ///
-        /// If `None`, removes all marks from the focused window.
+        /// If `None`, removes every mark from every window, which is what i3's bare
+        /// `unmark` does.
         #[cfg_attr(feature = "clap", arg())]
         name: Option<String>,
     },
@@ -660,10 +661,25 @@ pub enum Action {
     ConsumeWindowIntoContainer {},
     /// Expel the focused window from the focused container.
     ExpelWindowFromContainer {},
-    /// Swap focused window with one to the right.
-    SwapWindowRight {},
-    /// Swap focused window with one to the left.
-    SwapWindowLeft {},
+    /// Swap what is focused with the window carrying a mark.
+    ///
+    /// i3's `swap container with mark <mark>`. What is swapped is the selection, so after
+    /// `focus-parent` this trades whole containers. The two exchange places and their sizes
+    /// stay with the places, not with the windows.
+    SwapWindowWithMark {
+        /// Mark naming the window to swap with.
+        #[cfg_attr(feature = "clap", arg())]
+        mark: String,
+    },
+    /// Swap what is focused with a window, by id.
+    ///
+    /// i3's `swap container with con_id <id>`, for scripting: an id is what a program has,
+    /// where a person has a mark.
+    SwapWindowWithId {
+        /// Id of the window to swap with.
+        #[cfg_attr(feature = "clap", arg())]
+        id: u64,
+    },
     /// Toggle the focused column between normal and tabbed display.
     ToggleColumnTabbedDisplay {},
     /// Set the display mode of the focused column.

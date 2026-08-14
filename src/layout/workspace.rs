@@ -2042,16 +2042,6 @@ impl<W: LayoutElement> Workspace<W> {
         self.space.swap_selected_with_window(target)
     }
 
-    pub fn swap_window_in_direction(&mut self, direction: Direction) {
-        self.dispatch_move_directional(
-            |f, tree| f.swap_window_in_direction(tree, direction),
-            |t| {
-                t.swap_window_in_direction(direction);
-                true
-            },
-        );
-    }
-
     pub fn toggle_column_tabbed_display(&mut self) {
         self.dispatch_active_layer(
             |f, tree| f.toggle_column_tabbed_display(tree),

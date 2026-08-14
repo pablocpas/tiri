@@ -477,10 +477,6 @@ fn arbitrary_parent_id() -> impl Strategy<Value = Option<usize>> {
     ]
 }
 
-fn arbitrary_swap_direction() -> impl Strategy<Value = Direction> {
-    prop_oneof![Just(Direction::Left), Just(Direction::Right)]
-}
-
 fn arbitrary_column_display() -> impl Strategy<Value = ColumnDisplay> {
     prop_oneof![Just(ColumnDisplay::Normal), Just(ColumnDisplay::Tabbed)]
 }
@@ -597,8 +593,10 @@ enum Op {
     },
     ConsumeWindowIntoColumn,
     ExpelWindowFromColumn,
-    SwapWindowInDirection(#[proptest(strategy = "arbitrary_swap_direction()")] Direction),
     SwapWithWindow(#[proptest(strategy = "1..=5usize")] usize),
+    SwapWithMark(
+        #[proptest(strategy = "(1..=3usize).prop_map(|id| format!(\"mark{id}\"))")] String,
+    ),
     ToggleColumnTabbedDisplay,
     SetColumnDisplay(#[proptest(strategy = "arbitrary_column_display()")] ColumnDisplay),
     CenterColumn,
@@ -888,10 +886,18 @@ enum Op {
     },
     // Mark operations
     MarkFocused {
-        #[proptest(strategy = "1..=3usize")]
-        mark_id: usize,
+        /// A small pool on purpose: marks are interesting when they collide, and three
+        /// names collide often enough for the fuzz to reach the cases where one moves.
+        #[proptest(strategy = "(1..=3usize).prop_map(|id| format!(\"mark{id}\"))")]
+        mark: String,
         #[proptest(strategy = "arbitrary_mark_mode()")]
         mode: MarkMode,
+    },
+    Unmark {
+        #[proptest(
+            strategy = "proptest::option::of((1..=3usize).prop_map(|id| format!(\"mark{id}\")))"
+        )]
+        mark: Option<String>,
     },
     // Scratchpad operations
     MoveWindowToScratchpad {
@@ -1315,11 +1321,13 @@ impl Op {
             }
             Op::ConsumeWindowIntoColumn => layout.consume_into_column(),
             Op::ExpelWindowFromColumn => layout.expel_from_column(),
-            Op::SwapWindowInDirection(direction) => layout.swap_window_in_direction(direction),
             Op::SwapWithWindow(id) => {
                 if layout.has_window(&id) {
                     layout.swap_window_with(&id);
                 }
+            }
+            Op::SwapWithMark(mark) => {
+                layout.swap_window_with_mark(&mark);
             }
             Op::ToggleColumnTabbedDisplay => layout.toggle_column_tabbed_display(),
             Op::SetColumnDisplay(display) => layout.set_column_display(display),
@@ -1827,8 +1835,11 @@ impl Op {
             Op::SetLayoutDefault => layout.set_default_layout(),
             Op::ToggleLayoutCycle { cycle } => layout.toggle_layout_cycle(&cycle),
             // Mark operations
-            Op::MarkFocused { mark_id, mode } => {
-                layout.mark_focused(format!("mark{mark_id}"), mode);
+            Op::MarkFocused { mark, mode } => {
+                layout.mark_focused(mark, mode);
+            }
+            Op::Unmark { mark } => {
+                layout.unmark(mark.as_deref());
             }
             // Scratchpad operations
             Op::MoveWindowToScratchpad { id } => {

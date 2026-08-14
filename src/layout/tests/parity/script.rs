@@ -12,6 +12,7 @@ use std::fmt;
 use tiri_ipc::SizeChange;
 
 use crate::layout::tests::{Op, TestWindowParams};
+use crate::layout::MarkMode;
 use crate::layout::{ContainerLayout, Direction, LayoutCycleEntry};
 
 /// One line of a script: the text as written, and what tiri does with it.
@@ -258,6 +259,43 @@ fn op_for(command: &str, next_id: &mut usize, client: (i32, i32)) -> Result<Op, 
             Op::MoveContainerToWorkspace(workspace_index(target)?, false)
         }
         ["workspace", target] => Op::FocusWorkspace(workspace_index(target)?),
+
+        // sway's `mark [--add|--replace] [--toggle] <identifier>`, documented at the top of
+        // `sway/commands/mark.c`. Bare `mark` is `--replace`. `--add --toggle` is tiri's
+        // `Toggle`: take the mark off this window if it has it, otherwise add it without
+        // disturbing the others. `--replace --toggle` has no tiri mode and is left unsaid
+        // rather than approximated.
+        ["mark", name] => Op::MarkFocused {
+            mark: (*name).to_owned(),
+            mode: MarkMode::Replace,
+        },
+        ["mark", "--replace", name] => Op::MarkFocused {
+            mark: (*name).to_owned(),
+            mode: MarkMode::Replace,
+        },
+        ["mark", "--add", name] => Op::MarkFocused {
+            mark: (*name).to_owned(),
+            mode: MarkMode::Add,
+        },
+        ["mark", "--add", "--toggle", name] | ["mark", "--toggle", "--add", name] => {
+            Op::MarkFocused {
+                mark: (*name).to_owned(),
+                mode: MarkMode::Toggle,
+            }
+        }
+
+        // `unmark <id>` takes that mark off whichever window holds it; bare `unmark` is the
+        // sweeping one.
+        ["unmark"] => Op::Unmark { mark: None },
+        ["unmark", name] => Op::Unmark {
+            mark: Some((*name).to_owned()),
+        },
+
+        // The addressed swap, in the harness's vocabulary for a window (see above) and in
+        // sway's for a mark.
+        ["swap", "container", "with", "mark", name] | ["swap", "with", "mark", name] => {
+            Op::SwapWithMark((*name).to_owned())
+        }
 
         _ => return Err(Reason::Unsupported),
     })

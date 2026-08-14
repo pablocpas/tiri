@@ -2291,14 +2291,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
         self.split_container(space, idx, Layout::SplitH);
     }
 
-    pub fn swap_window_in_direction(&mut self, space: &mut TreeSpace<W>, direction: Direction) {
-        let Some(idx) = self.active_container_idx(space) else {
-            return;
-        };
-
-        self.move_tree_command_target(space, idx, direction);
-    }
-
     fn move_tree_command_target(
         &mut self,
         space: &mut TreeSpace<W>,

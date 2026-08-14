@@ -124,6 +124,17 @@ const VOCABULARY: &[(&str, u32)] = &[
     ("resize set width 2000 px", 1),
     ("resize set height 400 px", 1),
     ("resize set height 2000 px", 1),
+    // Marks, and the swap that addresses by one. A mark is only interesting once something
+    // moves under it, so these are drawn rarely and from a pool of two names: the collisions
+    // are the point, not the vocabulary.
+    ("mark m1", 2),
+    ("mark --add m2", 1),
+    ("mark --add --toggle m1", 1),
+    ("unmark m1", 1),
+    ("unmark", 1),
+    ("swap container with mark m1", 2),
+    ("swap container with 1", 2),
+    ("swap container with 2", 1),
     ("focus next", 2),
     ("focus prev", 2),
     ("focus next sibling", 1),
