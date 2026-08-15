@@ -1,90 +1,101 @@
 # Performance Profiling
 
-The profiling workflow for this fork is `tiri`-only. The goal is to compare local changes against a repeatable workload on your real hardware, then use Tracy to understand where the time went.
+Keep performance comparisons reproducible: build both revisions with the same profile, run them
+on the same machine and power mode, and repeat marginal results. Store captures under `target/`,
+which is ignored by Git.
 
-## Build for Tracy
+## Tracy build
 
-Use on-demand Tracy so the compositor only collects profiling data while the Tracy UI is attached:
+Use on-demand Tracy so instrumentation is active only while a capture is attached:
 
 ```sh
-cargo build --release --features=profile-with-tracy-ondemand
+cargo build --locked --release \
+  --features profile-with-tracy-ondemand \
+  --target-dir target/tracy
 ```
 
-Use `profile-with-tracy` instead only if you specifically need startup profiling.
+Use `profile-with-tracy` only when startup itself is under investigation.
 
-## Recommended Setup
+## Headless workflow comparison
 
-- Run the profiled build on a quiet TTY session.
-- Keep the test output simple at first: one monitor, no heavy background workloads.
-- Prefer running the same scenario several times before and after a change instead of trusting a single run.
+`profile_tiri_workflows.py` is the default regression workflow. It owns an isolated headless Tiri
+instance, drives real Wayland clients, captures Tracy and writes a machine-readable report.
 
-## Scripted Scenario Runner
+```sh
+scripts/profile_tiri_workflows.py run \
+  --tiri target/tracy/release/tiri \
+  --output-dir target/perf-baseline
 
-Use `scripts/profile_tiri_scenario.py` to drive a live session over `TIRI_SOCKET` and write numeric summaries.
+# Rebuild the candidate with the same command, then capture it.
+scripts/profile_tiri_workflows.py run \
+  --tiri target/tracy/release/tiri \
+  --output-dir target/perf-candidate
 
-Example:
+scripts/profile_tiri_workflows.py compare \
+  --baseline target/perf-baseline/workflows.json \
+  --candidate target/perf-candidate/workflows.json
+```
+
+The built-in workflows cover opening and closing terminals, terminal idle/activity, a local
+browser animation and a multi-output session. The browser uses a temporary profile and a local
+page, so network and user-profile variance do not enter the result. Use `--workflow` to restrict a
+confirmation run.
+
+Headless results are suitable for comparing compositor CPU work, action latency, redraw rate and
+self-invalidation loops. They do not measure physical scanout, input-device latency or production
+GPU-driver behavior.
+
+## Individual scenarios
+
+Use `profile_tiri_scenario.py` when developing or validating one scenario against an already
+running session:
 
 ```sh
 python3 scripts/profile_tiri_scenario.py \
   --scenario scripts/perf_scenarios/open_close.json \
   --window-cmd "foot --app-id perf-test" \
-  --output-dir /tmp/tiri-profile-open-close
+  --output-dir target/perf-open-close
 ```
 
-The runner will:
+A scenario declares `initial_windows` and a list of IPC actions or `spawn_window` steps. Validate
+new JSON without touching a session by adding `--validate-only`. Keep scenarios deterministic and
+small enough that a regression can be tied to one operation.
 
-- create an isolated temporary workspace for each run,
-- open windows using `--window-cmd`,
-- send scripted IPC actions to `tiri`,
-- wait for the session to go quiet after each step,
-- write `summary.json` and `summary.csv`,
-- and restore the original focused workspace when it finishes.
+## Physical DRM measurements
 
-The first run is kept as a warmup and marked as such in the summary.
+For presentation latency or process-wide efficiency, run the Tracy build as the compositor on a
+quiet TTY and capture from a terminal inside that Tiri session:
 
-## Scenario Format
-
-Scenario files live under `scripts/perf_scenarios/` and use JSON:
-
-```json
-{
-  "name": "open-close",
-  "initial_windows": 2,
-  "steps": [
-    { "kind": "action", "name": "FocusColumnRight" },
-    { "kind": "spawn_window", "label": "open_extra" },
-    {
-      "kind": "action",
-      "name": "CloseWindow",
-      "args": { "id": null }
-    }
-  ]
-}
+```sh
+scripts/profile_tiri_real_tracy.py \
+  --scenario scripts/perf_scenarios/terminal_activity.json \
+  --window-cmd scripts/perf_workloads/run_terminal_activity.sh \
+  --expected-exe target/tracy/release/tiri \
+  --output-dir target/drm-baseline
 ```
 
-Rules:
+`--expected-exe` verifies through the IPC socket and `/proc` that the intended binary is running.
+The report combines Tracy presentation markers with process CPU time, context switches and page
+faults measured during the workload. Captures without DRM vblank samples are rejected.
 
-- `initial_windows` opens that many windows before the scripted steps start.
-- `spawn_window` uses the command from `--window-cmd`.
-- `action` sends an IPC action by name, with optional `args` matching the JSON form documented in [IPC, tiri msg](IPC.md).
+After capturing the candidate under the same output mode and workload, compare the reports:
 
-## Reading the Results
+```sh
+scripts/analyze_tiri_perceptual.py compare \
+  --baseline target/drm-baseline/perceptual.json \
+  --candidate target/drm-candidate/perceptual.json
+```
 
-- Use `summary.csv` for quick comparisons in a spreadsheet or ad hoc scripts.
-- Use `summary.json` when you want the full per-run breakdown.
-- Focus on `p50`, `p95`, and `max` for each step rather than only the total scenario time.
+This measures from compositor input or client commit to DRM presentation. It does not include
+device-to-kernel delay or panel scanout; literal input-to-photon claims still require external
+measurement.
 
-If a numeric regression appears, repeat the same scenario with Tracy attached and inspect:
+## Interpreting results
 
-- `IPC::Action` spans for the step being driven,
-- redraw/render spans in `src/tiri.rs`,
-- layout update spans such as `Layout::refresh` and `Layout::update_render_elements`,
-- backend render spans on TTY such as `Tty::render` and `Tty::on_vblank`.
-
-## Suggested Baseline Scenarios
-
-- `scripts/perf_scenarios/open_close.json`: window spawn and close latency.
-- `scripts/perf_scenarios/layout_mutations.json`: layout mode transitions and floating/fullscreen toggles.
-- `scripts/perf_scenarios/focus_reorder.json`: focus and column reordering on a populated workspace.
-
-Keep scenarios small and deterministic. If a workload only happens in your daily session, encode that workflow into a new scenario instead of relying on memory or manual interaction.
+- Compare total CPU time for work that may be skipped; a lower call count can raise the remaining
+  calls' mean while still being an improvement.
+- Compare per-call cost only when both revisions perform equivalent work.
+- Treat p95 step latency only as meaningful with enough measured repetitions.
+- Confirm small regressions with an A-B-A or B-A-B run and no other CPU-intensive workload.
+- Use Tracy zones to locate work, but use process-wide counters to decide whether total compositor
+  efficiency changed.

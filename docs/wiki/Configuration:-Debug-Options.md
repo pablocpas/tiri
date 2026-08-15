@@ -33,7 +33,7 @@ debug {
     honor-xdg-activation-with-invalid-serial
     skip-cursor-only-updates-during-vrr
     deactivate-unfocused-windows
-    frame-schedule-margin-ms 3
+    frame-schedule-margin-ms 0
     disable-frame-scheduling
 }
 
@@ -330,11 +330,9 @@ Disables frame scheduling, a latency optimization that only applies on the TTY b
 
 When frame scheduling is enabled (the default), tiri delays rendering until just before the estimated vblank deadline instead of rendering immediately when damage arrives.
 This reduces the time the rendered frame sits in the KMS buffer waiting for vblank, lowering input-to-presentation latency.
-The deadline is computed independently per output from a time-weighted estimate of the complete compositing critical path, its observed positive deviation, and presentation deadline misses.
-Slow frames and late presentations move rendering earlier immediately; the margin is reduced gradually after a stable run.
+The deadline is computed from an adaptive estimator of render+commit time that adjusts automatically based on measured GPU render times and detected frame drops.
 
-Frame scheduling does not activate in the following cases: Winit/Headless backends, VRR-enabled outputs, or when the output has no reliable presentation history.
-After a long idle, tiri deliberately renders the first damaged frame early because the GPU may be in a low-power state.
+Frame scheduling does not activate in the following cases: Winit/Headless backends, VRR-enabled outputs, or when the output has no presentation time history (e.g. first frame after idle or resume from suspend).
 
 Set this debug flag if you experience issues like missed frames or visual glitches that you suspect may be related to frame scheduling.
 
@@ -346,20 +344,18 @@ debug {
 
 ### `frame-schedule-margin-ms`
 
-Overrides the adaptive estimator with a fixed number of milliseconds before the next predicted
-refresh at which tiri starts compositing.
+Controls how many milliseconds before the next predicted refresh tiri starts compositing when frame
+scheduling is enabled.
 
-Normally this option should be absent: adaptive scheduling is the default. A positive value selects
-a fixed safety margin in the spirit of sway's `max_render_time`; smaller values reduce latency, but
-if set too low they can cause delayed frames, stutter, or cursor lag. Larger values are more stable,
-but reduce the latency benefit.
+This is a fixed safety margin in the spirit of sway's `max_render_time`: smaller values reduce
+latency, but if set too low they can cause delayed frames, stutter, or cursor lag on some systems.
+Larger values are more stable, but reduce the latency benefit of frame scheduling.
 
-Setting this option to `0` disables delayed rendering, equivalent to `disable-frame-scheduling`.
+The default is `0`, which matches sway's `off`: no delayed repaint timer is used.
 
 ```kdl
 debug {
-    // Fixed diagnostic override; omit this line for adaptive scheduling.
-    frame-schedule-margin-ms 3
+    frame-schedule-margin-ms 0
 }
 ```
 

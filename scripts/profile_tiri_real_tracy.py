@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture perceptual latency from an already-running Tracy-enabled tiri DRM session."""
+"""Capture latency and process efficiency from a Tracy-enabled tiri DRM session."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ import struct
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
@@ -27,15 +28,144 @@ class ProfileError(RuntimeError):
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@dataclass(frozen=True)
+class ProcessSnapshot:
+    sampled_at_monotonic_ns: int
+    sampled_at_boottime_ns: int
+    start_time_ticks: int
+    user_time_ticks: int
+    system_time_ticks: int
+    minor_page_faults: int
+    major_page_faults: int
+    voluntary_context_switches: int
+    involuntary_context_switches: int
+
+
+def parse_proc_stat(contents: str) -> dict[str, int]:
+    # comm is parenthesized and may itself contain spaces or closing parentheses.
+    closing_parenthesis = contents.rfind(")")
+    if closing_parenthesis < 0:
+        raise ProfileError("invalid /proc stat: missing process name")
+    fields = contents[closing_parenthesis + 1 :].split()
+    if len(fields) < 20:
+        raise ProfileError("invalid /proc stat: missing process counters")
+    try:
+        return {
+            "minor_page_faults": int(fields[7]),
+            "major_page_faults": int(fields[9]),
+            "user_time_ticks": int(fields[11]),
+            "system_time_ticks": int(fields[12]),
+            "start_time_ticks": int(fields[19]),
+        }
+    except ValueError as error:
+        raise ProfileError(f"invalid /proc stat counter: {error}") from error
+
+
+def parse_proc_status(contents: str) -> dict[str, int]:
+    wanted = {
+        "voluntary_ctxt_switches": "voluntary_context_switches",
+        "nonvoluntary_ctxt_switches": "involuntary_context_switches",
+    }
+    counters: dict[str, int] = {}
+    for line in contents.splitlines():
+        name, separator, value = line.partition(":")
+        output_name = wanted.get(name)
+        if separator and output_name is not None:
+            try:
+                counters[output_name] = int(value.strip())
+            except ValueError as error:
+                raise ProfileError(f"invalid /proc status counter {name}: {value}") from error
+    missing = set(wanted.values()) - counters.keys()
+    if missing:
+        raise ProfileError(f"invalid /proc status: missing {sorted(missing)}")
+    return counters
+
+
+def read_process_snapshot(pid: int, proc_root: Path = Path("/proc")) -> ProcessSnapshot:
+    process_dir = proc_root / str(pid)
+    stat = parse_proc_stat((process_dir / "stat").read_text(encoding="utf-8"))
+    status = parse_proc_status((process_dir / "status").read_text(encoding="utf-8"))
+    boottime_clock = getattr(time, "CLOCK_BOOTTIME", time.CLOCK_MONOTONIC)
+    return ProcessSnapshot(
+        sampled_at_monotonic_ns=time.monotonic_ns(),
+        sampled_at_boottime_ns=time.clock_gettime_ns(boottime_clock),
+        **stat,
+        **status,
+    )
+
+
+def summarize_process_efficiency(
+    start: ProcessSnapshot,
+    end: ProcessSnapshot,
+    clock_ticks_per_second: int,
+) -> dict[str, object]:
+    if clock_ticks_per_second <= 0:
+        raise ProfileError("invalid system clock tick rate")
+    if start.start_time_ticks != end.start_time_ticks:
+        raise ProfileError("compositor process changed during the workload")
+    wall_time_s = (end.sampled_at_monotonic_ns - start.sampled_at_monotonic_ns) / 1e9
+    if wall_time_s <= 0:
+        raise ProfileError("process measurement window is empty")
+
+    counter_names = (
+        "user_time_ticks",
+        "system_time_ticks",
+        "minor_page_faults",
+        "major_page_faults",
+        "voluntary_context_switches",
+        "involuntary_context_switches",
+    )
+    deltas = {name: getattr(end, name) - getattr(start, name) for name in counter_names}
+    negative = [name for name, value in deltas.items() if value < 0]
+    if negative:
+        raise ProfileError(f"process counters went backwards: {negative}")
+
+    user_cpu_s = deltas["user_time_ticks"] / clock_ticks_per_second
+    system_cpu_s = deltas["system_time_ticks"] / clock_ticks_per_second
+    total_cpu_s = user_cpu_s + system_cpu_s
+    process_start_boottime_ns = (
+        start.start_time_ticks * 1_000_000_000 // clock_ticks_per_second
+    )
+    start_process_elapsed_ns = start.sampled_at_boottime_ns - process_start_boottime_ns
+    end_process_elapsed_ns = end.sampled_at_boottime_ns - process_start_boottime_ns
+    if start_process_elapsed_ns < 0 or end_process_elapsed_ns <= start_process_elapsed_ns:
+        raise ProfileError("invalid compositor-relative measurement window")
+
+    voluntary = deltas["voluntary_context_switches"]
+    involuntary = deltas["involuntary_context_switches"]
+    return {
+        "format": 1,
+        "source": "/proc/<pid>/stat and status",
+        "context_switch_scope": "thread-group leader",
+        "clock_ticks_per_second": clock_ticks_per_second,
+        "measurement_start_process_elapsed_ns": start_process_elapsed_ns,
+        "measurement_end_process_elapsed_ns": end_process_elapsed_ns,
+        "wall_time_s": wall_time_s,
+        "user_cpu_s": user_cpu_s,
+        "system_cpu_s": system_cpu_s,
+        "total_cpu_s": total_cpu_s,
+        "average_cpu_cores": total_cpu_s / wall_time_s,
+        "average_cpu_percent_of_one_core": total_cpu_s / wall_time_s * 100.0,
+        "minor_page_faults": deltas["minor_page_faults"],
+        "major_page_faults": deltas["major_page_faults"],
+        "voluntary_context_switches": voluntary,
+        "involuntary_context_switches": involuntary,
+        "context_switches": voluntary + involuntary,
+    }
+
+
 def export_trace(exporter: str, trace: Path, output_dir: Path) -> None:
     exports = (
-        ("cpu-zones-summary.csv", []),
         ("plots.csv", ["-u", "-p"]),
         ("messages.csv", ["-m"]),
     )
     for name, flags in exports:
+        started_at = time.monotonic()
+        print(f"Exporting Tracy data to {name}...", flush=True)
         with (output_dir / name).open("wb") as output:
             subprocess.run([exporter, *flags, os.fspath(trace)], check=True, stdout=output)
+        elapsed = time.monotonic() - started_at
+        print(f"Exported {name} in {elapsed:.1f} seconds.", flush=True)
 
 
 def stop_capture(process: subprocess.Popen[bytes], timeout: float = 15.0) -> None:
@@ -123,6 +253,8 @@ def run(args: argparse.Namespace) -> int:
     capture_log_path = output_dir / "capture.log"
     capture_log: IO[bytes] | None = None
     capture_process: subprocess.Popen[bytes] | None = None
+    efficiency_start: ProcessSnapshot | None = None
+    efficiency_end: ProcessSnapshot | None = None
     started_at = time.time()
 
     try:
@@ -145,6 +277,7 @@ def run(args: argparse.Namespace) -> int:
             raise ProfileError(
                 f"tracy-capture exited before profiling (status {capture_process.returncode})"
             )
+        efficiency_start = read_process_snapshot(int(compositor["pid"]))
 
         if args.scenario is not None:
             scenario_dir = output_dir / "scenario"
@@ -180,9 +313,11 @@ def run(args: argparse.Namespace) -> int:
                     break
                 if capture_process.poll() is not None:
                     raise ProfileError(
-                        f"tracy-capture exited during profiling (status {capture_process.returncode})"
+                        "tracy-capture exited during profiling "
+                        f"(status {capture_process.returncode})"
                     )
                 time.sleep(min(remaining, 0.25))
+        efficiency_end = read_process_snapshot(int(compositor["pid"]))
     finally:
         if capture_process is not None:
             stop_capture(capture_process)
@@ -192,10 +327,19 @@ def run(args: argparse.Namespace) -> int:
     if not trace.is_file() or trace.stat().st_size == 0:
         log = capture_log_path.read_text(encoding="utf-8", errors="replace")
         raise ProfileError(f"Tracy did not produce a trace:\n{log}")
+    if efficiency_start is None or efficiency_end is None:
+        raise ProfileError("process efficiency measurement did not complete")
+
+    clock_ticks_per_second = int(os.sysconf("SC_CLK_TCK"))
+    process_efficiency = summarize_process_efficiency(
+        efficiency_start,
+        efficiency_end,
+        clock_ticks_per_second,
+    )
 
     export_trace(exporter_bin, trace, output_dir)
     metadata = {
-        "format": 1,
+        "format": 2,
         "started_at_unix": started_at,
         "finished_at_unix": time.time(),
         "socket": os.fspath(socket_path),
@@ -208,6 +352,7 @@ def run(args: argparse.Namespace) -> int:
         "duration_s": args.duration if args.scenario is None else None,
         "manual_task": args.manual_task if args.scenario is None else None,
         "trace_bytes": trace.stat().st_size,
+        "process_efficiency": process_efficiency,
     }
     (output_dir / "metadata.json").write_text(
         json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
@@ -230,13 +375,8 @@ def run(args: argparse.Namespace) -> int:
         raise ProfileError(
             f"capture did not contain only physical DRM presentations: {report.get('backends')}"
         )
-    if args.require_adaptive_scheduler and not report.get("adaptive_scheduler", {}).get(
-        "complete"
-    ):
-        raise ProfileError(
-            "capture did not contain all adaptive-scheduler plots; check the binary, ensure frame "
-            "scheduling is not disabled, and use a fixed-refresh non-VRR output"
-        )
+    if report.get("process_efficiency", {}).get("drm_presentations", 0) < 1:
+        raise ProfileError("capture did not contain DRM vblank messages in the workload window")
 
     print(report_path)
     return 0
@@ -264,7 +404,6 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="reject the capture unless TIRI_SOCKET belongs to this exact executable hash",
     )
-    parser.add_argument("--require-adaptive-scheduler", action="store_true")
     return parser.parse_args()
 
 
@@ -278,7 +417,13 @@ def main() -> int:
         if args.ipc_timeout <= 0:
             raise ProfileError("--ipc-timeout must be positive")
         return run(args)
-    except (OSError, ValueError, json.JSONDecodeError, subprocess.CalledProcessError, ProfileError) as error:
+    except (
+        OSError,
+        ValueError,
+        json.JSONDecodeError,
+        subprocess.CalledProcessError,
+        ProfileError,
+    ) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

@@ -8,3 +8,7 @@
 # cargo-mutants scratch output
 mutants.out/
 mutants.out.old/
+
+# Python profiling helpers.
+__pycache__/
+*.py[cod]

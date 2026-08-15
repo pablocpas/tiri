@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Analyze and compare input/commit-to-vblank latency messages exported from Tracy."""
+"""Analyze and compare latency plus process-efficiency captures from Tracy."""
 
 from __future__ import annotations
 
@@ -32,12 +32,7 @@ PHYSICAL_SOURCES = {
     "gesture",
     "tablet",
 }
-SCHEDULER_PLOT_SUFFIXES = {
-    "margin_ms": " frame schedule margin, ms",
-    "delay_ms": " frame schedule delay, ms",
-    "predicted_render_ms": " predicted render time, ms",
-    "late_penalty_ms": " frame schedule late penalty, ms",
-}
+VBLANK_MESSAGE_PREFIX = "vblank on "
 
 
 class AnalysisError(RuntimeError):
@@ -109,76 +104,106 @@ def parse_message(message: str, timestamp_ns: int) -> dict[str, Any] | None:
     return record
 
 
-def read_records(directory: Path) -> tuple[list[dict[str, Any]], int]:
+def read_process_efficiency(directory: Path) -> dict[str, Any] | None:
+    path = directory / "metadata.json"
+    try:
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except json.JSONDecodeError as error:
+        raise AnalysisError(f"invalid profiler metadata {path}: {error}") from error
+    efficiency = metadata.get("process_efficiency")
+    if efficiency is None:
+        return None
+    if not isinstance(efficiency, dict):
+        raise AnalysisError(f"process efficiency metadata is not an object: {path}")
+    required = {
+        "measurement_start_process_elapsed_ns",
+        "measurement_end_process_elapsed_ns",
+        "wall_time_s",
+        "user_cpu_s",
+        "system_cpu_s",
+        "total_cpu_s",
+        "average_cpu_percent_of_one_core",
+        "minor_page_faults",
+        "major_page_faults",
+        "voluntary_context_switches",
+        "involuntary_context_switches",
+        "context_switches",
+    }
+    missing = required - efficiency.keys()
+    if missing:
+        raise AnalysisError(f"process efficiency metadata is missing {sorted(missing)}: {path}")
+    start_ns = int(efficiency["measurement_start_process_elapsed_ns"])
+    end_ns = int(efficiency["measurement_end_process_elapsed_ns"])
+    wall_time_s = float(efficiency["wall_time_s"])
+    if (
+        start_ns < 0
+        or end_ns <= start_ns
+        or not math.isfinite(wall_time_s)
+        or wall_time_s <= 0
+    ):
+        raise AnalysisError(f"process efficiency metadata has an invalid window: {path}")
+    return efficiency
+
+
+def parse_tracy_message_row(row: dict[Any, Any]) -> tuple[str, int]:
+    # Some tracy-csvexport versions leave commas in MessageName unquoted. DictReader
+    # stores the overflow columns under None, so reconstruct the message from the end.
+    overflow = row.get(None)
+    if overflow:
+        message = ",".join([row["MessageName"], row["total_ns"], *overflow[:-1]])
+        timestamp = overflow[-1]
+    else:
+        message = row["MessageName"]
+        timestamp = row["total_ns"]
+    return message, int(timestamp)
+
+
+def read_records(
+    directory: Path,
+    process_efficiency: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], int, dict[str, int]]:
     path = directory / "messages.csv"
     records = []
     no_damage = 0
+    drm_presentations: dict[str, int] = defaultdict(int)
+    window_start_ns = (
+        int(process_efficiency["measurement_start_process_elapsed_ns"])
+        if process_efficiency is not None
+        else None
+    )
+    window_end_ns = (
+        int(process_efficiency["measurement_end_process_elapsed_ns"])
+        if process_efficiency is not None
+        else None
+    )
     try:
         with path.open(encoding="utf-8", newline="") as handle:
             for row in csv.DictReader(handle):
-                message = row["MessageName"]
+                message, timestamp_ns = parse_tracy_message_row(row)
+                if window_start_ns is not None and timestamp_ns < window_start_ns:
+                    continue
+                if window_end_ns is not None and timestamp_ns > window_end_ns:
+                    continue
+                if message.startswith(VBLANK_MESSAGE_PREFIX):
+                    output = message.removeprefix(VBLANK_MESSAGE_PREFIX).partition(",")[0]
+                    if output:
+                        drm_presentations[output] += 1
+                    continue
                 if message.startswith("latency.no_damage "):
                     no_damage += 1
                     continue
                 if not message.startswith("latency.present "):
                     continue
-                record = parse_message(message, int(row["total_ns"]))
+                record = parse_message(message, timestamp_ns)
                 if record is not None:
                     records.append(record)
     except FileNotFoundError as error:
         raise AnalysisError(f"missing Tracy message export: {path}") from error
     except (KeyError, ValueError) as error:
         raise AnalysisError(f"invalid Tracy message export {path}: {error}") from error
-    return records, no_damage
-
-
-def read_scheduler_plots(directory: Path) -> dict[str, Any]:
-    path = directory / "plots.csv"
-    by_output: dict[str, dict[str, list[float]]] = defaultdict(
-        lambda: defaultdict(list)
-    )
-    try:
-        with path.open(encoding="utf-8", newline="") as handle:
-            for row in csv.DictReader(handle):
-                name = row["name"]
-                value = row["value"]
-                if not value:
-                    continue
-                for metric, suffix in SCHEDULER_PLOT_SUFFIXES.items():
-                    if name.endswith(suffix):
-                        output = name.removesuffix(suffix)
-                        by_output[output][metric].append(float(value))
-                        break
-    except FileNotFoundError as error:
-        raise AnalysisError(f"missing Tracy plot export: {path}") from error
-    except (KeyError, ValueError) as error:
-        raise AnalysisError(f"invalid Tracy plot export {path}: {error}") from error
-
-    def summarize(series: dict[str, list[float]]) -> dict[str, Any]:
-        result = {
-            metric: metric_summary(values) for metric, values in sorted(series.items())
-        }
-        penalty = series.get("late_penalty_ms", [])
-        result["penalty_active_rate"] = (
-            sum(value > 0.0 for value in penalty) / len(penalty) if penalty else 0.0
-        )
-        return result
-
-    combined: dict[str, list[float]] = defaultdict(list)
-    for series in by_output.values():
-        for metric, values in series.items():
-            combined[metric].extend(values)
-
-    complete = all(metric in combined for metric in SCHEDULER_PLOT_SUFFIXES)
-    return {
-        "available": bool(by_output),
-        "complete": complete,
-        "scheduled_redraws": len(combined.get("margin_ms", [])),
-        "combined": summarize(combined) if combined else {},
-        "by_output": {
-            output: summarize(series) for output, series in sorted(by_output.items())
-        },
-    }
+    return records, no_damage, dict(sorted(drm_presentations.items()))
 
 
 def metric_summary(values: list[float]) -> dict[str, float | int]:
@@ -217,9 +242,45 @@ def collapse_by_trigger(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(selected.values(), key=lambda record: record["timestamp_ns"])
 
 
+def summarize_process_efficiency(
+    process_efficiency: dict[str, Any] | None,
+    drm_presentations_by_output: dict[str, int],
+) -> dict[str, Any]:
+    if process_efficiency is None:
+        return {"available": False}
+
+    result = dict(process_efficiency)
+    wall_time_s = float(result["wall_time_s"])
+    total_cpu_s = float(result["total_cpu_s"])
+    drm_presentations = sum(drm_presentations_by_output.values())
+    result.update(
+        {
+            "available": True,
+            "drm_presentations": drm_presentations,
+            "drm_presentations_by_output": drm_presentations_by_output,
+            "cpu_ms_per_drm_presentation": (
+                total_cpu_s * 1000.0 / drm_presentations if drm_presentations else None
+            ),
+            "context_switches_per_s": (
+                int(result["context_switches"]) / wall_time_s if wall_time_s > 0 else None
+            ),
+            "minor_page_faults_per_s": (
+                int(result["minor_page_faults"]) / wall_time_s if wall_time_s > 0 else None
+            ),
+            "major_page_faults_per_s": (
+                int(result["major_page_faults"]) / wall_time_s if wall_time_s > 0 else None
+            ),
+        }
+    )
+    return result
+
+
 def analyze(directory: Path) -> dict[str, Any]:
     directory = directory.resolve()
-    records, no_damage = read_records(directory)
+    process_efficiency = read_process_efficiency(directory)
+    records, no_damage, drm_presentations_by_output = read_records(
+        directory, process_efficiency
+    )
     if not records:
         raise AnalysisError(
             f"no presented latency samples in {directory}; use a Tracy-enabled tiri on the DRM "
@@ -245,10 +306,12 @@ def analyze(directory: Path) -> dict[str, Any]:
         "presented_samples": len(records),
         "unique_triggers": len(unique_records),
         "no_damage_samples": no_damage,
+        "process_efficiency": summarize_process_efficiency(
+            process_efficiency, drm_presentations_by_output
+        ),
         "overall": summarize_group(unique_records),
         "all_output_presentations": summarize_group(records),
         "physical_input": summarize_group(physical),
-        "adaptive_scheduler": read_scheduler_plots(directory),
         "by_source": {
             name: summarize_group(group) for name, group in sorted(by_source.items())
         },
@@ -272,35 +335,43 @@ def print_group(label: str, group: dict[str, Any]) -> None:
     )
 
 
+def print_process_efficiency(efficiency: dict[str, Any]) -> None:
+    if not efficiency.get("available"):
+        print("process-efficiency       unavailable (capture predates /proc measurement)")
+        return
+    cpu_per_presentation = efficiency.get("cpu_ms_per_drm_presentation")
+    cpu_per_presentation_text = (
+        f"{cpu_per_presentation:.3f} ms/presentation"
+        if cpu_per_presentation is not None
+        else "unavailable"
+    )
+    print(
+        f"process-efficiency       wall={efficiency['wall_time_s']:.2f} s "
+        f"cpu user/system/total={efficiency['user_cpu_s']:.2f}/"
+        f"{efficiency['system_cpu_s']:.2f}/{efficiency['total_cpu_s']:.2f} s "
+        f"one-core={efficiency['average_cpu_percent_of_one_core']:.2f}%"
+    )
+    print(
+        f"process-presentations    drm={efficiency['drm_presentations']} "
+        f"cpu={cpu_per_presentation_text} "
+        f"by-output={efficiency['drm_presentations_by_output']}"
+    )
+    print(
+        f"process-events           main-context-switches={efficiency['context_switches']} "
+        f"({efficiency['context_switches_per_s']:.2f}/s) "
+        f"faults minor/major={efficiency['minor_page_faults']}/"
+        f"{efficiency['major_page_faults']}"
+    )
+
+
 def print_analysis(report: dict[str, Any]) -> None:
     print(report["directory"])
     print(f"backends={','.join(report['backends'])} outputs={','.join(report['outputs'])}")
+    print_process_efficiency(report.get("process_efficiency", {}))
     print_group("overall", report["overall"])
     print_group("physical-input", report["physical_input"])
     for name, group in report["by_source"].items():
         print_group(f"source:{name}", group)
-    print_scheduler(report.get("adaptive_scheduler", {}))
-
-
-def print_scheduler(scheduler: dict[str, Any]) -> None:
-    if not scheduler.get("available"):
-        print("adaptive-scheduler       unavailable")
-        return
-    if not scheduler.get("complete"):
-        print("adaptive-scheduler       incomplete telemetry")
-        return
-    metrics = scheduler["combined"]
-    margin = metrics["margin_ms"]
-    delay = metrics["delay_ms"]
-    predicted = metrics["predicted_render_ms"]
-    penalty = metrics["late_penalty_ms"]
-    print(
-        f"adaptive-scheduler       redraws={scheduler['scheduled_redraws']:5d} "
-        f"delay p50/p95={delay['p50']:.2f}/{delay['p95']:.2f} ms "
-        f"margin p50/p95={margin['p50']:.2f}/{margin['p95']:.2f} ms "
-        f"render-est p95={predicted['p95']:.2f} ms "
-        f"penalty p95/max={penalty['p95']:.2f}/{penalty['max']:.2f} ms"
-    )
 
 
 def percent_delta(baseline: float, candidate: float) -> float:
@@ -309,73 +380,76 @@ def percent_delta(baseline: float, candidate: float) -> float:
     return (candidate - baseline) / baseline * 100.0
 
 
-def print_improvement(
-    label: str,
-    baseline: float,
-    candidate: float,
-    *,
-    unit: str = "ms",
-) -> None:
-    improvement = baseline - candidate
-    improvement_pct = -percent_delta(baseline, candidate)
+def compare_process_efficiency(
+    baseline: dict[str, Any],
+    candidate: dict[str, Any],
+    args: argparse.Namespace,
+) -> list[str]:
+    base = baseline.get("process_efficiency", {})
+    cand = candidate.get("process_efficiency", {})
+    if not base.get("available") or not cand.get("available"):
+        print("Process efficiency comparison unavailable; both captures need /proc metadata.")
+        return []
+
+    print("Process efficiency deltas (negative is more efficient):")
+    metrics = (
+        ("user_cpu_s", "user CPU", "s", 3),
+        ("system_cpu_s", "system CPU", "s", 3),
+        ("total_cpu_s", "total CPU", "s", 3),
+        ("average_cpu_percent_of_one_core", "average one-core CPU", "%", 2),
+        ("cpu_ms_per_drm_presentation", "CPU per DRM presentation", "ms", 3),
+        ("context_switches_per_s", "main-thread context switches", "/s", 2),
+        ("minor_page_faults_per_s", "minor page faults", "/s", 2),
+        ("major_page_faults_per_s", "major page faults", "/s", 3),
+    )
+    values: dict[str, tuple[float, float]] = {}
+    for name, label, unit, precision in metrics:
+        base_value = base.get(name)
+        cand_value = cand.get(name)
+        if base_value is None or cand_value is None:
+            continue
+        base_float = float(base_value)
+        cand_float = float(cand_value)
+        values[name] = (base_float, cand_float)
+        delta = cand_float - base_float
+        delta_pct = percent_delta(base_float, cand_float)
+        print(
+            f"  {label:28} {base_float:10.{precision}f} -> "
+            f"{cand_float:10.{precision}f} {unit:2}  "
+            f"{delta:+10.{precision}f} {unit:2}  {delta_pct:+7.1f}%"
+        )
     print(
-        f"  {label:31} {baseline:8.2f} -> {candidate:8.2f} {unit}  "
-        f"improvement={improvement:+8.2f} {unit} ({improvement_pct:+7.1f}%)"
+        f"  {'DRM presentations':28} {base['drm_presentations']:10d} -> "
+        f"{cand['drm_presentations']:10d}"
     )
 
-
-def print_adaptive_impact(baseline: dict[str, Any], candidate: dict[str, Any]) -> None:
-    print("Adaptive scheduling impact (positive improvement is better):")
-    for group_name, label in (("overall", "all visual work"), ("physical_input", "physical input")):
-        base_group = baseline[group_name]
-        cand_group = candidate[group_name]
-        if min(base_group["samples"], cand_group["samples"]) == 0:
-            continue
-        metric_names = ["commit_ms", "queue_ms", "render_ms", "submit_ms"]
-        if group_name == "physical_input":
-            metric_names.insert(0, "input_ms")
-        for metric_name in metric_names:
-            base_metric = base_group["metrics"][metric_name]
-            cand_metric = cand_group["metrics"][metric_name]
-            if min(base_metric["samples"], cand_metric["samples"]) == 0:
-                continue
-            for percentile_name in ("p50", "p95"):
-                print_improvement(
-                    f"{label} {metric_name} {percentile_name}",
-                    float(base_metric[percentile_name]),
-                    float(cand_metric[percentile_name]),
-                )
-
-        base_missed = float(base_group["missed_deadline_rate"]) * 100.0
-        cand_missed = float(cand_group["missed_deadline_rate"]) * 100.0
-        print_improvement(
-            f"{label} missed deadlines",
-            base_missed,
-            cand_missed,
-            unit="%",
-        )
-
-    scheduler = candidate.get("adaptive_scheduler", {})
-    if scheduler.get("complete"):
-        print("Candidate adaptive telemetry:")
-        print_scheduler(scheduler)
-    else:
-        print("WARNING: candidate has no adaptive-scheduler plots; this is not an adaptive A/B.")
+    per_presentation = values.get("cpu_ms_per_drm_presentation")
+    if per_presentation is None:
+        return []
+    if (
+        min(int(base["drm_presentations"]), int(cand["drm_presentations"]))
+        < args.min_samples
+    ):
+        return []
+    base_cpu, cand_cpu = per_presentation
+    delta_ms = cand_cpu - base_cpu
+    delta_pct = percent_delta(base_cpu, cand_cpu)
+    threshold_delta_ms = abs(delta_ms) if args.symmetric else delta_ms
+    threshold_delta_pct = abs(delta_pct) if args.symmetric else delta_pct
+    if threshold_delta_ms >= args.cpu_abs_ms and threshold_delta_pct >= args.cpu_pct:
+        return [
+            f"process: CPU per DRM presentation {base_cpu:.3f} -> {cand_cpu:.3f} ms "
+            f"({delta_ms:+.3f} ms, {delta_pct:+.1f}%)"
+        ]
+    return []
 
 
 def compare_reports(args: argparse.Namespace) -> int:
     baseline = json.loads(args.baseline.read_text(encoding="utf-8"))
     candidate = json.loads(args.candidate.read_text(encoding="utf-8"))
-    if args.require_adaptive_candidate and not candidate.get("adaptive_scheduler", {}).get(
-        "complete"
-    ):
-        raise AnalysisError(
-            "candidate has no adaptive-scheduler plots; rebuild it from the adaptive commit"
-        )
-    regressions = []
+    regressions = compare_process_efficiency(baseline, candidate, args)
     comparisons = []
 
-    print_adaptive_impact(baseline, candidate)
     print()
 
     base_sources = baseline.get("by_source", {})
@@ -408,17 +482,20 @@ def compare_reports(args: argparse.Namespace) -> int:
                 )
                 if (
                     percentile_name in ("p95", "p99")
-                    and delta_ms >= args.latency_abs_ms
-                    and delta_pct >= args.latency_pct
+                    and (abs(delta_ms) if args.symmetric else delta_ms)
+                    >= args.latency_abs_ms
+                    and (abs(delta_pct) if args.symmetric else delta_pct)
+                    >= args.latency_pct
                 ):
                     regressions.append(
                         f"{source}: {metric_name} {percentile_name} {base_value:.2f} -> "
-                        f"{cand_value:.2f} ms (+{delta_ms:.2f} ms, +{delta_pct:.1f}%)"
+                        f"{cand_value:.2f} ms ({delta_ms:+.2f} ms, {delta_pct:+.1f}%)"
                     )
 
         base_missed = float(base["missed_deadline_rate"])
         cand_missed = float(cand["missed_deadline_rate"])
-        if cand_missed - base_missed >= args.missed_abs_rate:
+        missed_delta = cand_missed - base_missed
+        if (abs(missed_delta) if args.symmetric else missed_delta) >= args.missed_abs_rate:
             regressions.append(
                 f"{source}: missed deadline rate {base_missed * 100:.2f}% -> "
                 f"{cand_missed * 100:.2f}%"
@@ -439,11 +516,13 @@ def compare_reports(args: argparse.Namespace) -> int:
         )
 
     if regressions:
-        print("Perceptual latency regressions detected:")
+        print("Benchmark regressions detected:")
         for regression in regressions:
             print(f"  - {regression}")
         return 1
-    print("No perceptual latency regression exceeded the configured thresholds.")
+    print(
+        "No efficiency or perceptual latency regression exceeded the configured thresholds."
+    )
     return 0
 
 
@@ -462,7 +541,13 @@ def parse_args() -> argparse.Namespace:
     compare_parser.add_argument("--latency-pct", type=float, default=10.0)
     compare_parser.add_argument("--latency-abs-ms", type=float, default=2.0)
     compare_parser.add_argument("--missed-abs-rate", type=float, default=0.01)
-    compare_parser.add_argument("--require-adaptive-candidate", action="store_true")
+    compare_parser.add_argument("--cpu-pct", type=float, default=10.0)
+    compare_parser.add_argument("--cpu-abs-ms", type=float, default=0.05)
+    compare_parser.add_argument(
+        "--symmetric",
+        action="store_true",
+        help="treat threshold-sized changes in either direction as instability",
+    )
     return parser.parse_args()
 
 

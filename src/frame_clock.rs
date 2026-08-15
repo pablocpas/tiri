@@ -44,14 +44,6 @@ impl FrameClock {
         self.vrr
     }
 
-    pub fn last_presentation_time(&self) -> Option<Duration> {
-        self.last_presentation_time
-    }
-
-    pub fn has_presentation_history(&self) -> bool {
-        self.last_presentation_time.is_some() && self.refresh_interval_ns.is_some()
-    }
-
     pub fn presented(&mut self, presentation_time: Duration) {
         if presentation_time.is_zero() {
             // Not interested in these.
@@ -102,33 +94,5 @@ impl FrameClock {
         } else {
             last_presentation_time + Duration::from_nanos(to_next_ns)
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn presentation_history_requires_real_timestamps_and_refresh() {
-        let refresh = Duration::from_nanos(16_666_667);
-        let mut clock = FrameClock::new(Some(refresh), false);
-        assert!(!clock.has_presentation_history());
-
-        clock.presented(Duration::ZERO);
-        assert!(!clock.has_presentation_history());
-
-        clock.presented(Duration::from_secs(1));
-        assert!(clock.has_presentation_history());
-    }
-
-    #[test]
-    fn changing_vrr_invalidates_fixed_refresh_history() {
-        let refresh = Duration::from_nanos(16_666_667);
-        let mut clock = FrameClock::new(Some(refresh), false);
-        clock.presented(Duration::from_secs(1));
-
-        clock.set_vrr(true);
-        assert!(!clock.has_presentation_history());
     }
 }
