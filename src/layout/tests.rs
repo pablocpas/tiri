@@ -3612,3 +3612,19 @@ fn setting_a_layout_on_a_floating_root_updates_its_ipc_kind() {
         Op::SetLayoutSplitH,
     ]);
 }
+
+#[test]
+fn expelling_from_a_fullscreen_floating_root_updates_its_ipc_kind() {
+    let mut floating = TestWindowParams::new(2);
+    floating.is_floating = true;
+
+    check_ops([
+        Op::AddWindow { params: floating },
+        Op::FullscreenWindow(2),
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::AddOutput(1),
+        Op::ConsumeOrExpelWindowLeft { id: None },
+    ]);
+}

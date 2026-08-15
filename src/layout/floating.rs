@@ -89,6 +89,8 @@ struct FloatingContainer {
     id: u64,
     /// The branch's root — sway's entry in `ws->floating`.
     root: NodeKey,
+    /// Provenance as of creation. Read it through [`FloatingSpace::root_kind`], which
+    /// promotes an implicit root the tree has since made addressable.
     kind: FloatingRootKind,
 }
 
@@ -2397,38 +2399,36 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return;
         };
         self.containers[idx].root = root;
-        if space.branch_root_is_implicit(root) {
-            self.containers[idx].kind = FloatingRootKind::ImplicitWindowGroup;
-        }
     }
 
-    /// Keep a floating root's IPC provenance in sync with the tree.
+    /// A floating root's provenance, promoted on read.
     ///
-    /// A lone floating window starts in a container that exists only because Tiri needs a
-    /// root for the floating stack. Any command that turns that very container into one the
-    /// user addressed — a split, a layout mode, a cycle — makes it one sway publishes from
-    /// then on, so it is no longer an implicit window group. Every branch-level layout command
-    /// has to answer this, not just `split`.
-    fn sync_root_kind(&mut self, space: &TreeSpace<W>, idx: usize) {
-        if self.containers[idx].kind != FloatingRootKind::ImplicitWindowGroup {
-            return;
+    /// Creation decides whether a root is Tiri's addressing scaffolding or a container sway
+    /// also has, and that answer is not derivable afterwards — a floated `tabbed` is a real
+    /// container whether or not anything set the user-created bit on it. What *is* derivable
+    /// is the one-way promotion: the moment a command makes an implicit root addressable, sway
+    /// publishes it from then on. Reading that here rather than writing it back means no
+    /// operation has to remember to keep a copy in step — split, layout mode, cycle, expel and
+    /// whatever comes next are all right by construction.
+    fn root_kind(&self, space: &TreeSpace<W>, idx: usize) -> FloatingRootKind {
+        let stored = self.containers[idx].kind;
+        if stored != FloatingRootKind::ImplicitWindowGroup {
+            return stored;
         }
         if space
             .tree()
             .branch_container(self.containers[idx].root)
             .is_some_and(|root| root.is_user_container())
         {
-            self.containers[idx].kind = FloatingRootKind::FloatedContainer;
+            FloatingRootKind::FloatedContainer
+        } else {
+            stored
         }
     }
 
     fn split_container(&mut self, space: &mut TreeSpace<W>, idx: usize, layout: Layout) -> bool {
         let root = self.containers[idx].root;
-        let changed = space.split_in_branch(root, layout);
-        if changed {
-            self.sync_root_kind(space, idx);
-        }
-        changed
+        space.split_in_branch(root, layout)
     }
 
     pub fn set_layout_mode(&mut self, space: &mut TreeSpace<W>, layout: Layout) {
@@ -2436,7 +2436,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return;
         };
         space.set_layout_in_branch(self.containers[idx].root, layout);
-        self.sync_root_kind(space, idx);
     }
 
     pub fn toggle_split_layout(&mut self, space: &mut TreeSpace<W>) {
@@ -2444,7 +2443,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return;
         };
         space.toggle_split_in_branch(self.containers[idx].root);
-        self.sync_root_kind(space, idx);
     }
 
     pub fn toggle_layout_all(&mut self, space: &mut TreeSpace<W>) {
@@ -2452,7 +2450,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return;
         };
         space.toggle_layout_all_in_branch(self.containers[idx].root);
-        self.sync_root_kind(space, idx);
     }
 
     pub fn set_default_layout(&mut self, space: &mut TreeSpace<W>) {
@@ -2460,7 +2457,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return;
         };
         space.set_default_layout_in_branch(self.containers[idx].root);
-        self.sync_root_kind(space, idx);
     }
 
     pub(super) fn toggle_layout_cycle(
@@ -2472,7 +2468,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return;
         };
         space.toggle_layout_cycle_in_branch(self.containers[idx].root, cycle);
-        self.sync_root_kind(space, idx);
     }
 
     fn move_container_to(
@@ -3322,15 +3317,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
             tree.floating_container_area(container.root)
                 .expect("every floating stack entry must name a floating root");
-            if container.kind == FloatingRootKind::ImplicitWindowGroup {
-                assert!(
-                    !tree
-                        .branch_container(container.root)
-                        .is_some_and(|root| root.is_user_container()),
-                    "an explicit floating root must not retain the implicit IPC kind"
-                );
-            }
-
             for tile in tree.tiles_in_branch(container.root) {
                 assert!(Rc::ptr_eq(space.options(), &tile.options));
                 assert_eq!(space.view_size(), tile.view_size());
@@ -3388,7 +3374,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 let mut path = vec![idx];
                 let mut root =
                     tree.layout_tree_for_branch(container.root, focused_key, &mut path, true)?;
-                root.floating_root_kind = Some(container.kind.ipc());
+                root.floating_root_kind = Some(self.root_kind(space, idx).ipc());
                 space.apply_workspace_fullscreen(root)
             })
             .collect()
