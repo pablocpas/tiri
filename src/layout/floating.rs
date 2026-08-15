@@ -2402,22 +2402,31 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
     }
 
-    /// Apply an explicit split and keep the floating root's IPC provenance in sync.
+    /// Keep a floating root's IPC provenance in sync with the tree.
     ///
     /// A lone floating window starts in a container that exists only because Tiri needs a
-    /// root for the floating stack. `split` turns that very container into one the user can
-    /// address; sway publishes it from then on, so it is no longer an implicit window group.
+    /// root for the floating stack. Any command that turns that very container into one the
+    /// user addressed — a split, a layout mode, a cycle — makes it one sway publishes from
+    /// then on, so it is no longer an implicit window group. Every branch-level layout command
+    /// has to answer this, not just `split`.
+    fn sync_root_kind(&mut self, space: &TreeSpace<W>, idx: usize) {
+        if self.containers[idx].kind != FloatingRootKind::ImplicitWindowGroup {
+            return;
+        }
+        if space
+            .tree()
+            .branch_container(self.containers[idx].root)
+            .is_some_and(|root| root.is_user_container())
+        {
+            self.containers[idx].kind = FloatingRootKind::FloatedContainer;
+        }
+    }
+
     fn split_container(&mut self, space: &mut TreeSpace<W>, idx: usize, layout: Layout) -> bool {
         let root = self.containers[idx].root;
         let changed = space.split_in_branch(root, layout);
-        if changed
-            && self.containers[idx].kind == FloatingRootKind::ImplicitWindowGroup
-            && space
-                .tree()
-                .branch_container(root)
-                .is_some_and(|root| root.is_user_container())
-        {
-            self.containers[idx].kind = FloatingRootKind::FloatedContainer;
+        if changed {
+            self.sync_root_kind(space, idx);
         }
         changed
     }
@@ -2427,6 +2436,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return;
         };
         space.set_layout_in_branch(self.containers[idx].root, layout);
+        self.sync_root_kind(space, idx);
     }
 
     pub fn toggle_split_layout(&mut self, space: &mut TreeSpace<W>) {
@@ -2434,6 +2444,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return;
         };
         space.toggle_split_in_branch(self.containers[idx].root);
+        self.sync_root_kind(space, idx);
     }
 
     pub fn toggle_layout_all(&mut self, space: &mut TreeSpace<W>) {
@@ -2441,6 +2452,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return;
         };
         space.toggle_layout_all_in_branch(self.containers[idx].root);
+        self.sync_root_kind(space, idx);
     }
 
     pub fn set_default_layout(&mut self, space: &mut TreeSpace<W>) {
@@ -2448,6 +2460,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return;
         };
         space.set_default_layout_in_branch(self.containers[idx].root);
+        self.sync_root_kind(space, idx);
     }
 
     pub(super) fn toggle_layout_cycle(
@@ -2459,6 +2472,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return;
         };
         space.toggle_layout_cycle_in_branch(self.containers[idx].root, cycle);
+        self.sync_root_kind(space, idx);
     }
 
     fn move_container_to(
