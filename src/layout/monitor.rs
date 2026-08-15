@@ -660,7 +660,6 @@ impl<W: LayoutElement> Monitor<W> {
             activate,
             true,
             removed.width,
-            removed.is_full_width,
             true,
         );
 
@@ -1029,22 +1028,13 @@ impl<W: LayoutElement> Monitor<W> {
         target: MonitorAddWindowTarget<W>,
         activate: ActivateWindow,
         width: ColumnWidth,
-        is_full_width: bool,
         is_floating: bool,
     ) {
         // Currently, everything a workspace sets on a Tile is the same across all workspaces of a
         // monitor. So we can use any workspace, not necessarily the exact target workspace.
         let tile = self.workspaces[0].make_tile(window);
 
-        self.add_tile(
-            tile,
-            target,
-            activate,
-            true,
-            width,
-            is_full_width,
-            is_floating,
-        );
+        self.add_tile(tile, target, activate, true, width, is_floating);
     }
 
     pub fn add_root_tiling_subtree(
@@ -1088,14 +1078,13 @@ impl<W: LayoutElement> Monitor<W> {
         // FIXME: Refactor ActivateWindow enum to make this better.
         allow_to_activate_workspace: bool,
         width: ColumnWidth,
-        is_full_width: bool,
         is_floating: bool,
     ) {
         let (mut workspace_idx, target) = self.resolve_add_window_target(target);
 
         let workspace = &mut self.workspaces[workspace_idx];
 
-        workspace.add_tile(tile, target, activate, width, is_full_width, is_floating);
+        workspace.add_tile(tile, target, activate, width, is_floating);
 
         // After adding a new window, workspace becomes this output's own.
         if !workspace.has_persistent_identity() {
@@ -1444,7 +1433,6 @@ impl<W: LayoutElement> Monitor<W> {
             activate,
             true,
             removed.width,
-            removed.is_full_width,
             removed.is_floating,
         );
     }
@@ -1479,7 +1467,6 @@ impl<W: LayoutElement> Monitor<W> {
             activate,
             true,
             removed.width,
-            removed.is_full_width,
             removed.is_floating,
         );
     }
@@ -1529,7 +1516,6 @@ impl<W: LayoutElement> Monitor<W> {
                     activate,
                     true,
                     removed.width,
-                    removed.is_full_width,
                     true,
                 );
 
@@ -1587,7 +1573,6 @@ impl<W: LayoutElement> Monitor<W> {
             },
             true,
             removed.width,
-            removed.is_full_width,
             removed.is_floating,
         );
 

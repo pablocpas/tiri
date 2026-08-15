@@ -80,7 +80,6 @@ pub struct Tile<W: LayoutElement> {
     fullscreen_backdrop: SolidColorBuffer,
 
     /// Whether the tile should float upon unfullscreening.
-    pub(super) restore_to_floating: bool,
     /// Whether this tile is in the scratchpad.
     pub(super) is_scratchpad: bool,
     /// Whether this tile is sticky (floating across workspaces on an output).
@@ -88,9 +87,6 @@ pub struct Tile<W: LayoutElement> {
 
     /// Marks assigned to this tile.
     marks: Vec<String>,
-
-    /// Whether the tile should return to maximized once it exits fullscreen.
-    pub(super) pending_maximized: bool,
 
     /// The size that the window should assume when going floating.
     ///
@@ -325,7 +321,6 @@ impl<W: LayoutElement> Tile<W> {
         clock: Clock,
         options: Rc<Options>,
     ) -> Self {
-        let pending_maximized = window.pending_sizing_mode().is_maximized();
         let rules = window.rules();
         let border_config = options.layout.border.merged_with(&rules.border);
         let focus_ring_config = options.layout.focus_ring.merged_with(&rules.focus_ring);
@@ -341,11 +336,9 @@ impl<W: LayoutElement> Tile<W> {
             shadow: Shadow::new(shadow_config),
             sizing_mode,
             fullscreen_backdrop: SolidColorBuffer::new((0., 0.), [0., 0., 0., 1.]),
-            restore_to_floating: false,
             is_scratchpad: false,
             is_sticky: false,
             marks: Vec::new(),
-            pending_maximized,
             floating_window_size: None,
             floating_pos: None,
             floating_reinsert_hint: None,
@@ -1426,21 +1419,6 @@ impl<W: LayoutElement> Tile<W> {
         }
     }
 
-    pub fn request_maximized(
-        &mut self,
-        size: Size<f64, Logical>,
-        animate: bool,
-        transaction: Option<Transaction>,
-    ) {
-        self.record_pending_resize(transaction.as_ref());
-        self.window.request_size(
-            size.to_i32_round(),
-            SizingMode::Maximized,
-            animate,
-            transaction,
-        );
-    }
-
     pub fn request_fullscreen(&mut self, animate: bool, transaction: Option<Transaction>) {
         self.record_pending_resize(transaction.as_ref());
         self.window.request_size(
@@ -1453,13 +1431,12 @@ impl<W: LayoutElement> Tile<W> {
 
     pub fn request_windowed_fullscreen(&mut self, animate: bool, transaction: Option<Transaction>) {
         self.record_pending_resize(transaction.as_ref());
-        let mode = if self.pending_maximized {
-            SizingMode::Maximized
-        } else {
-            SizingMode::Normal
-        };
-        self.window
-            .request_size(self.view_size.to_i32_round(), mode, animate, transaction);
+        self.window.request_size(
+            self.view_size.to_i32_round(),
+            SizingMode::Normal,
+            animate,
+            transaction,
+        );
     }
 
     pub fn min_size_nonfullscreen(&self) -> Size<f64, Logical> {

@@ -34,7 +34,6 @@ use smithay::wayland::xdg_foreign::{XdgForeignHandler, XdgForeignState};
 use smithay::{
     delegate_kde_decoration, delegate_xdg_decoration, delegate_xdg_foreign, delegate_xdg_shell,
 };
-use tiri_config::PresetSize;
 use tracing::field::Empty;
 
 use crate::input::move_grab::MoveGrab;
@@ -469,148 +468,11 @@ impl XdgShellHandler for State {
     }
 
     fn maximize_request(&mut self, toplevel: ToplevelSurface) {
-        if let Some((mapped, _)) = self
-            .niri
-            .layout
-            .find_window_and_output_mut(toplevel.wl_surface())
-        {
-            // A configure is required in response to this event regardless if there are pending
-            // changes.
-            mapped.set_needs_configure();
-
-            let window = mapped.window.clone();
-            self.niri.layout.set_maximized(&window, true);
-            self.niri.invalidate_layout();
-        } else if let Some(unmapped) = self.niri.unmapped_windows.get_mut(toplevel.wl_surface()) {
-            match &mut unmapped.state {
-                InitialConfigureState::NotConfigured {
-                    wants_maximized, ..
-                } => {
-                    *wants_maximized = true;
-
-                    // The required configure will be the initial configure.
-                }
-                InitialConfigureState::Configured {
-                    rules,
-                    output,
-                    is_pending_maximized,
-                    ..
-                } => {
-                    let layout = &self.niri.layout;
-                    let (resolved_output, mon) =
-                        resolve_unmapped_monitor(layout, &toplevel, output.as_ref(), None);
-                    *output = resolved_output;
-
-                    let ws = resolve_unmapped_workspace(layout, mon, None);
-
-                    if let Some(ws) = ws {
-                        // If the window is pending fullscreen, then this will do nothing. But
-                        // that's expected: the window remains fullscreen, and we simply remember
-                        // that it is now pending maximized.
-                        *is_pending_maximized = true;
-                        toplevel.with_pending_state(|state| {
-                            if !state.states.contains(xdg_toplevel::State::Fullscreen) {
-                                state.states.set(xdg_toplevel::State::Maximized);
-                            }
-                        });
-                        ws.configure_new_window(&unmapped.window, None, None, false, rules);
-                    }
-
-                    // We already sent the initial configure, so we need to reconfigure.
-                    toplevel.send_configure();
-                }
-            }
-        } else {
-            error!("couldn't find the toplevel in maximize_request()");
-            toplevel.send_configure();
-        }
+        self.ack_ignored_maximize_request(&toplevel);
     }
 
     fn unmaximize_request(&mut self, toplevel: ToplevelSurface) {
-        if let Some((mapped, _)) = self
-            .niri
-            .layout
-            .find_window_and_output_mut(toplevel.wl_surface())
-        {
-            // A configure is required in response to this event regardless if there are pending
-            // changes.
-            mapped.set_needs_configure();
-
-            let window = mapped.window.clone();
-            self.niri.layout.set_maximized(&window, false);
-            self.niri.invalidate_layout();
-        } else if let Some(unmapped) = self.niri.unmapped_windows.get_mut(toplevel.wl_surface()) {
-            match &mut unmapped.state {
-                InitialConfigureState::NotConfigured {
-                    wants_maximized, ..
-                } => {
-                    *wants_maximized = false;
-
-                    // The required configure will be the initial configure.
-                }
-                InitialConfigureState::Configured {
-                    rules,
-                    width,
-                    height,
-                    floating_width,
-                    floating_height,
-                    is_full_width,
-                    output,
-                    workspace_name,
-                    is_pending_maximized,
-                } => {
-                    let workspace_name = workspace_name.as_deref();
-                    let layout = &self.niri.layout;
-                    let (resolved_output, mon) = resolve_unmapped_monitor(
-                        layout,
-                        &toplevel,
-                        output.as_ref(),
-                        workspace_name,
-                    );
-                    *output = resolved_output;
-
-                    let ws = resolve_unmapped_workspace(layout, mon, workspace_name);
-
-                    if let Some(ws) = ws {
-                        // If the window is pending fullscreen, then this will do nothing since
-                        // then the Maximized state is already unset. But that's expected: the
-                        // window remains fullscreen, and we simply remember that it is no
-                        // longer pending maximized.
-                        *is_pending_maximized = false;
-                        toplevel.with_pending_state(|state| {
-                            state.states.unset(xdg_toplevel::State::Maximized);
-                        });
-
-                        let is_floating = rules.compute_open_floating(&toplevel);
-                        let configure_width = if is_floating {
-                            *floating_width
-                        } else if *is_full_width {
-                            Some(PresetSize::Proportion(1.))
-                        } else {
-                            *width
-                        };
-                        let configure_height = if is_floating {
-                            *floating_height
-                        } else {
-                            *height
-                        };
-                        ws.configure_new_window(
-                            &unmapped.window,
-                            configure_width,
-                            configure_height,
-                            is_floating,
-                            rules,
-                        );
-                    }
-
-                    // We already sent the initial configure, so we need to reconfigure.
-                    toplevel.send_configure();
-                }
-            }
-        } else {
-            error!("couldn't find the toplevel in unmaximize_request()");
-            toplevel.send_configure();
-        }
+        self.ack_ignored_maximize_request(&toplevel);
     }
 
     fn fullscreen_request(
@@ -665,7 +527,6 @@ impl XdgShellHandler for State {
                     if let Some(ws) = ws {
                         toplevel.with_pending_state(|state| {
                             state.states.set(xdg_toplevel::State::Fullscreen);
-                            state.states.unset(xdg_toplevel::State::Maximized);
                         });
                         ws.configure_new_window(&unmapped.window, None, None, false, rules);
                     }
@@ -708,10 +569,8 @@ impl XdgShellHandler for State {
                     height,
                     floating_width,
                     floating_height,
-                    is_full_width,
                     output,
                     workspace_name,
-                    is_pending_maximized,
                 } => {
                     let workspace_name = workspace_name.as_deref();
                     let layout = &self.niri.layout;
@@ -728,20 +587,10 @@ impl XdgShellHandler for State {
                     if let Some(ws) = ws {
                         toplevel.with_pending_state(|state| {
                             state.states.unset(xdg_toplevel::State::Fullscreen);
-
-                            if *is_pending_maximized {
-                                state.states.set(xdg_toplevel::State::Maximized);
-                            }
                         });
 
                         let is_floating = rules.compute_open_floating(&toplevel);
-                        let configure_width = if is_floating {
-                            *floating_width
-                        } else if *is_full_width {
-                            Some(PresetSize::Proportion(1.))
-                        } else {
-                            *width
-                        };
+                        let configure_width = if is_floating { *floating_width } else { *width };
                         let configure_height = if is_floating {
                             *floating_height
                         } else {
@@ -971,6 +820,30 @@ impl XdgForeignHandler for State {
 delegate_xdg_foreign!(State);
 
 impl State {
+    /// Answer a maximize request without honoring it, the way sway does.
+    ///
+    /// `handle_request_maximize` drops the request for an unmapped surface and otherwise only
+    /// schedules a configure: there is no maximized state in the model for the request to set.
+    /// A tiled window already fills its slot, and a floating one is the size the user gave it.
+    ///
+    /// sway/desktop/xdg_shell.c
+    fn ack_ignored_maximize_request(&mut self, toplevel: &ToplevelSurface) {
+        let Some((mapped, _)) = self
+            .niri
+            .layout
+            .find_window_and_output_mut(toplevel.wl_surface())
+        else {
+            // Not mapped yet: sway returns without configuring, and the initial configure is
+            // still to come.
+            return;
+        };
+
+        // A configure is required in response to this event regardless if there are pending
+        // changes.
+        mapped.set_needs_configure();
+        self.niri.invalidate_layout();
+    }
+
     pub fn send_initial_configure(&mut self, toplevel: &ToplevelSurface) {
         let _span = tracy_client::span!("State::send_initial_configure");
 
@@ -988,11 +861,7 @@ impl State {
 
         let Unmapped { window, state, .. } = unmapped;
 
-        let InitialConfigureState::NotConfigured {
-            wants_fullscreen,
-            wants_maximized,
-        } = state
-        else {
+        let InitialConfigureState::NotConfigured { wants_fullscreen } = state else {
             error!("window must not be already configured in send_initial_configure()");
             return;
         };
@@ -1055,7 +924,6 @@ impl State {
         let mut floating_width = None;
         let mut height = None;
         let mut floating_height = None;
-        let is_full_width = rules.open_maximized.unwrap_or(false);
         let is_floating = rules.compute_open_floating(toplevel);
 
         // Tell the surface the preferred size and bounds for its likely output.
@@ -1068,21 +936,13 @@ impl State {
                     .or_else(|| self.niri.layout.active_workspace())
             });
 
-        let mut is_pending_maximized = false;
         if let Some(ws) = ws {
-            // Set a fullscreen and maximized state based on window request and window rule.
-            is_pending_maximized = (*wants_maximized && rules.open_maximized_to_edges.is_none())
-                || rules.open_maximized_to_edges == Some(true);
-
+            // Set the fullscreen state based on window request and window rule.
             if (wants_fullscreen.is_some() && rules.open_fullscreen.is_none())
                 || rules.open_fullscreen == Some(true)
             {
                 toplevel.with_pending_state(|state| {
                     state.states.set(xdg_toplevel::State::Fullscreen);
-                });
-            } else if is_pending_maximized {
-                toplevel.with_pending_state(|state| {
-                    state.states.set(xdg_toplevel::State::Maximized);
                 });
             }
 
@@ -1091,13 +951,7 @@ impl State {
             height = ws.resolve_default_height(rules.default_height, false);
             floating_height = ws.resolve_default_height(rules.default_height, true);
 
-            let configure_width = if is_floating {
-                floating_width
-            } else if is_full_width {
-                Some(PresetSize::Proportion(1.))
-            } else {
-                width
-            };
+            let configure_width = if is_floating { floating_width } else { width };
             let configure_height = if is_floating { floating_height } else { height };
             ws.configure_new_window(
                 window,
@@ -1118,10 +972,8 @@ impl State {
             height,
             floating_width,
             floating_height,
-            is_full_width,
             output,
             workspace_name: ws.and_then(|w| w.name().cloned()),
-            is_pending_maximized,
         };
 
         trace!(surface = %toplevel.wl_surface().id(), "sending initial configure");

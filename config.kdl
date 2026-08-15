@@ -589,8 +589,6 @@ binds {
     Mod+Shift+R { switch-preset-window-height; }
     Mod+Ctrl+R { reset-window-height; }
     Mod+F { fullscreen-window; }
-    Mod+M hotkey-overlay-title="Maximize Container" { maximize-column; }
-    Mod+Shift+M { maximize-window-to-edges; }
 
     Mod+Ctrl+F { expand-column-to-available-width; }
     Mod+C { center-column; }

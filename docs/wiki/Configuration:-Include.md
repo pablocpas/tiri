@@ -76,14 +76,12 @@ Another example:
 // rules.kdl
 window-rule {
     match app-id="Alacritty"
-    open-maximized false
 }
 ```
 
 ```kdl,must-fail
 // config.kdl
 window-rule {
-    open-maximized true
 }
 
 // Window rules get inserted at this position.
@@ -91,7 +89,6 @@ include "rules.kdl"
 
 window-rule {
     match app-id="firefox$"
-    open-maximized true
 }
 ```
 
@@ -99,18 +96,15 @@ This is equivalent to the following config file:
 
 ```kdl
 window-rule {
-    open-maximized true
 }
 
 // Included from rules.kdl.
 window-rule {
     match app-id="Alacritty"
-    open-maximized false
 }
 
 window-rule {
     match app-id="firefox$"
-    open-maximized true
 }
 ```
 

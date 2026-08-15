@@ -263,7 +263,6 @@ fn collect_actions(config: &Config) -> Vec<&Action> {
 
     actions.extend(&[
         &Action::SwitchPresetColumnWidth,
-        &Action::MaximizeColumn,
         &Action::SplitHorizontal,
         &Action::SplitVertical,
         &Action::ToggleSplitLayout,
@@ -499,7 +498,6 @@ fn action_name(action: &Action) -> String {
         Action::MoveWindowToWorkspaceDown(_) => String::from("Move Window to Workspace Down"),
         Action::MoveWindowToWorkspaceUp(_) => String::from("Move Window to Workspace Up"),
         Action::SwitchPresetColumnWidth => String::from("Cycle Container Width"),
-        Action::MaximizeColumn => String::from("Maximize Container"),
         Action::SplitHorizontal => String::from("Split Horizontally"),
         Action::SplitVertical => String::from("Split Vertically"),
         Action::SplitToggle => String::from("Toggle Split Direction"),

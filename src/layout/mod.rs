@@ -204,7 +204,6 @@ pub type LayoutElementRenderSnapshot =
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SizingMode {
     Normal,
-    Maximized,
     Fullscreen,
 }
 
@@ -588,8 +587,6 @@ struct InteractiveMoveData<W: LayoutElement> {
     pub(self) pointer_pos_within_output: Point<f64, Logical>,
     /// Width of the root tiling subtree the window came from.
     pub(self) width: ColumnWidth,
-    /// Whether that root tiling subtree occupied the full available width.
-    pub(self) is_full_width: bool,
     /// Whether the window targets the floating layout.
     pub(self) is_floating: bool,
     /// Whether the window was sticky before the move started.
@@ -689,8 +686,6 @@ pub struct RemovedTile<W: LayoutElement> {
     tile: Tile<W>,
     /// Width of the root tiling subtree the tile was in.
     width: ColumnWidth,
-    /// Whether that root tiling subtree was full-width.
-    is_full_width: bool,
     /// Whether the tile was floating.
     is_floating: bool,
 }
@@ -778,11 +773,6 @@ impl SizingMode {
     #[must_use]
     pub fn is_fullscreen(&self) -> bool {
         matches!(self, Self::Fullscreen)
-    }
-
-    #[must_use]
-    pub fn is_maximized(&self) -> bool {
-        matches!(self, Self::Maximized)
     }
 }
 
@@ -1194,7 +1184,6 @@ impl<W: LayoutElement> Layout<W> {
         target: AddWindowTarget<W>,
         width: Option<PresetSize>,
         height: Option<PresetSize>,
-        is_full_width: bool,
         is_floating: bool,
         activate: ActivateWindow,
     ) -> Option<Output> {
@@ -1269,14 +1258,7 @@ impl<W: LayoutElement> Layout<W> {
                 let ws = &mon.workspaces[ws_idx];
                 let tiling_width = ws.resolve_tiling_width(&window, width);
 
-                mon.add_window(
-                    window,
-                    target,
-                    activate,
-                    tiling_width,
-                    is_full_width,
-                    is_floating,
-                );
+                mon.add_window(window, target, activate, tiling_width, is_floating);
 
                 if activate.map_smart(|| false) {
                     *active_monitor_idx = mon_idx;
@@ -1353,14 +1335,7 @@ impl<W: LayoutElement> Layout<W> {
                 let tiling_width = ws.resolve_tiling_width(&window, width);
 
                 let tile = ws.make_tile(window);
-                ws.add_tile(
-                    tile,
-                    target,
-                    activate,
-                    tiling_width,
-                    is_full_width,
-                    is_floating,
-                );
+                ws.add_tile(tile, target, activate, tiling_width, is_floating);
 
                 // Set the default height for tiling windows.
                 if !is_floating {
@@ -1415,7 +1390,6 @@ impl<W: LayoutElement> Layout<W> {
                         return Some(RemovedTile {
                             tile: move_.tile,
                             width: move_.width,
-                            is_full_width: move_.is_full_width,
                             is_floating: false,
                         });
                     }
@@ -1436,7 +1410,6 @@ impl<W: LayoutElement> Layout<W> {
             return Some(RemovedTile {
                 width: ColumnWidth::Fixed(tile.tile_expected_or_current_size().w as i32),
                 tile,
-                is_full_width: false,
                 is_floating: true,
             });
         }
@@ -5082,7 +5055,6 @@ impl<W: LayoutElement> Layout<W> {
                 activate,
                 true,
                 removed.width,
-                removed.is_full_width,
                 removed.is_floating,
             );
             if activate.map_smart(|| false) {
@@ -5364,34 +5336,6 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn toggle_windowed_fullscreen(&mut self, id: &W::Id) {
         self.toggle_fullscreen(id);
-    }
-
-    pub fn set_maximized(&mut self, id: &W::Id, maximize: bool) {
-        self.request_refresh();
-        if self.interactive_move_targets_window(id) {
-            return;
-        }
-
-        for ws in self.workspaces_mut() {
-            if ws.has_window(id) {
-                ws.set_maximized(id, maximize);
-                return;
-            }
-        }
-    }
-
-    pub fn toggle_maximized(&mut self, id: &W::Id) {
-        self.request_refresh();
-        if self.interactive_move_targets_window(id) {
-            return;
-        }
-
-        for ws in self.workspaces_mut() {
-            if ws.has_window(id) {
-                ws.toggle_maximized(id);
-                return;
-            }
-        }
     }
 
     fn interactive_move_targets_window(&self, id: &W::Id) -> bool {
@@ -5928,7 +5872,6 @@ impl<W: LayoutElement> Layout<W> {
                         .find(|ws| ws.has_window(&window_id))
                         .unwrap();
                     ws.set_fullscreen(window, false);
-                    ws.set_maximized(window, false);
 
                     let origin_workspace = ws.id();
                     let swap_origin = if is_floating {
@@ -5941,7 +5884,6 @@ impl<W: LayoutElement> Layout<W> {
                 let RemovedTile {
                     mut tile,
                     width,
-                    is_full_width,
                     is_floating,
                 } = self.remove_window(window, Transaction::new()).unwrap();
 
@@ -5965,7 +5907,6 @@ impl<W: LayoutElement> Layout<W> {
                     .adjusted_for_scale(scale);
                 tile.update_config(view_size, scale, Rc::new(options));
                 if !tile.window().pending_sizing_mode().is_normal() {
-                    tile.pending_maximized = false;
                     tile.request_tile_size(tile.tile_size(), !self.options.animations.off, None);
                 }
 
@@ -5984,7 +5925,6 @@ impl<W: LayoutElement> Layout<W> {
                     output,
                     pointer_pos_within_output,
                     width,
-                    is_full_width,
                     is_floating,
                     was_sticky,
                     pointer_ratio_within_window,
@@ -6343,7 +6283,6 @@ impl<W: LayoutElement> Layout<W> {
                             ActivateWindow::Yes,
                             allow_to_activate_workspace,
                             move_.width,
-                            move_.is_full_width,
                             false,
                         );
                     }
@@ -6443,7 +6382,6 @@ impl<W: LayoutElement> Layout<W> {
                             ActivateWindow::Yes,
                             allow_to_activate_workspace,
                             move_.width,
-                            move_.is_full_width,
                             true,
                         );
                     }
@@ -6477,7 +6415,6 @@ impl<W: LayoutElement> Layout<W> {
                     WorkspaceAddWindowTarget::Auto,
                     ActivateWindow::Yes,
                     move_.width,
-                    move_.is_full_width,
                     move_.is_floating,
                 );
             }

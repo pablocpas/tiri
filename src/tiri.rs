@@ -2672,7 +2672,9 @@ impl Niri {
         let compositor_state = CompositorState::new_v6::<State>(&display_handle);
         let xdg_shell_state = XdgShellState::new_with_capabilities::<State>(
             &display_handle,
-            [WmCapabilities::Fullscreen, WmCapabilities::Maximize],
+            // Fullscreen only: there is no maximized state to enter, so advertising the
+            // capability would put a maximize button on titlebars that does nothing.
+            [WmCapabilities::Fullscreen],
         );
         let xdg_decoration_state =
             XdgDecorationState::new_with_filter::<State, _>(&display_handle, |client| {

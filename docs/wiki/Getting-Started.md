@@ -172,8 +172,6 @@ The default config follows the i3/sway convention for the core tiling actions: a
 | <kbd>Mod</kbd><kbd>Ctrl</kbd><kbd>↓</kbd> or <kbd>Mod</kbd><kbd>Ctrl</kbd><kbd>J</kbd> | Grow height |
 | <kbd>Mod</kbd><kbd>Ctrl</kbd><kbd>↑</kbd> or <kbd>Mod</kbd><kbd>Ctrl</kbd><kbd>K</kbd> | Shrink height |
 | <kbd>Mod</kbd><kbd>F</kbd> | Toggle full-screen on the focused window |
-| <kbd>Mod</kbd><kbd>M</kbd> | Toggle `maximize-column` compatibility behavior (fullscreen-style in current tiri) |
-| <kbd>Mod</kbd><kbd>Shift</kbd><kbd>M</kbd> | Toggle `maximize-window-to-edges` compatibility behavior (currently an alias of fullscreen) |
 | **Screenshots** | |
 | <kbd>PrtSc</kbd> | Take an area screenshot. Select the area to screenshot with mouse, then press Space to save the screenshot, or Escape to cancel |
 | <kbd>Alt</kbd><kbd>PrtSc</kbd> | Take a screenshot of the focused window to clipboard and to `~/Pictures/Screenshots/` |

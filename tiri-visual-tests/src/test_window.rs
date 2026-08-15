@@ -20,6 +20,10 @@ use tiri::window::ResolvedWindowRules;
 #[derive(Debug)]
 struct TestWindowInner {
     size: Size<i32, Logical>,
+    /// The size the window mapped with, fixed for the rest of its life.
+    ///
+    /// Tiling stretches `size`; this is what the window falls back to when it floats again.
+    natural_size: Size<i32, Logical>,
     requested_size: Option<Size<i32, Logical>>,
     min_size: Size<i32, Logical>,
     max_size: Size<i32, Logical>,
@@ -47,6 +51,7 @@ impl TestWindow {
             id,
             inner: Rc::new(RefCell::new(TestWindowInner {
                 size,
+                natural_size: size,
                 requested_size: None,
                 min_size,
                 max_size,
@@ -65,6 +70,11 @@ impl TestWindow {
         rv.set_max_size((200, 400).into());
         rv.set_color([0.88, 0.11, 0.14, 1.]);
         rv.communicate();
+        // The clamp happens before the window is handed to the layout, so this is still the
+        // geometry it maps with.
+        let mut inner = rv.inner.borrow_mut();
+        inner.natural_size = inner.size;
+        drop(inner);
         rv
     }
 
@@ -137,8 +147,16 @@ impl LayoutElement for TestWindow {
         &self.id
     }
 
+    fn ipc_id(&self) -> u64 {
+        self.id as u64
+    }
+
     fn size(&self) -> Size<i32, Logical> {
         self.inner.borrow().size
+    }
+
+    fn natural_size(&self) -> Size<i32, Logical> {
+        self.inner.borrow().natural_size
     }
 
     fn buf_loc(&self) -> Point<i32, Logical> {

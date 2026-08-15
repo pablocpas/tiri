@@ -950,7 +950,6 @@ mod tests {
                 exclude is-active=true is-focused=false
 
                 open-on-output "eDP-1"
-                open-maximized true
                 open-fullscreen false
                 open-floating false
                 open-focused true
@@ -1902,10 +1901,6 @@ mod tests {
                         "eDP-1",
                     ),
                     open_on_workspace: None,
-                    open_maximized: Some(
-                        true,
-                    ),
-                    open_maximized_to_edges: None,
                     open_fullscreen: Some(
                         false,
                     ),

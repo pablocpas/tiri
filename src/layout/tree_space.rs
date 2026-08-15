@@ -1051,7 +1051,6 @@ impl<W: LayoutElement> TreeSpace<W> {
         Some(RemovedTile {
             tile,
             width: ColumnWidth::default(),
-            is_full_width: false,
             is_floating: false,
         })
     }
@@ -2639,7 +2638,6 @@ impl<W: LayoutElement> TreeSpace<W> {
         tile: Tile<W>,
         activate: bool,
         _width: ColumnWidth,
-        _is_full_width: bool,
         _height: Option<WindowHeight>,
     ) {
         let id = tile.window().id().clone();
@@ -2658,7 +2656,6 @@ impl<W: LayoutElement> TreeSpace<W> {
         tile: Tile<W>,
         activate: bool,
         _width: ColumnWidth,
-        _is_full_width: bool,
     ) {
         let id = tile.window().id().clone();
         self.tree.insert_leaf_after(next_to, tile, activate);
@@ -2860,7 +2857,6 @@ impl<W: LayoutElement> TreeSpace<W> {
         RemovedTile {
             tile,
             width: ColumnWidth::default(),
-            is_full_width: false,
             is_floating: false,
         }
     }
@@ -3304,7 +3300,6 @@ impl<W: LayoutElement> TreeSpace<W> {
             }
 
             if let Some(tile) = self.tree.get_tile_mut(key) {
-                tile.pending_maximized |= tile.window().pending_sizing_mode().is_maximized();
                 tile.request_fullscreen(!self.options.animations.off, None);
             }
 
@@ -3332,11 +3327,7 @@ impl<W: LayoutElement> TreeSpace<W> {
             // non-fullscreen request has gone out there is nothing for it to notice. The size
             // is provisional — the arrange right below re-decides it against the slot the
             // window lands in.
-            if tile.pending_maximized {
-                tile.request_maximized(self.working_area.size, !self.options.animations.off, None);
-            } else {
-                tile.request_tile_size(self.working_area.size, !self.options.animations.off, None);
-            }
+            tile.request_tile_size(self.working_area.size, !self.options.animations.off, None);
 
             if fullscreen_matches {
                 self.tree.set_fullscreen_key(None);
@@ -3395,25 +3386,8 @@ impl<W: LayoutElement> TreeSpace<W> {
             let Some(tile) = self.tree.get_tile_mut(key) else {
                 continue;
             };
-            if tile.pending_maximized {
-                tile.request_maximized(self.working_area.size, !self.options.animations.off, None);
-            } else {
-                tile.request_tile_size(self.working_area.size, !self.options.animations.off, None);
-            }
+            tile.request_tile_size(self.working_area.size, !self.options.animations.off, None);
         }
-    }
-
-    pub fn set_maximized(&mut self, window: &W::Id, maximize: bool) -> bool {
-        let Some(key) = self.tiled_window_key(window) else {
-            return false;
-        };
-        let Some(tile) = self.tree.get_tile_mut(key) else {
-            return false;
-        };
-
-        tile.pending_maximized = maximize;
-        self.tree.layout();
-        true
     }
 
     // No-ops: centering only makes sense with a scrolling viewport; in the i3 model the

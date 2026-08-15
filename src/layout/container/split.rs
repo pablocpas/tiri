@@ -170,7 +170,12 @@ impl<W: LayoutElement> ContainerTree<W> {
         target: NodeKey,
     ) -> bool {
         self.flatten_layout_parent_once(target);
-        self.set_layout_for_prepared_target(layout, target)
+        let changed = self.set_layout_for_prepared_target(layout, target);
+        // `layout` may either flatten an existing wrapper or build one around workspace
+        // children. Both change leaf addresses even when the surviving layout itself does
+        // not change and no arrange pass follows.
+        self.readdress_leaf_layouts();
+        changed
     }
 
     fn set_layout_for_prepared_target(&mut self, layout: Layout, target: NodeKey) -> bool {

@@ -301,7 +301,7 @@ animations {
 
 Window resize animation.
 
-Only manual window resizes are animated, i.e. when you resize the window with `switch-preset-column-width` or `maximize-column`.
+Only manual window resizes are animated, i.e. when you resize the window with `switch-preset-column-width`.
 Also, very small resizes (up to 10 pixels) are not animated.
 
 ```kdl

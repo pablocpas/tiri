@@ -30,7 +30,6 @@ fn fullscreen_disables_resize_hits() {
         None,
         None,
         false,
-        false,
         ActivateWindow::Yes,
     );
     layout.add_window(
@@ -38,7 +37,6 @@ fn fullscreen_disables_resize_hits() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::Yes,
     );
@@ -69,7 +67,6 @@ fn fullscreen_visuals_wait_for_commit() {
         None,
         None,
         false,
-        false,
         ActivateWindow::Yes,
     );
     layout.add_window(
@@ -77,7 +74,6 @@ fn fullscreen_visuals_wait_for_commit() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::Yes,
     );
@@ -1171,7 +1167,6 @@ fn fullscreen_open_window_does_not_steal_focus_like_sway() {
         None,
         None,
         false,
-        false,
         ActivateWindow::Yes,
     );
 
@@ -1211,7 +1206,6 @@ fn fullscreen_open_then_focus_right_stays_locked_like_sway() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::Yes,
     );
@@ -1255,7 +1249,6 @@ fn fullscreen_focus_down_can_move_within_fullscreen_subtree_like_sway() {
         None,
         None,
         false,
-        false,
         ActivateWindow::Yes,
     );
 
@@ -1288,7 +1281,6 @@ fn fullscreen_focus_down_can_move_within_fullscreen_subtree_like_sway() {
         None,
         None,
         false,
-        false,
         ActivateWindow::Yes,
     );
     assert_eq!(
@@ -1296,37 +1288,6 @@ fn fullscreen_focus_down_can_move_within_fullscreen_subtree_like_sway() {
         Some(4),
         "open_window should not steal focus even when focus is on non-fullscreen leaf inside fullscreen subtree (sway parity)"
     );
-}
-#[test]
-fn restore_to_floating_persists_across_fullscreen_maximize() {
-    let ops = [
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::ToggleWindowFloating { id: None },
-        // Maximize then fullscreen.
-        Op::MaximizeWindowToEdges { id: None },
-        Op::FullscreenWindow(1),
-        // Unfullscreen.
-        Op::FullscreenWindow(1),
-    ];
-
-    let mut layout = check_ops(ops);
-
-    // Unfullscreening should return the window to the maximized state.
-    let tiling = layout.active_workspace().unwrap().tiling();
-    assert!(tiling.tiles().next().is_some());
-
-    let ops = [
-        // Unmaximize.
-        Op::MaximizeWindowToEdges { id: None },
-    ];
-    check_ops_on_layout(&mut layout, ops);
-
-    // The window was originally floating, so unmaximize restores it to floating.
-    let workspace = layout.active_workspace().unwrap();
-    assert!(workspace.is_floating(&1));
 }
 #[test]
 fn floating_fullscreen_roundtrip_restores_floating() {
@@ -1762,76 +1723,6 @@ fn floating_fullscreen_roundtrip_restores_position_in_container_order() {
     assert!(close(before2.loc.x, after2.loc.x));
     assert!(close(before3.loc.x, after3.loc.x));
 }
-#[test]
-fn unmaximize_during_fullscreen_does_not_float() {
-    let ops = [
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::ToggleWindowFloating { id: None },
-        // Maximize then fullscreen.
-        Op::MaximizeWindowToEdges { id: None },
-        Op::FullscreenWindow(1),
-        // Unmaximize.
-        Op::MaximizeWindowToEdges { id: None },
-    ];
-
-    let mut layout = check_ops(ops);
-
-    // Unmaximize shouldn't have changed the window state since it's fullscreen.
-    let tiling = layout.active_workspace().unwrap().tiling();
-    assert!(tiling.tiles().next().is_some());
-
-    let ops = [
-        // Unfullscreen.
-        Op::FullscreenWindow(1),
-    ];
-    check_ops_on_layout(&mut layout, ops);
-
-    // The window was originally floating, so unfullscreen restores it to floating.
-    let workspace = layout.active_workspace().unwrap();
-    assert!(workspace.is_floating(&1));
-}
-#[test]
-fn move_column_to_workspace_maximize_and_fullscreen() {
-    let ops = [
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::MaximizeWindowToEdges { id: None },
-        Op::FullscreenWindow(1),
-        Op::MoveColumnToWorkspaceDown(true),
-        Op::FullscreenWindow(1),
-    ];
-
-    let layout = check_ops(ops);
-    let (_, win) = layout.windows().next().unwrap();
-
-    // Unfullscreening should return to maximized because the window was maximized before.
-    assert_eq!(win.pending_sizing_mode(), SizingMode::Maximized);
-}
-#[test]
-fn move_window_to_workspace_maximize_and_fullscreen() {
-    let ops = [
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::MaximizeWindowToEdges { id: None },
-        Op::FullscreenWindow(1),
-        Op::MoveWindowToWorkspaceDown(true),
-        Op::FullscreenWindow(1),
-    ];
-
-    let layout = check_ops(ops);
-    let (_, win) = layout.windows().next().unwrap();
-
-    // Unfullscreening should return to maximized because the window was maximized before.
-    assert_eq!(win.pending_sizing_mode(), SizingMode::Maximized);
-}
-
 #[test]
 fn moving_pending_fullscreen_into_fullscreen_workspace_keeps_one_client() {
     let layout = check_ops([

@@ -16,7 +16,6 @@ fn i3_167_workspace_layout_tabbed_groups_second_open() {
         None,
         None,
         false,
-        false,
         ActivateWindow::default(),
     );
     layout.add_window(
@@ -24,7 +23,6 @@ fn i3_167_workspace_layout_tabbed_groups_second_open() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::default(),
     );
@@ -52,7 +50,6 @@ fn i3_167_workspace_layout_stacked_groups_second_open() {
         None,
         None,
         false,
-        false,
         ActivateWindow::default(),
     );
     layout.add_window(
@@ -60,7 +57,6 @@ fn i3_167_workspace_layout_stacked_groups_second_open() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::default(),
     );
@@ -86,7 +82,6 @@ fn i3_167_workspace_layout_stacked_reinserts_after_floating_roundtrip() {
         None,
         None,
         false,
-        false,
         ActivateWindow::default(),
     );
     layout.toggle_window_floating(None);
@@ -96,7 +91,6 @@ fn i3_167_workspace_layout_stacked_reinserts_after_floating_roundtrip() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::default(),
     );
@@ -121,7 +115,6 @@ fn i3_167_empty_workspace_layout_can_switch_back_to_splith() {
         None,
         None,
         false,
-        false,
         ActivateWindow::default(),
     );
     layout.add_window(
@@ -129,7 +122,6 @@ fn i3_167_empty_workspace_layout_can_switch_back_to_splith() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::default(),
     );
@@ -143,7 +135,6 @@ fn i3_167_empty_workspace_layout_can_switch_back_to_splith() {
         None,
         None,
         false,
-        false,
         ActivateWindow::default(),
     );
     layout.add_window(
@@ -151,7 +142,6 @@ fn i3_167_empty_workspace_layout_can_switch_back_to_splith() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::default(),
     );
@@ -175,7 +165,6 @@ fn i3_167_empty_workspace_layout_can_switch_back_to_splitv() {
         None,
         None,
         false,
-        false,
         ActivateWindow::default(),
     );
     layout.add_window(
@@ -183,7 +172,6 @@ fn i3_167_empty_workspace_layout_can_switch_back_to_splitv() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::default(),
     );
@@ -197,7 +185,6 @@ fn i3_167_empty_workspace_layout_can_switch_back_to_splitv() {
         None,
         None,
         false,
-        false,
         ActivateWindow::default(),
     );
     layout.add_window(
@@ -205,7 +192,6 @@ fn i3_167_empty_workspace_layout_can_switch_back_to_splitv() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::default(),
     );

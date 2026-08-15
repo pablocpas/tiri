@@ -7,8 +7,8 @@ final monitor: headless-1
 final workspace: 0 (ws-1)
 
 initial configure:
-size: 1264 × 704, bounds: 800 × 600, states: []
+size: 0 × 0, bounds: 800 × 600, states: []
 
 post-map configures:
-size: 1264 × 704, bounds: 800 × 600, states: []
+size: 0 × 0, bounds: 800 × 600, states: []
 size: 1264 × 704, bounds: 1264 × 704, states: [Activated]

@@ -402,41 +402,44 @@ fn interactive_move_unfullscreen_to_tiling_restores_size() {
 }
 
 #[test]
-fn interactive_move_unmaximize_to_tiling_restores_size() {
+fn a_maximize_request_is_answered_and_ignored() {
+    // sway's `handle_request_maximize` only schedules a configure: there is no maximized state
+    // for the request to set. The client must get its answer, and nothing else may move.
     let (mut f, id, surface) = set_up();
-
     let _ = f.client(id).window(&surface).recent_configures();
 
-    let niri = f.niri();
-    let mapped = niri.layout.windows().next().unwrap().1;
-    let window = mapped.window.clone();
-    niri.layout.set_maximized(&window, true);
+    let size_before = f
+        .niri()
+        .layout
+        .workspaces()
+        .find_map(|(_, _, ws)| ws.windows().next().map(|w| w.size()))
+        .unwrap();
+
+    f.client(id).window(&surface).set_maximized();
     f.double_roundtrip(id);
 
-    // This should request a maximized size.
+    // A configure, carrying no Maximized state and no new size.
     assert_snapshot!(
         f.client(id).window(&surface).format_recent_configures(),
-        @""
+        @"size: 1904 × 1064, bounds: 1904 × 1064, states: [Activated]"
     );
 
-    // Start an interactive move which causes an unmaximize.
-    let output = f.niri_output(1);
-    let niri = f.niri();
-    let mapped = niri.layout.windows().next().unwrap().1;
-    let window = mapped.window.clone();
-    niri.layout
-        .interactive_move_begin(window.clone(), &output, Point::default());
-    niri.layout.interactive_move_update(
-        &window,
-        Point::from((1000., 0.)),
-        output,
-        Point::default(),
-    );
+    f.client(id).window(&surface).unset_maximized();
     f.double_roundtrip(id);
 
-    // This should request the tiled size.
     assert_snapshot!(
         f.client(id).window(&surface).format_recent_configures(),
-        @"size: 1904 × 1064, bounds: 1920 × 1080, states: [Activated]"
+        @"size: 1904 × 1064, bounds: 1904 × 1064, states: [Activated]"
+    );
+
+    let size_after = f
+        .niri()
+        .layout
+        .workspaces()
+        .find_map(|(_, _, ws)| ws.windows().next().map(|w| w.size()))
+        .unwrap();
+    assert_eq!(
+        size_before, size_after,
+        "the request must not resize anything"
     );
 }

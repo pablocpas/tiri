@@ -119,6 +119,7 @@ impl TestCase for Tile {
         self.tile.update_render_elements(
             true,
             true,
+            true,
             tiri::layout::focus_ring::FocusRingEdges::all(),
             None,
             Rectangle::new(Point::from((-location.x, -location.y)), size.to_logical(1.)),

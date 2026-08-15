@@ -254,7 +254,6 @@ impl Layout {
             AddWindowTarget::Auto,
             width,
             None,
-            false,
             is_floating,
             ActivateWindow::default(),
         );
@@ -283,7 +282,6 @@ impl Layout {
             AddWindowTarget::NextTo(right_of.id()),
             width,
             None,
-            false,
             false,
             ActivateWindow::default(),
         );

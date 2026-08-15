@@ -683,11 +683,6 @@ enum Op {
         #[proptest(strategy = "proptest::option::of(1..=5usize)")]
         id: Option<usize>,
     },
-    MaximizeColumn,
-    MaximizeWindowToEdges {
-        #[proptest(strategy = "proptest::option::of(1..=5usize)")]
-        id: Option<usize>,
-    },
     SetColumnWidth(#[proptest(strategy = "arbitrary_size_change()")] SizeChange),
     SetWindowWidth {
         #[proptest(strategy = "proptest::option::of(1..=5usize)")]
@@ -1063,7 +1058,6 @@ impl Op {
                     AddWindowTarget::Auto,
                     None,
                     None,
-                    false,
                     is_floating,
                     ActivateWindow::default(),
                 );
@@ -1132,7 +1126,6 @@ impl Op {
                     AddWindowTarget::NextTo(&next_to_id),
                     None,
                     None,
-                    false,
                     is_floating,
                     ActivateWindow::default(),
                 );
@@ -1204,7 +1197,6 @@ impl Op {
                     AddWindowTarget::Workspace(ws_id),
                     None,
                     None,
-                    false,
                     is_floating,
                     ActivateWindow::default(),
                 );
@@ -1494,17 +1486,6 @@ impl Op {
             Op::SwitchPresetWindowHeightBack { id } => {
                 let id = id.filter(|id| layout.has_window(id));
                 layout.toggle_window_height(id.as_ref(), false);
-            }
-            Op::MaximizeColumn => layout.toggle_full_width(),
-            Op::MaximizeWindowToEdges { id } => {
-                let id = id.or_else(|| layout.focus().map(|win| *win.id()));
-                let Some(id) = id else {
-                    return;
-                };
-                if !layout.has_window(&id) {
-                    return;
-                }
-                layout.toggle_maximized(&id);
             }
             Op::SetColumnWidth(change) => layout.set_column_width(change),
             Op::SetWindowWidth { id, change } => {
@@ -2539,6 +2520,31 @@ fn check_ops_with_options(
 }
 
 #[test]
+fn tabbing_a_fullscreen_floating_window_readdresses_cached_layouts() {
+    let mut floating = TestWindowParams::new(2);
+    floating.is_floating = true;
+
+    check_ops([
+        Op::AddNamedWorkspace {
+            ws_name: 5,
+            output_name: None,
+            layout_config: None,
+        },
+        Op::AddWindow { params: floating },
+        Op::AddOutput(1),
+        Op::AddWindowToNamedWorkspace {
+            params: TestWindowParams::new(3),
+            ws_name: 5,
+        },
+        Op::SetFullscreenWindow {
+            window: 2,
+            is_fullscreen: true,
+        },
+        Op::ToggleColumnTabbedDisplay,
+    ]);
+}
+
+#[test]
 fn operations_dont_panic() {
     if std::env::var_os("RUN_SLOW_TESTS").is_none() {
         eprintln!("ignoring slow test");
@@ -2581,9 +2587,6 @@ fn operations_dont_panic() {
         Op::FullscreenWindow(1),
         Op::FullscreenWindow(2),
         Op::FullscreenWindow(3),
-        Op::MaximizeWindowToEdges { id: Some(1) },
-        Op::MaximizeWindowToEdges { id: Some(2) },
-        Op::MaximizeWindowToEdges { id: Some(3) },
         Op::FocusColumnLeft,
         Op::FocusColumnRight,
         Op::FocusColumnRightOrFirst,
@@ -2741,9 +2744,6 @@ fn operations_from_starting_state_dont_panic() {
         Op::FullscreenWindow(1),
         Op::FullscreenWindow(2),
         Op::FullscreenWindow(3),
-        Op::MaximizeWindowToEdges { id: Some(1) },
-        Op::MaximizeWindowToEdges { id: Some(2) },
-        Op::MaximizeWindowToEdges { id: Some(3) },
         Op::SetFullscreenWindow {
             window: 1,
             is_fullscreen: false,
@@ -2919,83 +2919,6 @@ fn start_interactive_move_then_remove_window() {
     check_ops(ops);
 }
 
-#[test]
-fn maximize_during_interactive_move_start_is_ignored() {
-    let layout = check_ops([
-        Op::AddOutput(2),
-        Op::AddWindow {
-            params: TestWindowParams::new(3),
-        },
-        Op::InteractiveMoveBegin {
-            window: 3,
-            output_idx: 2,
-            px: 0.,
-            py: 0.,
-        },
-        Op::MaximizeWindowToEdges { id: None },
-        Op::AddWindowNextTo {
-            params: TestWindowParams::new(1),
-            next_to_id: 3,
-        },
-        Op::InteractiveMoveUpdate {
-            window: 3,
-            dx: 0.,
-            dy: -10406.186649509411,
-            output_idx: 2,
-            px: 0.,
-            py: 0.,
-        },
-    ]);
-
-    let Some(InteractiveMoveState::Moving(move_)) = &layout.interactive_move else {
-        panic!("interactive move should still be active");
-    };
-
-    assert_eq!(move_.tile.window().id(), &3);
-    assert!(move_.tile.window().pending_sizing_mode().is_normal());
-}
-
-#[test]
-fn interactive_move_of_maximized_window_normalizes_sizing_mode() {
-    let layout = check_ops([
-        Op::AddScaledOutput {
-            id: 5,
-            scale: 1.0,
-            layout_config: None,
-        },
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(4),
-        },
-        Op::MaximizeWindowToEdges { id: None },
-        Op::MoveWorkspaceToOutput(1),
-        Op::InteractiveMoveBegin {
-            window: 4,
-            output_idx: 1,
-            px: 0.0,
-            py: 0.0,
-        },
-        Op::FocusWorkspaceDown,
-        Op::FocusWorkspaceAutoBackAndForth(0),
-        Op::MoveWindowDownOrToWorkspaceDown,
-        Op::InteractiveMoveUpdate {
-            window: 4,
-            dx: 0.0,
-            dy: 3386.017133369442,
-            output_idx: 5,
-            px: 0.0,
-            py: 0.0,
-        },
-    ]);
-
-    let Some(InteractiveMoveState::Moving(move_)) = &layout.interactive_move else {
-        panic!("interactive move should still be active");
-    };
-
-    assert_eq!(move_.tile.window().id(), &4);
-    assert!(move_.tile.window().pending_sizing_mode().is_normal());
-}
-
 // empty_workspace_above_first = true
 
 #[test]
@@ -3052,7 +2975,6 @@ fn interactive_resize_nested_split_targets_parent() {
         None,
         None,
         false,
-        false,
         ActivateWindow::Yes,
     );
     layout.add_window(
@@ -3060,7 +2982,6 @@ fn interactive_resize_nested_split_targets_parent() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::Yes,
     );
@@ -3072,7 +2993,6 @@ fn interactive_resize_nested_split_targets_parent() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::Yes,
     );
@@ -3505,7 +3425,6 @@ fn insert_position_with_window_on_top_edge() {
         None,
         None,
         false,
-        false,
         ActivateWindow::Yes,
     );
 
@@ -3543,7 +3462,6 @@ fn insert_position_with_window_on_bottom_edge() {
         None,
         None,
         false,
-        false,
         ActivateWindow::Yes,
     );
 
@@ -3580,7 +3498,6 @@ fn insert_position_center_of_window() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::Yes,
     );

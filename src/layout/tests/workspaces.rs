@@ -389,7 +389,6 @@ fn empty_workspace_layout_commands_do_not_wrap_next_open() {
         None,
         None,
         false,
-        false,
         ActivateWindow::default(),
     );
 
@@ -428,7 +427,6 @@ fn empty_workspace_uses_workspace_command_context_like_sway() {
         None,
         None,
         false,
-        false,
         ActivateWindow::default(),
     );
     layout.add_window(
@@ -436,7 +434,6 @@ fn empty_workspace_uses_workspace_command_context_like_sway() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::default(),
     );
@@ -462,7 +459,6 @@ fn top_level_leaf_layout_noops_when_matching_workspace_layout_like_sway() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::default(),
     );
@@ -506,7 +502,6 @@ fn top_level_leaf_toggle_split_uses_workspace_layout_state_like_sway() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::default(),
     );
@@ -552,7 +547,6 @@ fn workspace_toggle_split_uses_prev_split_layout_like_sway() {
         None,
         None,
         false,
-        false,
         ActivateWindow::default(),
     );
     layout.add_window(
@@ -560,7 +554,6 @@ fn workspace_toggle_split_uses_prev_split_layout_like_sway() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::default(),
     );
@@ -1797,7 +1790,6 @@ fn numeric_workspace_one_is_reused_after_switching_to_two() {
         None,
         None,
         false,
-        false,
         ActivateWindow::default(),
     );
 
@@ -1864,7 +1856,6 @@ fn add_window_to_numeric_workspace(
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::default(),
     );
@@ -2019,7 +2010,6 @@ fn empty_inactive_numeric_workspace_is_destroyed_without_renumbering() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::default(),
     );

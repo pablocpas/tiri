@@ -327,17 +327,6 @@ impl FloatingActive {
     }
 }
 
-/// Tell a tile which side it will restore to.
-///
-/// Landing in tiling is also what ends a tile's stay in the scratchpad, so the two travel
-/// together — every `add_tile` arm answers the same question and has to answer it once.
-fn mark_restore_to_floating<W: LayoutElement>(tile: &mut Tile<W>, wants_floating: bool) {
-    if !wants_floating {
-        tile.set_scratchpad(false);
-    }
-    tile.restore_to_floating = wants_floating;
-}
-
 fn external_resize_cursor_icon(edges: ResizeEdge) -> CursorIcon {
     if edges.contains(ResizeEdge::TOP) && edges.contains(ResizeEdge::LEFT) {
         return CursorIcon::NwResize;
@@ -1037,7 +1026,6 @@ impl<W: LayoutElement> Workspace<W> {
         target: WorkspaceAddWindowTarget<W>,
         activate: ActivateWindow,
         width: ColumnWidth,
-        is_full_width: bool,
         is_floating: bool,
     ) {
         self.enter_output_for_window(tile.window());
@@ -1049,11 +1037,6 @@ impl<W: LayoutElement> Workspace<W> {
             command_targets_floating && self.space.tree().is_leaf(command_target);
         let command_targets_floating_container =
             command_targets_floating && !self.space.tree().is_leaf(command_target);
-        // A tile that is pending maximized or fullscreen has to open in the tiling layout,
-        // which is the only side that can do that.
-        let can_open_floating =
-            tile.window().pending_sizing_mode().is_normal() && !tile.pending_maximized;
-
         match target {
             WorkspaceAddWindowTarget::Auto => {
                 let has_floating_reinsert_hint = tile.floating_reinsert_hint.is_some();
@@ -1070,7 +1053,6 @@ impl<W: LayoutElement> Workspace<W> {
                     && (command_targets_floating_leaf
                         || self.floating.active_wrapper_selected(&self.space));
                 let wants_floating = is_floating || grouped_floating;
-                mark_restore_to_floating(&mut tile, wants_floating);
 
                 let keep_floating_focus = floating_active
                     && !wants_floating
@@ -1092,7 +1074,7 @@ impl<W: LayoutElement> Workspace<W> {
                     activate.map_smart(|| !self.is_active_pending_fullscreen())
                 };
 
-                if wants_floating && can_open_floating {
+                if wants_floating {
                     if has_floating_reinsert_hint {
                         self.floating
                             .add_tile_with_restore_hint(&mut self.space, tile, activate);
@@ -1108,8 +1090,7 @@ impl<W: LayoutElement> Workspace<W> {
                     }
                 } else {
                     let tiling_was_empty = self.space.is_empty();
-                    self.space
-                        .add_tile(None, tile, activate, width, is_full_width, None);
+                    self.space.add_tile(None, tile, activate, width, None);
 
                     if activate
                         || (floating_active
@@ -1122,10 +1103,9 @@ impl<W: LayoutElement> Workspace<W> {
                 }
             }
             WorkspaceAddWindowTarget::NewColumnAt(col_idx) => {
-                mark_restore_to_floating(&mut tile, is_floating);
                 let activate = activate.map_smart(|| false);
                 self.space
-                    .add_tile(Some(col_idx), tile, activate, width, is_full_width, None);
+                    .add_tile(Some(col_idx), tile, activate, width, None);
 
                 if activate {
                     self.activate_tiling_for_new_content();
@@ -1136,12 +1116,11 @@ impl<W: LayoutElement> Workspace<W> {
                 let grouped_floating_target = floating_has_window
                     && self.floating.container_allows_splits(&self.space, next_to);
                 let wants_floating = is_floating || grouped_floating_target;
-                mark_restore_to_floating(&mut tile, wants_floating);
 
                 let activate = activate
                     .map_smart(|| self.active_window().is_some_and(|win| win.id() == next_to));
 
-                if wants_floating && can_open_floating {
+                if wants_floating {
                     if grouped_floating_target {
                         self.floating.add_tile_to_container_of(
                             &mut self.space,
@@ -1161,20 +1140,17 @@ impl<W: LayoutElement> Workspace<W> {
                         self.activate_floating_for_new_content();
                     }
                 } else if floating_has_window {
-                    self.space
-                        .add_tile(None, tile, activate, width, is_full_width, None);
+                    self.space.add_tile(None, tile, activate, width, None);
 
                     if activate {
                         self.activate_tiling_for_new_content();
                     }
                 } else {
                     if self.space.tiles().any(|tile| tile.window().id() == next_to) {
-                        self.space
-                            .add_tile_right_of(next_to, tile, activate, width, is_full_width);
+                        self.space.add_tile_right_of(next_to, tile, activate, width);
                     } else {
                         error!("next_to target disappeared while placing a new tiled window");
-                        self.space
-                            .add_tile(None, tile, activate, width, is_full_width, None);
+                        self.space.add_tile(None, tile, activate, width, None);
                     }
 
                     if activate {
@@ -1359,7 +1335,6 @@ impl<W: LayoutElement> Workspace<W> {
     ) -> bool {
         tile.set_scratchpad(false);
         self.enter_output_for_window(tile.window());
-        tile.restore_to_floating = false;
 
         let inserted = self
             .space
@@ -1381,7 +1356,6 @@ impl<W: LayoutElement> Workspace<W> {
     ) -> bool {
         tile.set_scratchpad(false);
         self.enter_output_for_window(tile.window());
-        tile.restore_to_floating = false;
 
         let inserted = self.space.insert_tile_split_root(direction, tile, activate);
 
@@ -1588,8 +1562,6 @@ impl<W: LayoutElement> Workspace<W> {
         toplevel.with_pending_state(|state| {
             if state.states.contains(xdg_toplevel::State::Fullscreen) {
                 state.size = Some(self.view_size.to_i32_round());
-            } else if state.states.contains(xdg_toplevel::State::Maximized) {
-                state.size = Some(self.working_area.size.to_i32_round());
             } else if !is_floating {
                 // Like sway, let an ordinary tiled window choose the geometry it maps with.
                 // Mapped stores that geometry as the natural floating size before tiling sends
@@ -2312,29 +2284,6 @@ impl<W: LayoutElement> Workspace<W> {
             return;
         }
 
-        if !is_fullscreen {
-            // The window is in the tiling layout and we're requesting an unfullscreen. If it is
-            // indeed fullscreen (i.e. this isn't a duplicate unfullscreen request), then we may
-            // need to unfullscreen into floating.
-            let tile = self
-                .space
-                .tiles()
-                .find(|tile| tile.window().id() == window)
-                .unwrap();
-
-            // When going from fullscreen to maximized, don't consider restore_to_floating yet.
-            // pending_sizing_mode() is asynchronous, so also check space.is_fullscreen() to
-            // handle requests while the client is catching up.
-            let is_fullscreen_now = self.space.is_fullscreen(tile.window())
-                || tile.window().pending_sizing_mode().is_fullscreen();
-            if is_fullscreen_now && !tile.pending_maximized && tile.restore_to_floating {
-                // Unfullscreen and float in one call so it has a chance to notice and request a
-                // (0, 0) size, rather than the tiling tile size.
-                self.toggle_window_floating(Some(window));
-                return;
-            }
-        }
-
         self.space.set_fullscreen(window, is_fullscreen);
     }
 
@@ -2388,71 +2337,6 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn set_windowed_fullscreen(&mut self, window: &W::Id, is_fullscreen: bool) {
         self.set_fullscreen(window, is_fullscreen);
-    }
-
-    pub fn set_maximized(&mut self, window: &W::Id, maximize: bool) {
-        let mut restore_to_floating = false;
-        if self.floating.has_window(&self.space, window) {
-            if maximize {
-                restore_to_floating = true;
-                self.space
-                    .tree_mut()
-                    .discard_layout_superseded_by_transfer();
-                self.toggle_window_floating(Some(window));
-            } else {
-                // Floating windows are never maximized, so this is an unmaximize request for an
-                // already unmaximized window.
-                return;
-            }
-        } else if !maximize {
-            // The window is in the tiling layout and we're requesting to unmaximize. If it is
-            // indeed maximized (i.e. this isn't a duplicate unmaximize request), then we may
-            // need to unmaximize into floating.
-            let tile = self
-                .space
-                .tiles()
-                .find(|tile| tile.window().id() == window)
-                .unwrap();
-            if tile.window().pending_sizing_mode().is_fullscreen() {
-                self.space.set_maximized(window, maximize);
-                return;
-            }
-            if tile.pending_maximized && tile.restore_to_floating {
-                // Unmaximize and float in one call so it has a chance to notice and request a
-                // (0, 0) size, rather than the tiling tile size.
-                self.toggle_window_floating(Some(window));
-                return;
-            }
-        }
-
-        let tile = self
-            .space
-            .tiles()
-            .find(|tile| tile.window().id() == window)
-            .unwrap();
-        let was_normal = tile.window().pending_sizing_mode().is_normal();
-
-        self.space.set_maximized(window, maximize);
-
-        // When going from normal to maximized, remember if we should unmaximize to floating.
-        let tile = self
-            .space
-            .tiles_mut()
-            .find(|tile| tile.window().id() == window)
-            .unwrap();
-        if was_normal && tile.pending_maximized {
-            tile.restore_to_floating = restore_to_floating;
-        }
-    }
-
-    pub fn toggle_maximized(&mut self, window: &W::Id) {
-        let current = self
-            .space
-            .tiles()
-            .find(|tile| tile.window().id() == window)
-            .is_some_and(|tile| tile.pending_maximized);
-
-        self.set_maximized(window, !current);
     }
 
     pub fn toggle_window_floating(&mut self, id: Option<&W::Id>) {
@@ -2635,7 +2519,6 @@ impl<W: LayoutElement> Workspace<W> {
                 };
                 if let Some(tile) = self.space.tree_mut().get_tile_mut(subtree) {
                     tile.stop_move_animations();
-                    tile.pending_maximized = false;
                 }
 
                 if !self.floating.add_subtree(
@@ -2755,7 +2638,6 @@ impl<W: LayoutElement> Workspace<W> {
         if !removed.is_floating {
             tile.stop_move_animations();
             tile.clear_resize_animation();
-            tile.pending_maximized = false;
             tile.floating_pos = None;
 
             let size = self.scratchpad_default_size(&tile);

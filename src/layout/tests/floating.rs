@@ -108,7 +108,6 @@ fn focusing_output_from_floating_workspace_context_clears_tiling_workspace_conte
             layout_config: None,
         },
         Op::FocusWindowOrMonitorUp(1),
-        Op::MaximizeWindowToEdges { id: None },
     ]);
 }
 
@@ -1383,7 +1382,6 @@ fn floating_tab_bar_hit_does_not_report_resize_edges() {
         None,
         None,
         false,
-        false,
         ActivateWindow::Yes,
     );
     layout.toggle_window_floating(None);
@@ -1393,7 +1391,6 @@ fn floating_tab_bar_hit_does_not_report_resize_edges() {
         AddWindowTarget::NextTo(&1),
         None,
         None,
-        false,
         false,
         ActivateWindow::Yes,
     );
@@ -1472,7 +1469,6 @@ fn floating_tab_bar_hit_does_not_fall_through_to_tiling_window() {
         None,
         None,
         false,
-        false,
         ActivateWindow::Yes,
     );
     layout.add_window(
@@ -1480,7 +1476,6 @@ fn floating_tab_bar_hit_does_not_fall_through_to_tiling_window() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::Yes,
     );
@@ -1491,7 +1486,6 @@ fn floating_tab_bar_hit_does_not_fall_through_to_tiling_window() {
         AddWindowTarget::NextTo(&2),
         None,
         None,
-        false,
         false,
         ActivateWindow::Yes,
     );
@@ -1537,41 +1531,6 @@ fn toggle_window_floating_after_output_attach_keeps_options_synced() {
         Op::FocusParent,
         Op::ToggleWindowFloating { id: None },
     ]);
-}
-#[test]
-fn move_window_to_workspace_up_after_maximize_keeps_floating_normal() {
-    let ops = [
-        Op::AddWindow {
-            params: TestWindowParams {
-                id: 3,
-                is_floating: true,
-                ..TestWindowParams::new(3)
-            },
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::AddOutput(1),
-        Op::MoveWindowToWorkspace {
-            window_id: None,
-            workspace_idx: 1,
-            focus: true,
-        },
-        Op::MaximizeWindowToEdges { id: None },
-        Op::MoveWindowToWorkspaceUp(false),
-    ];
-
-    let layout = check_ops(ops);
-
-    let monitor = match layout.monitor_set {
-        MonitorSet::Normal { monitors, .. } => monitors.into_iter().next().unwrap(),
-        MonitorSet::NoOutputs { .. } => unreachable!(),
-    };
-
-    // Window 1 was maximized before the move and should stay in tiling (not floating).
-    let ws0 = &monitor.workspaces[0];
-    assert!(ws0.tiling().tiles().any(|tile| tile.window().id() == &1));
-    assert!(!ws0.floating().tiles().any(|tile| tile.window().id() == &1));
 }
 #[test]
 fn interactive_move_toggle_floating_ends_dnd_gesture() {
@@ -1805,32 +1764,6 @@ fn move_column_to_workspace_focus_false_on_floating_window() {
     };
 
     assert_eq!(monitors[0].active_workspace_idx, 0);
-}
-#[test]
-fn tiling_maximized_window_floated_clears_maximized_state() {
-    let ops = [
-        Op::AddWindow {
-            params: TestWindowParams::new(3),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(4),
-        },
-        Op::MaximizeWindowToEdges { id: Some(3) },
-        Op::AddOutput(1),
-        Op::FocusParent,
-        Op::ToggleWindowFloating { id: None },
-    ];
-
-    let layout = check_ops(ops);
-
-    let workspace = layout.active_workspace().unwrap();
-    assert!(workspace.is_floating(&3));
-
-    let (_mon, win3) = layout
-        .windows()
-        .find(|(_, win)| *win.id() == 3)
-        .expect("window 3 should exist");
-    assert!(win3.pending_sizing_mode().is_normal());
 }
 #[test]
 fn floating_interactive_resize_then_unfloat_clears_resize_state() {

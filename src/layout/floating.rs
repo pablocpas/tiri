@@ -916,7 +916,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
         tile: &mut Tile<W>,
     ) -> (W::Id, Option<Size<f64, Logical>>) {
         tile.update_config(config.view_size, config.scale, config.options.clone());
-        tile.pending_maximized = false;
 
         let win_id = tile.window().id().clone();
 
@@ -960,13 +959,30 @@ impl<W: LayoutElement> FloatingSpace<W> {
         (win_id, requested_tile_size)
     }
 
+    /// sway's `floating_calculate_constraints` on its automatic settings.
+    ///
+    /// A floor of 75 by 50 with the output layout box as the ceiling, the floor applied outside
+    /// the ceiling so it wins on an output too small to hold it, then the client's own limits.
+    fn floating_constraints(
+        config: &TileConfig,
+        tile: &Tile<W>,
+        mut size: Size<i32, Logical>,
+    ) -> Size<i32, Logical> {
+        size.w = size.w.min(config.view_size.w.floor() as i32).max(75);
+        size.h = size.h.min(config.view_size.h.floor() as i32).max(50);
+        let min_size = tile.window().min_size();
+        let max_size = tile.window().max_size();
+        size.w = ensure_min_max_size_maybe_zero(size.w, min_size.w, max_size.w);
+        size.h = ensure_min_max_size_maybe_zero(size.h, min_size.h, max_size.h);
+        size
+    }
+
     fn preserve_fullscreen_tile_for_floating(
         config: &TileConfig,
         tile: &mut Tile<W>,
         restore_tile_size: Option<Size<f64, Logical>>,
     ) {
         tile.update_config(config.view_size, config.scale, config.options.clone());
-        tile.pending_maximized = false;
         if tile.floating_window_size.is_none() {
             tile.floating_window_size = restore_tile_size
                 .filter(|size| size.w > 0.0 && size.h > 0.0)
@@ -974,7 +990,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 .or_else(|| {
                     let size = tile.window().natural_size();
                     (size.w > 0 && size.h > 0).then_some(size)
-                });
+                })
+                // The constraints apply to any view that becomes floating, fullscreen or not.
+                // Without them a window that mapped smaller than sway's floor restores to that
+                // size instead of to 75x50.
+                .map(|size| Self::floating_constraints(config, tile, size));
         }
     }
 
@@ -986,7 +1006,25 @@ impl<W: LayoutElement> FloatingSpace<W> {
         activate: bool,
     ) {
         let config = space.tile_config();
-        let (_, requested_tile_size) = Self::prepare_tile_for_floating(&config, &mut tile);
+        // A view that maps fullscreen keeps the state on the list it lands in —
+        // `container_set_fullscreen` never moves a node between lists, so arriving floating is
+        // not a reason to leave fullscreen. Only a view that is not fullscreen gets normalized
+        // to a floating size on the way in.
+        let maps_fullscreen = tile.window().pending_sizing_mode().is_fullscreen();
+        let requested_tile_size = if maps_fullscreen {
+            Self::preserve_fullscreen_tile_for_floating(&config, &mut tile, None);
+            // The group's box is the one the view would have had unfullscreened.
+            // `container_init_floating` computes it from the natural size whatever the
+            // fullscreen state, and it is what `fullscreen disable` restores to later.
+            tile.floating_window_size.map(|size| {
+                Size::from((
+                    tile.tile_width_for_window_width(f64::from(size.w)),
+                    tile.tile_height_for_window_height(f64::from(size.h)),
+                ))
+            })
+        } else {
+            Self::prepare_tile_for_floating(&config, &mut tile).1
+        };
 
         // Make sure the tile isn't inserted below its parent.
         for (i, container) in self.containers.iter().enumerate().take(idx) {
@@ -1008,6 +1046,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let rect = Rectangle::new(pos, tile_size);
 
         let (root, leaf) = space.tree_mut().float_new_group(tile, rect);
+        // `workspace->fullscreen` names the node on whichever list it lives.
+        if maps_fullscreen && space.tree().fullscreen_key().is_none() {
+            space.tree_mut().set_fullscreen_key(Some(leaf));
+        }
         if activate || space.tree().focused_node_key().is_none() {
             space.tree_mut().focus_node(leaf);
         }
@@ -1194,14 +1236,9 @@ impl<W: LayoutElement> FloatingSpace<W> {
                     preserved_fullscreen_leaf = true;
                 } else {
                     if tile.floating_window_size.is_none() {
-                        let mut size = tile.window().natural_size();
-                        size.w = size.w.min(config.view_size.w.floor() as i32).max(75);
-                        size.h = size.h.min(config.view_size.h.floor() as i32).max(50);
-                        let min_size = tile.window().min_size();
-                        let max_size = tile.window().max_size();
-                        size.w = ensure_min_max_size_maybe_zero(size.w, min_size.w, max_size.w);
-                        size.h = ensure_min_max_size_maybe_zero(size.h, min_size.h, max_size.h);
-                        tile.floating_window_size = Some(size);
+                        let size = tile.window().natural_size();
+                        tile.floating_window_size =
+                            Some(Self::floating_constraints(&config, tile, size));
                     }
                     let (_, requested) = Self::prepare_tile_for_floating(&config, tile);
                     prepared_leaf = Some((key, requested));
@@ -1454,7 +1491,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
         RemovedTile {
             tile,
             width,
-            is_full_width: false,
             is_floating: true,
         }
     }

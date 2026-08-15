@@ -391,10 +391,6 @@ pub enum Action {
     SwitchPresetWindowHeightById(u64),
     #[knuffel(skip)]
     SwitchPresetWindowHeightBackById(u64),
-    MaximizeColumn,
-    MaximizeWindowToEdges,
-    #[knuffel(skip)]
-    MaximizeWindowToEdgesById(u64),
     SetColumnWidth(#[knuffel(argument, str)] SizeChange),
     ExpandColumnToAvailableWidth,
     SwitchLayout(#[knuffel(argument, str)] LayoutSwitchTarget),
@@ -766,11 +762,6 @@ impl From<tiri_ipc::Action> for Action {
             }
             tiri_ipc::Action::SwitchPresetWindowHeightBack { id: Some(id) } => {
                 Self::SwitchPresetWindowHeightBackById(id)
-            }
-            tiri_ipc::Action::MaximizeColumn {} => Self::MaximizeColumn,
-            tiri_ipc::Action::MaximizeWindowToEdges { id: None } => Self::MaximizeWindowToEdges,
-            tiri_ipc::Action::MaximizeWindowToEdges { id: Some(id) } => {
-                Self::MaximizeWindowToEdgesById(id)
             }
             tiri_ipc::Action::SetColumnWidth { change } => Self::SetColumnWidth(change),
             tiri_ipc::Action::ExpandColumnToAvailableWidth {} => Self::ExpandColumnToAvailableWidth,

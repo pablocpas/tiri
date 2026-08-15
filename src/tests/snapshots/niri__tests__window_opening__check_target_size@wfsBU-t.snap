@@ -4,7 +4,7 @@ description: "want fullscreen: BU\nconfig:\nwindow-rule {\n    default-column-di
 expression: snapshot
 ---
 initial configure:
-size: 1264 × 704, bounds: 800 × 600, states: []
+size: 0 × 0, bounds: 800 × 600, states: []
 
 post-map configures:
 size: 1264 × 704, bounds: 1264 × 704, states: [Activated]

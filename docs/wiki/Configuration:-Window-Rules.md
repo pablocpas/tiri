@@ -8,15 +8,11 @@ This means that you can put more generic rules first, then override them for spe
 For example:
 
 ```kdl
-// Set open-maximized to true for all windows.
 window-rule {
-    open-maximized true
 }
 
-// Then, for Alacritty, set open-maximized back to false.
 window-rule {
     match app-id="Alacritty"
-    open-maximized false
 }
 ```
 
@@ -43,8 +39,6 @@ window-rule {
     default-window-height { fixed 500; }
     open-on-output "Some Company CoolMonitor 1234"
     open-on-workspace "chat"
-    open-maximized true
-    open-maximized-to-edges true
     open-fullscreen true
     open-floating true
     open-focused false
@@ -423,42 +417,9 @@ window-rule {
 }
 ```
 
-#### `open-maximized`
-
-Make the window open as a maximized column.
-
-```kdl
-// Maximize Firefox by default.
-window-rule {
-    match app-id="firefox$"
-
-    open-maximized true
-}
-```
-
-#### `open-maximized-to-edges`
-
-<sup>Upstream niri: 25.11</sup>
-
-Make the window open [maximized to edges](./Fullscreen-and-Maximize.md).
-
-```kdl
-window-rule {
-    open-maximized-to-edges true
-}
-```
-
-You can also set this to `false` to *prevent* a window from opening maximized to edges.
-
-```kdl
-window-rule {
-    open-maximized-to-edges false
-}
-```
-
 #### `open-fullscreen`
 
-Make the window open [fullscreen](./Fullscreen-and-Maximize.md).
+Make the window open [fullscreen](./Fullscreen.md).
 
 ```kdl
 window-rule {

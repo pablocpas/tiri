@@ -58,12 +58,6 @@ pub struct ResolvedWindowRules {
     /// Workspace to open this window on.
     pub open_on_workspace: Option<String>,
 
-    /// Whether the window should open full-width.
-    pub open_maximized: Option<bool>,
-
-    /// Whether the window should open maximized to edges (true maximized).
-    pub open_maximized_to_edges: Option<bool>,
-
     /// Whether the window should open fullscreen.
     pub open_fullscreen: Option<bool>,
 
@@ -235,14 +229,6 @@ impl ResolvedWindowRules {
 
                 if let Some(x) = rule.open_on_workspace.as_deref() {
                     open_on_workspace = Some(x);
-                }
-
-                if let Some(x) = rule.open_maximized {
-                    resolved.open_maximized = Some(x);
-                }
-
-                if let Some(x) = rule.open_maximized_to_edges {
-                    resolved.open_maximized_to_edges = Some(x);
                 }
 
                 if let Some(x) = rule.open_fullscreen {

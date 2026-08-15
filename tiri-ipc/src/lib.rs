@@ -1056,16 +1056,6 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg(long))]
         id: Option<u64>,
     },
-    /// Toggle the maximized state of the focused column.
-    MaximizeColumn {},
-    /// Toggle the maximized-to-edges state of the focused window.
-    MaximizeWindowToEdges {
-        /// Id of the window to maximize.
-        ///
-        /// If `None`, uses the focused window.
-        #[cfg_attr(feature = "clap", arg(long))]
-        id: Option<u64>,
-    },
     /// Change the width of the focused column.
     SetColumnWidth {
         /// How to change the width.

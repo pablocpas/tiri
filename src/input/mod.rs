@@ -339,9 +339,6 @@ fn action_refresh_impact(action: &Action) -> ActionRefreshImpact {
         | Action::SwitchPresetWindowHeightBack
         | Action::SwitchPresetWindowHeightById(..)
         | Action::SwitchPresetWindowHeightBackById(..)
-        | Action::MaximizeColumn
-        | Action::MaximizeWindowToEdges
-        | Action::MaximizeWindowToEdgesById(..)
         | Action::SetColumnWidth(..)
         | Action::ExpandColumnToAvailableWidth
         | Action::MoveWorkspaceToMonitorLeft
@@ -2064,26 +2061,6 @@ impl State {
             Action::CenterVisibleColumns => {
                 self.niri.layout.center_visible_columns();
                 self.niri.queue_redraw_active_output();
-            }
-            Action::MaximizeColumn => {
-                self.niri.layout.toggle_full_width();
-            }
-            Action::MaximizeWindowToEdges => {
-                let focus = self.niri.layout.focus().map(|m| m.window.clone());
-                if let Some(window) = focus {
-                    // In tiri, maximize-to-edges is an alias of fullscreen for i3-like behavior.
-                    self.niri.layout.toggle_fullscreen(&window);
-                    self.niri.queue_redraw_active_output();
-                }
-            }
-            Action::MaximizeWindowToEdgesById(id) => {
-                let window = self.niri.layout.windows().find(|(_, m)| m.id().get() == id);
-                let window = window.map(|(_, m)| m.window.clone());
-                if let Some(window) = window {
-                    // In tiri, maximize-to-edges is an alias of fullscreen for i3-like behavior.
-                    self.niri.layout.toggle_fullscreen(&window);
-                    self.niri.queue_redraw_window_by_id(id);
-                }
             }
             Action::FocusMonitorLeft => {
                 if let Some(output) = self.niri.output_left() {

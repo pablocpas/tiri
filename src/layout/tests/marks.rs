@@ -16,7 +16,6 @@ fn marks_replace_add_toggle() {
         None,
         None,
         false,
-        false,
         ActivateWindow::Yes,
     );
 
@@ -27,7 +26,6 @@ fn marks_replace_add_toggle() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::Yes,
     );
@@ -64,7 +62,6 @@ fn marks_multiple_on_same_window() {
         None,
         None,
         false,
-        false,
         ActivateWindow::Yes,
     );
 
@@ -96,7 +93,6 @@ fn marks_unique_across_windows() {
         None,
         None,
         false,
-        false,
         ActivateWindow::Yes,
     );
 
@@ -107,7 +103,6 @@ fn marks_unique_across_windows() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::Yes,
     );
@@ -143,7 +138,6 @@ fn unmark_takes_a_named_mark_off_its_holder_and_bare_unmark_clears_every_window(
         None,
         None,
         false,
-        false,
         ActivateWindow::Yes,
     );
 
@@ -154,7 +148,6 @@ fn unmark_takes_a_named_mark_off_its_holder_and_bare_unmark_clears_every_window(
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::Yes,
     );

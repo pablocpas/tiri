@@ -16,7 +16,6 @@ fn scratchpad_show_hides_focused_window() {
         None,
         None,
         false,
-        false,
         ActivateWindow::Yes,
     );
 
@@ -27,7 +26,6 @@ fn scratchpad_show_hides_focused_window() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::Yes,
     );
@@ -68,7 +66,6 @@ fn scratchpad_show_moves_visible_between_outputs() {
         None,
         None,
         false,
-        false,
         ActivateWindow::Yes,
     );
 
@@ -103,7 +100,6 @@ fn scratchpad_multiple_windows_round_robin() {
         None,
         None,
         false,
-        false,
         ActivateWindow::Yes,
     );
 
@@ -115,7 +111,6 @@ fn scratchpad_multiple_windows_round_robin() {
         None,
         None,
         false,
-        false,
         ActivateWindow::Yes,
     );
 
@@ -126,7 +121,6 @@ fn scratchpad_multiple_windows_round_robin() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::Yes,
     );
@@ -173,7 +167,6 @@ fn scratchpad_from_floating_preserves_floating() {
         None,
         None,
         false,
-        false,
         ActivateWindow::Yes,
     );
 
@@ -212,7 +205,6 @@ fn scratchpad_from_tiling_becomes_floating() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::Yes,
     );
@@ -402,7 +394,6 @@ fn sticky_toggle_requires_floating() {
         None,
         None,
         false,
-        false,
         ActivateWindow::Yes,
     );
 
@@ -427,7 +418,6 @@ fn sticky_moves_across_workspaces_on_output() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::Yes,
     );
@@ -475,7 +465,6 @@ fn scratchpad_show_hides_visible_then_shows_next() {
         None,
         None,
         false,
-        false,
         ActivateWindow::Yes,
     );
 
@@ -486,7 +475,6 @@ fn scratchpad_show_hides_visible_then_shows_next() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::Yes,
     );
@@ -528,7 +516,6 @@ fn scratchpad_fullscreen_to_scratchpad() {
         AddWindowTarget::Auto,
         None,
         None,
-        false,
         false,
         ActivateWindow::Yes,
     );

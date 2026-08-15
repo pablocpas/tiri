@@ -61,7 +61,6 @@ pub(super) struct PendingLayout {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LayoutRequestMode {
     Normal,
-    Maximized,
     Fullscreen,
 }
 
@@ -250,15 +249,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         let working_area_size = self.working_area.size;
         let replacement_restore = self.node_geometry(new_key).unwrap_or_default();
         if let Some(tile) = self.get_tile_mut(old_key) {
-            if tile.pending_maximized {
-                tile.request_maximized(working_area_size, animate, None);
-            } else {
-                tile.request_tile_size(working_area_size, animate, None);
-            }
+            tile.request_tile_size(working_area_size, animate, None);
         }
 
         if let Some(tile) = self.get_tile_mut(new_key) {
-            tile.pending_maximized |= tile.window().pending_sizing_mode().is_maximized();
             tile.request_fullscreen(animate, None);
         }
 
@@ -676,11 +670,6 @@ impl<W: LayoutElement> ContainerTree<W> {
             LayoutRequest {
                 mode: LayoutRequestMode::Fullscreen,
                 size: self.view_size.to_i32_round(),
-            }
-        } else if tile.pending_maximized {
-            LayoutRequest {
-                mode: LayoutRequestMode::Maximized,
-                size: tile_size.to_i32_round(),
             }
         } else {
             LayoutRequest {
@@ -1116,8 +1105,6 @@ impl<W: LayoutElement> ContainerTree<W> {
             let size = Size::from((info.rect.size.w, info.rect.size.h));
             if tile.window().pending_sizing_mode().is_fullscreen() {
                 tile.request_fullscreen(animate_resize, tx);
-            } else if tile.pending_maximized {
-                tile.request_maximized(size, animate_resize, tx);
             } else {
                 tile.request_tile_size(size, animate_resize, tx);
             }
