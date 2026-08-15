@@ -186,7 +186,8 @@ fn pinned_options() -> Options {
             tab_bar: tiri_config::TabBar {
                 off: false,
                 show_in_split: false,
-                height: 0.,
+                // Keep parity fixtures independent from the host Pango metrics.
+                height: 23.,
                 padding_x: 8.,
                 padding_y: 3.,
                 border_width: 0.,

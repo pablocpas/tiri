@@ -283,13 +283,11 @@ jobs:
             pkg update -f
             pkg install -y ${{ env.DEPS_PKG }}
           run: |
-            curl -o patch-pipewire_init 'https://cgit.freebsd.org/ports/plain/x11-wm/niri/files/patch-pipewire_init?id=cadf6784d264cf780b6e0ad59bd15b831d36cf80'
-
             export CARGO_HOME="$PWD/cargo-home"
 
             cargo fetch
 
-            ( cd $CARGO_HOME/registry/src/index.crates.io-*/; patch -p1 < $CARGO_HOME/../patch-pipewire_init; )
+            ( cd "$CARGO_HOME"/registry/src/index.crates.io-*/; patch -p1 < "$CARGO_HOME/../.github/patches/pipewire-0.9.2-freebsd.patch"; )
 
             cargo build \
               --offline \
