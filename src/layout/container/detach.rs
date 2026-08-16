@@ -2,7 +2,6 @@
 
 use super::ContainerData;
 use super::ContainerTree;
-use super::DetachedContainer;
 use super::DetachedNode;
 #[cfg(test)]
 use super::InsertParentInfo;
@@ -131,95 +130,95 @@ impl<W: LayoutElement> ContainerTree<W> {
             .remove_node_from_store(key)
             .expect("node key must exist when extracting subtree");
 
-        match node_data {
-            NodeData::Workspace(_) => unreachable!("the workspace cannot be detached"),
-            NodeData::Container(container) if container.is_view() => {
-                let tile = container.into_tile().expect("a view holds a tile");
-                debug_assert_eq!(tile.node_key(), key);
-                DetachedNode::Leaf(tile)
-            }
-            NodeData::Container(container) => {
-                let child_keys = container.children.clone();
-                let mut children = Vec::new();
-                for child_key in child_keys.iter().copied() {
-                    children.push(self.extract_subtree(child_key));
-                }
-                // Which child a switcher shows is behaviour, so the subtree carries those
-                // stable identities into the receiving workspace instead of rebuilding them
-                // from child positions.
-                let mut focus_stack: Vec<NodeKey> = self
-                    .seat
-                    .order()
-                    .iter()
-                    .copied()
-                    .filter(|key| child_keys.contains(key))
-                    .collect();
-                for key in child_keys {
-                    if !focus_stack.contains(&key) {
-                        focus_stack.push(key);
-                    }
-                }
-                DetachedNode::Container(DetachedContainer {
-                    key,
-                    sizing: container.sizing,
-                    layout: container.layout,
-                    children,
-                    focus_stack,
-                    user_created: container.user_created,
-                    prev_split_layout: container.prev_split_layout,
-                })
+        let NodeData::Container(container) = node_data else {
+            unreachable!("the workspace cannot be detached")
+        };
+
+        // A view has no children to walk and no focus stack to carry; everything else on the
+        // node travels the same way either way, which is the point of it being one type.
+        let child_keys = container.children.clone();
+        let mut children = Vec::new();
+        for child_key in child_keys.iter().copied() {
+            children.push(self.extract_subtree(child_key));
+        }
+        // Which child a switcher shows is behaviour, so the subtree carries those stable
+        // identities into the receiving workspace instead of rebuilding them from child
+        // positions.
+        let mut focus_stack: Vec<NodeKey> = self
+            .seat
+            .order()
+            .iter()
+            .copied()
+            .filter(|key| child_keys.contains(key))
+            .collect();
+        for key in child_keys {
+            if !focus_stack.contains(&key) {
+                focus_stack.push(key);
             }
         }
+
+        // `sizing` is the split's own; a view's lives on its tile, here as in the arena.
+        let detached = DetachedNode {
+            key,
+            sizing: container.sizing,
+            layout: container.layout,
+            user_created: container.user_created,
+            prev_split_layout: container.prev_split_layout,
+            tile: container.into_tile(),
+            children,
+            focus_stack,
+        };
+        debug_assert!(detached
+            .tile
+            .as_ref()
+            .is_none_or(|tile| tile.node_key() == key));
+        detached
     }
 
     /// Insert a detached subtree into this tree, returning the new root key.
     pub(super) fn insert_subtree(&mut self, subtree: DetachedNode<W>) -> NodeKey {
-        match subtree {
-            DetachedNode::Leaf(tile) => {
-                self.insert_node(NodeData::Container(ContainerData::new_view(tile)))
-            }
-            DetachedNode::Container(container) => {
-                let container_key = container.key;
-                self.insert_node_with_key(
-                    container_key,
-                    NodeData::Container(ContainerData::new(container.layout)),
-                );
+        // A view keeps the key it left with, the same as a split: node identity surviving the
+        // crossing is what the whole detached representation exists for.
+        let container_key = subtree.key;
+        let node = match subtree.tile {
+            Some(tile) => ContainerData::new_view(tile),
+            None => ContainerData::new(subtree.layout),
+        };
+        self.insert_node_with_key(container_key, NodeData::Container(node));
 
-                let mut child_keys = Vec::new();
-                for child in container.children {
-                    let child_key = self.insert_subtree(child);
-                    self.set_parent(child_key, Some(container_key));
-                    child_keys.push(child_key);
-                }
-
-                if let Some(node) = self.get_real_container_mut(container_key) {
-                    node.children = child_keys;
-                    node.sizing = container.sizing;
-                    node.user_created = container.user_created;
-                    node.prev_split_layout = container.prev_split_layout;
-                }
-
-                // Back into the seat's order, keeping the sequence the subtree carried.
-                // Appended rather than promoted: arriving is not being focused, and whatever
-                // focuses next will raise its own chain.
-                let restored: Vec<NodeKey> = container
-                    .focus_stack
-                    .iter()
-                    .filter_map(|key| {
-                        self.get_container(container_key)?
-                            .children()
-                            .contains(key)
-                            .then_some(*key)
-                    })
-                    .collect();
-                // Appended, not placed: the receiving workspace has its own inactive order.
-                // Layout's seat history decides whether the arriving view should be focused;
-                // the order inside this subtree only decides which child a descent reaches.
-                self.seat.restore_at(usize::MAX, restored);
-
-                container_key
-            }
+        let mut child_keys = Vec::new();
+        for child in subtree.children {
+            let child_key = self.insert_subtree(child);
+            self.set_parent(child_key, Some(container_key));
+            child_keys.push(child_key);
         }
+
+        if let Some(node) = self.get_real_container_mut(container_key) {
+            node.children = child_keys;
+            node.sizing = subtree.sizing;
+            node.user_created = subtree.user_created;
+            node.prev_split_layout = subtree.prev_split_layout;
+        }
+
+        // Back into the seat's order, keeping the sequence the subtree carried.
+        // Appended rather than promoted: arriving is not being focused, and whatever
+        // focuses next will raise its own chain.
+        let restored: Vec<NodeKey> = subtree
+            .focus_stack
+            .iter()
+            .filter_map(|key| {
+                self.get_container(container_key)?
+                    .children()
+                    .contains(key)
+                    .then_some(*key)
+            })
+            .collect();
+        // Appended, not placed: the receiving workspace has its own inactive order.
+        // Layout's seat history decides whether the arriving view should be focused;
+        // the order inside this subtree only decides which child a descent reaches.
+        self.seat.restore_at(usize::MAX, restored);
+
+        container_key
     }
 
     /// Remove and return the root-level child at the given index as a detached subtree.

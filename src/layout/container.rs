@@ -271,18 +271,17 @@ impl<W: LayoutElement> NodeData<W> {
 }
 
 /// Detached subtree used to move container structures across trees.
-#[allow(clippy::large_enum_variant)]
+///
+/// One type, the same way the arena has one: a node carries a tile or children, never both.
+/// Splitting this in two was what made a window in transit unable to say anything a container
+/// can say, so the two halves had to be kept in step by hand at both ends of every move.
 #[derive(Debug)]
-pub enum DetachedNode<W: LayoutElement> {
-    Container(DetachedContainer<W>),
-    Leaf(Tile<W>),
-}
-
-#[derive(Debug)]
-pub struct DetachedContainer<W: LayoutElement> {
+pub struct DetachedNode<W: LayoutElement> {
     key: NodeKey,
     sizing: NodeSizing,
     layout: Layout,
+    /// The view this node *is*, when it is one. Mirrors `ContainerData::tile`.
+    tile: Option<Tile<W>>,
     children: Vec<DetachedNode<W>>,
     focus_stack: Vec<NodeKey>,
     user_created: bool,
@@ -744,17 +743,39 @@ impl<W: LayoutElement> DerefMut for ContainerData<W> {
 // ============================================================================
 
 impl<W: LayoutElement> DetachedNode<W> {
-    fn key(&self) -> NodeKey {
-        match self {
-            DetachedNode::Container(container) => container.key,
-            DetachedNode::Leaf(tile) => tile.node_key(),
+    /// The node a window is, keeping the key it already had.
+    pub(super) fn new_view(tile: Tile<W>) -> Self {
+        Self {
+            key: tile.node_key(),
+            sizing: NodeSizing::default(),
+            layout: Layout::SplitH,
+            tile: Some(tile),
+            children: Vec::new(),
+            focus_stack: Vec::new(),
+            user_created: false,
+            prev_split_layout: None,
         }
     }
 
+    pub(super) fn new_container(layout: Layout, children: Vec<DetachedNode<W>>) -> Self {
+        let focus_stack = children.iter().map(|child| child.key).collect();
+        Self {
+            key: NodeKey::next(),
+            sizing: NodeSizing::default(),
+            layout,
+            tile: None,
+            children,
+            focus_stack,
+            user_created: false,
+            prev_split_layout: None,
+        }
+    }
+
+    /// Where this node's fractions live: on the tile when it is a view, as in the arena.
     pub(super) fn unset_root_fractions(&mut self) {
-        match self {
-            DetachedNode::Leaf(tile) => tile.unset_node_fractions(),
-            DetachedNode::Container(container) => container.sizing.unset_fractions(),
+        match &mut self.tile {
+            Some(tile) => tile.unset_node_fractions(),
+            None => self.sizing.unset_fractions(),
         }
     }
 
@@ -765,10 +786,10 @@ impl<W: LayoutElement> DetachedNode<W> {
     }
 
     fn collect_tiles<'a>(&'a self, tiles: &mut Vec<&'a Tile<W>>) {
-        match self {
-            DetachedNode::Leaf(tile) => tiles.push(tile),
-            DetachedNode::Container(container) => {
-                for child in &container.children {
+        match &self.tile {
+            Some(tile) => tiles.push(tile),
+            None => {
+                for child in &self.children {
                     child.collect_tiles(tiles);
                 }
             }
@@ -776,9 +797,9 @@ impl<W: LayoutElement> DetachedNode<W> {
     }
 
     pub(super) fn contains_window(&self, window_id: &W::Id) -> bool {
-        match self {
-            DetachedNode::Leaf(tile) => tile.window().id() == window_id,
-            DetachedNode::Container(container) => container
+        match &self.tile {
+            Some(tile) => tile.window().id() == window_id,
+            None => self
                 .children
                 .iter()
                 .any(|child| child.contains_window(window_id)),
@@ -792,28 +813,13 @@ impl<W: LayoutElement> DetachedNode<W> {
     }
 
     fn collect_tiles_owned(self, tiles: &mut Vec<Tile<W>>) {
-        match self {
-            DetachedNode::Leaf(tile) => tiles.push(tile),
-            DetachedNode::Container(container) => {
-                for child in container.children {
+        match self.tile {
+            Some(tile) => tiles.push(tile),
+            None => {
+                for child in self.children {
                     child.collect_tiles_owned(tiles);
                 }
             }
-        }
-    }
-}
-
-impl<W: LayoutElement> DetachedContainer<W> {
-    pub(super) fn new(layout: Layout, children: Vec<DetachedNode<W>>) -> Self {
-        let focus_stack = children.iter().map(DetachedNode::key).collect();
-        Self {
-            key: NodeKey::next(),
-            sizing: NodeSizing::default(),
-            layout,
-            children,
-            focus_stack,
-            user_created: false,
-            prev_split_layout: None,
         }
     }
 }

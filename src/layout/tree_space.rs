@@ -27,8 +27,8 @@ use tiri_ipc::{ColumnDisplay, LayoutTreeNode, LayoutTreeRect, SizeChange};
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::container::{
-    ContainerMetrics, ContainerTree, DetachedContainer, DetachedNode, Direction, Layout,
-    LeafLayoutInfo, NodeKey, ResizeDelta, ResizeReach, ResizeSpace, ResizeTarget,
+    ContainerMetrics, ContainerTree, DetachedNode, Direction, Layout, LeafLayoutInfo, NodeKey,
+    ResizeDelta, ResizeReach, ResizeSpace, ResizeTarget,
 };
 use super::focus_ring::{
     render_container_selection, ContainerSelectionStyle, FocusRingEdges, FocusRingIndicatorEdge,
@@ -3791,30 +3791,18 @@ impl<W: LayoutElement> RootTilingSubtree<W> {
 
     pub fn new(tile: Tile<W>) -> Self {
         Self {
-            subtree: DetachedNode::Leaf(tile),
+            subtree: DetachedNode::new_view(tile),
         }
     }
 
     pub fn from_tiles(tiles: Vec<Tile<W>>) -> Self {
-        if tiles.is_empty() {
-            return Self {
-                subtree: DetachedNode::Container(DetachedContainer::new(
-                    Layout::SplitV,
-                    Vec::new(),
-                )),
-            };
-        }
-
         if tiles.len() == 1 {
             return Self::new(tiles.into_iter().next().unwrap());
         }
 
-        let children = tiles
-            .into_iter()
-            .map(DetachedNode::Leaf)
-            .collect::<Vec<_>>();
+        let children = tiles.into_iter().map(DetachedNode::new_view).collect();
         Self {
-            subtree: DetachedNode::Container(DetachedContainer::new(Layout::SplitV, children)),
+            subtree: DetachedNode::new_container(Layout::SplitV, children),
         }
     }
 
