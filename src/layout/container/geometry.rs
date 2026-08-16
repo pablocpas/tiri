@@ -272,7 +272,6 @@ impl<W: LayoutElement> ContainerTree<W> {
             //
             // sway/tree/arrange.c:15-55,100-140
             self.pending_relayout = true;
-            self.readdress_leaf_layouts();
             self.debug_layout_state("layout_atomic_pending");
         } else {
             self.pending_relayout = false;
@@ -364,8 +363,16 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
         self.pending_transaction = None;
 
+        // A pass does not necessarily reach every branch. One waiting on its own configures is
+        // skipped on purpose, and a fullscreen makes `arrange_each_branch` return that branch
+        // alone — sway's `arrange_workspace` never descends the rest either. Those branches
+        // keep the geometry they last had, which is what is still on screen, but a path is an
+        // address rather than geometry: the tree may have moved under it while it was not
+        // being arranged. Re-point every cached leaf at where it is now; for the branches this
+        // pass did arrange, the addresses it just wrote are these same ones.
+        self.readdress_leaf_layouts();
+
         if requested {
-            self.readdress_leaf_layouts();
             self.debug_layout_state("layout_atomic_requested");
         } else {
             self.debug_layout_state("layout_atomic_apply");

@@ -3717,3 +3717,30 @@ fn a_floating_window_moved_between_workspaces_animates_like_a_tiled_one() {
         );
     }
 }
+
+/// A fullscreen stops the arrange at its own branch, and the tiled tree still moves.
+///
+/// `arrange_workspace` gives the fullscreen container the output's box and returns without
+/// descending anything else, so a tiled leaf that changed position while the fullscreen was
+/// up is never arranged and keeps the address it had. Floating the fullscreen window out is
+/// the shortest way there: it leaves the tiled branch one child shorter, and the leaf that
+/// slid into the gap is not looked at.
+///
+/// sway/tree/arrange.c:264-322
+#[test]
+fn a_fullscreen_branch_does_not_freeze_the_addresses_of_the_others() {
+    check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::FullscreenWindow(3),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::SetWindowFloating {
+            id: None,
+            floating: true,
+        },
+    ]);
+}
