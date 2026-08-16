@@ -77,15 +77,15 @@ elif hash dinitctl >/dev/null 2>&1; then
     fi
 
     # Create the directory for the logfile, if doesn't exist
-    mkdir --parents $HOME/.local/share/tiri
+    mkdir --parents "$HOME/.local/share/tiri"
     # Start tiri
     dinitctl --quiet --user start tiri.target 2>&1
 
     # Wait for termination
-    dinit-monitor --user --initial -c $'sh -c " 
+    dinit-monitor --user --initial -c 'sh -c "
         if [ "%s" = "stopped" ] || [ "%s" = "failed" ]; then
             ppid=$(ps -o ppid= -p $$)
-            kill $ppid
+            kill "$ppid"
         fi"' tiri >/dev/null 2>&1
 
     # Unset environment that we've set.

@@ -32,6 +32,7 @@ use crate::animation::Animation;
 use crate::layout::tab_bar::{
     render_tab_bar, tab_bar_state_from_info, TabBarCacheEntry, TabBarRenderOutput,
 };
+use crate::layout::RenderLayer;
 use crate::niri_render_elements;
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
@@ -318,6 +319,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         space: &mut TreeSpace<W>,
         is_active: bool,
         view_rect: Rectangle<f64, Logical>,
+        layer: RenderLayer,
     ) {
         let _span = tracy_client::span!("FloatingSpace::update_render_elements");
         let active = self.active_window_id(space);
@@ -356,6 +358,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
             for info in layouts.iter().copied() {
                 let is_focus_head = float_has_sublayout && space.tree().is_focus_head(info.key);
                 if let Some(tile) = space.tree_mut().get_tile_mut(info.key) {
+                    // Skip tiles belonging to a different render layer.
+                    if layer.is_normal() == tile.is_moving_between_workspaces() {
+                        continue;
+                    }
+
                     let is_fullscreen_tile = fullscreen_id
                         .as_ref()
                         .is_some_and(|id| id == tile.window().id());
@@ -2664,6 +2671,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         xray_pos: XrayPos,
         view_rect: Rectangle<f64, Logical>,
         focus_ring: bool,
+        layer: RenderLayer,
     ) -> Vec<FloatingSpaceRenderElement<R>> {
         let tree = space.tree();
         let tile_count = self.tiles(space).count();
@@ -2674,7 +2682,12 @@ impl<W: LayoutElement> FloatingSpace<W> {
         // Draw the closing windows on top of the other windows.
         //
         // FIXME: I guess this should rather preserve the stacking order when the window is closed.
-        for closing in self.closing_windows.iter().rev() {
+        for closing in self
+            .closing_windows
+            .iter()
+            .rev()
+            .filter(|_| layer.is_normal())
+        {
             let elem = closing.render(ctx.as_gles(), view_rect, scale);
             elements.push(elem.into());
         }
@@ -2815,6 +2828,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
             }
         } else {
             for (tile, tile_pos) in self.tiles_with_render_positions(space) {
+                // Skip tiles belonging to a different render layer.
+                if layer.is_normal() == tile.is_moving_between_workspaces() {
+                    continue;
+                }
                 if fullscreen_key.is_some_and(|scope| !tree.is_descendant(tile.node_key(), scope)) {
                     continue;
                 }
@@ -2839,6 +2856,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         elements
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn render<R: NiriRenderer>(
         &self,
         space: &TreeSpace<W>,
@@ -2846,9 +2864,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
         xray_pos: XrayPos,
         view_rect: Rectangle<f64, Logical>,
         focus_ring: bool,
+        layer: RenderLayer,
         push: &mut dyn FnMut(FloatingSpaceRenderElement<R>),
     ) {
-        for elem in self.render_elements(space, ctx, xray_pos, view_rect, focus_ring) {
+        for elem in self.render_elements(space, ctx, xray_pos, view_rect, focus_ring, layer) {
             push(elem);
         }
     }

@@ -29,6 +29,7 @@ use super::{
     LayoutElement, Options, RemovedTile, ResizeHit, ResizeRequest, SizeFrac,
 };
 use crate::animation::Clock;
+use crate::layout::RenderLayer;
 use crate::niri_render_elements;
 use crate::render_helpers::offscreen::OffscreenRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
@@ -646,22 +647,26 @@ impl<W: LayoutElement> Workspace<W> {
         self.space.are_transitions_ongoing() || self.floating.are_transitions_ongoing(&self.space)
     }
 
-    pub fn update_render_elements(&mut self, is_active: bool) {
-        self.space
-            .set_active(is_active, self.floating_is_active.get());
-        self.space.update_render_elements();
+    pub fn update_render_elements(&mut self, is_active: bool, layer: RenderLayer) {
+        if layer.is_normal() {
+            self.space
+                .set_active(is_active, self.floating_is_active.get());
+            self.space.update_render_elements();
+        }
 
         let view_rect = Rectangle::from_size(self.view_size);
         self.floating
-            .update_render_elements(&mut self.space, is_active, view_rect);
+            .update_render_elements(&mut self.space, is_active, view_rect, layer);
 
-        self.shadow.update_render_elements(
-            self.view_size,
-            true,
-            CornerRadius::default(),
-            self.scale.fractional_scale(),
-            1.,
-        );
+        if layer.is_normal() {
+            self.shadow.update_render_elements(
+                self.view_size,
+                true,
+                CornerRadius::default(),
+                self.scale.fractional_scale(),
+                1.,
+            );
+        }
     }
 
     pub fn update_config(&mut self, base_options: Rc<Options>) {
@@ -1020,6 +1025,7 @@ impl<W: LayoutElement> Workspace<W> {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn add_tile(
         &mut self,
         mut tile: Tile<W>,
@@ -1027,6 +1033,9 @@ impl<W: LayoutElement> Workspace<W> {
         activate: ActivateWindow,
         width: ColumnWidth,
         is_floating: bool,
+        // Only the floating side animates a move between workspaces so far; a tile that lands
+        // in the tiling arrives where it arrives.
+        _anim: Option<tiri_config::Animation>,
     ) {
         self.enter_output_for_window(tile.window());
         let floating_active = self.floating_is_active.get();
@@ -2903,9 +2912,16 @@ impl<W: LayoutElement> Workspace<W> {
         ctx: RenderCtx<R>,
         xray_pos: XrayPos,
         focus_ring: bool,
+        layer: RenderLayer,
         push: &mut dyn FnMut(WorkspaceRenderElement<R>),
     ) {
         if self.floating.fullscreen_key(&self.space).is_some() {
+            return;
+        }
+        // The tiled side has no per-tile movement animation yet, so it has nothing to draw on
+        // the moving layer — and drawing it there as well as on the normal one would render the
+        // whole tiling twice per frame.
+        if !layer.is_normal() {
             return;
         }
         let tiling_focus_ring = focus_ring && !self.floating_is_active();
@@ -2939,9 +2955,10 @@ impl<W: LayoutElement> Workspace<W> {
         ctx: RenderCtx<R>,
         xray_pos: XrayPos,
         focus_ring: bool,
+        layer: RenderLayer,
         push: &mut dyn FnMut(WorkspaceRenderElement<R>),
     ) {
-        if !self.is_floating_visible() {
+        if !self.is_floating_visible() && layer.is_normal() {
             return;
         }
 
@@ -2953,6 +2970,7 @@ impl<W: LayoutElement> Workspace<W> {
             xray_pos,
             view_rect,
             floating_focus_ring,
+            layer,
             &mut |elem| push(elem.into()),
         );
     }

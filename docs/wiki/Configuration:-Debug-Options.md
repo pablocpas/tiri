@@ -283,6 +283,8 @@ Most of the time, these fresh tokens will have invalid serials, because the app 
 By default, tiri ignores xdg-activation tokens with invalid serials, to prevent windows from randomly stealing focus.
 This debug flag makes tiri honor such tokens, making the aforementioned widely-used apps get focus when clicking on their tray icon or notification.
 
+Use the [`focus-on-xdg-activate` window rule](./Configuration:-Window-Rules.md#focus-on-xdg-activate) to control whether individual windows receive focus for accepted xdg-activation requests.
+
 Amusingly, clicking on a notification sends the app a perfectly valid activation token from the notification daemon, but these apps seem to simply ignore it.
 Maybe in the future these apps/toolkits (Electron, Qt) are fixed, making this debug flag unnecessary.
 
@@ -321,6 +323,21 @@ It will cause tiri to drop the Activated state for all unfocused windows.
 ```kdl
 debug {
     deactivate-unfocused-windows
+}
+```
+
+### `disable-10bit-output`
+
+<sup>Since: next release</sup>
+
+By default, tiri will try to output a 10-bit color format to the monitor (before falling back to 8-bit).
+However, this can currently cause problems on some Intel + NVIDIA mixed-GPU setups: the screen doesn't light up, or displays only white, etc.
+
+Until this is fixed in Smithay, you can disable 10-bit color formats by setting this debug flag.
+
+```kdl
+debug {
+    disable-10bit-output
 }
 ```
 

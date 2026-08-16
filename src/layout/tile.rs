@@ -278,6 +278,10 @@ struct ResizeAnimation {
 struct MoveAnimation {
     anim: Animation,
     from: f64,
+    /// Whether this animation is for moving the tile between workspaces.
+    ///
+    /// Controls whether the tile is rendered uncropped and above others.
+    is_between_workspaces: bool,
 }
 
 #[derive(Debug)]
@@ -668,6 +672,16 @@ impl<W: LayoutElement> Tile<W> {
                 .is_some_and(|alpha| !alpha.anim.is_done())
     }
 
+    pub fn is_moving_between_workspaces(&self) -> bool {
+        self.move_y_animation
+            .as_ref()
+            .is_some_and(|anim| anim.is_between_workspaces)
+            || self
+                .move_x_animation
+                .as_ref()
+                .is_some_and(|anim| anim.is_between_workspaces)
+    }
+
     pub fn update_render_elements(
         &mut self,
         is_active_workspace: bool,
@@ -930,8 +944,16 @@ impl<W: LayoutElement> Tile<W> {
     }
 
     pub fn animate_move_from(&mut self, from: Point<f64, Logical>) {
-        self.animate_move_x_from(from.x);
-        self.animate_move_y_from(from.y);
+        self.animate_move_from_with_config(from, self.options.animations.window_movement.0);
+    }
+
+    pub fn animate_move_from_with_config(
+        &mut self,
+        from: Point<f64, Logical>,
+        config: tiri_config::Animation,
+    ) {
+        self.animate_move_x_from_with_config(from.x, config);
+        self.animate_move_y_from_with_config(from.y, config);
     }
 
     pub fn animate_move_x_from(&mut self, from: f64) {
@@ -942,7 +964,11 @@ impl<W: LayoutElement> Tile<W> {
         let current_offset = self.render_offset().x;
 
         // Preserve the previous config if ongoing.
-        let anim = self.move_x_animation.take().map(|move_| move_.anim);
+        let move_ = self.move_x_animation.take();
+        let current_between = move_
+            .as_ref()
+            .is_some_and(|move_| move_.is_between_workspaces);
+        let anim = move_.map(|move_| move_.anim);
         let anim = anim
             .map(|anim| anim.restarted(1., 0., 0.))
             .unwrap_or_else(|| Animation::new(self.clock.clone(), 1., 0., 0., config));
@@ -950,6 +976,7 @@ impl<W: LayoutElement> Tile<W> {
         self.move_x_animation = Some(MoveAnimation {
             anim,
             from: from + current_offset,
+            is_between_workspaces: current_between,
         });
     }
 
@@ -961,7 +988,11 @@ impl<W: LayoutElement> Tile<W> {
         let current_offset = self.render_offset().y;
 
         // Preserve the previous config if ongoing.
-        let anim = self.move_y_animation.take().map(|move_| move_.anim);
+        let move_ = self.move_y_animation.take();
+        let current_between = move_
+            .as_ref()
+            .is_some_and(|move_| move_.is_between_workspaces);
+        let anim = move_.map(|move_| move_.anim);
         let anim = anim
             .map(|anim| anim.restarted(1., 0., 0.))
             .unwrap_or_else(|| Animation::new(self.clock.clone(), 1., 0., 0., config));
@@ -969,6 +1000,7 @@ impl<W: LayoutElement> Tile<W> {
         self.move_y_animation = Some(MoveAnimation {
             anim,
             from: from + current_offset,
+            is_between_workspaces: current_between,
         });
     }
 
@@ -986,6 +1018,12 @@ impl<W: LayoutElement> Tile<W> {
     pub fn stop_move_animations(&mut self) {
         self.move_x_animation = None;
         self.move_y_animation = None;
+    }
+
+    pub fn set_anim_y_between_workspaces(&mut self) {
+        if let Some(anim) = &mut self.move_y_animation {
+            anim.is_between_workspaces = true;
+        }
     }
 
     pub fn animate_alpha(&mut self, from: f64, to: f64, config: tiri_config::Animation) {
