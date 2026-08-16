@@ -2369,7 +2369,7 @@ impl<W: LayoutElement> Layout<W> {
         monitors.iter()
     }
 
-    pub fn monitors_mut(&mut self) -> impl Iterator<Item = &mut Monitor<W>> + '_ {
+    fn monitors_mut(&mut self) -> impl Iterator<Item = &mut Monitor<W>> + '_ {
         let monitors = if let MonitorSet::Normal { monitors, .. } = &mut self.monitor_set {
             &mut monitors[..]
         } else {
@@ -2377,6 +2377,28 @@ impl<W: LayoutElement> Layout<W> {
         };
 
         monitors.iter_mut()
+    }
+
+    /// Hand one output's layout config to its monitor. Answers whether anything changed.
+    ///
+    /// This is here rather than on the monitor the caller already has because
+    /// `empty-workspace-above-first` going off drops a workspace
+    /// ([`Monitor::update_config`]), and the seat's history is kept on `Layout`. A workspace
+    /// that dies without this seeing it stays in the history as an id nothing can resolve —
+    /// the same reason [`Self::update_options`], which reaches the very same removal, prunes.
+    pub fn update_output_layout_config(
+        &mut self,
+        output: &Output,
+        layout_config: Option<tiri_config::LayoutPart>,
+    ) -> bool {
+        let Some(mon) = self.monitors_mut().find(|mon| mon.output() == output) else {
+            return false;
+        };
+        if !mon.update_layout_config(layout_config) {
+            return false;
+        }
+        self.seat_focus_after_mutation();
+        true
     }
 
     pub fn monitor_for_output(&self, output: &Output) -> Option<&Monitor<W>> {

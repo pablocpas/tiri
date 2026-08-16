@@ -2126,24 +2126,21 @@ impl State {
                 }
             }
 
-            for mon in self.niri.layout.monitors_mut() {
-                if mon.output() != output {
-                    continue;
+            let mut layout_config = config.and_then(|c| c.layout.clone());
+            // Support the deprecated non-layout background-color key.
+            if let Some(layout) = &mut layout_config {
+                if layout.background_color.is_none() {
+                    layout.background_color = config.and_then(|c| c.background_color);
                 }
+            }
 
-                let mut layout_config = config.and_then(|c| c.layout.clone());
-                // Support the deprecated non-layout background-color key.
-                if let Some(layout) = &mut layout_config {
-                    if layout.background_color.is_none() {
-                        layout.background_color = config.and_then(|c| c.background_color);
-                    }
-                }
-
-                if mon.update_layout_config(layout_config) {
-                    // Also redraw these; if anything, the background color could've changed.
-                    recolored_outputs.push(output.clone());
-                }
-                break;
+            if self
+                .niri
+                .layout
+                .update_output_layout_config(output, layout_config)
+            {
+                // Also redraw these; if anything, the background color could've changed.
+                recolored_outputs.push(output.clone());
             }
         }
 

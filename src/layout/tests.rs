@@ -993,11 +993,15 @@ impl Op {
             }
             Op::UpdateOutputLayoutConfig { id, layout_config } => {
                 let name = format!("output{id}");
-                let Some(mon) = layout.monitors_mut().find(|m| m.output_name() == &name) else {
+                let Some(output) = layout
+                    .monitors()
+                    .find(|m| m.output_name() == &name)
+                    .map(|m| m.output().clone())
+                else {
                     return;
                 };
 
-                mon.update_layout_config(layout_config.map(|x| *x));
+                layout.update_output_layout_config(&output, layout_config.map(|x| *x));
             }
             Op::AddNamedWorkspace {
                 ws_name,
