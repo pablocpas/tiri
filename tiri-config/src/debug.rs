@@ -75,6 +75,7 @@ pub struct DebugPart {
     pub disable_frame_scheduling: Option<Flag>,
     #[knuffel(child, unwrap(argument))]
     pub frame_schedule_margin_ms: Option<u16>,
+    #[knuffel(child)]
     pub disable_10bit_output: Option<Flag>,
 }
 
