@@ -15,7 +15,7 @@ use smithay::backend::drm::DrmNode;
 use smithay::backend::input::{InputEvent, TabletToolDescriptor};
 use smithay::desktop::{PopupKind, PopupManager};
 use smithay::input::dnd::{self, DnDGrab, DndGrabHandler, DndTarget};
-use smithay::input::pointer::{CursorImageStatus, Focus, PointerHandle};
+use smithay::input::pointer::{self, CursorImageStatus, Focus, PointerHandle};
 use smithay::input::tablet::TabletSeatHandler;
 use smithay::input::{keyboard, Seat, SeatHandler, SeatState};
 use smithay::output::Output;
@@ -65,6 +65,7 @@ use smithay::wayland::xdg_activation::{
 };
 
 pub use crate::handlers::xdg_shell::KdeDecorationsModeState;
+use crate::input::click_grab::ClickGrab;
 use crate::layout::workspace::WorkspaceId;
 use crate::layout::ActivateWindow;
 use crate::protocols::ext_workspace::{self, ExtWorkspaceHandler, ExtWorkspaceManagerState};
@@ -121,6 +122,13 @@ impl SeatHandler for State {
         for mut keyboard in keyboards {
             keyboard.led_update(led_state.into());
         }
+    }
+
+    fn click_grab(
+        &mut self,
+        start_data: pointer::GrabStartData<Self>,
+    ) -> impl pointer::PointerGrab<Self> {
+        ClickGrab::new(start_data)
     }
 }
 

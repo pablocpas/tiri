@@ -22,7 +22,8 @@ use smithay::input::pointer::{
     GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent,
     GrabStartData as PointerGrabStartData, MotionEvent, PointerGrab, RelativeMotionEvent,
 };
-use smithay::input::tablet::{TabletDescriptor, TabletSeatTrait};
+use smithay::input::tablet::tool::GrabStartData as TabletToolGrabStartData;
+use smithay::input::tablet::{TabletDescriptor, TabletSeatHandler, TabletSeatTrait};
 use smithay::input::touch::{
     DownEvent, GrabStartData as TouchGrabStartData, MotionEvent as TouchMotionEvent, UpEvent,
 };
@@ -61,6 +62,7 @@ use crate::utils::{center, get_monotonic_time, CastSessionId, ResizeEdge};
 use tiri_ipc::SizeChange;
 
 pub mod backend_ext;
+pub mod click_grab;
 pub mod move_grab;
 pub mod pick_color_grab;
 pub mod pick_window_grab;
@@ -70,7 +72,6 @@ pub mod scroll_tracker;
 pub mod spatial_movement_grab;
 pub mod swipe_tracker;
 pub mod touch_overview_grab;
-pub mod touch_resize_grab;
 
 use backend_ext::{NiriInputBackend as InputBackend, NiriInputDevice as _};
 
@@ -369,30 +370,45 @@ fn action_refresh_impact(action: &Action) -> ActionRefreshImpact {
     }
 }
 
-pub enum PointerOrTouchStartData<D: SeatHandler> {
+pub enum AnyStartData<D: SeatHandler + TabletSeatHandler> {
     Pointer(PointerGrabStartData<D>),
     Touch(TouchGrabStartData<D>),
+    TabletTool(TabletToolGrabStartData<D>),
 }
 
-impl<D: SeatHandler> PointerOrTouchStartData<D> {
+impl<D: SeatHandler + TabletSeatHandler> AnyStartData<D> {
     pub fn location(&self) -> Point<f64, Logical> {
         match self {
-            PointerOrTouchStartData::Pointer(x) => x.location,
-            PointerOrTouchStartData::Touch(x) => x.location,
+            AnyStartData::Pointer(x) => x.location,
+            AnyStartData::Touch(x) => x.location,
+            AnyStartData::TabletTool(x) => x.location,
         }
     }
 
     pub fn unwrap_pointer(&self) -> &PointerGrabStartData<D> {
         match self {
-            PointerOrTouchStartData::Pointer(x) => x,
-            PointerOrTouchStartData::Touch(_) => panic!("start_data is not Pointer"),
+            AnyStartData::Pointer(x) => x,
+            AnyStartData::Touch(_) | AnyStartData::TabletTool(_) => {
+                panic!("start_data is not Pointer")
+            }
         }
     }
 
     pub fn unwrap_touch(&self) -> &TouchGrabStartData<D> {
         match self {
-            PointerOrTouchStartData::Pointer(_) => panic!("start_data is not Touch"),
-            PointerOrTouchStartData::Touch(x) => x,
+            AnyStartData::Pointer(_) | AnyStartData::TabletTool(_) => {
+                panic!("start_data is not Touch")
+            }
+            AnyStartData::Touch(x) => x,
+        }
+    }
+
+    pub fn unwrap_tablet_tool(&self) -> &TabletToolGrabStartData<D> {
+        match self {
+            AnyStartData::Pointer(_) | AnyStartData::Touch(_) => {
+                panic!("start_data is not TabletTool")
+            }
+            AnyStartData::TabletTool(x) => x,
         }
     }
 
@@ -402,6 +418,10 @@ impl<D: SeatHandler> PointerOrTouchStartData<D> {
 
     pub fn is_touch(&self) -> bool {
         matches!(self, Self::Touch(_))
+    }
+
+    pub fn is_tablet_tool(&self) -> bool {
+        matches!(self, Self::TabletTool(_))
     }
 }
 
@@ -3580,7 +3600,10 @@ impl State {
                                 button: button_code,
                                 location,
                             };
-                            let grab = ResizeGrab::new(start_data, hit.window.clone());
+                            let grab = ResizeGrab::new(
+                                AnyStartData::Pointer(start_data),
+                                hit.window.clone(),
+                            );
                             pointer.set_grab(self, grab, serial, Focus::Clear);
                             self.niri.cursor_manager.set_override_cursor(
                                 CursorOverride::PointerGrab,
@@ -3662,7 +3685,10 @@ impl State {
                                 button: button_code,
                                 location,
                             };
-                            let grab = ResizeGrab::new(start_data, hit.window.clone());
+                            let grab = ResizeGrab::new(
+                                AnyStartData::Pointer(start_data),
+                                hit.window.clone(),
+                            );
                             pointer.set_grab(self, grab, serial, Focus::Clear);
                             self.niri.cursor_manager.set_override_cursor(
                                 CursorOverride::PointerGrab,
@@ -3692,7 +3718,7 @@ impl State {
                             button: button_code,
                             location,
                         };
-                        let start_data = PointerOrTouchStartData::Pointer(start_data);
+                        let start_data = AnyStartData::Pointer(start_data);
                         let icon = CursorIcon::Grabbing;
                         if let Some(grab) =
                             MoveGrab::new(self, start_data, window.clone(), false, Some(icon))
@@ -4366,24 +4392,20 @@ impl State {
         };
         let tip_state = event.tip_state();
 
-        let is_overview_open = self.niri.layout.is_overview_open();
-
         let serial = SERIAL_COUNTER.next_serial();
         let time = event.time_msec();
 
         match tip_state {
             TabletToolTipState::Down => {
-                tool.down(self, &tablet::tool::DownEvent { serial, time });
-
                 if let Some(pos) = self.niri.tablet_cursor_location {
                     let under = self.niri.contents_under(pos);
 
-                    if self.niri.screenshot_ui.is_open() {
-                        let mod_key = self.backend.mod_key(&self.niri.config.borrow());
-                        let mods = self.niri.seat.get_keyboard().unwrap().modifier_state();
-                        let modifiers = modifiers_from_state(mods);
-                        let mod_down = modifiers.contains(mod_key.to_modifiers());
+                    let mod_key = self.backend.mod_key(&self.niri.config.borrow());
+                    let mods = self.niri.seat.get_keyboard().unwrap().modifier_state();
+                    let modifiers = modifiers_from_state(mods);
+                    let mod_down = modifiers.contains(mod_key.to_modifiers());
 
+                    if self.niri.screenshot_ui.is_open() {
                         // If we'll be moving the existing selection, use the selection output.
                         let output = if mod_down {
                             self.niri.screenshot_ui.selection_output()
@@ -4419,45 +4441,84 @@ impl State {
                                 self.niri.cancel_mru();
                             }
                         }
-                    } else if let Some((window, _)) = under.window {
-                        if let Some(output) = is_overview_open.then_some(under.output).flatten() {
-                            let mut workspaces = self.niri.layout.workspaces();
-                            if let Some(ws_idx) = workspaces.find_map(|(_, ws_idx, ws)| {
-                                ws.windows().any(|w| w.window == window).then_some(ws_idx)
-                            }) {
-                                drop(workspaces);
-                                self.niri.layout.focus_output(&output);
-                                self.niri.layout.toggle_overview_to_workspace(ws_idx);
+                    } else if !tool.is_grabbed() {
+                        if self.niri.layout.is_overview_open()
+                            && !mod_down
+                            && under.layer.is_none()
+                            && under.output.is_some()
+                        {
+                            let (output, pos_within_output) = self.niri.output_under(pos).unwrap();
+                            let output = output.clone();
+
+                            let mut matched_narrow = true;
+                            let mut ws = self.niri.workspace_under(false, pos);
+                            if ws.is_none() {
+                                matched_narrow = false;
+                                ws = self.niri.workspace_under(true, pos);
                             }
+                            let ws_id = ws.map(|(_, ws)| ws.id());
+
+                            let mapped = self.niri.window_under(pos);
+                            let window = mapped.map(|mapped| mapped.window.clone());
+
+                            let start_data = TabletToolGrabStartData {
+                                focus: None,
+                                trigger: tablet::tool::GrabTrigger::Tip,
+                                location: pos,
+                            };
+                            let start_data = AnyStartData::TabletTool(start_data);
+                            let start_timestamp = Duration::from_micros(event.time());
+                            let grab = TouchOverviewGrab::new(
+                                start_data,
+                                start_timestamp,
+                                output,
+                                pos_within_output,
+                                ws_id,
+                                matched_narrow,
+                                window,
+                            );
+                            tool.set_grab(self, grab, time, serial, Focus::Clear);
+                        } else if let Some((window, _)) = under.window {
+                            self.niri.layout.activate_window(&window);
+
+                            // Check if we need to start a tablet tool move grab.
+                            if mod_down {
+                                let start_data = TabletToolGrabStartData {
+                                    focus: None,
+                                    trigger: tablet::tool::GrabTrigger::Tip,
+                                    location: pos,
+                                };
+                                let start_data = AnyStartData::TabletTool(start_data);
+                                let icon = CursorIcon::Grabbing;
+                                if let Some(grab) = MoveGrab::new(
+                                    self,
+                                    start_data,
+                                    window.clone(),
+                                    true,
+                                    Some(icon),
+                                ) {
+                                    tool.set_grab(self, grab, time, serial, Focus::Clear);
+                                }
+                            }
+
+                            self.niri.invalidate_layout();
+
+                            let output = self
+                                .niri
+                                .output_under(pos)
+                                .map(|(output, _)| output.clone());
+                            self.niri.queue_redraw_output_pair(output, None);
+                        } else if let Some(output) = under.output {
+                            self.niri.layout.focus_output(&output);
+                            self.niri.invalidate_layout();
+
+                            self.niri.queue_redraw(&output);
                         }
-
-                        self.niri.layout.activate_window(&window);
-                        self.niri.invalidate_layout();
-
-                        let output = self
-                            .niri
-                            .output_under(pos)
-                            .map(|(output, _)| output.clone());
-                        self.niri.queue_redraw_output_pair(output, None);
-                    } else if let Some((output, ws)) = is_overview_open
-                        .then(|| self.niri.workspace_under(false, pos))
-                        .flatten()
-                    {
-                        let ws_idx = self.niri.layout.find_workspace_by_id(ws.id()).unwrap().0;
-
-                        self.niri.layout.focus_output(&output);
-                        self.niri.layout.toggle_overview_to_workspace(ws_idx);
-                        self.niri.invalidate_layout();
-
-                        self.niri.queue_redraw(&output);
-                    } else if let Some(output) = under.output {
-                        self.niri.layout.focus_output(&output);
-                        self.niri.invalidate_layout();
-
-                        self.niri.queue_redraw(&output);
+                        self.niri.focus_layer_surface_if_on_demand(under.layer);
                     }
-                    self.niri.focus_layer_surface_if_on_demand(under.layer);
                 }
+
+                tool.down(self, &tablet::tool::DownEvent { serial, time });
             }
             TabletToolTipState::Up => {
                 if let Some(capture) = self.niri.screenshot_ui.pointer_up(None) {
@@ -5013,6 +5074,7 @@ impl State {
                     slot,
                     location: pos,
                 };
+                let start_data = AnyStartData::Touch(start_data);
                 let start_timestamp = Duration::from_micros(evt.time());
                 let grab = TouchOverviewGrab::new(
                     start_data,
@@ -5035,7 +5097,7 @@ impl State {
                         slot,
                         location: pos,
                     };
-                    let start_data = PointerOrTouchStartData::Touch(start_data);
+                    let start_data = AnyStartData::Touch(start_data);
                     if let Some(grab) = MoveGrab::new(self, start_data, window.clone(), true, None)
                     {
                         handle.set_grab(self, grab, serial);

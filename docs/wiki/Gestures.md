@@ -47,6 +47,32 @@ In current tiri's i3/sway-style tiling layout, the reliable touchpad gesture to 
 
 Open and close the overview with a four-finger vertical swipe.
 
+### Touchscreen
+
+#### Interactive Move
+
+<sup>Since: 0.1.10</sup>
+
+You can move windows by holding <kbd>Mod</kbd> and dragging the window with your finger.
+
+Dragging a tiled window horizontally will scroll the view instead.
+
+You can customize the look of the window insertion preview in the [`insert-hint` layout config](./Configuration:-Layout.md#insert-hint).
+
+<sup>Since: 25.11</sup> Tap with a second finger while moving to toggle between floating and tiling layout to put the window into.
+
+### Tablet
+
+#### Interactive Move
+
+<sup>Since: next release</sup>
+
+You can move windows by holding <kbd>Mod</kbd> and dragging the window with a tablet pen.
+
+Dragging a tiled window horizontally will scroll the view instead.
+
+You can customize the look of the window insertion preview in the [`insert-hint` layout config](./Configuration:-Layout.md#insert-hint).
+
 ### All Pointing Devices
 
 #### Drag-and-drop edge workspace switch
