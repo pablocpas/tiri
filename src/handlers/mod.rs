@@ -16,6 +16,7 @@ use smithay::backend::input::{InputEvent, TabletToolDescriptor};
 use smithay::desktop::{PopupKind, PopupManager};
 use smithay::input::dnd::{self, DnDGrab, DndGrabHandler, DndTarget};
 use smithay::input::pointer::{CursorImageStatus, Focus, PointerHandle};
+use smithay::input::tablet::TabletSeatHandler;
 use smithay::input::{keyboard, Seat, SeatHandler, SeatState};
 use smithay::output::Output;
 use smithay::reexports::rustix::fs::{fcntl_setfl, OFlags};
@@ -37,7 +38,9 @@ use smithay::wayland::keyboard_shortcuts_inhibit::{
     KeyboardShortcutsInhibitHandler, KeyboardShortcutsInhibitState, KeyboardShortcutsInhibitor,
 };
 use smithay::wayland::output::OutputHandler;
-use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraintsHandler};
+use smithay::wayland::pointer_constraints::{
+    with_pointer_constraint, PointerConstraint, PointerConstraintsHandler,
+};
 use smithay::wayland::security_context::{
     SecurityContext, SecurityContextHandler, SecurityContextListenerSource,
 };
@@ -57,19 +60,8 @@ use smithay::wayland::selection::{SelectionHandler, SelectionTarget};
 use smithay::wayland::session_lock::{
     LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
 };
-use smithay::wayland::tablet_manager::TabletSeatHandler;
 use smithay::wayland::xdg_activation::{
     XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
-};
-use smithay::{
-    delegate_cursor_shape, delegate_data_control, delegate_data_device, delegate_dmabuf,
-    delegate_drm_lease, delegate_ext_data_control, delegate_fractional_scale,
-    delegate_idle_inhibit, delegate_idle_notify, delegate_input_method_manager,
-    delegate_keyboard_shortcuts_inhibit, delegate_output, delegate_pointer_constraints,
-    delegate_pointer_gestures, delegate_presentation, delegate_primary_selection,
-    delegate_relative_pointer, delegate_seat, delegate_security_context, delegate_session_lock,
-    delegate_single_pixel_buffer, delegate_tablet_manager, delegate_text_input_manager,
-    delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_activation,
 };
 
 pub use crate::handlers::xdg_shell::KdeDecorationsModeState;
@@ -90,11 +82,6 @@ use crate::protocols::virtual_pointer::{
 };
 use crate::tiri::{DndIcon, NewClient, State};
 use crate::utils::{output_size, send_scale_transform};
-use crate::{
-    delegate_ext_workspace, delegate_foreign_toplevel, delegate_gamma_control,
-    delegate_mutter_x11_interop, delegate_output_management, delegate_screencopy,
-    delegate_virtual_pointer,
-};
 
 pub const XDG_ACTIVATION_TOKEN_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -136,20 +123,16 @@ impl SeatHandler for State {
         }
     }
 }
-delegate_seat!(State);
-delegate_cursor_shape!(State);
-delegate_pointer_gestures!(State);
-delegate_relative_pointer!(State);
-delegate_text_input_manager!(State);
 
 impl TabletSeatHandler for State {
+    type ToolFocus = WlSurface;
+
     fn tablet_tool_image(&mut self, _tool: &TabletToolDescriptor, image: CursorImageStatus) {
         // FIXME: tablet tools should have their own cursors.
         self.niri.cursor_manager.set_client_cursor(image);
         self.niri.queue_redraw_cursor_output();
     }
 }
-delegate_tablet_manager!(State);
 
 impl PointerConstraintsHandler for State {
     fn new_constraint(&mut self, _surface: &WlSurface, _pointer: &PointerHandle<Self>) {
@@ -205,6 +188,24 @@ impl PointerConstraintsHandler for State {
                 output_geometry.size -= (1, 1).into();
                 (origin + location).constrain(output_geometry.to_f64())
             });
+        self.niri.pointer_constraint_position_hint = Some(target);
+    }
+
+    fn remove_constraint(
+        &mut self,
+        _surface: &WlSurface,
+        pointer: &PointerHandle<Self>,
+        _constraint: Option<&PointerConstraint>,
+    ) {
+        // Since a pointer constraint is broken when a surface loses pointer focus, and one surface
+        // can only have a single pointer constraint at once, assume there can be only one
+        // constraint active at once, and therefore the global position hint should come from that
+        // one constraint that just got removed.
+        let Some(target) = self.niri.pointer_constraint_position_hint.take() else {
+            // The client never sent a position hint.
+            return;
+        };
+
         pointer.set_location(target);
 
         // Redraw to update the cursor position if it's visible.
@@ -213,7 +214,6 @@ impl PointerConstraintsHandler for State {
         }
     }
 }
-delegate_pointer_constraints!(State);
 
 impl InputMethodHandler for State {
     fn new_popup(&mut self, surface: PopupSurface) {
@@ -273,10 +273,6 @@ impl KeyboardShortcutsInhibitHandler for State {
             .remove(&inhibitor.wl_surface().clone());
     }
 }
-
-delegate_input_method_manager!(State);
-delegate_keyboard_shortcuts_inhibit!(State);
-delegate_virtual_keyboard_manager!(State);
 
 impl SelectionHandler for State {
     type SelectionUserData = Arc<[u8]>;
@@ -397,14 +393,11 @@ impl crate::tiri::Niri {
     }
 }
 
-delegate_data_device!(State);
-
 impl PrimarySelectionHandler for State {
     fn primary_selection_state(&mut self) -> &mut PrimarySelectionState {
         &mut self.niri.primary_selection_state
     }
 }
-delegate_primary_selection!(State);
 
 impl WlrDataControlHandler for State {
     fn data_control_state(&mut self) -> &mut WlrDataControlState {
@@ -412,15 +405,11 @@ impl WlrDataControlHandler for State {
     }
 }
 
-delegate_data_control!(State);
-
 impl ExtDataControlHandler for State {
     fn data_control_state(&mut self) -> &mut ExtDataControlState {
         &mut self.niri.ext_data_control_state
     }
 }
-
-delegate_ext_data_control!(State);
 
 impl OutputHandler for State {
     fn output_bound(&mut self, output: Output, wl_output: WlOutput) {
@@ -428,9 +417,6 @@ impl OutputHandler for State {
         ext_workspace::on_output_bound(self, &output, &wl_output);
     }
 }
-delegate_output!(State);
-
-delegate_presentation!(State);
 
 impl DmabufHandler for State {
     fn dmabuf_state(&mut self) -> &mut DmabufState {
@@ -450,7 +436,6 @@ impl DmabufHandler for State {
         }
     }
 }
-delegate_dmabuf!(State);
 
 impl SessionLockHandler for State {
     fn lock_state(&mut self) -> &mut SessionLockManagerState {
@@ -477,7 +462,6 @@ impl SessionLockHandler for State {
         self.niri.new_lock_surface(surface, &output);
     }
 }
-delegate_session_lock!(State);
 
 pub fn configure_lock_surface(surface: &LockSurface, output: &Output) {
     surface.with_pending_state(|states| {
@@ -508,14 +492,12 @@ impl SecurityContextHandler for State {
             .unwrap();
     }
 }
-delegate_security_context!(State);
 
 impl IdleNotifierHandler for State {
     fn idle_notifier_state(&mut self) -> &mut IdleNotifierState<Self> {
         &mut self.niri.idle_notifier_state
     }
 }
-delegate_idle_notify!(State);
 
 impl IdleInhibitHandler for State {
     fn inhibit(&mut self, surface: WlSurface) {
@@ -526,7 +508,6 @@ impl IdleInhibitHandler for State {
         self.niri.idle_inhibiting_surfaces.remove(&surface);
     }
 }
-delegate_idle_inhibit!(State);
 
 impl ForeignToplevelHandler for State {
     fn foreign_toplevel_manager_state(&mut self) -> &mut ForeignToplevelManagerState {
@@ -583,7 +564,6 @@ impl ForeignToplevelHandler for State {
         }
     }
 }
-delegate_foreign_toplevel!(State);
 
 impl ExtWorkspaceHandler for State {
     fn ext_workspace_manager_state(&mut self) -> &mut ExtWorkspaceManagerState {
@@ -609,7 +589,6 @@ impl ExtWorkspaceHandler for State {
         self.niri.invalidate_layout();
     }
 }
-delegate_ext_workspace!(State);
 
 impl ScreencopyHandler for State {
     fn frame(&mut self, manager: &ZwlrScreencopyManagerV1, screencopy: Screencopy) {
@@ -639,7 +618,6 @@ impl ScreencopyHandler for State {
         &mut self.niri.screencopy_state
     }
 }
-delegate_screencopy!(State);
 
 impl VirtualPointerHandler for State {
     fn virtual_pointer_manager_state(&mut self) -> &mut VirtualPointerManagerState {
@@ -664,7 +642,6 @@ impl VirtualPointerHandler for State {
         self.process_input_event(InputEvent::<VirtualPointerInputBackend>::PointerAxis { event });
     }
 }
-delegate_virtual_pointer!(State);
 
 impl DrmLeaseHandler for State {
     fn drm_lease_state(&mut self, node: DrmNode) -> &mut DrmLeaseState {
@@ -711,9 +688,6 @@ impl DrmLeaseHandler for State {
             .remove_lease(lease_id);
     }
 }
-delegate_drm_lease!(State);
-
-delegate_viewporter!(State);
 
 impl GammaControlHandler for State {
     fn gamma_control_manager_state(&mut self) -> &mut GammaControlManagerState {
@@ -744,7 +718,6 @@ impl GammaControlHandler for State {
         }
     }
 }
-delegate_gamma_control!(State);
 
 struct UrgentOnlyMarker;
 
@@ -824,10 +797,8 @@ impl XdgActivationHandler for State {
         self.niri.activation_state.remove_token(&token);
     }
 }
-delegate_xdg_activation!(State);
 
 impl FractionalScaleHandler for State {}
-delegate_fractional_scale!(State);
 
 impl OutputManagementHandler for State {
     fn output_management_state(&mut self) -> &mut OutputManagementManagerState {
@@ -839,9 +810,5 @@ impl OutputManagementHandler for State {
         self.reload_output_config();
     }
 }
-delegate_output_management!(State);
 
 impl MutterX11InteropHandler for State {}
-delegate_mutter_x11_interop!(State);
-
-delegate_single_pixel_buffer!(State);

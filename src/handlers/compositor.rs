@@ -15,7 +15,6 @@ use smithay::wayland::compositor::{
 use smithay::wayland::dmabuf::get_dmabuf;
 use smithay::wayland::shell::xdg::ToplevelCachedState;
 use smithay::wayland::shm::{ShmHandler, ShmState};
-use smithay::{delegate_compositor, delegate_shm};
 use tiri_ipc::PositionChange;
 
 use super::xdg_shell::add_mapped_toplevel_pre_commit_hook;
@@ -479,9 +478,6 @@ impl ShmHandler for State {
         &self.niri.shm_state
     }
 }
-
-delegate_compositor!(State);
-delegate_shm!(State);
 
 impl State {
     pub fn add_default_dmabuf_pre_commit_hook(&mut self, surface: &WlSurface) {

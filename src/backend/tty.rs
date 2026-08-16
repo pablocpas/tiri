@@ -72,10 +72,10 @@ use crate::render_helpers::{resources, shaders, RenderCtx, RenderTarget};
 use crate::tiri::{Niri, RedrawState, State};
 use crate::utils::{get_monotonic_time, is_laptop_panel, logical_output, PanelOrientation};
 
-const SUPPORTED_COLOR_FORMATS: [Fourcc; 8] = [
-    Fourcc::Xrgb2101010,
+// specific 10-bit formats for multigpu setup,
+// i.e. copying from rendering Nvidia dGPU to target iGPU.
+const SUPPORTED_COLOR_FORMATS: [Fourcc; 6] = [
     Fourcc::Xbgr2101010,
-    Fourcc::Argb2101010,
     Fourcc::Abgr2101010,
     Fourcc::Xrgb8888,
     Fourcc::Xbgr8888,
@@ -2103,7 +2103,9 @@ impl Tty {
 
         match renderer.import_dmabuf(dmabuf, None) {
             Ok(_texture) => {
-                dmabuf.set_node(Some(self.primary_render_node));
+                if dmabuf.node().is_none() {
+                    dmabuf.set_node(Some(self.primary_render_node));
+                }
                 true
             }
             Err(err) => {
@@ -2241,15 +2243,6 @@ impl Tty {
                     });
                 let vrr_enabled = surface.is_some_and(|surface| surface.compositor.vrr_enabled());
 
-                let props = ConnectorProperties::try_new(&device.drm, connector.handle()).ok();
-                let max_bpc = props.as_ref().and_then(|p| p.find(c"max bpc").ok());
-                let max_bpc = max_bpc.and_then(|(info, value)| {
-                    info.value_type()
-                        .convert_value(*value)
-                        .as_unsigned_range()
-                        .map(|v| v as u8)
-                });
-
                 let logical = niri
                     .global_space
                     .outputs()
@@ -2263,6 +2256,15 @@ impl Tty {
                 let id = id.unwrap_or_else(|| {
                     error!("crtc for connector {connector_name} missing from known");
                     OutputId::next()
+                });
+
+                let props = ConnectorProperties::try_new(&device.drm, connector.handle()).ok();
+                let max_bpc = props.as_ref().and_then(|p| p.find(c"max bpc").ok());
+                let max_bpc = max_bpc.and_then(|(info, value)| {
+                    info.value_type()
+                        .convert_value(*value)
+                        .as_unsigned_range()
+                        .map(|v| v as u8)
                 });
 
                 let ipc_output = tiri_ipc::Output {
@@ -2911,13 +2913,15 @@ fn surface_dmabuf_feedback(
         .clone()
         .add_preference_tranche(
             surface_scanout_node.dev_id(),
-            Some(TrancheFlags::Scanout),
+            TrancheFlags::Scanout,
             primary_scanout_formats,
+            4..=6,
         )
         .add_preference_tranche(
             surface_scanout_node.dev_id(),
-            Some(TrancheFlags::Scanout),
+            TrancheFlags::Scanout,
             primary_or_overlay_scanout_formats,
+            4..=6,
         )
         .build()?;
 
