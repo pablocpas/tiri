@@ -30,6 +30,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             );
         }
         self.verify_floating_region();
+        self.verify_seat_order();
 
         if self.is_empty() && self.floating_roots().next().is_none() {
             // The workspace itself stays: an empty workspace is a container with no
@@ -235,6 +236,50 @@ impl<W: LayoutElement> ContainerTree<W> {
 }
 
 impl<W: LayoutElement> ContainerTree<W> {
+    /// The seat's order is the workspace's one focus cache, and everything reads through it.
+    ///
+    /// It is sway's `seat->focus_stack`, which its new-node and destroy listeners keep as
+    /// exactly the live nodes. Nothing derived from it can be checked in its own right —
+    /// `inactive_tiling_key` and `seat_get_active_tiling_child` are filters over this list, so
+    /// asserting their answers only restates the filter. This is the state they read.
+    ///
+    /// A missing node is a node no descent can land on and no switcher will show; a stale one
+    /// is a key that outranks every live node and answers for a window that is gone.
+    fn verify_seat_order(&self) {
+        let order = self.seat.order();
+        let mut seen = HashSet::new();
+        for key in order {
+            assert!(
+                self.nodes.contains_key(*key),
+                "the seat's order may only name live nodes, found {key:?}"
+            );
+            assert!(
+                seen.insert(*key),
+                "a node must appear once in the seat's order: with the same one twice, \
+                 \"most recently focused\" does not name anything"
+            );
+        }
+        assert_eq!(
+            seen.len(),
+            self.nodes.len(),
+            "every live node has a place in the seat's order, however far back: a node that is \
+             not in it is one `focus_inactive` can never answer with"
+        );
+
+        if let Some(leaf) = self.seat.focused_leaf() {
+            assert!(
+                self.get_node(leaf).is_some_and(|node| node.is_view()),
+                "the seat's keyboard focus is a window, found {leaf:?}"
+            );
+        }
+        if let Some(selected) = self.seat.selected() {
+            assert!(
+                self.nodes.contains_key(selected),
+                "the seat's selection must be a live node, found {selected:?}"
+            );
+        }
+    }
+
     /// The floating side is in the same arena, and has to look like it.
     ///
     /// Every floating root is a live node parented semantically by the workspace, listed once.

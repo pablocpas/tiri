@@ -288,12 +288,18 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Remove one node from the arena and retire every workspace authority naming it.
     ///
-    /// Structural callers still own focus-order cleanup and child handling. Keeping the
-    /// fullscreen retirement beside the actual arena removal makes it impossible for a new
-    /// container owner to become a stale key when an empty wrapper is reaped.
+    /// Structural callers still own child handling and where focus should land next. What they
+    /// do not own is whether the seat still lists the node: sway drops it from `focus_stack` in
+    /// the destroy listener, so it happens once, at the removal, and cannot be forgotten by a
+    /// caller who was thinking about something else. Twelve places remove a node here and only
+    /// some of them used to say so, which left the order ranking keys that had moved to another
+    /// workspace — where they still resolve, because the key is the same one.
+    ///
+    /// sway/input/seat.c:261-324
     pub(super) fn remove_node_from_store(&mut self, key: NodeKey) -> Option<NodeData<W>> {
         let node = self.nodes.remove(key)?;
         self.parents.remove(key);
+        self.seat.unregister(key);
         if self.fullscreen_key == Some(key) {
             self.fullscreen_key = None;
         }

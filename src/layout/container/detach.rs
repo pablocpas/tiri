@@ -126,6 +126,31 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Extract a subtree rooted at the given key into a detached representation.
     pub(super) fn extract_subtree(&mut self, key: NodeKey) -> DetachedNode<W> {
+        // A view has no children to walk and no focus stack to carry; everything else on the
+        // node travels the same way either way, which is the point of it being one type.
+        let child_keys = self
+            .get_container(key)
+            .map(|container| container.children.clone())
+            .unwrap_or_default();
+
+        // Which child a switcher shows is behaviour, so the subtree carries those stable
+        // identities into the receiving workspace instead of rebuilding them from child
+        // positions. Read before anything leaves the arena: leaving is what retires a key from
+        // the seat, so afterwards there is no order left to read and every arriving subtree
+        // would land in child order, showing whichever window happens to be first.
+        let mut focus_stack: Vec<NodeKey> = self
+            .seat
+            .order()
+            .iter()
+            .copied()
+            .filter(|key| child_keys.contains(key))
+            .collect();
+        for key in child_keys.iter().copied() {
+            if !focus_stack.contains(&key) {
+                focus_stack.push(key);
+            }
+        }
+
         let node_data = self
             .remove_node_from_store(key)
             .expect("node key must exist when extracting subtree");
@@ -134,27 +159,9 @@ impl<W: LayoutElement> ContainerTree<W> {
             unreachable!("the workspace cannot be detached")
         };
 
-        // A view has no children to walk and no focus stack to carry; everything else on the
-        // node travels the same way either way, which is the point of it being one type.
-        let child_keys = container.children.clone();
         let mut children = Vec::new();
-        for child_key in child_keys.iter().copied() {
+        for child_key in child_keys {
             children.push(self.extract_subtree(child_key));
-        }
-        // Which child a switcher shows is behaviour, so the subtree carries those stable
-        // identities into the receiving workspace instead of rebuilding them from child
-        // positions.
-        let mut focus_stack: Vec<NodeKey> = self
-            .seat
-            .order()
-            .iter()
-            .copied()
-            .filter(|key| child_keys.contains(key))
-            .collect();
-        for key in child_keys {
-            if !focus_stack.contains(&key) {
-                focus_stack.push(key);
-            }
         }
 
         // `sizing` is the split's own; a view's lives on its tile, here as in the arena.
