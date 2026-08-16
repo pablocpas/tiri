@@ -1511,10 +1511,16 @@ impl<W: LayoutElement> Monitor<W> {
         };
         let window = window.clone();
 
+        // None when no arrange has described this window yet. `tiles_with_render_positions`
+        // reads the layout cache, and a tile is in the tree from the moment it is added —
+        // being laid out is a later, separate event. Upstream unwraps the same lookup because
+        // its positions come from the live column vector, where the two are one state.
+        //
+        // The move itself does not depend on this; only the animation, which has nothing to
+        // travel from.
         let mut old_render_pos = workspace
             .tiles_with_render_positions()
-            .find_map(|(tile, offset, _visible)| (tile.window().id() == &window).then_some(offset))
-            .unwrap();
+            .find_map(|(tile, offset, _visible)| (tile.window().id() == &window).then_some(offset));
 
         let transaction = Transaction::new();
         let mut removed = workspace.remove_tile(&window, transaction);
@@ -1556,14 +1562,17 @@ impl<W: LayoutElement> Monitor<W> {
         // source workspace itself was removed, don't bother animating this since the removal is
         // instant anyway.
         if let Some(source_workspace_idx) = self.idx_of_ws(source_id) {
-            old_render_pos.y +=
+            let workspace_delta =
                 self.workspace_size_with_gap(1.).h * (source_workspace_idx as f64 - new_idx as f64);
+            if let Some(old_render_pos) = &mut old_render_pos {
+                old_render_pos.y += workspace_delta;
+            }
         }
 
         let found = self.workspaces[new_idx]
             .tiles_with_render_positions_mut(false)
             .find(|(tile, _)| tile.window().id() == &window);
-        if let Some((tile, new_render_pos)) = found {
+        if let (Some(old_render_pos), Some((tile, new_render_pos))) = (old_render_pos, found) {
             tile.animate_move_from_with_config(old_render_pos - new_render_pos, config);
             tile.set_anim_y_between_workspaces();
         }
