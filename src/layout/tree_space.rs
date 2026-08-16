@@ -47,6 +47,7 @@ use crate::layout::tab_bar::{
     render_tab_bar, tab_bar_hit_index, tab_bar_state_from_info, TabBarCacheEntry,
     TabBarRenderOutput,
 };
+use crate::layout::RenderLayer;
 use crate::niri_render_elements;
 use crate::render_helpers::offscreen::{OffscreenBuffer, OffscreenRenderElement};
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
@@ -1062,6 +1063,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         mut ctx: RenderCtx<R>,
         xray_pos: XrayPos,
         tiling_focus_ring: bool,
+        layer: RenderLayer,
     ) -> Vec<TreeSpaceRenderElement<R>> {
         // Pre-allocate: ~4 elements per tile + closing windows + tab bars
         let tile_count = self.tree.window_count();
@@ -1075,14 +1077,22 @@ impl<W: LayoutElement> TreeSpace<W> {
         let fullscreen = self.fullscreen_render_state();
         let view_rect = Rectangle::from_size(self.view_size);
 
-        for closing in self.closing_windows.iter().rev() {
+        for closing in self
+            .closing_windows
+            .iter()
+            .rev()
+            .filter(|_| layer.is_normal())
+        {
             let elem = closing.render(ctx.as_gles(), view_rect, scale);
             elements.push(TreeSpaceRenderElement::ClosingWindow(elem));
         }
 
         // Render container selection before regular tiling elements so it ends up
         // visually on top after the global reverse-order composition pass.
-        if selection_is_layout_parent && (tiling_focus_ring || selection_is_active) {
+        if layer.is_normal()
+            && selection_is_layout_parent
+            && (tiling_focus_ring || selection_is_active)
+        {
             if let Some(rect) = self.selected_geometry() {
                 let mut selection_border = self.options.layout.border;
                 if let Some(focus_info) = self
@@ -1113,6 +1123,10 @@ impl<W: LayoutElement> TreeSpace<W> {
         for info in render_layouts.iter().rev() {
             // Use O(1) key lookup instead of O(depth) path lookup.
             if let Some(tile) = self.tree.get_tile(info.key) {
+                // Skip tiles belonging to a different render layer.
+                if layer.is_normal() == tile.is_moving_between_workspaces() {
+                    continue;
+                }
                 let in_fullscreen_container = fullscreen
                     .container
                     .is_some_and(|scope| self.tree.is_descendant(info.key, scope));
@@ -1229,9 +1243,10 @@ impl<W: LayoutElement> TreeSpace<W> {
         ctx: RenderCtx<R>,
         xray_pos: XrayPos,
         tiling_focus_ring: bool,
+        layer: RenderLayer,
         push: &mut dyn FnMut(TreeSpaceRenderElement<R>),
     ) {
-        for elem in self.render_elements(ctx, xray_pos, tiling_focus_ring) {
+        for elem in self.render_elements(ctx, xray_pos, tiling_focus_ring, layer) {
             push(elem);
         }
     }
@@ -1251,7 +1266,12 @@ impl<W: LayoutElement> TreeSpace<W> {
             target,
             xray: None,
         };
-        let mut elements = self.render_elements(ctx, XrayPos::default(), tiling_focus_ring);
+        let mut elements = self.render_elements(
+            ctx,
+            XrayPos::default(),
+            tiling_focus_ring,
+            RenderLayer::Normal,
+        );
         if elements.is_empty() {
             return None;
         }

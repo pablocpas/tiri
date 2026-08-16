@@ -648,11 +648,9 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn update_render_elements(&mut self, is_active: bool, layer: RenderLayer) {
-        if layer.is_normal() {
-            self.space
-                .set_active(is_active, self.floating_is_active.get());
-            self.space.update_render_elements();
-        }
+        self.space
+            .set_active(is_active, self.floating_is_active.get());
+        self.space.update_render_elements();
 
         let view_rect = Rectangle::from_size(self.view_size);
         self.floating
@@ -1033,8 +1031,9 @@ impl<W: LayoutElement> Workspace<W> {
         activate: ActivateWindow,
         width: ColumnWidth,
         is_floating: bool,
-        // Only the floating side animates a move between workspaces so far; a tile that lands
-        // in the tiling arrives where it arrives.
+        // Unused here. This is upstream's channel for the scrolling layout to animate the tile
+        // as it inserts it; `Monitor::move_to_workspace` animates from the render positions it
+        // measured either side of the move, which needs nothing from the insert.
         _anim: Option<tiri_config::Animation>,
     ) {
         self.enter_output_for_window(tile.window());
@@ -2918,15 +2917,9 @@ impl<W: LayoutElement> Workspace<W> {
         if self.floating.fullscreen_key(&self.space).is_some() {
             return;
         }
-        // The tiled side has no per-tile movement animation yet, so it has nothing to draw on
-        // the moving layer — and drawing it there as well as on the normal one would render the
-        // whole tiling twice per frame.
-        if !layer.is_normal() {
-            return;
-        }
         let tiling_focus_ring = focus_ring && !self.floating_is_active();
         self.space
-            .render(ctx, xray_pos, tiling_focus_ring, &mut |elem| {
+            .render(ctx, xray_pos, tiling_focus_ring, layer, &mut |elem| {
                 push(elem.into())
             });
     }
