@@ -292,19 +292,23 @@ impl<W: LayoutElement> ContainerTree<W> {
         node_key: NodeKey,
         focus: bool,
     ) -> bool {
-        let container_key =
-            match self.ensure_container_at_path(branch_root, &info.parent_path, info.layout) {
-                Some(key) => key,
-                None => {
-                    let end = self.branch_children_len(branch_root);
-                    self.insert_key_into_branch(branch_root, end, node_key, focus);
-                    return true;
-                }
-            };
+        // A path recorded elsewhere can resolve here to a node that holds a window rather than
+        // children, and a window has no room for one. Treat that the same as finding no
+        // container at all: the node goes at the end of the branch, which is where the
+        // remembered position has stopped meaning anything.
+        let container_key = self
+            .ensure_container_at_path(branch_root, &info.parent_path, info.layout)
+            .filter(|key| self.get_container(*key).is_some());
 
-        if let Some(container) = self.get_container_mut(container_key) {
-            container.insert_child(info.insert_idx, node_key);
-        }
+        let Some(container_key) = container_key else {
+            let end = self.branch_children_len(branch_root);
+            self.insert_key_into_branch(branch_root, end, node_key, focus);
+            return true;
+        };
+
+        self.get_container_mut(container_key)
+            .expect("only a node that lays out children gets here")
+            .insert_child(info.insert_idx, node_key);
         self.set_parent(node_key, Some(container_key));
 
         self.settle_focus_after_insert(node_key, focus);

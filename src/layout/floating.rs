@@ -1153,12 +1153,18 @@ impl<W: LayoutElement> FloatingSpace<W> {
         tree.focused_container_allows_splits()
     }
 
+    /// Whether the window named here sits in a container a new sibling can join.
+    ///
+    /// It used to answer about the *focused* container instead, which is the same node only
+    /// when the named window happens to be the focused one. A floating window that is its own
+    /// root has no container to join, and reading someone else's answer for it sent a new tile
+    /// into a group that was not there.
     pub(super) fn container_allows_splits(&self, space: &TreeSpace<W>, id: &W::Id) -> bool {
         let tree = space.tree();
-        let Some(_idx) = self.idx_of(space, id) else {
+        let Some(key) = tree.window_key(id) else {
             return false;
         };
-        tree.focused_container_allows_splits()
+        tree.container_of_allows_splits(key)
     }
 
     pub(super) fn container_pos(
