@@ -3685,3 +3685,35 @@ fn moving_a_floating_window_across_workspaces_does_not_orphan_it() {
         Op::MoveWindowToWorkspaceUp(false),
     ]);
 }
+
+#[test]
+fn a_floating_window_moved_between_workspaces_animates_like_a_tiled_one() {
+    // The animation is applied through `tiles_with_render_positions_mut`, which reaches tiles
+    // by asking the tree for its leaf layouts. That list covers the floating side too, because
+    // both sides live in the one arena — so this holds without the walk knowing there are two.
+    for is_floating in [false, true] {
+        let mut params = TestWindowParams::new(1);
+        params.is_floating = is_floating;
+
+        let mut layout = check_ops([
+            Op::AddOutput(1),
+            Op::AddWindow { params },
+            Op::AddWindow {
+                params: TestWindowParams::new(2),
+            },
+            Op::FocusWindow(1),
+        ]);
+
+        check_ops_on_layout(&mut layout, [Op::MoveWindowToWorkspaceDown(true)]);
+
+        let moving = layout.workspaces_mut().any(|ws| {
+            ws.tiles_with_render_positions_mut(false)
+                .any(|(tile, _)| tile.window().id() == &1 && tile.is_moving_between_workspaces())
+        });
+        assert!(
+            moving,
+            "a window moved between workspaces animates, floating or not \
+             (is_floating = {is_floating})",
+        );
+    }
+}
