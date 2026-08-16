@@ -13,10 +13,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             *key != self.root
                 && self.get_node(*key).is_some()
                 && self.branch_root(*key) == self.root
-                && matches!(
-                    self.get_node(*key),
-                    Some(NodeData::Leaf(_) | NodeData::Container(_))
-                )
+                && matches!(self.get_node(*key), Some(NodeData::Container(_)))
         })
     }
 
@@ -38,8 +35,10 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         match self.get_node(key)? {
             NodeData::Workspace(_) => None,
-            NodeData::Container(container) => Some((key, container.child_count())),
-            NodeData::Leaf(_) => {
+            NodeData::Container(container) if !container.is_view() => {
+                Some((key, container.child_count()))
+            }
+            _ => {
                 let parent_key = self.parent_of(key)?;
                 let parent = self.get_container(parent_key)?;
                 let leaf_idx = self.child_index(parent_key, key)?;

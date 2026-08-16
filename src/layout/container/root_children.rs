@@ -1,5 +1,6 @@
 //! Root-child ("column") compatibility layer over the tree root.
 
+use super::ContainerData;
 use super::ContainerTree;
 use super::DetachedNode;
 use super::LayoutElement;
@@ -14,7 +15,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let root_key = self.root;
 
         match self.get_node(root_key) {
-            Some(NodeData::Leaf(_)) => 1,
+            Some(node) if node.is_view() => 1,
             Some(NodeData::Workspace(workspace)) => workspace.children.len(),
             Some(NodeData::Container(container)) => container.children.len(),
             None => 0,
@@ -42,7 +43,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         match self.get_node(root_key) {
-            Some(NodeData::Leaf(_)) => Some(0),
+            Some(node) if node.is_view() => Some(0),
             Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => {
                 // Nothing focused yet: fall back to the container's own focus history.
                 let Some(focused_key) = self.effective_focused_key() else {
@@ -68,7 +69,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let root_key = self.root;
 
         match self.get_node(root_key) {
-            Some(NodeData::Leaf(_)) => {
+            Some(node) if node.is_view() => {
                 if idx == 0 {
                     self.focus_node_key(root_key);
                     true
@@ -266,7 +267,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         tile: Tile<W>,
         focus: bool,
     ) {
-        let tile_key = self.insert_node(NodeData::Leaf(tile));
+        let tile_key = self.insert_node(NodeData::Container(ContainerData::new_view(tile)));
         self.insert_key_into_branch(branch_root, index, tile_key, focus);
     }
 

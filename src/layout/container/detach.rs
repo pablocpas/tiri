@@ -36,10 +36,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         // Now remove from this workspace store (only the leaf, not recursive).
         let node_data = self.remove_node_from_store(node_key)?;
-        let tile = match node_data {
-            NodeData::Leaf(tile) => tile,
-            NodeData::Workspace(_) | NodeData::Container(_) => return None,
-        };
+        let tile = node_data.into_tile()?;
 
         if let Some(cleanup_key) = cleanup_key {
             self.reap_empty(cleanup_key);
@@ -136,7 +133,8 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         match node_data {
             NodeData::Workspace(_) => unreachable!("the workspace cannot be detached"),
-            NodeData::Leaf(tile) => {
+            NodeData::Container(container) if container.is_view() => {
+                let tile = container.into_tile().expect("a view holds a tile");
                 debug_assert_eq!(tile.node_key(), key);
                 DetachedNode::Leaf(tile)
             }
@@ -177,7 +175,9 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Insert a detached subtree into this tree, returning the new root key.
     pub(super) fn insert_subtree(&mut self, subtree: DetachedNode<W>) -> NodeKey {
         match subtree {
-            DetachedNode::Leaf(tile) => self.insert_node(NodeData::Leaf(tile)),
+            DetachedNode::Leaf(tile) => {
+                self.insert_node(NodeData::Container(ContainerData::new_view(tile)))
+            }
             DetachedNode::Container(container) => {
                 let container_key = container.key;
                 self.insert_node_with_key(
@@ -230,7 +230,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let root_key = self.root;
 
         match self.get_node(root_key) {
-            Some(NodeData::Leaf(_)) => None,
+            Some(node) if node.is_view() => None,
             Some(NodeData::Workspace(_)) => {
                 let child_key = {
                     let container = self.get_container(root_key)?;
@@ -250,9 +250,6 @@ impl<W: LayoutElement> ContainerTree<W> {
                 self.prune_leaf_layouts();
 
                 match self.get_node(root_key) {
-                    Some(NodeData::Leaf(_)) | None => {
-                        self.focus_first_leaf();
-                    }
                     Some(NodeData::Workspace(root_container)) => {
                         if remaining > 0 {
                             let new_idx = idx.min(root_container.children.len().saturating_sub(1));
@@ -266,7 +263,10 @@ impl<W: LayoutElement> ContainerTree<W> {
                             self.focus_first_leaf();
                         }
                     }
-                    Some(NodeData::Container(_)) => unreachable!("root must be a workspace"),
+                    Some(node) if node.is_split() => {
+                        unreachable!("root must be a workspace")
+                    }
+                    _ => self.focus_first_leaf(),
                 }
 
                 let subtree = self.extract_subtree(child_key);

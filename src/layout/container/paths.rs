@@ -23,10 +23,10 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         for &idx in path {
             match self.get_node(current_key)? {
+                node if node.is_view() => return None,
                 NodeData::Workspace(_) | NodeData::Container(_) => {
                     current_key = self.get_container(current_key)?.child_key(idx)?;
                 }
-                NodeData::Leaf(_) => return None,
             }
         }
 
@@ -36,7 +36,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(super) fn leaf_under_key(&self, mut key: NodeKey) -> Option<NodeKey> {
         loop {
             match self.get_node(key)? {
-                NodeData::Leaf(_) => return Some(key),
+                node if node.is_view() => return Some(key),
                 NodeData::Workspace(_) | NodeData::Container(_) => {
                     if self.get_container(key)?.children.is_empty() {
                         return None;
@@ -79,7 +79,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// the moved view keeps seat focus while the sibling tab/stack selected during tree surgery
     /// remains visible.
     pub(super) fn set_seat_focus_preserving_switcher(&mut self, leaf_key: NodeKey) {
-        if matches!(self.get_node(leaf_key), Some(NodeData::Leaf(_))) {
+        if self.get_node(leaf_key).is_some_and(|node| node.is_view()) {
             self.seat.follow_without_raising(leaf_key);
         }
     }
@@ -140,7 +140,12 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// to resolve it back into the key they actually wanted.
     pub(in crate::layout) fn window_key(&self, window_id: &W::Id) -> Option<NodeKey> {
         self.nodes.iter().find_map(|(key, node)| match node {
-            NodeData::Leaf(tile) if tile.window().id() == window_id => Some(key),
+            node if node
+                .as_tile()
+                .is_some_and(|tile| tile.window().id() == window_id) =>
+            {
+                Some(key)
+            }
             _ => None,
         })
     }

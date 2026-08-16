@@ -103,8 +103,12 @@ pub struct Tile<W: LayoutElement> {
 
     /// Hint for restoring the tile into its previous floating container/tree position.
     ///
-    /// The tuple is `(container_id, insert_parent_info)`.
-    pub(super) floating_reinsert_hint: Option<(u64, InsertParentInfo)>,
+    /// The tuple is `(container_id, insert_parent_info)`. The parent info is absent when the
+    /// tile *was* the floating group — a floating window has no container around it until a
+    /// command builds one, so there is no position inside one to return to. Set either way:
+    /// the outer `Option` answers "is this tile coming back from somewhere", and letting a
+    /// lone window answer no is what let whichever group is active now absorb it.
+    pub(super) floating_reinsert_hint: Option<(u64, Option<InsertParentInfo>)>,
 
     /// Currently selected preset width index when this tile is floating.
     pub(super) floating_preset_width_idx: Option<usize>,

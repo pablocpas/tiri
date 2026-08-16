@@ -610,37 +610,23 @@ impl<W: LayoutElement> TreeSpace<W> {
         self.tree.layout_owning(key)
     }
 
-    /// Whether this branch's root is a container tiri added rather than one the model has.
+    /// Whether this branch is nothing but the window in it.
     ///
-    /// A workspace is a container sway really has, so a command aimed at it has something to
-    /// act on however few children it holds. A floating group's root is not: sway's
-    /// `ws->floating` holds whatever was floated, a view included, while tiri always wraps,
-    /// and a layout command aimed at that wrapper would be acting on a container sway would
-    /// say does not exist. This is the open entry in the parity ledger, seen from the side
-    /// that has to work around it.
-    pub(super) fn branch_root_is_implicit(&self, branch: NodeKey) -> bool {
-        if branch == self.tree.workspace_root() || self.selected_container_in(branch) {
-            return false;
-        }
-
-        let Some(key) = self.tree.branch_position(branch) else {
-            return false;
-        };
-        if self.tree.branch_relative_path(key).as_deref() != Some(&[0]) {
-            return false;
-        }
-        let Some(root) = self.tree.branch_container(branch) else {
-            return false;
-        };
-        root.child_count() == 1
-            && !root.is_user_container()
-            && matches!(root.layout(), Layout::SplitH | Layout::SplitV)
+    /// `ws->floating` holds whatever was floated, a view included, so a floating window has no
+    /// container around it until a command builds one. A `layout` aimed here therefore has
+    /// nothing to act on, and cycling between groups is cycling between windows. The workspace
+    /// is never this: it is a container sway really has, however few children it holds.
+    ///
+    /// This used to ask whether the root was a wrapper tiri had added, which is the same
+    /// question only for as long as there is a wrapper to recognise.
+    pub(super) fn branch_root_is_lone_window(&self, branch: NodeKey) -> bool {
+        branch != self.tree.workspace_root() && self.tree.is_leaf(branch)
     }
 
     /// A layout command needs a container to act on. Vacuous on the tiled side, where the
     /// branch root is the workspace.
     fn branch_has_layout_target(&self, branch: NodeKey) -> bool {
-        self.selection_layout_in(branch).is_some() && !self.branch_root_is_implicit(branch)
+        self.selection_layout_in(branch).is_some() && !self.branch_root_is_lone_window(branch)
     }
 
     pub(super) fn split_in_branch(&mut self, branch: NodeKey, layout: Layout) -> bool {
@@ -3083,7 +3069,11 @@ impl<W: LayoutElement> TreeSpace<W> {
         }
 
         if !self.move_command_target(direction) {
-            self.mutate_tree(|tree| tree.split_focused(Layout::SplitV));
+            // Scoped to the tiled branch, like the move above it. One seat spans the whole
+            // workspace, so the focused node can be a floating one this side does not own —
+            // and splitting a floating root now replaces it, which only its own stacking
+            // order may do.
+            self.split_in_branch(self.tiled_branch(), Layout::SplitV);
         }
     }
 

@@ -6,7 +6,6 @@ use smithay::utils::Rectangle;
 use super::ContainerTree;
 use super::Layout;
 use super::LayoutElement;
-use super::NodeData;
 use super::NodeKey;
 use super::PreviewLeafGeometry;
 
@@ -95,7 +94,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         for &idx in path {
             let container = self.get_container(node_key)?;
             let child_key = container.child_key(idx)?;
-            let child_is_leaf = matches!(self.get_node(child_key), Some(NodeData::Leaf(_)));
+            let child_is_leaf = self.get_node(child_key).is_some_and(|node| node.is_view());
             let percents = self.get_normalized_child_percents(node_key, container.child_count());
             let (child_rect, _) = self.preview_child_rect(
                 PreviewContainer {

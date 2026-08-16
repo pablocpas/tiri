@@ -41,27 +41,18 @@ impl<W: LayoutElement> ContainerTree<W> {
                     || !self.branch_is_addressable(container_key)
             });
             let Some(parent_key) = parent_key else {
-                // A top-level floating view is a container in sway. Tiri represents a view as
-                // a leaf and therefore retains an invisible group root when that is the child.
-                // Clearing the explicit bit makes the wrapper disappear from command and IPC
-                // semantics while preserving the leaf's NodeKey.
-                if matches!(self.get_node(child_key), Some(NodeData::Leaf(_))) {
-                    self.get_real_container_mut(container_key)?
-                        .clear_user_created();
-                    break container_key;
-                }
-
-                // A real child container can become the floating root without changing its
-                // identity. Transfer only the root-owned geometry; all subtree state remains
-                // on the child NodeKey.
+                // The child becomes the floating root without changing its identity, view or
+                // split alike — the exact reverse of the wrapper `container_split` builds.
+                // Transfer only the root-owned geometry; all subtree state remains on the
+                // child NodeKey.
                 let old_floating_geometry = self
-                    .get_real_container_mut(container_key)?
+                    .get_any_container_mut(container_key)?
                     .floating_geometry
                     .take()?;
-                let child_area = self.get_container(child_key)?.geometry;
+                let child_area = self.node_geometry(child_key)?;
                 let floating_geometry =
                     FloatingGeometry::new(old_floating_geometry.working_area, child_area);
-                self.get_real_container_mut(child_key)?.floating_geometry = Some(floating_geometry);
+                self.get_any_container_mut(child_key)?.floating_geometry = Some(floating_geometry);
                 self.set_parent(child_key, Some(self.root));
                 self.transfer_fullscreen_to_replacement(container_key, child_key);
                 if self.selected_key() == Some(container_key) {
@@ -78,7 +69,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             if !self.replace_child_node(parent_key, container_key, child_key) {
                 return None;
             }
-            if matches!(self.get_node(child_key), Some(NodeData::Leaf(_))) {
+            if self.get_node(child_key).is_some_and(|node| node.is_view()) {
                 self.preserve_leaf_node_geometry(child_key);
             }
             if self.selected_key() == Some(container_key) {
@@ -187,8 +178,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
         match self.get_node(target) {
             Some(NodeData::Workspace(_)) => false,
+            Some(node) if node.is_view() => self.set_layout_of_parent_of(target, layout),
             Some(NodeData::Container(_)) => self.set_layout_for_container_target(target, layout),
-            Some(NodeData::Leaf(_)) => self.set_layout_of_parent_of(target, layout),
             None => false,
         }
     }
@@ -232,7 +223,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         if !self.replace_child_node(parent_key, container_key, child_key) {
             return;
         }
-        if matches!(self.get_node(child_key), Some(NodeData::Leaf(_))) {
+        if self.get_node(child_key).is_some_and(|node| node.is_view()) {
             self.preserve_leaf_node_geometry(child_key);
         }
         if self.selected_key() == Some(container_key) {
@@ -254,11 +245,11 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
         match self.get_node(target) {
             Some(NodeData::Workspace(_)) => None,
-            Some(NodeData::Container(_)) => self.parent_of(target),
-            Some(NodeData::Leaf(_)) => {
+            Some(node) if node.is_view() => {
                 // A branch-root leaf has no owning container, so it is its own target.
                 self.parent_of(target).or(Some(target))
             }
+            Some(NodeData::Container(_)) => self.parent_of(target),
             None => None,
         }
     }
@@ -442,8 +433,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         } else {
             match self.get_node(target) {
                 Some(NodeData::Workspace(_)) => false,
+                Some(node) if node.is_view() => self.split_leaf(target, layout),
                 Some(NodeData::Container(_)) => self.split_selected_container(target, layout),
-                Some(NodeData::Leaf(_)) => self.split_leaf(target, layout),
                 None => false,
             }
         };
@@ -469,7 +460,13 @@ impl<W: LayoutElement> ContainerTree<W> {
         true
     }
 
-    /// Split the focused container in a direction
+    /// Split the focused container in a direction.
+    ///
+    /// Reads the seat's focus without saying which branch it wants, so a workspace whose focus
+    /// is on the other side answers with a node the caller does not own. Every command path
+    /// goes through the branch-scoped [`Self::split_target`] instead; this is the tree's own
+    /// tests asking the short question.
+    #[cfg(test)]
     pub(in crate::layout) fn split_focused(&mut self, layout: Layout) -> bool {
         self.clear_focus_history();
         if self.is_empty() {
@@ -497,6 +494,19 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// parent whose layout had been set explicitly as already-split and do nothing, which the
     /// differential fuzz caught on its first script.
     pub(super) fn split_leaf(&mut self, key: NodeKey, layout: Layout) -> bool {
+        // A floating root never takes the shortcut. `container_split` reads the parent's layout
+        // only to decide whether a lone child can be spared a wrapper, and for a floating child
+        // it replaces that answer with `L_NONE` before comparing, which matches neither
+        // orientation (sway/tree/container.c:1578-1580). There is nothing above it to state an
+        // orientation on: its list is `ws->floating`, which has none.
+        if self.is_floating_root(key) {
+            let mut wrapper = ContainerData::new(layout);
+            wrapper.mark_user_created();
+            return self
+                .wrap_floating_root_in_new_container(key, wrapper)
+                .is_some();
+        }
+
         let Some(parent_key) = self.parent_of(key) else {
             // A branch whose root is the node itself: there is nothing above it to split
             // against, so the node's own orientation is all the command can state.

@@ -40,7 +40,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         is_floating: bool,
     ) -> LayoutTreeNode {
         match self.get_node(node_key) {
-            Some(NodeData::Leaf(tile)) => {
+            Some(node) if node.is_view() => {
+                let tile = node.as_tile().expect("a view holds a tile");
                 let window = tile.window();
 
                 LayoutTreeNode {
@@ -135,28 +136,30 @@ impl<W: LayoutElement> ContainerTree<W> {
         // rectangle out from the parent instead answers where the node *will* be, which is a
         // different question and one nothing asked.
         let rect = match self.get_node(node_key)? {
-            NodeData::Leaf(tile) => self
-                .leaf_layouts()
-                .iter()
-                .find(|info| info.key == node_key)
-                .map(|info| {
-                    let mut rect = info.node_rect;
-                    if !tile.window().pending_sizing_mode().is_fullscreen() {
-                        if let Some(parent) = self.parent_of(node_key) {
-                            if let Some(container) = self.get_container(parent) {
-                                let offset = self.switcher_content_offset(
-                                    container.layout(),
-                                    container.child_count(),
-                                    rect.size.h,
-                                );
-                                rect.loc.y += offset;
-                                rect.size.h = (rect.size.h - offset).max(0.0);
+            node if node.is_view() => {
+                let tile = node.as_tile().expect("a view holds a tile");
+                self.leaf_layouts()
+                    .iter()
+                    .find(|info| info.key == node_key)
+                    .map(|info| {
+                        let mut rect = info.node_rect;
+                        if !tile.window().pending_sizing_mode().is_fullscreen() {
+                            if let Some(parent) = self.parent_of(node_key) {
+                                if let Some(container) = self.get_container(parent) {
+                                    let offset = self.switcher_content_offset(
+                                        container.layout(),
+                                        container.child_count(),
+                                        rect.size.h,
+                                    );
+                                    rect.loc.y += offset;
+                                    rect.size.h = (rect.size.h - offset).max(0.0);
+                                }
                             }
                         }
-                    }
-                    rect
-                })
-                .unwrap_or_default(),
+                        rect
+                    })
+                    .unwrap_or_default()
+            }
             NodeData::Workspace(workspace) => workspace.geometry(),
             NodeData::Container(container) => container.geometry(),
         };

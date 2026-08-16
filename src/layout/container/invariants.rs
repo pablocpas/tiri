@@ -139,8 +139,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         let sizing = match self.get_node(key).expect("visited node must exist") {
             NodeData::Workspace(_) => None,
-            NodeData::Container(container) => Some(&container.sizing),
-            NodeData::Leaf(tile) => Some(tile.node_sizing()),
+            NodeData::Container(container) => Some(container.sizing()),
         };
         if let Some(sizing) = sizing {
             for (axis, percent) in [
@@ -164,7 +163,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         match self.get_node(key).expect("visited node must exist") {
-            NodeData::Leaf(_) => {
+            node if node.is_view() => {
                 leaves.insert(key);
             }
             NodeData::Workspace(_) | NodeData::Container(_) => {
@@ -263,8 +262,10 @@ impl<W: LayoutElement> ContainerTree<W> {
                 "a node must not be listed as a floating root twice"
             );
 
+            // A view is one too: sway's `ws->floating` holds whatever was floated, so the
+            // floating root is a split only when the user built one (sway/tree/container.c:1104).
             let container = self
-                .get_real_container(key)
+                .get_any_container(key)
                 .expect("every floating root must be a container");
             let geometry = container
                 .floating_geometry

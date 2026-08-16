@@ -32,16 +32,14 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(super) fn node_sizing(&self, key: NodeKey) -> Option<&NodeSizing> {
         match self.get_node(key)? {
             NodeData::Workspace(_) => None,
-            NodeData::Container(container) => Some(&container.sizing),
-            NodeData::Leaf(tile) => Some(tile.node_sizing()),
+            NodeData::Container(container) => Some(container.sizing()),
         }
     }
 
     pub(super) fn node_sizing_mut(&mut self, key: NodeKey) -> Option<&mut NodeSizing> {
         match self.get_node_mut(key)? {
             NodeData::Workspace(_) => None,
-            NodeData::Container(container) => Some(&mut container.sizing),
-            NodeData::Leaf(tile) => Some(tile.node_sizing_mut()),
+            NodeData::Container(container) => Some(container.sizing_mut()),
         }
     }
 

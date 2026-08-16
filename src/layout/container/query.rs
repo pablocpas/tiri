@@ -53,7 +53,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         windows: &mut Vec<&'a W>,
     ) {
         match self.get_node(node_key) {
-            Some(NodeData::Leaf(tile)) => windows.push(tile.window()),
+            Some(node) if node.is_view() => {
+                let tile = node.as_tile().expect("a view holds a tile");
+                windows.push(tile.window())
+            }
             Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => {
                 for &child_key in &self
                     .get_container(node_key)
@@ -82,7 +85,10 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     pub(super) fn collect_window_ids_from_node(&self, node_key: NodeKey, ids: &mut Vec<W::Id>) {
         match self.get_node(node_key) {
-            Some(NodeData::Leaf(tile)) => ids.push(tile.window().id().clone()),
+            Some(node) if node.is_view() => {
+                let tile = node.as_tile().expect("a view holds a tile");
+                ids.push(tile.window().id().clone())
+            }
             Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => {
                 for &child_key in &self
                     .get_container(node_key)
@@ -110,7 +116,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         tiles: &mut Vec<&'a Tile<W>>,
     ) {
         match self.get_node(node_key) {
-            Some(NodeData::Leaf(tile)) => tiles.push(tile),
+            Some(node) if node.is_view() => {
+                let tile = node.as_tile().expect("a view holds a tile");
+                tiles.push(tile)
+            }
             Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => {
                 for &child_key in &self
                     .get_container(node_key)
@@ -142,7 +151,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     fn collect_leaf_keys(&self, node_key: NodeKey, out: &mut Vec<NodeKey>) {
         match self.get_node(node_key) {
-            Some(NodeData::Leaf(_)) => out.push(node_key),
+            Some(node) if node.is_view() => out.push(node_key),
             Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => {
                 for &child_key in &self
                     .get_container(node_key)
@@ -169,8 +178,10 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// [`Self::workspace_layout`].
     pub(in crate::layout) fn contains_layout(&self, layout: Layout) -> bool {
         self.nodes.iter().any(|(key, node)| match node {
-            NodeData::Container(container) => key != self.root && container.layout() == layout,
-            NodeData::Workspace(_) | NodeData::Leaf(_) => false,
+            NodeData::Container(container) if !container.is_view() => {
+                key != self.root && container.layout() == layout
+            }
+            NodeData::Workspace(_) | NodeData::Container(_) => false,
         })
     }
 
@@ -201,9 +212,9 @@ impl<W: LayoutElement> ContainerTree<W> {
         let mut out: Vec<(usize, &mut Tile<W>)> = self
             .nodes
             .iter_mut()
-            .filter_map(|(key, node)| match node {
-                NodeData::Leaf(tile) => rank.get(&key).map(|&idx| (idx, tile)),
-                _ => None,
+            .filter_map(|(key, node)| {
+                node.as_tile_mut()
+                    .and_then(|tile| rank.get(&key).map(|&idx| (idx, tile)))
             })
             .collect();
         out.sort_by_key(|(idx, _)| *idx);
@@ -221,13 +232,6 @@ impl<W: LayoutElement> ContainerTree<W> {
             container.geometry(),
             container.child_count(),
         ))
-    }
-
-    /// Whether the container at `key` is a container the user can address: it either holds
-    /// several children or was created by an explicit split.
-    pub(in crate::layout) fn container_is_meaningful_parent(&self, key: NodeKey) -> Option<bool> {
-        let container = self.get_real_container(key)?;
-        Some(container.child_count() > 1 || container.is_user_container())
     }
 
     /// Rect of the `child_idx`-th child of the container at `container_key`.
@@ -325,7 +329,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         results: &mut Vec<Vec<usize>>,
     ) {
         match self.get_node(node_key) {
-            Some(NodeData::Leaf(_)) => results.push(path.clone()),
+            Some(node) if node.is_view() => results.push(path.clone()),
             Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => {
                 let container = self.get_container(node_key).expect("layout parent");
                 for (idx, &child_key) in container.children.iter().enumerate() {

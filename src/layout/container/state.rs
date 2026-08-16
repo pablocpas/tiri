@@ -55,7 +55,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Helper: count windows in a node
     pub(super) fn count_windows_in_node(&self, node_key: NodeKey) -> usize {
         match self.get_node(node_key) {
-            Some(NodeData::Leaf(_)) => 1,
+            Some(node) if node.is_view() => 1,
             Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => self
                 .get_container(node_key)
                 .expect("layout parent")
@@ -97,7 +97,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(super) fn prune_leaf_layouts(&mut self) {
         if self
             .focused_key()
-            .is_some_and(|key| !matches!(self.get_node(key), Some(NodeData::Leaf(_))))
+            .is_some_and(|key| !self.get_node(key).is_some_and(|node| node.is_view()))
         {
             let first = self.first_leaf_key();
             self.seat.redirect_focused_leaf(first);

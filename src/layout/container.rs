@@ -1,10 +1,11 @@
 //! i3-style container tree implementation
 //!
 //! This module implements the hierarchical container system used by i3wm.
-//! Containers form a tree where:
-//! - Leaf nodes contain windows (wrapped in Tiles)
-//! - Internal nodes contain child containers with a specific layout
-//! - Each container can have layouts: SplitH, SplitV, Tabbed, or Stacked
+//! Containers form a tree where every node below the workspace is one kind of thing, sway's
+//! `sway_container`: it is a window when it holds a tile, and a split when it holds children.
+//! Each carries the same state either way — layout (SplitH, SplitV, Tabbed, Stacked), size
+//! fractions, floating geometry — which is what lets a window float, be split, or cross a
+//! workspace without anything having to wrap it first.
 //!
 //! Nodes use process-wide keys so moving a node between workspace stores does not change its
 //! identity. Each workspace still owns its topology and geometry caches. This is the Rust
@@ -221,11 +222,52 @@ const MIN_CHILD_PERCENT: f64 = 0.05;
 #[derive(Debug)]
 pub enum NodeData<W: LayoutElement> {
     /// The workspace node. It owns the tiled child list but is not a container.
+    ///
+    /// sway's `N_WORKSPACE`: a struct of its own, unlike i3 where a workspace is an ordinary
+    /// `Con`. Modelling it as a node anyway is what lets one code path answer the questions
+    /// both of them answer the same way.
     Workspace(WorkspaceData),
-    /// Container node with children (stored as identities)
-    Container(ContainerData),
-    /// Leaf node containing a tile
-    Leaf(Tile<W>),
+    /// Every other node: sway's `N_CONTAINER`.
+    ///
+    /// One `sway_container` is a view when `->view` is set and a split when it has children,
+    /// and it carries the same state either way. A separate leaf type is what left a window
+    /// unable to hold what a container holds — geometry above all, which is why floating a
+    /// window used to need a wrapper around it.
+    Container(ContainerData<W>),
+}
+
+impl<W: LayoutElement> NodeData<W> {
+    /// The view this node is, when it is one.
+    pub(super) fn as_tile(&self) -> Option<&Tile<W>> {
+        match self {
+            NodeData::Container(container) => container.tile(),
+            NodeData::Workspace(_) => None,
+        }
+    }
+
+    pub(super) fn as_tile_mut(&mut self) -> Option<&mut Tile<W>> {
+        match self {
+            NodeData::Container(container) => container.tile_mut(),
+            NodeData::Workspace(_) => None,
+        }
+    }
+
+    /// Whether this node is a window, as opposed to the workspace or a split.
+    pub(super) fn is_view(&self) -> bool {
+        self.as_tile().is_some()
+    }
+
+    /// Whether this node lays out children: a split container, not a view.
+    pub(super) fn is_split(&self) -> bool {
+        matches!(self, NodeData::Container(container) if !container.is_view())
+    }
+
+    pub(super) fn into_tile(self) -> Option<Tile<W>> {
+        match self {
+            NodeData::Container(container) => container.into_tile(),
+            NodeData::Workspace(_) => None,
+        }
+    }
 }
 
 /// Detached subtree used to move container structures across trees.
@@ -264,8 +306,12 @@ pub struct WorkspaceData {
 
 /// Container data stored under a stable node identity.
 #[derive(Debug)]
-pub struct ContainerData {
+pub struct ContainerData<W: LayoutElement> {
     common: LayoutParentData,
+    /// The view this node *is*, when it is one. sway's `sway_container->view`.
+    ///
+    /// A node holding a tile never holds children, and vice versa.
+    tile: Option<Tile<W>>,
     /// Preserve container even if it has a single child (explicit split).
     user_created: bool,
     /// The fractions and resize reference spans belonging to this node itself.
@@ -605,14 +651,57 @@ impl DerefMut for WorkspaceData {
     }
 }
 
-impl ContainerData {
-    /// Create a new real container with given layout.
+impl<W: LayoutElement> ContainerData<W> {
+    /// Create a new split container with given layout.
     pub(super) fn new(layout: Layout) -> Self {
         Self {
             common: LayoutParentData::new(layout),
+            tile: None,
             user_created: false,
             sizing: NodeSizing::default(),
             floating_geometry: None,
+        }
+    }
+
+    /// Create the node a window *is*.
+    pub(super) fn new_view(tile: Tile<W>) -> Self {
+        Self {
+            common: LayoutParentData::new(Layout::SplitH),
+            tile: Some(tile),
+            user_created: false,
+            sizing: NodeSizing::default(),
+            floating_geometry: None,
+        }
+    }
+
+    pub(super) fn tile(&self) -> Option<&Tile<W>> {
+        self.tile.as_ref()
+    }
+
+    pub(super) fn tile_mut(&mut self) -> Option<&mut Tile<W>> {
+        self.tile.as_mut()
+    }
+
+    pub(super) fn is_view(&self) -> bool {
+        self.tile.is_some()
+    }
+
+    pub(super) fn into_tile(self) -> Option<Tile<W>> {
+        self.tile
+    }
+
+    /// Where this node's fractions live: on the tile when it is a view.
+    pub(super) fn sizing(&self) -> &NodeSizing {
+        match &self.tile {
+            Some(tile) => tile.node_sizing(),
+            None => &self.sizing,
+        }
+    }
+
+    pub(super) fn sizing_mut(&mut self) -> &mut NodeSizing {
+        match &mut self.tile {
+            Some(tile) => tile.node_sizing_mut(),
+            None => &mut self.sizing,
         }
     }
 
@@ -634,13 +723,9 @@ impl ContainerData {
     pub(super) fn mark_user_created(&mut self) {
         self.user_created = true;
     }
-
-    pub(super) fn clear_user_created(&mut self) {
-        self.user_created = false;
-    }
 }
 
-impl Deref for ContainerData {
+impl<W: LayoutElement> Deref for ContainerData<W> {
     type Target = LayoutParentData;
 
     fn deref(&self) -> &Self::Target {
@@ -648,7 +733,7 @@ impl Deref for ContainerData {
     }
 }
 
-impl DerefMut for ContainerData {
+impl<W: LayoutElement> DerefMut for ContainerData<W> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.common
     }

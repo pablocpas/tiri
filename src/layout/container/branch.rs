@@ -28,7 +28,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn branch_container(
         &self,
         branch_root: NodeKey,
-    ) -> Option<&ContainerData> {
+    ) -> Option<&ContainerData<W>> {
         self.get_real_container(branch_root)
     }
 

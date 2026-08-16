@@ -32,8 +32,8 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(super) fn get_container(&self, key: NodeKey) -> Option<&LayoutParentData> {
         match self.nodes.get(key)? {
             NodeData::Workspace(workspace) => Some(workspace),
-            NodeData::Container(container) => Some(container),
-            _ => None,
+            NodeData::Container(container) if !container.is_view() => Some(container),
+            NodeData::Container(_) => None,
         }
     }
 
@@ -41,23 +41,41 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(super) fn get_container_mut(&mut self, key: NodeKey) -> Option<&mut LayoutParentData> {
         match self.nodes.get_mut(key)? {
             NodeData::Workspace(workspace) => Some(workspace),
-            NodeData::Container(container) => Some(container),
-            _ => None,
+            NodeData::Container(container) if !container.is_view() => Some(container),
+            NodeData::Container(_) => None,
         }
     }
 
     /// Get a real container, excluding the workspace node.
-    pub(super) fn get_real_container(&self, key: NodeKey) -> Option<&ContainerData> {
+    pub(super) fn get_real_container(&self, key: NodeKey) -> Option<&ContainerData<W>> {
         match self.nodes.get(key)? {
-            NodeData::Container(container) => Some(container),
+            NodeData::Container(container) if !container.is_view() => Some(container),
             _ => None,
         }
     }
 
-    /// Get a mutable real container, excluding the workspace node.
-    pub(super) fn get_real_container_mut(&mut self, key: NodeKey) -> Option<&mut ContainerData> {
+    /// Any node that is not the workspace: a split container or a view alike.
+    ///
+    /// sway's `N_CONTAINER`, which is both. Use this for the state the two share — geometry,
+    /// floating-root membership — and `get_real_container` when only a split will do.
+    pub(super) fn get_any_container(&self, key: NodeKey) -> Option<&ContainerData<W>> {
+        match self.nodes.get(key)? {
+            NodeData::Container(container) => Some(container),
+            NodeData::Workspace(_) => None,
+        }
+    }
+
+    pub(super) fn get_any_container_mut(&mut self, key: NodeKey) -> Option<&mut ContainerData<W>> {
         match self.nodes.get_mut(key)? {
             NodeData::Container(container) => Some(container),
+            NodeData::Workspace(_) => None,
+        }
+    }
+
+    /// Get a mutable real container, excluding the workspace node.
+    pub(super) fn get_real_container_mut(&mut self, key: NodeKey) -> Option<&mut ContainerData<W>> {
+        match self.nodes.get_mut(key)? {
+            NodeData::Container(container) if !container.is_view() => Some(container),
             _ => None,
         }
     }
@@ -149,30 +167,16 @@ impl<W: LayoutElement> ContainerTree<W> {
         &mut self,
         parent_key: NodeKey,
         child_key: NodeKey,
-        wrapper: ContainerData,
+        wrapper: ContainerData<W>,
     ) -> Option<NodeKey> {
         self.wrap_child_in_new_container_with_fullscreen(parent_key, child_key, wrapper, true)
-    }
-
-    /// Add Tiri's implicit floating group without changing the semantic fullscreen owner.
-    ///
-    /// An explicit split creates the real replacement container Sway points fullscreen at.
-    /// A lone floating view is already a container in Sway; this wrapper is scaffolding only,
-    /// so the leaf's stable key and client fullscreen state must remain authoritative.
-    pub(in crate::layout) fn wrap_child_in_implicit_floating_group(
-        &mut self,
-        parent_key: NodeKey,
-        child_key: NodeKey,
-        wrapper: ContainerData,
-    ) -> Option<NodeKey> {
-        self.wrap_child_in_new_container_with_fullscreen(parent_key, child_key, wrapper, false)
     }
 
     fn wrap_child_in_new_container_with_fullscreen(
         &mut self,
         parent_key: NodeKey,
         child_key: NodeKey,
-        mut wrapper: ContainerData,
+        mut wrapper: ContainerData<W>,
         transfer_fullscreen: bool,
     ) -> Option<NodeKey> {
         if wrapper.child_count() != 0 {
@@ -221,19 +225,19 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn node_geometry(&self, key: NodeKey) -> Option<Rectangle<f64, Logical>> {
         match self.get_node(key)? {
             NodeData::Workspace(workspace) => Some(workspace.geometry()),
-            NodeData::Container(container) => Some(container.geometry()),
             // A view directly under tabs keeps the parent's whole pending box. The rendered
             // rectangle beside it has already had the title bar applied, so it cannot answer
             // resize or survive a reparent faithfully.
             //
             // sway/tree/arrange.c:185-211
-            NodeData::Leaf(_) => Some(
+            node if node.is_view() => Some(
                 self.leaf_layouts
                     .iter()
                     .find(|info| info.key == key)
                     .map(|info| info.node_rect)
                     .unwrap_or_default(),
             ),
+            NodeData::Container(container) => Some(container.geometry()),
         }
     }
 
@@ -250,7 +254,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Get tile by key (O(1) access).
     pub(in crate::layout) fn get_tile(&self, key: NodeKey) -> Option<&Tile<W>> {
         match self.nodes.get(key)? {
-            NodeData::Leaf(tile) => Some(tile),
+            NodeData::Container(container) => container.tile(),
             _ => None,
         }
     }
@@ -258,7 +262,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Get mutable tile by key (O(1) access).
     pub(in crate::layout) fn get_tile_mut(&mut self, key: NodeKey) -> Option<&mut Tile<W>> {
         match self.nodes.get_mut(key)? {
-            NodeData::Leaf(tile) => Some(tile),
+            NodeData::Container(container) => container.tile_mut(),
             _ => None,
         }
     }
@@ -267,8 +271,9 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(super) fn insert_node(&mut self, node: NodeData<W>) -> NodeKey {
         let key = match &node {
             NodeData::Workspace(_) => panic!("a workspace node is created with the tree"),
-            NodeData::Container(_) => NodeKey::next(),
-            NodeData::Leaf(tile) => tile.node_key(),
+            NodeData::Container(container) => container
+                .tile()
+                .map_or_else(NodeKey::next, |tile| tile.node_key()),
         };
         self.insert_node_with_key(key, node);
         key

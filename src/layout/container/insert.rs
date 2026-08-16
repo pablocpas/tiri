@@ -33,7 +33,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     ) {
         self.clear_focus_history();
 
-        let tile_key = self.insert_node(NodeData::Leaf(tile));
+        let tile_key = self.insert_node(NodeData::Container(ContainerData::new_view(tile)));
         self.insert_key_as_focus_sibling(branch_root, tile_key, focus);
     }
 
@@ -133,7 +133,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             return;
         };
 
-        let tile_key = self.insert_node(NodeData::Leaf(tile));
+        let tile_key = self.insert_node(NodeData::Container(ContainerData::new_view(tile)));
         self.get_container_mut(parent_key)
             .expect("child_index resolved this parent as a layout parent")
             .insert_child(insert_idx, tile_key);
@@ -163,7 +163,10 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         };
 
-        if matches!(self.get_node(root_child_key), Some(NodeData::Leaf(_))) {
+        if self
+            .get_node(root_child_key)
+            .is_some_and(|node| node.is_view())
+        {
             // Wrap the root leaf child in a vertical container so tiles can stack inside it.
             let Some(_) = self.wrap_child_in_new_container(
                 root_key,
@@ -190,7 +193,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let insert_at = tile_idx.unwrap_or(root_child_container.children.len());
         let insert_at = insert_at.min(root_child_container.children.len());
 
-        let tile_key = self.insert_node(NodeData::Leaf(tile));
+        let tile_key = self.insert_node(NodeData::Container(ContainerData::new_view(tile)));
 
         if let Some(root_child_container) = self.get_container_mut(root_child_key) {
             root_child_container.insert_child(insert_at, tile_key);
@@ -250,15 +253,13 @@ impl<W: LayoutElement> ContainerTree<W> {
         key: NodeKey,
         tile: Tile<W>,
     ) -> Option<Tile<W>> {
-        match self.get_node_mut(key)? {
-            NodeData::Leaf(existing) => Some(std::mem::replace(existing, tile)),
-            _ => None,
-        }
+        let existing = self.get_node_mut(key)?.as_tile_mut()?;
+        Some(std::mem::replace(existing, tile))
     }
 
     /// Whether `key` addresses a leaf (window) node.
     pub(in crate::layout) fn is_leaf(&self, key: NodeKey) -> bool {
-        matches!(self.get_node(key), Some(NodeData::Leaf(_)))
+        self.get_node(key).is_some_and(|node| node.is_view())
     }
 
     pub(in crate::layout) fn insert_leaf_with_parent_info(
@@ -268,7 +269,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         tile: Tile<W>,
         focus: bool,
     ) -> bool {
-        let tile_key = self.insert_node(NodeData::Leaf(tile));
+        let tile_key = self.insert_node(NodeData::Container(ContainerData::new_view(tile)));
         self.insert_key_with_parent_info(branch_root, info, tile_key, focus)
     }
 
@@ -378,7 +379,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             } else {
                 target_idx + 1
             };
-            let tile_key = self.insert_node(NodeData::Leaf(tile));
+            let tile_key = self.insert_node(NodeData::Container(ContainerData::new_view(tile)));
 
             let container = self
                 .get_container_mut(parent_key)
@@ -392,7 +393,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         // Otherwise wrap the target and the new tile in a fresh split container that
         // replaces the target in its parent.
-        let tile_key = self.insert_node(NodeData::Leaf(tile));
+        let tile_key = self.insert_node(NodeData::Container(ContainerData::new_view(tile)));
         let new_container_key = self.new_split_pair_container(target_key, tile_key, direction);
 
         self.replace_child_node(parent_key, target_key, new_container_key);
@@ -418,7 +419,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             self.wrap_workspace_children(previous, direction.split_layout());
         }
 
-        let tile_key = self.insert_node(NodeData::Leaf(tile));
+        let tile_key = self.insert_node(NodeData::Container(ContainerData::new_view(tile)));
         let insert_idx = match direction.is_leading() {
             true => 0,
             false => self

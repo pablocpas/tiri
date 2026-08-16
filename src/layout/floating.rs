@@ -96,8 +96,9 @@ struct FloatingContainer {
 
 /// Semantic provenance of a floating root.
 ///
-/// An implicit one-window group is Tiri's addressing scaffolding. The other two variants are
-/// real containers that sway also publishes, even when they contain only one window.
+/// A one-window group is the window: sway floats a view as itself and publishes it as a
+/// window, so there is no container to report. The other two variants are real containers that
+/// sway also publishes, even when they contain only one window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FloatingRootKind {
     ImplicitWindowGroup,
@@ -893,11 +894,16 @@ impl<W: LayoutElement> FloatingSpace<W> {
     ) {
         let hint = tile.floating_reinsert_hint.take();
 
-        if let Some((container_id, insert_info)) = hint {
+        // A tile that was the whole group has no position inside one to be restored to, and
+        // the group it was went away with it; it comes back the way it left, as its own. Nor
+        // can a remembered position be restored into a group that is now one window: there is
+        // no container there to hold two.
+        if let Some((container_id, Some(insert_info))) = hint {
             if let Some(idx) = self
                 .containers
                 .iter()
                 .position(|container| container.id == container_id)
+                .filter(|idx| !space.branch_root_is_lone_window(self.containers[*idx].root))
             {
                 self.add_tile_to_container_idx_with_parent_info(
                     space,
@@ -1493,7 +1499,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         Self::store_floating_size_for_restore(&mut tile);
         // Store the floating position.
         tile.floating_pos = Some(container_pos);
-        tile.floating_reinsert_hint = insert_hint.map(|info| (container_id, info));
+        tile.floating_reinsert_hint = Some((container_id, insert_hint));
 
         let width = ColumnWidth::Fixed(tile.tile_expected_or_current_size().w as i32);
         RemovedTile {
@@ -2118,11 +2124,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
         self.containers.len() > 1
             && self
                 .active_container_idx(space)
-                .is_some_and(|idx| space.branch_root_is_implicit(self.containers[idx].root))
+                .is_some_and(|idx| space.branch_root_is_lone_window(self.containers[idx].root))
             && self
                 .containers
                 .iter()
-                .all(|container| space.branch_root_is_implicit(container.root))
+                .all(|container| space.branch_root_is_lone_window(container.root))
     }
 
     pub fn focus_left(&mut self, space: &mut TreeSpace<W>) -> bool {
@@ -2248,33 +2254,16 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return true;
         }
 
-        // The floating root is an ordinary sway container. Once it holds focus, the next
-        // parent is the workspace, which Workspace represents outside ContainerTree; leave
-        // the root selected so command routing still knows which floating group was raised.
-        if space.tree_mut().selected_container_key() == Some(root) {
-            return space.tree_mut().select_parent();
-        }
-
         // One step, not a walk: `select_parent_in` stops at the branch root, so there is
-        // never a second ancestor to consider. This was written as a loop that every path
-        // left on its first pass.
-        if !space.tree_mut().select_parent_in(root) {
-            return false;
-        }
-
-        let Some(key) = space.tree_mut().selected_container_key() else {
-            return false;
-        };
-        let meaningful = space
-            .tree_mut()
-            .container_is_meaningful_parent(key)
-            .unwrap_or(false);
-        if key != root || meaningful {
+        // never a second ancestor to consider inside the group.
+        if space.tree_mut().select_parent_in(root) {
             return true;
         }
 
-        // The root around a lone floating view exists only because tiri needs a node for the
-        // entry in ws->floating. sway does not expose an extra focus-parent stop for it.
+        // It declined, so the position already *is* the root, and above a floating root is
+        // the workspace — which Workspace represents outside ContainerTree. A lone floating
+        // window is its own root, so this is the first step from it too: sway has no extra
+        // stop for a view that floats, because there is no container around it to stop on.
         space.tree_mut().select_parent()
     }
 
@@ -2434,7 +2423,14 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     fn split_container(&mut self, space: &mut TreeSpace<W>, idx: usize, layout: Layout) -> bool {
         let root = self.containers[idx].root;
-        space.split_in_branch(root, layout)
+        if !space.split_in_branch(root, layout) {
+            return false;
+        }
+        // Splitting a floating root puts a new container in its slot, so the group is addressed
+        // by a different key afterwards — the same handover `split_none` does in reverse. Asked
+        // of the old root, which is now an ordinary child, this answers with the new one.
+        self.containers[idx].root = space.tree().branch_root(root);
+        true
     }
 
     pub fn set_layout_mode(&mut self, space: &mut TreeSpace<W>, layout: Layout) {

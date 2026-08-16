@@ -136,7 +136,8 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         let indent = "  ".repeat(path.len());
         match self.get_node(node_key) {
-            Some(NodeData::Leaf(tile)) => {
+            Some(node) if node.is_view() => {
+                let tile = node.as_tile().expect("a view holds a tile");
                 let focused = if *path == focused_path { " *" } else { "" };
                 let _ = writeln!(out, "{indent}Window {}{focused}", tile.window().id());
             }

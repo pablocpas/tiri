@@ -64,21 +64,24 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     pub(in crate::layout) fn selected_container_key(&self) -> Option<NodeKey> {
         let key = self.selected_key()?;
-        matches!(self.get_node(key), Some(NodeData::Container(_))).then_some(key)
+        // A split, not a view. sway's containers are one type and this question is still two:
+        // `focus parent` stopping on the thing a window is in is what the callers mean, and a
+        // window is not something a window is in.
+        self.get_node(key)
+            .is_some_and(|node| node.is_split())
+            .then_some(key)
     }
 
     /// The selected node that lays out children, including the workspace itself.
     ///
     /// Command semantics still use [`Self::selected_container_key`] when they require a real
     /// container. Rendering uses this broader question so selecting the workspace through
-    /// `focus parent` remains visible without pretending that it is a `ContainerData`.
+    /// `focus parent` remains visible without pretending that it is a `ContainerData<W>`.
     pub(in crate::layout) fn selected_layout_parent_key(&self) -> Option<NodeKey> {
         let key = self.selected_key()?;
-        matches!(
-            self.get_node(key),
-            Some(NodeData::Workspace(_) | NodeData::Container(_))
-        )
-        .then_some(key)
+        self.get_node(key)
+            .is_some_and(|node| node.is_split() || matches!(node, NodeData::Workspace(_)))
+            .then_some(key)
     }
 
     /// sway's `seat_set_focus` on a container: it becomes the selection *and* the most recent
@@ -92,7 +95,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let chain = self.focus_chain(key);
         let leaf = if key == self.root {
             self.focused_key()
-                .filter(|focused| matches!(self.get_node(*focused), Some(NodeData::Leaf(_))))
+                .filter(|focused| self.get_node(*focused).is_some_and(|node| node.is_view()))
                 .or_else(|| self.focus_inactive_anywhere())
         } else {
             self.leaf_under_key(key)
@@ -365,7 +368,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// every level, and part ways exactly where it does not — a subtree the focus left by
     /// some route the per-level walk cannot retrace.
     pub(in crate::layout) fn focus_inactive_view(&self, key: NodeKey) -> Option<NodeKey> {
-        if matches!(self.get_node(key), Some(NodeData::Leaf(_))) {
+        if self.get_node(key).is_some_and(|node| node.is_view()) {
             return Some(key);
         }
         self.focus_inactive_view_from_order(key)
@@ -378,7 +381,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         &self,
         branch_root: NodeKey,
     ) -> Option<NodeKey> {
-        if matches!(self.get_node(branch_root), Some(NodeData::Leaf(_))) {
+        if self
+            .get_node(branch_root)
+            .is_some_and(|node| node.is_view())
+        {
             return Some(branch_root);
         }
         self.seat
@@ -386,7 +392,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             .iter()
             .copied()
             .find(|candidate| {
-                matches!(self.get_node(*candidate), Some(NodeData::Leaf(_)))
+                self.get_node(*candidate).is_some_and(|node| node.is_view())
                     && self.branch_root(*candidate) == branch_root
             })
             .or_else(|| self.leaf_under_key(branch_root))
@@ -405,7 +411,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     fn focus_inactive_view_from_order(&self, key: NodeKey) -> Option<NodeKey> {
         self.seat.order().iter().copied().find(|candidate| {
-            matches!(self.get_node(*candidate), Some(NodeData::Leaf(_)))
+            self.get_node(*candidate).is_some_and(|node| node.is_view())
                 && self.is_descendant(*candidate, key)
         })
     }
@@ -557,7 +563,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             .iter()
             .copied()
             .find(|candidate| {
-                matches!(self.get_node(*candidate), Some(NodeData::Leaf(_)))
+                self.get_node(*candidate).is_some_and(|node| node.is_view())
                     && self.nodes.contains_key(*candidate)
             })
             .or_else(|| self.focus_inactive_view(root))

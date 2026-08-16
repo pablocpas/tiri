@@ -93,8 +93,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
         let preserve_selected_container = match self.get_node(target) {
             Some(NodeData::Workspace(_)) => return None,
+            Some(node) if node.is_view() => false,
             Some(NodeData::Container(_)) => true,
-            Some(NodeData::Leaf(_)) => false,
             None => return None,
         };
 
@@ -234,7 +234,10 @@ impl<W: LayoutElement> ContainerTree<W> {
             return;
         };
 
-        if matches!(self.get_node(destination_key), Some(NodeData::Leaf(_))) {
+        if self
+            .get_node(destination_key)
+            .is_some_and(|node| node.is_view())
+        {
             let Some(destination_idx) = self.child_index(destination_parent_key, destination_key)
             else {
                 return;

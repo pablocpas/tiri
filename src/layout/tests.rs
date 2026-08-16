@@ -3628,3 +3628,56 @@ fn expelling_from_a_fullscreen_floating_root_updates_its_ipc_kind() {
         Op::ConsumeOrExpelWindowLeft { id: None },
     ]);
 }
+
+#[test]
+fn opening_next_to_a_lone_floating_window_does_not_group_into_it() {
+    // A floating window with no container around it has nothing for a new tile to join, so
+    // the tile opens as its own group. Asking whether the *focused* container took splits
+    // answered for a different window entirely — one that an expel had just wrapped — and the
+    // insert then addressed a container the named window does not have, leaving the new node
+    // in the arena with no parent. Found by the ops fuzz.
+    let mut floating_4 = TestWindowParams::new(4);
+    floating_4.is_floating = true;
+    let mut floating_1 = TestWindowParams::new(1);
+    floating_1.is_floating = true;
+
+    check_ops([
+        Op::AddWindow { params: floating_4 },
+        Op::AddWindow { params: floating_1 },
+        Op::ConsumeOrExpelWindowRight { id: Some(4) },
+        Op::AddWindowNextTo {
+            params: TestWindowParams::new(2),
+            next_to_id: 1,
+        },
+    ]);
+}
+
+#[test]
+fn moving_a_floating_window_across_workspaces_does_not_orphan_it() {
+    // The tile carries where it sat inside its floating group, and that position means
+    // nothing in the workspace it lands in: the path resolved onto a window there, which
+    // holds a tile and never children, so the insert quietly did nothing while the node's
+    // parent had already been written. The node stayed in the arena with no one listing it.
+    // Found by the ops fuzz.
+    let mut floating_1 = TestWindowParams::new(1);
+    floating_1.is_floating = true;
+    let mut floating_2 = TestWindowParams::new(2);
+    floating_2.is_floating = true;
+
+    check_ops([
+        Op::AddWindow { params: floating_1 },
+        Op::FullscreenWindow(1),
+        Op::AddOutput(1),
+        Op::AddNamedWorkspace {
+            ws_name: 3,
+            output_name: None,
+            layout_config: None,
+        },
+        Op::AddWindowToNamedWorkspace {
+            params: floating_2,
+            ws_name: 3,
+        },
+        Op::ConsumeOrExpelWindowLeft { id: None },
+        Op::MoveWindowToWorkspaceUp(false),
+    ]);
+}

@@ -86,7 +86,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         if tab_idx == 0 {
-            if let Some(NodeData::Leaf(tile)) = self.get_node(container_key) {
+            if let Some(tile) = self.get_node(container_key).and_then(|node| node.as_tile()) {
                 return Some(tile.window());
             }
         }
@@ -111,7 +111,10 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     pub(super) fn focused_window_in_subtree(&self, node_key: NodeKey) -> Option<&W> {
         match self.get_node(node_key) {
-            Some(NodeData::Leaf(tile)) => Some(tile.window()),
+            Some(node) if node.is_view() => {
+                let tile = node.as_tile().expect("a view holds a tile");
+                Some(tile.window())
+            }
             Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => {
                 let child_key = self.active_child(node_key)?;
                 self.focused_window_in_subtree(child_key)
@@ -122,7 +125,10 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     pub(super) fn subtree_has_urgent(&self, node_key: NodeKey) -> bool {
         match self.get_node(node_key) {
-            Some(NodeData::Leaf(tile)) => tile.window().is_urgent(),
+            Some(node) if node.is_view() => {
+                let tile = node.as_tile().expect("a view holds a tile");
+                tile.window().is_urgent()
+            }
             Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => self
                 .get_container(node_key)
                 .expect("layout parent")

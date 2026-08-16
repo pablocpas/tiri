@@ -469,12 +469,14 @@ impl<W: LayoutElement> ContainerTree<W> {
             .nodes
             .keys()
             .filter_map(|key| {
-                matches!(self.get_node(key), Some(NodeData::Leaf(_))).then(|| {
-                    Some((
-                        key,
-                        (self.branch_relative_path(key)?, self.branch_root(key)),
-                    ))
-                })?
+                self.get_node(key)
+                    .is_some_and(|node| node.is_view())
+                    .then(|| {
+                        Some((
+                            key,
+                            (self.branch_relative_path(key)?, self.branch_root(key)),
+                        ))
+                    })?
             })
             .collect();
         self.leaf_layouts.retain_mut(|info| {
@@ -542,7 +544,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let visibility: HashMap<NodeKey, bool> = self
             .nodes
             .keys()
-            .filter(|key| matches!(self.get_node(*key), Some(NodeData::Leaf(_))))
+            .filter(|key| self.get_node(*key).is_some_and(|node| node.is_view()))
             .map(|key| (key, self.focus_makes_leaf_visible(key)))
             .collect();
         let refresh = |layouts: &mut Vec<LeafLayoutInfo>| {
@@ -946,7 +948,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         walk: &mut LayoutWalk<'_>,
     ) {
         let (layout, child_count, focused_idx, percents) = match self.get_node(node_key) {
-            Some(NodeData::Leaf(tile)) => {
+            Some(node) if node.is_view() => {
+                let tile = node.as_tile().expect("a view holds a tile");
                 let (offset, show_titlebar) = if tile.window().pending_sizing_mode().is_fullscreen()
                 {
                     (0.0, false)
@@ -1031,7 +1034,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     //
                     // sway/tree/arrange.c:185-211
                     let child_node_rect =
-                        if matches!(self.get_node(child_key), Some(NodeData::Leaf(_))) {
+                        if self.get_node(child_key).is_some_and(|node| node.is_view()) {
                             rect
                         } else {
                             child_rect
@@ -1253,7 +1256,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             return (0.0, false);
         }
 
-        let is_leaf = matches!(self.get_node(child_key), Some(NodeData::Leaf(_)));
+        let is_leaf = self.get_node(child_key).is_some_and(|node| node.is_view());
         if is_leaf {
             (split_bar_height, true)
         } else {
