@@ -1,10 +1,10 @@
 use smithay::utils::{Logical, Rectangle};
 
-use super::{ContainerTree, Layout, NodeData, NodeKey};
+use super::{ContainerArena, Layout, NodeData, NodeKey};
 use crate::layout::LayoutElement;
 use tiri_ipc::{LayoutTreeLayout, LayoutTreeNode, LayoutTreeRect};
 
-impl<W: LayoutElement> ContainerTree<W> {
+impl<W: LayoutElement> ContainerArena<W> {
     pub(in crate::layout) fn layout_tree(&self) -> Option<LayoutTreeNode> {
         let root_key = self.root_node_key()?;
         let focused_key = self.selected_node_key();

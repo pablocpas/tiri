@@ -6,7 +6,7 @@ use smithay::utils::Logical;
 use smithay::utils::Rectangle;
 use smithay::utils::Size;
 
-use super::ContainerTree;
+use super::ContainerArena;
 use super::Layout;
 use super::LayoutElement;
 use super::LeafLayoutInfo;
@@ -16,7 +16,23 @@ use crate::layout::tile::Tile;
 use crate::layout::Options;
 use crate::utils::transaction::Transaction;
 
-impl<W: LayoutElement> ContainerTree<W> {
+impl<W: LayoutElement> ContainerArena<W> {
+    pub(in crate::layout) fn view_size(&self) -> Size<f64, Logical> {
+        self.view_size
+    }
+
+    pub(in crate::layout) fn working_area(&self) -> Rectangle<f64, Logical> {
+        self.working_area
+    }
+
+    pub(in crate::layout) fn scale(&self) -> f64 {
+        self.scale
+    }
+
+    pub(in crate::layout) fn options(&self) -> &Rc<Options> {
+        &self.options
+    }
+
     /// Get the currently focused window
     pub(in crate::layout) fn focused_window(&self) -> Option<&W> {
         let key = self.focused_key()?;

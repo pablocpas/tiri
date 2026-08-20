@@ -5,8 +5,8 @@
 //! concepts.
 
 use super::container::DetachedNode;
+use super::container_tree::RootTilingSubtree;
 use super::tile::Tile;
-use super::tree_space::RootTilingSubtree;
 use super::LayoutElement;
 
 /// Legacy wrapper preserving the old niri-inspired "column" vocabulary at public seams.

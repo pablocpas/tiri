@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
-use super::{ContainerTree, Layout, LayoutElement, LeafLayoutInfo, NodeData, NodeKey};
+use super::{ContainerArena, Layout, LayoutElement, LeafLayoutInfo, NodeData, NodeKey};
 
-impl<W: LayoutElement> ContainerTree<W> {
+impl<W: LayoutElement> ContainerArena<W> {
     pub(in crate::layout) fn verify_invariants(&self) {
         let root_key = self.root;
 
@@ -235,7 +235,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 }
 
-impl<W: LayoutElement> ContainerTree<W> {
+impl<W: LayoutElement> ContainerArena<W> {
     /// The seat's order is the workspace's one focus cache, and everything reads through it.
     ///
     /// It is sway's `seat->focus_stack`, which its new-node and destroy listeners keep as

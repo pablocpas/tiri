@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use smithay::utils::Logical;
 use smithay::utils::Rectangle;
 
-use super::ContainerTree;
+use super::ContainerArena;
 use super::Layout;
 use super::LayoutElement;
 use super::NodeData;
@@ -13,7 +13,7 @@ use super::NodeKey;
 use super::ResizeReach;
 use crate::layout::tile::Tile;
 
-impl<W: LayoutElement> ContainerTree<W> {
+impl<W: LayoutElement> ContainerArena<W> {
     /// Get all windows in the tree (depth-first traversal)
     pub(in crate::layout) fn all_windows(&self) -> Vec<&W> {
         let mut windows = Vec::new();

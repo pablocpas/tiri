@@ -1,8 +1,8 @@
 //! Workspace-local inactive tiling focus, read directly from the seat order.
 
-use super::{ContainerTree, InactiveTilingReference, LayoutElement, NodeData, NodeKey};
+use super::{ContainerArena, InactiveTilingReference, LayoutElement, NodeData, NodeKey};
 
-impl<W: LayoutElement> ContainerTree<W> {
+impl<W: LayoutElement> ContainerArena<W> {
     /// The most recent node that still belongs to `ws->tiling`.
     ///
     /// Tiling and floating share this arena and this seat order. Floating a subtree removes

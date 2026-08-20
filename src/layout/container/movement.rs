@@ -10,7 +10,7 @@
 //! workspace's children by hand at the top level. Each disagreed with sway somewhere, and
 //! the disagreements did not share a cause, which is what made them look like eight bugs.
 
-use super::ContainerTree;
+use super::ContainerArena;
 use super::Direction;
 use super::LayoutElement;
 use super::NodeData;
@@ -39,7 +39,7 @@ enum ReparentFractions {
     PreserveAndUnset(NodeKey),
 }
 
-impl<W: LayoutElement> ContainerTree<W> {
+impl<W: LayoutElement> ContainerArena<W> {
     /// Move the current command target in a direction.
     #[cfg(test)]
     pub(in crate::layout) fn move_in_direction(&mut self, direction: Direction) -> bool {
@@ -121,7 +121,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             // check dissolved a fullscreen wrapper when a leaf tried to move across it.
             //
             // sway/commands/move.c:324-328
-            if self.fullscreen_key == Some(current) || self.is_floating(current) {
+            if self.fullscreen_key == Some(current) || self.is_floating_root(current) {
                 return false;
             }
             let Some(parent_key) = self.parent_of(current) else {

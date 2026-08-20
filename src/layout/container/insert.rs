@@ -1,7 +1,7 @@
 //! Window and subtree insertion at focus, path or split targets.
 
+use super::ContainerArena;
 use super::ContainerData;
-use super::ContainerTree;
 use super::DetachedNode;
 use super::Direction;
 use super::InsertParentInfo;
@@ -11,7 +11,7 @@ use super::NodeData;
 use super::NodeKey;
 use crate::layout::tile::Tile;
 
-impl<W: LayoutElement> ContainerTree<W> {
+impl<W: LayoutElement> ContainerArena<W> {
     /// Insert a window into the tree, focusing it afterwards.
     #[cfg(test)]
     pub(in crate::layout) fn insert_window(&mut self, tile: Tile<W>) {

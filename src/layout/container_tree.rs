@@ -1,33 +1,32 @@
-//! The workspace's layout space: the arena its windows live in, and the tiled side.
+//! Container ownership shared by the tiled and floating sides of a workspace.
 //!
 //! sway's workspace holds two lists — `ws->tiling` and `ws->floating` — over one set of
 //! containers, and the same container moves between them without being rebuilt. This is that
-//! set. Windows sit in a tree whose internal nodes are containers with a layout mode (SplitH,
+//! container tree. Windows sit in a tree whose internal nodes have a layout mode (SplitH,
 //! SplitV, Tabbed, Stacked) and whose leaves are tiles; the tiled side hangs off the
 //! workspace root and each floating group is a root of its own.
 //!
 //! Node access is O(1), and node keys remain stable when a subtree changes workspace or
 //! output.
 //!
-//! What lives here beyond the arena is what the workspace answers for as a whole: its box,
-//! its scale, its options, its fullscreen, its closing animations. The floating side's own
-//! state — where each group sits, what order they stack in — is in [`super::floating`].
+//! Render caches derived from the tree live beside it because both branches consume the same
+//! projections. Tiled interaction state and floating placement/stacking live in
+//! [`super::tiling_space`] and [`super::floating`] respectively.
 
 use std::cell::{RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::time::Duration;
 
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
 use tiri_config::utils::MergeWith as _;
-use tiri_config::{Border, HideEdgeBorders, PresetSize, TabBar};
+use tiri_config::{Border, Color, HideEdgeBorders, PresetSize, TabBar};
 use tiri_ipc::{ColumnDisplay, LayoutTreeNode, LayoutTreeRect, SizeChange};
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::container::{
-    ContainerMetrics, ContainerTree, DetachedNode, Direction, Layout, LeafLayoutInfo, NodeKey,
+    ContainerArena, ContainerMetrics, DetachedNode, Direction, Layout, LeafLayoutInfo, NodeKey,
     ResizeDelta, ResizeReach, ResizeSpace, ResizeTarget,
 };
 use super::focus_ring::{
@@ -37,7 +36,7 @@ use super::focus_ring::{
 use super::legacy_column::{Column, ColumnWidth};
 use super::monitor::{InsertPosition, SplitIndicator};
 use super::tile::{Tile, TileRenderElement};
-use super::viewport::FixedViewport;
+use super::tiling_space::{InteractiveResizeState, TilingSpace};
 use super::{
     ConfigureIntent, InteractiveResizeData, LayoutCycleEntry, LayoutElement, Options, RemovedTile,
     ResizeAxis, ResizeHit, ResizeRequest,
@@ -71,28 +70,31 @@ const SWAY_MIN_TILED_HEIGHT: f64 = 60.0;
 // MAIN STRUCTURES - i3-style container tree implementation
 // ============================================================================
 
-/// i3-style tiling space using hierarchical containers
+/// Workspace-wide container arena and the state shared by its tiled and floating branches.
+///
+/// This is deliberately not the tiled side: both sides store their nodes in `arena`, share the
+/// tab-bar cache and render projections, and keep stable node identity while crossing sides.
+/// Tiled-only interaction state lives in [`TilingSpace`].
 #[derive(Debug)]
-pub struct TreeSpace<W: LayoutElement> {
-    /// Container tree managing window layout
-    tree: ContainerTree<W>,
-    /// Workspace-level layout state (sway workspace->layout equivalent).
-    /// Previous workspace split layout (sway workspace->prev_split_layout equivalent).
-    /// View size (output size)
-    view_size: Size<f64, Logical>,
-    /// Working area (view_size minus gaps/bars)
-    working_area: Rectangle<f64, Logical>,
-    /// Viewport behavior. Fixed for i3/sway tiling; kept as a component to isolate niri merge
-    /// points that still talk about viewport gestures.
-    viewport: FixedViewport,
-    /// Display scale
-    scale: f64,
+pub struct ContainerTree<W: LayoutElement> {
+    /// Stable arena shared by the tiled and floating branches.
+    arena: ContainerArena<W>,
     /// Animation clock
     clock: Clock,
-    /// Ongoing interactive resize.
-    interactive_resize: Option<InteractiveResizeState<W>>,
-    /// Layout options
-    options: Rc<Options>,
+    /// Derived render data shared by both branches of the arena.
+    render: ContainerRenderState,
+    /// Whether this workspace is the active one.
+    is_active: bool,
+    /// Which of the workspace's two sides holds the focus.
+    floating_has_focus: bool,
+}
+
+/// Render caches derived from the shared arena.
+///
+/// Keeping these together makes their ownership explicit without giving either the tiled or
+/// floating side a second copy. None of this state is part of the container topology.
+#[derive(Debug)]
+struct ContainerRenderState {
     /// Tab bars already drawn, for both sides of the workspace.
     ///
     /// One cache, because a node key is unique across the arena; two would have to agree on
@@ -100,18 +102,6 @@ pub struct TreeSpace<W: LayoutElement> {
     /// their container leaves the tree, rather than when a frame does not redraw them: a
     /// fullscreen draws no bars at all and is not a reason to forget every one of them.
     tab_bar_cache: RefCell<HashMap<NodeKey, TabBarCacheEntry>>,
-    /// Whether this workspace is the active one.
-    is_active: bool,
-    /// Which of the workspace's two sides holds the focus.
-    ///
-    /// "Active" is not one value for the workspace: a tab bar is drawn focused when the side
-    /// it is on is the side with focus, and only one side can be. Keeping the workspace's own
-    /// activeness beside which side has it lets both sides ask the same question and get
-    /// their own answer — which is what two `is_active` fields were for before they were
-    /// merged into one that could only be right for whichever side wrote it last.
-    floating_has_focus: bool,
-    /// Windows in the closing animation.
-    closing_windows: Vec<ClosingWindow>,
     /// Cached offscreen texture for overview rendering.
     overview_offscreen: OffscreenBuffer,
     /// Stable workspace-sized background used under the overview offscreen.
@@ -122,6 +112,19 @@ pub struct TreeSpace<W: LayoutElement> {
     render_layout_scratch: Vec<LeafFrameInfo>,
     /// Edge projection parallel to `render_layout_scratch`.
     render_edges_scratch: Vec<(FocusRingEdges, Option<FocusRingIndicatorEdge>)>,
+}
+
+impl ContainerRenderState {
+    fn new(view_size: Size<f64, Logical>, background_color: Color) -> Self {
+        Self {
+            tab_bar_cache: RefCell::new(HashMap::new()),
+            overview_offscreen: OffscreenBuffer::default(),
+            overview_background: SolidColorBuffer::new(view_size, background_color),
+            state_layout_scratch: Vec::new(),
+            render_layout_scratch: Vec::new(),
+            render_edges_scratch: Vec::new(),
+        }
+    }
 }
 
 /// A leaf identified for hit-testing: stable node identity and on-screen rect.
@@ -213,16 +216,8 @@ impl<I: PartialEq> FullscreenRenderState<I> {
     }
 }
 
-#[derive(Debug, Clone)]
-struct InteractiveResizeState<W: LayoutElement> {
-    window: W::Id,
-    data: InteractiveResizeData,
-    horizontal: Option<ResizeTarget>,
-    vertical: Option<ResizeTarget>,
-}
-
 niri_render_elements! {
-    TreeSpaceRenderElement<R> => {
+    ContainerTreeRenderElement<R> => {
         Tile = TileRenderElement<R>,
         TabBar = PrimaryGpuTextureRenderElement,
         ClosingWindow = ClosingWindowRenderElement,
@@ -250,13 +245,13 @@ pub enum WindowHeight {
 }
 
 // ============================================================================
-// TreeSpace Implementation
+// ContainerTree Implementation
 // ============================================================================
 
-impl<W: LayoutElement> TreeSpace<W> {
+impl<W: LayoutElement> ContainerTree<W> {
     fn tiled_window_key(&self, id: &W::Id) -> Option<NodeKey> {
-        let key = self.tree.window_key(id)?;
-        (self.tree.branch_root(key) == self.tree.workspace_root()).then_some(key)
+        let key = self.arena.window_key(id)?;
+        (self.arena.branch_root(key) == self.arena.workspace_root()).then_some(key)
     }
 
     /// Match sway's `view_map` arrange boundary after inserting a new tiled window.
@@ -266,22 +261,22 @@ impl<W: LayoutElement> TreeSpace<W> {
     /// whole workspace instead. Keeping this decision here also avoids reconstructing a path:
     /// the inserted leaf and its parent are already stable `NodeKey`s.
     fn layout_after_tiled_insert(&mut self, id: &W::Id) {
-        let root = self.tree.workspace_root();
+        let root = self.arena.workspace_root();
         let parent = self
             .tiled_window_key(id)
-            .and_then(|key| self.tree.parent_of(key));
+            .and_then(|key| self.arena.parent_of(key));
 
         if let Some(parent) = parent.filter(|parent| *parent != root) {
-            self.tree.layout_container_subtree(parent);
+            self.arena.layout_container_subtree(parent);
         } else {
-            self.tree.layout();
+            self.arena.layout();
         }
     }
 
     fn render_fullscreen_window(&self) -> Option<W::Id> {
         let id = self.pending_fullscreen_window()?;
         let key = self.tiled_window_key(id)?;
-        let tile = self.tree.get_tile(key)?;
+        let tile = self.arena.get_tile(key)?;
         tile.window()
             .sizing_mode()
             .is_fullscreen()
@@ -289,8 +284,8 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     fn tiled_fullscreen_key(&self) -> Option<NodeKey> {
-        let key = self.tree.fullscreen_key()?;
-        (self.tree.holds_node(key) && self.tree.branch_root(key) == self.tree.workspace_root())
+        let key = self.arena.fullscreen_key()?;
+        (self.arena.holds_node(key) && self.arena.branch_root(key) == self.arena.workspace_root())
             .then_some(key)
     }
 
@@ -300,7 +295,7 @@ impl<W: LayoutElement> TreeSpace<W> {
     /// ordinary tiled clients and the compositor makes their branch exclusive itself.
     fn render_fullscreen_container(&self) -> Option<NodeKey> {
         let key = self.tiled_fullscreen_key()?;
-        self.tree.container_info(key)?;
+        self.arena.container_info(key)?;
         Some(key)
     }
 
@@ -325,7 +320,7 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     fn pending_fullscreen_window(&self) -> Option<&W::Id> {
         self.tiled_fullscreen_key()?;
-        self.tree.fullscreen_leaf_window_id()
+        self.arena.fullscreen_leaf_window_id()
     }
 
     /// The workspace's arena, holding both of its sides.
@@ -333,31 +328,31 @@ impl<W: LayoutElement> TreeSpace<W> {
     /// sway keeps one workspace with two lists over one set of containers. This type is that
     /// workspace's set, which is why the floating side asks it for the arena instead of
     /// keeping one: not a consumer lending out its own, a workspace answering for itself.
-    pub(super) fn tree(&self) -> &ContainerTree<W> {
-        &self.tree
+    pub(super) fn arena(&self) -> &ContainerArena<W> {
+        &self.arena
     }
 
-    pub(super) fn tree_mut(&mut self) -> &mut ContainerTree<W> {
-        &mut self.tree
+    pub(super) fn arena_mut(&mut self) -> &mut ContainerArena<W> {
+        &mut self.arena
     }
 
     /// The tiled side's cached leaf layouts. The floating groups are branches of the same
     /// tree and are laid out by the same pass, so "the layouts" has to say which branch.
     fn display_layouts(&self) -> impl DoubleEndedIterator<Item = &LeafLayoutInfo> + '_ {
-        branch_display_layouts(&self.tree, self.tree.workspace_root())
+        branch_display_layouts(&self.arena, self.arena.workspace_root())
     }
 
     fn focused_key(&self) -> Option<NodeKey> {
-        self.tree
-            .focus_inactive_view_in_branch(self.tree.workspace_root())
+        self.arena
+            .focus_inactive_view_in_branch(self.arena.workspace_root())
     }
 
     fn focused_tile(&self) -> Option<&Tile<W>> {
-        self.focused_key().and_then(|key| self.tree.get_tile(key))
+        self.focused_key().and_then(|key| self.arena.get_tile(key))
     }
 
     fn effective_tab_bar_config(&self) -> TabBar {
-        self.options.layout.tab_bar.clone()
+        self.options().layout.tab_bar.clone()
     }
 
     /// Whether the workspace itself is what the tree currently has selected.
@@ -367,11 +362,11 @@ impl<W: LayoutElement> TreeSpace<W> {
     /// the workspace, even when its parent is the workspace — measured against sway 1.11,
     /// which builds a container for such a command instead of retargeting the workspace.
     pub fn workspace_is_selected(&self) -> bool {
-        self.tree.workspace_is_selected()
+        self.arena.workspace_is_selected()
     }
 
     fn available_span(&self, total: f64, child_count: usize) -> f64 {
-        available_span(self.options.layout.gaps, total, child_count)
+        available_span(self.options().layout.gaps, total, child_count)
     }
 
     /// The gap between a branch's children.
@@ -381,7 +376,7 @@ impl<W: LayoutElement> TreeSpace<W> {
     /// inside that box would come out of the window rather than out of the workspace.
     pub(super) fn branch_gap(&self, branch: NodeKey) -> f64 {
         if branch == self.tiled_branch() {
-            self.options.layout.gaps
+            self.options().layout.gaps
         } else {
             0.0
         }
@@ -399,9 +394,9 @@ impl<W: LayoutElement> TreeSpace<W> {
     /// necessarily the container that will pay for the resize, so this is a separate climb
     /// from `find_resize_parent`.
     pub(super) fn ppt_reference(&self, key: NodeKey, layout: Layout) -> f64 {
-        self.tree
+        self.arena
             .find_parent_with_layout(key, layout)
-            .and_then(|(parent, _)| self.tree.node_span(parent, layout))
+            .and_then(|(parent, _)| self.arena.node_span(parent, layout))
             .unwrap_or_else(|| match layout {
                 Layout::SplitH => self.working_area().size.w,
                 Layout::SplitV => self.working_area().size.h,
@@ -469,12 +464,12 @@ impl<W: LayoutElement> TreeSpace<W> {
     fn window_target(&self, window: Option<&W::Id>) -> Option<NodeKey> {
         match window {
             Some(id) => self.tiled_window_key(id),
-            None => self.tree.branch_position(self.tree.workspace_root()),
+            None => self.arena.branch_position(self.arena.workspace_root()),
         }
     }
 
     fn window_container_metrics(&self, key: NodeKey, layout: Layout) -> Option<ContainerMetrics> {
-        let (parent_key, child_idx) = self.tree.find_parent_with_layout(key, layout)?;
+        let (parent_key, child_idx) = self.arena.find_parent_with_layout(key, layout)?;
         self.container_metrics(parent_key, child_idx, layout)
     }
 
@@ -484,13 +479,13 @@ impl<W: LayoutElement> TreeSpace<W> {
         layout: Layout,
         reach: ResizeReach,
     ) -> Option<ContainerMetrics> {
-        let (parent_key, child_idx) = self.tree.find_resize_parent(key, layout, reach)?;
-        let (container_layout, rect, child_count) = self.tree.container_info(parent_key)?;
+        let (parent_key, child_idx) = self.arena.find_resize_parent(key, layout, reach)?;
+        let (container_layout, rect, child_count) = self.arena.container_info(parent_key)?;
         if container_layout != layout || child_count == 0 {
             return None;
         }
         let available = self
-            .tree
+            .arena
             .child_resize_total(parent_key, child_idx, layout)?;
         (available > 0.0).then_some((parent_key, child_idx, available, child_count, rect))
     }
@@ -505,12 +500,12 @@ impl<W: LayoutElement> TreeSpace<W> {
         child_idx: usize,
         layout: Layout,
     ) -> Option<ContainerMetrics> {
-        let (container_layout, rect, child_count) = self.tree.container_info(parent_key)?;
+        let (container_layout, rect, child_count) = self.arena.container_info(parent_key)?;
         if container_layout != layout || child_count == 0 {
             return None;
         }
 
-        let branch = self.tree.branch_root(parent_key);
+        let branch = self.arena.branch_root(parent_key);
         let available = match layout {
             Layout::SplitH => self.available_span_in(branch, rect.size.w, child_count),
             Layout::SplitV => self.available_span_in(branch, rect.size.h, child_count),
@@ -530,12 +525,12 @@ impl<W: LayoutElement> TreeSpace<W> {
         key: NodeKey,
         layout: Layout,
     ) -> Option<ContainerMetrics> {
-        let (parent_key, child_idx) = self.tree.find_parent_with_layout(key, layout)?;
+        let (parent_key, child_idx) = self.arena.find_parent_with_layout(key, layout)?;
         self.container_metrics(parent_key, child_idx, layout)
     }
 
     fn selected_geometry(&self) -> Option<Rectangle<f64, Logical>> {
-        let key = self.tree.selected_layout_parent_key()?;
+        let key = self.arena.selected_layout_parent_key()?;
 
         // For container selection visuals, prefer the on-screen leaf geometry under this
         // container. This stays in sync with what is currently rendered even when the
@@ -543,7 +538,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         let mut bounds: Option<Rectangle<f64, Logical>> = None;
         for info in self
             .display_layouts()
-            .filter(|info| self.tree.is_descendant(info.key, key))
+            .filter(|info| self.arena.is_descendant(info.key, key))
         {
             bounds = Some(match bounds {
                 Some(acc) => {
@@ -560,20 +555,20 @@ impl<W: LayoutElement> TreeSpace<W> {
             });
         }
 
-        bounds.or_else(|| self.tree.container_info(key).map(|(_, rect, _)| rect))
+        bounds.or_else(|| self.arena.container_info(key).map(|(_, rect, _)| rect))
     }
 
     pub fn selected_is_container(&self) -> bool {
-        self.selected_container_in(self.tree.workspace_root())
+        self.selected_container_in(self.arena.workspace_root())
     }
 
     /// Whether a child-laying node is selected in the tiled branch. Unlike the command-facing
     /// container query, this includes the workspace node so `focus parent` always has a visual
     /// result.
     fn selected_layout_parent_in_tiling(&self) -> bool {
-        self.tree
+        self.arena
             .selected_layout_parent_key()
-            .is_some_and(|key| self.tree.branch_root(key) == self.tree.workspace_root())
+            .is_some_and(|key| self.arena.branch_root(key) == self.arena.workspace_root())
     }
 
     // ── Commands, asked of a branch ──────────────────────────────────────────────────
@@ -594,21 +589,21 @@ impl<W: LayoutElement> TreeSpace<W> {
     /// membership is therefore the question to ask, not ancestry: otherwise a selected
     /// floating container answers for the tiled side as well as its own.
     pub(super) fn selected_container_in(&self, branch: NodeKey) -> bool {
-        self.tree
+        self.arena
             .selected_container_key()
-            .is_some_and(|key| self.tree.branch_root(key) == branch)
+            .is_some_and(|key| self.arena.branch_root(key) == branch)
     }
 
     /// The layout a command in this branch would be read against: the selected container's
     /// when there is one, otherwise the layout of whatever holds the branch's focus.
     pub(super) fn selection_layout_in(&self, branch: NodeKey) -> Option<Layout> {
-        let key = self.tree.branch_position(branch)?;
+        let key = self.arena.branch_position(branch)?;
         if self.selected_container_in(branch) {
-            if let Some(info) = self.tree.container_info(key) {
+            if let Some(info) = self.arena.container_info(key) {
                 return Some(info.0);
             }
         }
-        self.tree.layout_owning(key)
+        self.arena.layout_owning(key)
     }
 
     /// Whether this branch is nothing but the window in it.
@@ -621,7 +616,7 @@ impl<W: LayoutElement> TreeSpace<W> {
     /// This used to ask whether the root was a wrapper tiri had added, which is the same
     /// question only for as long as there is a wrapper to recognise.
     pub(super) fn branch_root_is_lone_window(&self, branch: NodeKey) -> bool {
-        branch != self.tree.workspace_root() && self.tree.is_leaf(branch)
+        branch != self.arena.workspace_root() && self.arena.is_leaf(branch)
     }
 
     /// A layout command needs a container to act on. Vacuous on the tiled side, where the
@@ -631,18 +626,18 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     pub(super) fn split_in_branch(&mut self, branch: NodeKey, layout: Layout) -> bool {
-        let target = self.tree.command_target_in(branch);
-        let changed = self.tree.split_target(layout, target);
+        let target = self.arena.command_target_in(branch);
+        let changed = self.arena.split_target(layout, target);
         if changed {
-            self.tree.layout();
+            self.arena.layout();
         }
         changed
     }
 
     pub(super) fn unsplit_in_branch(&mut self, branch: NodeKey) -> Option<NodeKey> {
-        let target = self.tree.command_target_in(branch);
-        let root = self.tree.unsplit_target(target)?;
-        self.tree.layout();
+        let target = self.arena.command_target_in(branch);
+        let root = self.arena.unsplit_target(target)?;
+        self.arena.layout();
         Some(root)
     }
 
@@ -650,10 +645,10 @@ impl<W: LayoutElement> TreeSpace<W> {
         if !self.branch_has_layout_target(branch) {
             return false;
         }
-        let target = self.tree.command_target_in(branch);
-        let changed = self.tree.set_layout_for_target(layout, target);
+        let target = self.arena.command_target_in(branch);
+        let changed = self.arena.set_layout_for_target(layout, target);
         if changed {
-            self.tree.layout();
+            self.arena.layout();
         }
         changed
     }
@@ -662,10 +657,10 @@ impl<W: LayoutElement> TreeSpace<W> {
         if !self.branch_has_layout_target(branch) {
             return false;
         }
-        let target = self.tree.command_target_in(branch);
-        let changed = self.tree.toggle_split_for_target(target);
+        let target = self.arena.command_target_in(branch);
+        let changed = self.arena.toggle_split_for_target(target);
         if changed {
-            self.tree.layout();
+            self.arena.layout();
         }
         changed
     }
@@ -674,10 +669,10 @@ impl<W: LayoutElement> TreeSpace<W> {
         if !self.branch_has_layout_target(branch) {
             return false;
         }
-        let target = self.tree.command_target_in(branch);
-        let changed = self.tree.toggle_layout_all_for_target(target);
+        let target = self.arena.command_target_in(branch);
+        let changed = self.arena.toggle_layout_all_for_target(target);
         if changed {
-            self.tree.layout();
+            self.arena.layout();
         }
         changed
     }
@@ -686,10 +681,10 @@ impl<W: LayoutElement> TreeSpace<W> {
         if !self.branch_has_layout_target(branch) {
             return false;
         }
-        let target = self.tree.command_target_in(branch);
-        let changed = self.tree.set_default_layout_for_target(target);
+        let target = self.arena.command_target_in(branch);
+        let changed = self.arena.set_default_layout_for_target(target);
         if changed {
-            self.tree.layout();
+            self.arena.layout();
         }
         changed
     }
@@ -702,10 +697,10 @@ impl<W: LayoutElement> TreeSpace<W> {
         if !self.branch_has_layout_target(branch) {
             return false;
         }
-        let target = self.tree.command_target_in(branch);
-        let changed = self.tree.toggle_layout_cycle_for_target(target, cycle);
+        let target = self.arena.command_target_in(branch);
+        let changed = self.arena.toggle_layout_cycle_for_target(target, cycle);
         if changed {
-            self.tree.layout();
+            self.arena.layout();
         }
         changed
     }
@@ -713,11 +708,11 @@ impl<W: LayoutElement> TreeSpace<W> {
     /// What `close` would close, aimed at this branch.
     pub(super) fn close_window_ids_in_branch(&self, branch: NodeKey) -> Vec<W::Id> {
         if self.selected_container_in(branch) {
-            if let Some(key) = self.tree.selected_container_key() {
-                return self.tree.window_ids_under(key);
+            if let Some(key) = self.arena.selected_container_key() {
+                return self.arena.window_ids_under(key);
             }
         }
-        self.tree
+        self.arena
             .focused_window_in_branch(branch)
             .map(|window| vec![window.id().clone()])
             .unwrap_or_default()
@@ -725,8 +720,8 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     pub(super) fn close_window_ids_for_active_selection(&self) -> Vec<W::Id> {
         if self.selected_is_container() {
-            if let Some(key) = self.tree.selected_container_key() {
-                return self.tree.window_ids_under(key);
+            if let Some(key) = self.arena.selected_container_key() {
+                return self.arena.window_ids_under(key);
             }
         }
 
@@ -736,15 +731,15 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     pub(super) fn take_selected_subtree(&self) -> Option<(NodeKey, Rectangle<f64, Logical>)> {
-        let key = self.tree.selected_node_key()?;
-        self.tree.container_info(key)?;
+        let key = self.arena.selected_node_key()?;
+        self.arena.container_info(key)?;
         let rect = self.default_floating_container_rect();
         Some((key, rect))
     }
 
     /// sway's initial geometry for a container without a view when it starts floating.
     fn default_floating_container_rect(&self) -> Rectangle<f64, Logical> {
-        let area = self.working_area;
+        let area = self.working_area();
         let size = Size::from((area.size.w * 0.5, area.size.h * 0.75));
         Rectangle::new(
             Point::from((
@@ -766,7 +761,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         // one — which is why the number a floating *window* no longer gets is still this
         // one's.
         let rect = self.default_floating_container_rect();
-        (!self.tree.is_empty()).then_some((self.tree.workspace_root(), rect))
+        (!self.arena.is_empty()).then_some((self.arena.workspace_root(), rect))
     }
 
     pub(super) fn subtree_for_window_floating(
@@ -775,7 +770,7 @@ impl<W: LayoutElement> TreeSpace<W> {
     ) -> Option<(NodeKey, Rectangle<f64, Logical>)> {
         let key = self.tiled_window_key(id)?;
         let rect = self
-            .tree
+            .arena
             .fullscreen_restore_geometry(key)
             .filter(|rect| rect.size.w > 0.0 && rect.size.h > 0.0)
             .or_else(|| {
@@ -790,15 +785,15 @@ impl<W: LayoutElement> TreeSpace<W> {
     ///
     /// Every structural mutation must be followed by a relayout; routing them through this
     /// combinator makes that impossible to forget.
-    fn mutate_tree<R: TreeMutation>(&mut self, f: impl FnOnce(&mut ContainerTree<W>) -> R) -> R {
-        let result = f(&mut self.tree);
+    fn mutate_tree<R: TreeMutation>(&mut self, f: impl FnOnce(&mut ContainerArena<W>) -> R) -> R {
+        let result = f(&mut self.arena);
         if result.changed() {
-            self.tree.layout();
+            self.arena.layout();
         }
         // Whatever the mutation reported, the addresses beside the cached geometry describe
         // the tree and the tree may have moved. Keeping a derived field derived is cheaper
         // than trusting every path through the tree to say so.
-        self.tree.readdress_leaf_layouts();
+        self.arena.readdress_leaf_layouts();
         result
     }
 
@@ -807,16 +802,17 @@ impl<W: LayoutElement> TreeSpace<W> {
     /// Computed up front so the caller can hold mutable tile borrows while iterating.
     fn interactive_resize_data_by_leaf(
         &self,
+        tiling: &TilingSpace<W>,
         layouts: &[LeafFrameInfo],
     ) -> HashMap<NodeKey, InteractiveResizeData> {
-        let Some(resize) = self.interactive_resize.as_ref() else {
+        let Some(resize) = tiling.interactive_resize.as_ref() else {
             return HashMap::new();
         };
 
         layouts
             .iter()
             .filter_map(|info| {
-                let edges = self.tree.resize_edges_for_leaf(
+                let edges = self.arena.resize_edges_for_leaf(
                     info.key,
                     resize.horizontal.as_ref(),
                     resize.vertical.as_ref(),
@@ -839,13 +835,13 @@ impl<W: LayoutElement> TreeSpace<W> {
         let Some(target) = target else {
             return false;
         };
-        let Some(available) = self.tree.resize_available_span(target, layout) else {
+        let Some(available) = self.arena.resize_available_span(target, layout) else {
             return false;
         };
 
         let delta = if inverted { -delta } else { delta };
         let new_span = (target.original_span.max(1.0) + delta).round() as i32;
-        let current_percent = self.tree.resize_current_percent(target);
+        let current_percent = self.arena.resize_current_percent(target);
         let percent = percent_from_size_change(
             current_percent,
             available,
@@ -853,7 +849,7 @@ impl<W: LayoutElement> TreeSpace<W> {
             SizeChange::SetFixed(new_span),
         );
 
-        self.tree.apply_resize(target, layout, percent)
+        self.arena.apply_resize(target, layout, percent)
     }
 
     pub fn new(
@@ -863,37 +859,25 @@ impl<W: LayoutElement> TreeSpace<W> {
         clock: Clock,
         options: Rc<Options>,
     ) -> Self {
-        let tree = ContainerTree::new(view_size, working_area, scale, options.clone());
+        let arena = ContainerArena::new(view_size, working_area, scale, options.clone());
         let background_color = options.layout.background_color;
 
         Self {
-            tree,
-            view_size,
-            working_area,
-            viewport: FixedViewport,
-            scale,
+            arena,
             clock,
-            interactive_resize: None,
-            options,
-            tab_bar_cache: RefCell::new(HashMap::new()),
+            render: ContainerRenderState::new(view_size, background_color),
             is_active: false,
             floating_has_focus: false,
-            closing_windows: Vec::new(),
-            overview_offscreen: OffscreenBuffer::default(),
-            overview_background: SolidColorBuffer::new(view_size, background_color),
-            state_layout_scratch: Vec::new(),
-            render_layout_scratch: Vec::new(),
-            render_edges_scratch: Vec::new(),
         }
     }
 
     // Basic getters using ContainerTree
     pub fn windows(&self) -> impl Iterator<Item = &W> + '_ {
-        self.tree.all_windows().into_iter()
+        self.arena.all_windows().into_iter()
     }
 
     pub fn tiles(&self) -> impl Iterator<Item = &Tile<W>> + '_ {
-        self.tree.all_tiles().into_iter()
+        self.arena.all_tiles().into_iter()
     }
 
     pub fn active_tile(&self) -> Option<&Tile<W>> {
@@ -902,32 +886,32 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     pub fn active_window_mut(&mut self) -> Option<&mut W> {
         let key = self
-            .tree
-            .focus_inactive_view_in_branch(self.tree.workspace_root())?;
-        Some(self.tree.get_tile_mut(key)?.window_mut())
+            .arena
+            .focus_inactive_view_in_branch(self.arena.workspace_root())?;
+        Some(self.arena.get_tile_mut(key)?.window_mut())
     }
 
     pub fn is_active_pending_fullscreen(&self) -> bool {
-        self.tree.fullscreen_key().is_some()
+        self.arena.fullscreen_key().is_some()
             || self
                 .focused_tile()
                 .is_some_and(|tile| tile.window().is_pending_windowed_fullscreen())
     }
 
     pub fn view_size(&self) -> Size<f64, Logical> {
-        self.view_size
+        self.arena.view_size()
     }
 
     pub fn parent_area(&self) -> Rectangle<f64, Logical> {
-        self.working_area
+        self.working_area()
     }
 
     pub(super) fn working_area(&self) -> Rectangle<f64, Logical> {
-        self.working_area
+        self.arena.working_area()
     }
 
     pub(super) fn scale(&self) -> f64 {
-        self.scale
+        self.arena.scale()
     }
 
     /// Whether one of the workspace's two sides is the focused one.
@@ -949,16 +933,16 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     pub fn options(&self) -> &Rc<Options> {
-        &self.options
+        self.arena.options()
     }
 
     /// True while a configure this space sent is still unanswered.
     pub fn has_pending_layouts(&self) -> bool {
-        self.tree.has_pending_layouts()
+        self.arena.has_pending_layouts()
     }
 
     pub fn verify_invariants(&self) {
-        self.tree.verify_invariants();
+        self.arena.verify_invariants();
     }
 
     /// Whether any container in this space uses `layout`.
@@ -967,26 +951,26 @@ impl<W: LayoutElement> TreeSpace<W> {
     /// which also matches window titles and changes meaning with the dump's format.
     #[cfg(test)]
     pub fn contains_layout(&self, layout: Layout) -> bool {
-        self.tree.contains_layout(layout)
+        self.arena.contains_layout(layout)
     }
 
     /// Window ids in visual (depth-first) order.
     #[cfg(test)]
     pub fn all_window_ids(&self) -> Vec<W::Id> {
-        self.tree.all_window_ids()
+        self.arena.all_window_ids()
     }
 
     /// Number of children directly under the tree root.
     #[cfg(test)]
     pub fn root_children_len(&self) -> usize {
-        self.tree.root_children_len()
+        self.arena.root_children_len()
     }
 
     /// The focused window's id, for shape assertions that used to look for a `*` marker in
     /// the debug dump.
     #[cfg(test)]
     pub fn focused_window_id(&self) -> Option<W::Id> {
-        self.tree.focused_window_id()
+        self.arena.focused_window_id()
     }
 
     /// Whether the tree holds any container at all, as opposed to a lone window.
@@ -999,7 +983,7 @@ impl<W: LayoutElement> TreeSpace<W> {
             Layout::Stacked,
         ]
         .into_iter()
-        .any(|layout| self.tree.contains_layout(layout))
+        .any(|layout| self.arena.contains_layout(layout))
     }
 
     #[cfg(test)]
@@ -1007,26 +991,26 @@ impl<W: LayoutElement> TreeSpace<W> {
     where
         W::Id: std::fmt::Display,
     {
-        self.tree.debug_tree()
+        self.arena.debug_tree()
     }
 
     #[cfg(test)]
     pub fn focus_path(&self) -> Vec<usize> {
-        self.tree.focus_path()
+        self.arena.focus_path()
     }
 
     #[cfg(test)]
     pub fn debug_workspace_layout(&self) -> Layout {
-        self.tree.workspace_layout()
+        self.arena.workspace_layout()
     }
 
     #[cfg(test)]
     pub fn debug_root_is_workspace_node(&self) -> bool {
-        self.tree.root_is_workspace_node()
+        self.arena.root_is_workspace_node()
     }
 
     pub fn selected_path(&self) -> Vec<usize> {
-        self.tree.selected_path()
+        self.arena.selected_path()
     }
 
     #[cfg(test)]
@@ -1037,7 +1021,7 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     pub fn remove_window(&mut self, window: &W) -> Option<RemovedTile<W>> {
-        let tile = self.tree.remove_window(window.id())?;
+        let tile = self.arena.remove_window(window.id())?;
 
         // Create RemovedTile
         Some(RemovedTile {
@@ -1051,7 +1035,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         let Some(key) = self.tiled_window_key(window) else {
             return;
         };
-        let Some(tile) = self.tree.get_tile_mut(key) else {
+        let Some(tile) = self.arena.get_tile_mut(key) else {
             return;
         };
 
@@ -1065,31 +1049,32 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     pub fn render_elements<R: NiriRenderer>(
         &self,
+        tiling: &TilingSpace<W>,
         mut ctx: RenderCtx<R>,
         xray_pos: XrayPos,
         tiling_focus_ring: bool,
         layer: RenderLayer,
-    ) -> Vec<TreeSpaceRenderElement<R>> {
+    ) -> Vec<ContainerTreeRenderElement<R>> {
         // Pre-allocate: ~4 elements per tile + closing windows + tab bars
-        let tile_count = self.tree.window_count();
-        let estimated_capacity = tile_count * 4 + self.closing_windows.len() + tile_count / 2;
+        let tile_count = self.arena.window_count();
+        let estimated_capacity = tile_count * 4 + tiling.closing_windows.len() + tile_count / 2;
         let mut elements = Vec::with_capacity(estimated_capacity);
         let mut active_elements = Vec::with_capacity(8);
-        let scale = Scale::from(self.scale);
+        let scale = Scale::from(self.scale());
         let focused_key = self.focused_key();
         let selection_is_layout_parent = self.selected_layout_parent_in_tiling();
-        let selection_is_active = self.side_is_active(false) || self.tree.workspace_is_selected();
+        let selection_is_active = self.side_is_active(false) || self.arena.workspace_is_selected();
         let fullscreen = self.fullscreen_render_state();
-        let view_rect = Rectangle::from_size(self.view_size);
+        let view_rect = Rectangle::from_size(self.view_size());
 
-        for closing in self
+        for closing in tiling
             .closing_windows
             .iter()
             .rev()
             .filter(|_| layer.is_normal())
         {
             let elem = closing.render(ctx.as_gles(), view_rect, scale);
-            elements.push(TreeSpaceRenderElement::ClosingWindow(elem));
+            elements.push(ContainerTreeRenderElement::ClosingWindow(elem));
         }
 
         // Render container selection before regular tiling elements so it ends up
@@ -1099,12 +1084,12 @@ impl<W: LayoutElement> TreeSpace<W> {
             && (tiling_focus_ring || selection_is_active)
         {
             if let Some(rect) = self.selected_geometry() {
-                let mut selection_border = self.options.layout.border;
+                let mut selection_border = self.options().layout.border;
                 if let Some(focus_info) = self
                     .display_layouts()
                     .find(|info| Some(info.key) == focused_key)
                 {
-                    if let Some(tile) = self.tree.get_tile(focus_info.key) {
+                    if let Some(tile) = self.arena.get_tile(focus_info.key) {
                         if let Some(width) = tile.effective_border_width() {
                             selection_border.width = width;
                         }
@@ -1114,12 +1099,12 @@ impl<W: LayoutElement> TreeSpace<W> {
                     ctx.renderer,
                     rect,
                     view_rect,
-                    self.scale,
+                    self.scale(),
                     selection_is_active,
-                    self.options.layout.focus_ring,
+                    self.options().layout.focus_ring,
                     selection_border,
                     ContainerSelectionStyle::Tiling,
-                    &mut |elem| elements.push(TreeSpaceRenderElement::ContainerSelection(elem)),
+                    &mut |elem| elements.push(ContainerTreeRenderElement::ContainerSelection(elem)),
                 );
             }
         }
@@ -1127,14 +1112,14 @@ impl<W: LayoutElement> TreeSpace<W> {
         let render_layouts: Vec<&LeafLayoutInfo> = self.display_layouts().collect();
         for info in render_layouts.iter().rev() {
             // Use O(1) key lookup instead of O(depth) path lookup.
-            if let Some(tile) = self.tree.get_tile(info.key) {
+            if let Some(tile) = self.arena.get_tile(info.key) {
                 // Skip tiles belonging to a different render layer.
                 if layer.is_normal() == tile.is_moving_between_workspaces() {
                     continue;
                 }
                 let in_fullscreen_container = fullscreen
                     .container
-                    .is_some_and(|scope| self.tree.is_descendant(info.key, scope));
+                    .is_some_and(|scope| self.arena.is_descendant(info.key, scope));
                 let state = fullscreen.tile_state(
                     tile.window().id(),
                     info.visible,
@@ -1161,16 +1146,16 @@ impl<W: LayoutElement> TreeSpace<W> {
                 };
                 let tile_xray_pos = xray_pos.offset(pos);
                 tile.render(ctx.r(), pos, tile_xray_pos, draw_focus, &mut |elem| {
-                    target_elements.push(TreeSpaceRenderElement::from(elem));
+                    target_elements.push(ContainerTreeRenderElement::from(elem));
                 });
             }
         }
 
         elements.extend(active_elements);
 
-        if !fullscreen.has_client_fullscreen() && !self.options.layout.tab_bar.off {
-            let tab_bar_infos = self.tree.tab_bar_layouts();
-            let mut cache = self.tab_bar_cache.borrow_mut();
+        if !fullscreen.has_client_fullscreen() && !self.options().layout.tab_bar.off {
+            let tab_bar_infos = self.arena.tab_bar_layouts();
+            let mut cache = self.render.tab_bar_cache.borrow_mut();
             let gles = ctx.renderer.as_gles_renderer();
             let tab_bar_config = self.effective_tab_bar_config();
             let is_active_workspace = self.side_is_active(false);
@@ -1178,7 +1163,7 @@ impl<W: LayoutElement> TreeSpace<W> {
             for info in tab_bar_infos {
                 if fullscreen
                     .container
-                    .is_some_and(|scope| !self.tree.is_descendant(info.key, scope))
+                    .is_some_and(|scope| !self.arena.is_descendant(info.key, scope))
                 {
                     continue;
                 }
@@ -1186,7 +1171,7 @@ impl<W: LayoutElement> TreeSpace<W> {
                     &info,
                     &tab_bar_config,
                     is_active_workspace,
-                    self.scale,
+                    self.scale(),
                     target,
                 );
                 let (buffer, tab_widths_px) = match cache.get(&info.key) {
@@ -1202,7 +1187,7 @@ impl<W: LayoutElement> TreeSpace<W> {
                         &info.tabs,
                         is_active_workspace,
                         target,
-                        self.scale,
+                        self.scale(),
                     ) {
                         Ok(TabBarRenderOutput {
                             buffer,
@@ -1225,7 +1210,7 @@ impl<W: LayoutElement> TreeSpace<W> {
                     None,
                     Kind::Unspecified,
                 );
-                elements.push(TreeSpaceRenderElement::TabBar(
+                elements.push(ContainerTreeRenderElement::TabBar(
                     PrimaryGpuTextureRenderElement(elem),
                 ));
 
@@ -1245,19 +1230,21 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     pub fn render<R: NiriRenderer>(
         &self,
+        tiling: &TilingSpace<W>,
         ctx: RenderCtx<R>,
         xray_pos: XrayPos,
         tiling_focus_ring: bool,
         layer: RenderLayer,
-        push: &mut dyn FnMut(TreeSpaceRenderElement<R>),
+        push: &mut dyn FnMut(ContainerTreeRenderElement<R>),
     ) {
-        for elem in self.render_elements(ctx, xray_pos, tiling_focus_ring, layer) {
+        for elem in self.render_elements(tiling, ctx, xray_pos, tiling_focus_ring, layer) {
             push(elem);
         }
     }
 
     pub fn render_as_offscreen(
         &self,
+        tiling: &TilingSpace<W>,
         renderer: &mut GlesRenderer,
         target: RenderTarget,
         tiling_focus_ring: bool,
@@ -1272,6 +1259,7 @@ impl<W: LayoutElement> TreeSpace<W> {
             xray: None,
         };
         let mut elements = self.render_elements(
+            tiling,
             ctx,
             XrayPos::default(),
             tiling_focus_ring,
@@ -1282,15 +1270,16 @@ impl<W: LayoutElement> TreeSpace<W> {
         }
 
         let background = SolidColorRenderElement::from_buffer(
-            &self.overview_background,
+            &self.render.overview_background,
             Point::from((0., 0.)),
             1.,
             Kind::Unspecified,
         );
         elements.push(background.into());
 
-        self.overview_offscreen
-            .render(renderer, Scale::from(self.scale), &elements)
+        self.render
+            .overview_offscreen
+            .render(renderer, Scale::from(self.scale()), &elements)
             .map(|(elem, _sync, data)| {
                 for tile in self.tiles() {
                     tile.window().set_offscreen_data(Some(data.clone()));
@@ -1310,15 +1299,12 @@ impl<W: LayoutElement> TreeSpace<W> {
         scale: f64,
         options: Rc<Options>,
     ) {
-        self.view_size = view_size;
-        self.working_area = working_area;
-        self.scale = scale;
-        self.options = options.clone();
-        self.overview_background
+        self.render
+            .overview_background
             .update(view_size, options.layout.background_color);
-        self.tree
+        self.arena
             .update_config(view_size, working_area, scale, options);
-        self.tree.layout();
+        self.arena.layout();
     }
 
     pub fn set_view_size(
@@ -1326,27 +1312,20 @@ impl<W: LayoutElement> TreeSpace<W> {
         view_size: Size<f64, Logical>,
         working_area: Rectangle<f64, Logical>,
     ) {
-        self.view_size = view_size;
-        self.working_area = working_area;
-        self.overview_background.resize(view_size);
-        self.tree.set_view_size(view_size, working_area);
+        self.render.overview_background.resize(view_size);
+        self.arena.set_view_size(view_size, working_area);
         // Recalculate layout on resize
-        self.tree.layout();
+        self.arena.layout();
     }
 
     pub fn advance_animations(&mut self) {
         for tile in self.tiles_mut() {
             tile.advance_animations();
         }
-
-        self.closing_windows.retain_mut(|closing| {
-            closing.advance_animations();
-            closing.are_animations_ongoing()
-        });
     }
 
     pub fn are_animations_ongoing(&self) -> bool {
-        self.tiles().any(|tile| tile.are_animations_ongoing()) || !self.closing_windows.is_empty()
+        self.tiles().any(|tile| tile.are_animations_ongoing())
     }
 
     /// What a tile needs to know about the space it is in.
@@ -1356,58 +1335,59 @@ impl<W: LayoutElement> TreeSpace<W> {
     /// checker's way of pointing out that these are two different questions.
     pub(super) fn tile_config(&self) -> TileConfig {
         TileConfig {
-            view_size: self.view_size,
-            scale: self.scale,
-            options: self.options.clone(),
+            view_size: self.view_size(),
+            scale: self.scale(),
+            options: self.options().clone(),
         }
     }
 
     pub(super) fn tab_bar_cache_mut(&self) -> RefMut<'_, HashMap<NodeKey, TabBarCacheEntry>> {
-        self.tab_bar_cache.borrow_mut()
+        self.render.tab_bar_cache.borrow_mut()
     }
 
-    pub fn update_render_elements(&mut self) {
-        let _span = tracy_client::span!("TreeSpace::update_render_elements");
+    pub fn update_render_elements(&mut self, tiling: &TilingSpace<W>) {
+        let _span = tracy_client::span!("ContainerTree::update_render_elements");
         let is_active = self.side_is_active(false);
         // Once a frame, and for both sides: a container that has left the tree will not be
         // asked for again, and its texture is the largest thing an entry holds.
-        self.tab_bar_cache
+        self.render
+            .tab_bar_cache
             .borrow_mut()
-            .retain(|key, _| self.tree.holds_node(*key));
-        let applied = self.tree.apply_pending_layouts_if_ready();
-        if applied && self.tree.take_pending_relayout() {
-            self.tree.layout();
+            .retain(|key, _| self.arena.holds_node(*key));
+        let applied = self.arena.apply_pending_layouts_if_ready();
+        if applied && self.arena.take_pending_relayout() {
+            self.arena.layout();
         }
-        let has_pending = self.tree.has_pending_layouts();
-        let mut state_layouts = std::mem::take(&mut self.state_layout_scratch);
+        let has_pending = self.arena.has_pending_layouts();
+        let mut state_layouts = std::mem::take(&mut self.render.state_layout_scratch);
         state_layouts.clear();
         {
-            let _span = tracy_client::span!("TreeSpace::project_state_layouts_for_render");
+            let _span = tracy_client::span!("ContainerTree::project_state_layouts_for_render");
             if has_pending {
-                state_layouts.extend(self.tree.pending_leaf_layouts().map(LeafFrameInfo::from));
+                state_layouts.extend(self.arena.pending_leaf_layouts().map(LeafFrameInfo::from));
             } else {
-                state_layouts.extend(self.tree.leaf_layouts().iter().map(LeafFrameInfo::from));
+                state_layouts.extend(self.arena.leaf_layouts().iter().map(LeafFrameInfo::from));
             }
         }
         #[cfg(feature = "profile-with-tracy")]
         {
             tracy_client::plot!("layout.state_leaf_projections", state_layouts.len() as f64);
         }
-        let tiled_root = self.tree.workspace_root();
+        let tiled_root = self.arena.workspace_root();
         state_layouts.retain(|info| info.branch == tiled_root);
-        let workspace_view = Rectangle::from_size(self.view_size);
+        let workspace_view = Rectangle::from_size(self.view_size());
         let focused_key = self.focused_key();
         let selection_is_layout_parent = self.selected_layout_parent_in_tiling();
-        let scale = Scale::from(self.scale);
+        let scale = Scale::from(self.scale());
         let fullscreen = self.fullscreen_render_state();
         let fullscreen_container = fullscreen.container;
         let logical_fullscreen_id = self.pending_fullscreen_window().cloned();
-        let layout_rect = self.tree.layout_area();
-        let is_single_window = self.tree.window_count() <= 1;
-        let mut render_layouts = std::mem::take(&mut self.render_layout_scratch);
+        let layout_rect = self.arena.layout_area();
+        let is_single_window = self.arena.window_count() <= 1;
+        let mut render_layouts = std::mem::take(&mut self.render.render_layout_scratch);
         render_layouts.clear();
         {
-            let _span = tracy_client::span!("TreeSpace::project_display_layouts_for_render");
+            let _span = tracy_client::span!("ContainerTree::project_display_layouts_for_render");
             render_layouts.extend(self.display_layouts().map(LeafFrameInfo::from));
         }
         #[cfg(feature = "profile-with-tracy")]
@@ -1417,48 +1397,49 @@ impl<W: LayoutElement> TreeSpace<W> {
                 render_layouts.len() as f64
             );
         }
-        let mut render_edges = std::mem::take(&mut self.render_edges_scratch);
+        let mut render_edges = std::mem::take(&mut self.render.render_edges_scratch);
         render_edges.clear();
         {
-            let _span = tracy_client::span!("TreeSpace::collect_render_edges");
+            let _span = tracy_client::span!("ContainerTree::collect_render_edges");
             render_edges.extend(render_layouts.iter().map(|info| {
                 let edges = edge_visibility_for_tile(
-                    &self.options,
+                    self.options(),
                     layout_rect,
                     info.rect,
-                    self.scale,
+                    self.scale(),
                     is_single_window,
                 );
-                let indicator_edge = split_indicator_edge_for_tile(&self.tree, info.key, edges);
+                let indicator_edge = split_indicator_edge_for_tile(&self.arena, info.key, edges);
                 (edges, indicator_edge)
             }));
         }
 
+        let options = self.options().clone();
         let ctx = WindowStateContext {
             focused_key,
             workspace_active: is_active,
-            deactivate_unfocused: self.options.deactivate_unfocused_windows,
+            deactivate_unfocused: options.deactivate_unfocused_windows,
             request_size: !has_pending,
-            working_area_size: self.working_area.size,
-            options: &self.options,
+            working_area_size: self.working_area().size,
+            options: &options,
             fullscreen_id: logical_fullscreen_id.as_ref(),
             windowed_fullscreen_id: fullscreen.windowed_fullscreen_id.as_ref(),
             has_fullscreen_container: fullscreen_container.is_some(),
-            view_size: self.view_size,
+            view_size: self.view_size(),
         };
         // A stale snapshot describes a tree that no longer exists; driving window state
         // from it would flush configures carrying its obsolete bounds. The deferred
         // relayout will run this pass again once the transaction resolves.
-        let skip_state_pass = self.tree.pending_layout_is_stale();
-        let resize_data = self.interactive_resize_data_by_leaf(&state_layouts);
+        let skip_state_pass = self.arena.pending_layout_is_stale();
+        let resize_data = self.interactive_resize_data_by_leaf(tiling, &state_layouts);
         for info in &state_layouts {
             if skip_state_pass {
                 break;
             }
             let in_fullscreen_container =
-                fullscreen_container.is_some_and(|scope| self.tree.is_descendant(info.key, scope));
+                fullscreen_container.is_some_and(|scope| self.arena.is_descendant(info.key, scope));
             // Use O(1) key lookup instead of O(depth) path lookup.
-            if let Some(tile) = self.tree.get_tile_mut(info.key) {
+            if let Some(tile) = self.arena.get_tile_mut(info.key) {
                 let resize = resize_data.get(&info.key).copied();
                 Self::update_window_state(tile, info, resize, in_fullscreen_container, &ctx);
             }
@@ -1470,11 +1451,11 @@ impl<W: LayoutElement> TreeSpace<W> {
             .zip(render_edges.iter().copied())
         {
             let is_in_fullscreen_container =
-                fullscreen_container.is_some_and(|scope| self.tree.is_descendant(info.key, scope));
+                fullscreen_container.is_some_and(|scope| self.arena.is_descendant(info.key, scope));
             // Asked before the tile is borrowed mutably below.
-            let is_focus_head = self.tree.is_focus_head(info.key);
+            let is_focus_head = self.arena.is_focus_head(info.key);
             // Use O(1) key lookup instead of O(depth) path lookup.
-            if let Some(tile) = self.tree.get_tile_mut(info.key) {
+            if let Some(tile) = self.arena.get_tile_mut(info.key) {
                 let state = fullscreen.tile_state(
                     tile.window().id(),
                     info.visible,
@@ -1509,56 +1490,64 @@ impl<W: LayoutElement> TreeSpace<W> {
             }
         }
 
-        self.state_layout_scratch = state_layouts;
-        self.render_layout_scratch = render_layouts;
-        self.render_edges_scratch = render_edges;
+        self.render.state_layout_scratch = state_layouts;
+        self.render.render_layout_scratch = render_layouts;
+        self.render.render_edges_scratch = render_edges;
     }
 
-    pub fn interactive_resize_begin(&mut self, window: W::Id, edges: ResizeEdge) -> bool {
-        self.interactive_resize_begin_internal(window, edges, None)
+    pub fn interactive_resize_begin(
+        &mut self,
+        tiling: &mut TilingSpace<W>,
+        window: W::Id,
+        edges: ResizeEdge,
+    ) -> bool {
+        self.interactive_resize_begin_internal(tiling, window, edges, None)
     }
 
     pub fn interactive_resize_begin_at(
         &mut self,
+        tiling: &mut TilingSpace<W>,
         window: W::Id,
         edges: ResizeEdge,
         pos: Point<f64, Logical>,
     ) -> bool {
-        self.interactive_resize_begin_internal(window, edges, Some(pos))
+        self.interactive_resize_begin_internal(tiling, window, edges, Some(pos))
     }
 
     fn interactive_resize_begin_internal(
         &mut self,
+        tiling: &mut TilingSpace<W>,
         window: W::Id,
         edges: ResizeEdge,
         pos: Option<Point<f64, Logical>>,
     ) -> bool {
-        if self.interactive_resize.is_some() {
+        if tiling.interactive_resize.is_some() {
             return false;
         }
 
         let Some((edges, horizontal, vertical)) =
-            self.tree.resize_targets_for_window(&window, edges, pos)
+            self.arena.resize_targets_for_window(&window, edges, pos)
         else {
             return false;
         };
 
-        self.interactive_resize = Some(InteractiveResizeState {
+        tiling.interactive_resize = Some(InteractiveResizeState {
             window,
             data: InteractiveResizeData { edges },
             horizontal,
             vertical,
         });
-        self.tree.layout();
+        self.arena.layout();
         true
     }
 
     pub fn interactive_resize_update(
         &mut self,
+        tiling: &TilingSpace<W>,
         window: &W::Id,
         delta: Point<f64, Logical>,
     ) -> bool {
-        let Some(resize) = &self.interactive_resize else {
+        let Some(resize) = &tiling.interactive_resize else {
             return false;
         };
 
@@ -1589,14 +1578,14 @@ impl<W: LayoutElement> TreeSpace<W> {
         }
 
         if changed {
-            self.tree.layout_with_animation_flags(false, false);
+            self.arena.layout_with_animation_flags(false, false);
         }
 
         true
     }
 
-    pub fn interactive_resize_end(&mut self, window: Option<&W::Id>) {
-        let Some(resize) = &self.interactive_resize else {
+    pub fn interactive_resize_end(&mut self, tiling: &mut TilingSpace<W>, window: Option<&W::Id>) {
+        let Some(resize) = &tiling.interactive_resize else {
             return;
         };
 
@@ -1606,16 +1595,16 @@ impl<W: LayoutElement> TreeSpace<W> {
             }
         }
 
-        self.interactive_resize = None;
+        tiling.interactive_resize = None;
     }
 
-    pub fn cancel_resize_for_window(&mut self, window: &W) {
-        if self
+    pub fn cancel_resize_for_window(&mut self, tiling: &mut TilingSpace<W>, window: &W) {
+        if tiling
             .interactive_resize
             .as_ref()
             .is_some_and(|resize| &resize.window == window.id())
         {
-            self.interactive_resize = None;
+            tiling.interactive_resize = None;
         }
     }
 
@@ -1626,7 +1615,7 @@ impl<W: LayoutElement> TreeSpace<W> {
     pub fn resize_hit_under(&mut self, pos: Point<f64, Logical>) -> Option<ResizeHit<W::Id>> {
         let has_fullscreen_like = self.tiled_fullscreen_key().is_some()
             || self
-                .tree
+                .arena
                 .focused_tile()
                 .is_some_and(|tile| tile.window().is_pending_windowed_fullscreen());
         if has_fullscreen_like {
@@ -1634,14 +1623,14 @@ impl<W: LayoutElement> TreeSpace<W> {
         }
 
         let (leaf_key, rect) = self.closest_leaf_rect(pos)?;
-        let tile = self.tree.get_tile(leaf_key)?;
+        let tile = self.arena.get_tile(leaf_key)?;
         if !tile.window().pending_sizing_mode().is_normal() {
             return None;
         }
 
         let border = tile.effective_border_width().unwrap_or(0.0) * 2.0;
         let threshold = super::RESIZE_EDGE_THRESHOLD.max(border);
-        let gap_half = self.options.layout.gaps / 2.0;
+        let gap_half = self.options().layout.gaps / 2.0;
         let edge_threshold = threshold.max(gap_half);
         let cross_threshold = threshold;
 
@@ -1656,7 +1645,7 @@ impl<W: LayoutElement> TreeSpace<W> {
             if !edges.contains(edge) || !cross_ok || dist > edge_threshold {
                 return;
             }
-            if !self.tree.has_resize_target(leaf_key, edge, layout, pos) {
+            if !self.arena.has_resize_target(leaf_key, edge, layout, pos) {
                 return;
             }
             let score = dist / edge_threshold.max(1.0);
@@ -1692,7 +1681,7 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     // Focus operations using ContainerTree
     pub fn activate_window(&mut self, window: &W::Id) -> bool {
-        self.tree.focus_window_by_id(window)
+        self.arena.focus_window_by_id(window)
     }
 
     fn focus_in_direction_with_fullscreen_scope(
@@ -1706,12 +1695,12 @@ impl<W: LayoutElement> TreeSpace<W> {
         let fullscreen_scope = self.tiled_fullscreen_key();
 
         if let Some(scope) = fullscreen_scope {
-            self.tree
+            self.arena
                 .focus_in_direction_in_branch(scope, direction, false)
         } else if !allow_wrap {
-            self.tree.focus_in_direction_no_wrap(direction)
+            self.arena.focus_in_direction_no_wrap(direction)
         } else {
-            self.tree.focus_in_direction(direction)
+            self.arena.focus_in_direction(direction)
         }
     }
 
@@ -1752,7 +1741,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         if self.has_fullscreen_window() {
             return false;
         }
-        self.tree.focus_along_parent(forward, descend)
+        self.arena.focus_along_parent(forward, descend)
     }
 
     pub fn focus_parent(&mut self) -> bool {
@@ -1762,10 +1751,10 @@ impl<W: LayoutElement> TreeSpace<W> {
             // the fullscreen node as the focus boundary; treating any fullscreen presence
             // as a blanket no-op also blocked `focus parent` after a fullscreen leaf had
             // been wrapped by `split`.
-            return self.tree.select_parent_in(fullscreen_key);
+            return self.arena.select_parent_in(fullscreen_key);
         }
 
-        self.tree.select_parent()
+        self.arena.select_parent()
     }
 
     /// Handle `focus parent` inside this branch's fullscreen boundary.
@@ -1777,18 +1766,18 @@ impl<W: LayoutElement> TreeSpace<W> {
         branch: NodeKey,
     ) -> bool {
         let Some(fullscreen) = self
-            .tree
+            .arena
             .fullscreen_key()
-            .filter(|key| self.tree.branch_root(*key) == branch)
+            .filter(|key| self.arena.branch_root(*key) == branch)
         else {
             return false;
         };
-        let _ = self.tree.select_parent_in(fullscreen);
+        let _ = self.arena.select_parent_in(fullscreen);
         true
     }
 
     pub fn focus_child(&mut self) -> bool {
-        self.tree.select_child()
+        self.arena.select_child()
     }
 
     pub fn focus_parent_targets_workspace(&self) -> bool {
@@ -1800,62 +1789,62 @@ impl<W: LayoutElement> TreeSpace<W> {
             return false;
         }
 
-        if self.tree.selected_layout_parent_key() == Some(self.tree.workspace_root()) {
+        if self.arena.selected_layout_parent_key() == Some(self.arena.workspace_root()) {
             return true;
         }
 
-        self.tree.focused_leaf_targets_workspace_layout()
+        self.arena.focused_leaf_targets_workspace_layout()
     }
 
     pub fn clear_selection_context(&mut self) {
-        self.tree.clear_selection();
+        self.arena.clear_selection();
     }
 
     pub(super) fn clear_workspace_selection(&mut self) {
-        if self.tree.workspace_is_selected() && !self.tree.is_empty() {
-            self.tree.clear_selection();
+        if self.arena.workspace_is_selected() && !self.arena.is_empty() {
+            self.arena.clear_selection();
         }
     }
 
     pub(super) fn root_layout_and_child_count(&self) -> Option<(Layout, usize)> {
-        self.tree
-            .container_info(self.tree.root_node_key()?)
+        self.arena
+            .container_info(self.arena.root_node_key()?)
             .map(|(layout, _rect, child_count)| (layout, child_count))
     }
 
     pub fn select_root_container(&mut self) -> bool {
-        self.tree.select_root_container()
+        self.arena.select_root_container()
     }
 
     pub(super) fn inactive_tiling_key(&self) -> Option<NodeKey> {
-        self.tree.inactive_tiling_key()
+        self.arena.inactive_tiling_key()
     }
 
     pub(super) fn inactive_tiling_reference(
         &self,
     ) -> Option<super::container::InactiveTilingReference> {
-        self.tree.inactive_tiling_reference()
+        self.arena.inactive_tiling_reference()
     }
 
     pub(super) fn inactive_floating_window_id(&self) -> Option<W::Id> {
-        self.tree.inactive_floating_window_id()
+        self.arena.inactive_floating_window_id()
     }
 
     pub(super) fn active_floating_window_id(&self) -> Option<W::Id> {
-        self.tree.active_floating_window_id()
+        self.arena.active_floating_window_id()
     }
 
     pub(super) fn focus_inactive_tiling_key(&mut self, key: NodeKey) -> bool {
-        self.tree.focus_inactive_tiling_key(key)
+        self.arena.focus_inactive_tiling_key(key)
     }
 
     pub(super) fn window_for_inactive_tiling_key(&self, key: NodeKey) -> Option<&W> {
-        self.tree.window_for_inactive_tiling_key(key)
+        self.arena.window_for_inactive_tiling_key(key)
     }
 
     /// The branch the tiled commands act on: sway's `ws->tiling`.
     fn tiled_branch(&self) -> NodeKey {
-        self.tree.workspace_root()
+        self.arena.workspace_root()
     }
 
     fn move_command_target(&mut self, direction: Direction) -> bool {
@@ -1864,7 +1853,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         // and nothing else, one fullscreen globally does not move at all. Neither of them
         // ever looks at the tree, so nothing below applies. The fullscreen is the tiled
         // side's to know about, which is why this guard is here and not in `move_in_branch`.
-        let target = self.tree.command_target_in(self.tiled_branch());
+        let target = self.arena.command_target_in(self.tiled_branch());
         if self.target_is_fullscreen(target) {
             return false;
         }
@@ -1873,16 +1862,16 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     /// Move whatever a command in this branch is aimed at, and arrange if it moved.
     pub(super) fn move_in_branch(&mut self, branch: NodeKey, direction: Direction) -> bool {
-        let target = self.tree.command_target_in(branch);
+        let target = self.arena.command_target_in(branch);
         self.mutate_tree(|tree| tree.move_target_in_direction(direction, target))
     }
 
     fn target_is_fullscreen(&self, target: NodeKey) -> bool {
-        if target == self.tree.workspace_root() {
+        if target == self.arena.workspace_root() {
             return false;
         }
         self.tiled_fullscreen_key()
-            .is_some_and(|fullscreen| self.tree.is_descendant(target, fullscreen))
+            .is_some_and(|fullscreen| self.arena.is_descendant(target, fullscreen))
     }
 
     // Move operations using ContainerTree
@@ -1962,11 +1951,11 @@ impl<W: LayoutElement> TreeSpace<W> {
     /// workspace itself is what is selected: sway has no container to ask there, because a
     /// workspace is not one.
     pub fn command_target_parent_layout(&self) -> Option<Layout> {
-        let key = self.tree.selected_node_key()?;
-        if Some(key) == self.tree.root_node_key() {
+        let key = self.arena.selected_node_key()?;
+        if Some(key) == self.arena.root_node_key() {
             return None;
         }
-        self.tree.parent_layout(key)
+        self.arena.parent_layout(key)
     }
 
     /// Toggle between horizontal and vertical split for the focused container.
@@ -1976,8 +1965,8 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     pub fn toggle_workspace_split_layout(&mut self) {
         let next = self
-            .tree
-            .toggled_split_layout(self.tree.workspace_layout(), self.tree.root_node_key());
+            .arena
+            .toggled_split_layout(self.arena.workspace_layout(), self.arena.root_node_key());
         self.set_workspace_layout_mode(next);
     }
 
@@ -1987,7 +1976,7 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     pub fn toggle_workspace_layout_all(&mut self) {
-        let next = self.tree.workspace_layout().next_in_cycle();
+        let next = self.arena.workspace_layout().next_in_cycle();
         self.set_workspace_layout_mode(next);
     }
 
@@ -2015,14 +2004,14 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     /// Set the width of the currently focused root-level column
     pub fn set_column_width(&mut self, change: SizeChange) {
-        let Some(idx) = self.tree.focused_root_index() else {
+        let Some(idx) = self.arena.focused_root_index() else {
             return;
         };
-        let Some(root_key) = self.tree.root_node_key() else {
+        let Some(root_key) = self.arena.root_node_key() else {
             return;
         };
 
-        let Some((layout, rect, child_count)) = self.tree.container_info(root_key) else {
+        let Some((layout, rect, child_count)) = self.arena.container_info(root_key) else {
             return;
         };
         if layout != Layout::SplitH || child_count == 0 {
@@ -2034,15 +2023,15 @@ impl<W: LayoutElement> TreeSpace<W> {
             return;
         }
 
-        let current_percent = self.tree.child_percent(root_key, idx).unwrap_or(1.0);
+        let current_percent = self.arena.child_percent(root_key, idx).unwrap_or(1.0);
         let new_percent =
             percent_from_size_change(current_percent, available_width, || rect.size.w, change);
 
         if self
-            .tree
+            .arena
             .set_child_percent(root_key, idx, Layout::SplitH, new_percent)
         {
-            self.tree.layout();
+            self.arena.layout();
         }
     }
     pub fn reset_window_height(&mut self, window: Option<&W::Id>) {
@@ -2057,12 +2046,12 @@ impl<W: LayoutElement> TreeSpace<W> {
         };
 
         if self
-            .tree
+            .arena
             .container_info(parent_key)
             .is_some_and(|(layout, _, _)| layout == Layout::SplitV)
         {
-            self.tree.recalculate_child_percents(parent_key);
-            self.tree.layout();
+            self.arena.recalculate_child_percents(parent_key);
+            self.arena.layout();
         }
     }
 
@@ -2072,14 +2061,14 @@ impl<W: LayoutElement> TreeSpace<W> {
         let _ = self.set_fullscreen(window.id(), !currently);
     }
     pub fn toggle_width(&mut self, forwards: bool) {
-        let Some(idx) = self.tree.focused_root_index() else {
+        let Some(idx) = self.arena.focused_root_index() else {
             return;
         };
-        let Some(root_key) = self.tree.root_node_key() else {
+        let Some(root_key) = self.arena.root_node_key() else {
             return;
         };
 
-        let Some((layout, rect, child_count)) = self.tree.container_info(root_key) else {
+        let Some((layout, rect, child_count)) = self.arena.container_info(root_key) else {
             return;
         };
         if layout != Layout::SplitH || child_count == 0 {
@@ -2091,32 +2080,27 @@ impl<W: LayoutElement> TreeSpace<W> {
             return;
         }
 
-        let current_percent = self.tree.child_percent(root_key, idx).unwrap_or(1.0);
-        let presets = &self.options.layout.preset_column_widths;
+        let current_percent = self.arena.child_percent(root_key, idx).unwrap_or(1.0);
+        let presets = &self.options().layout.preset_column_widths;
 
         if let Some(percent) = self.cycle_presets(available, current_percent, presets, forwards) {
             if self
-                .tree
+                .arena
                 .set_child_percent(root_key, idx, Layout::SplitH, percent)
             {
-                self.tree.layout();
+                self.arena.layout();
             }
         }
     }
 
     #[cfg(test)]
-    pub fn view_pos(&self) -> f64 {
-        self.viewport.position()
-    }
-
-    #[cfg(test)]
     pub fn active_column_idx(&self) -> usize {
-        self.tree.focused_root_index().unwrap_or(0)
+        self.arena.focused_root_index().unwrap_or(0)
     }
 
     fn layout_area(&self) -> Rectangle<f64, Logical> {
-        let mut area = self.working_area;
-        let gap = self.options.layout.gaps;
+        let mut area = self.working_area();
+        let gap = self.options().layout.gaps;
         if gap > 0.0 {
             area.loc.x += gap;
             area.loc.y += gap;
@@ -2155,9 +2139,9 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     fn leaf_rect_for_key(&self, key: NodeKey) -> Option<Rectangle<f64, Logical>> {
-        let scale = Scale::from(self.scale);
+        let scale = Scale::from(self.scale());
         let info = self.display_layouts().find(|info| info.key == key)?;
-        let tile = self.tree.get_tile(info.key)?;
+        let tile = self.arena.get_tile(info.key)?;
         let mut tile_pos = info.rect.loc + tile.render_offset();
         tile_pos = tile_pos.to_physical_precise_round(scale).to_logical(scale);
         Some(Rectangle::new(tile_pos, tile.tile_size()))
@@ -2165,16 +2149,16 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     /// The leaf under `pos`, or the nearest one: its stable identity and on-screen rect.
     fn closest_leaf_rect(&self, pos: Point<f64, Logical>) -> Option<LeafHit> {
-        let scale = Scale::from(self.scale);
+        let scale = Scale::from(self.scale());
         let fullscreen = self.fullscreen_render_state();
 
         let mut nearest: Option<(LeafHit, f64)> = None;
 
         for info in self.display_layouts() {
-            if let Some(tile) = self.tree.get_tile(info.key) {
+            if let Some(tile) = self.arena.get_tile(info.key) {
                 let in_fullscreen_container = fullscreen
                     .container
-                    .is_some_and(|scope| self.tree.is_descendant(info.key, scope));
+                    .is_some_and(|scope| self.arena.is_descendant(info.key, scope));
                 let state = fullscreen.tile_state(
                     tile.window().id(),
                     info.visible,
@@ -2265,7 +2249,7 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     /// Determine insert position from pointer location
     pub(super) fn insert_position(&self, pos: Point<f64, Logical>) -> InsertPosition {
-        if self.tree.is_empty() {
+        if self.arena.is_empty() {
             return InsertPosition::NewColumn(0);
         }
 
@@ -2287,7 +2271,7 @@ impl<W: LayoutElement> TreeSpace<W> {
             return InsertPosition::NewColumn(0);
         };
 
-        let parent_layout = self.tree.parent_layout(leaf_key).unwrap_or(Layout::SplitH);
+        let parent_layout = self.arena.parent_layout(leaf_key).unwrap_or(Layout::SplitH);
 
         if matches!(parent_layout, Layout::SplitH | Layout::Tabbed) {
             if pos.y < rect.loc.y + Self::DROP_LAYOUT_BORDER {
@@ -2402,7 +2386,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         pos: Point<f64, Logical>,
         pad: i32,
     ) -> Option<(&W, super::HitType)> {
-        if self.options.layout.tab_bar.off {
+        if self.options().layout.tab_bar.off {
             return None;
         }
 
@@ -2410,9 +2394,10 @@ impl<W: LayoutElement> TreeSpace<W> {
         let fullscreen_container = (branch == self.tiled_branch())
             .then(|| self.render_fullscreen_container())
             .flatten();
-        let cache = self.tab_bar_cache.borrow();
-        for mut info in self.tree.tab_bar_layouts_in_branch(branch) {
-            if fullscreen_container.is_some_and(|scope| !self.tree.is_descendant(info.key, scope)) {
+        let cache = self.render.tab_bar_cache.borrow();
+        for mut info in self.arena.tab_bar_layouts_in_branch(branch) {
+            if fullscreen_container.is_some_and(|scope| !self.arena.is_descendant(info.key, scope))
+            {
                 continue;
             }
             // A branch's outermost bar sits on the branch's edge, and the gap is outside it.
@@ -2424,12 +2409,12 @@ impl<W: LayoutElement> TreeSpace<W> {
             let cached_widths = cache
                 .get(&info.key)
                 .map(|entry| entry.tab_widths_px.as_slice());
-            let Some(tab_idx) = tab_bar_hit_index(&info, pos, self.scale, cached_widths, pad)
+            let Some(tab_idx) = tab_bar_hit_index(&info, pos, self.scale(), cached_widths, pad)
             else {
                 continue;
             };
 
-            if let Some(window) = self.tree.window_for_tab(info.key, tab_idx) {
+            if let Some(window) = self.arena.window_for_tab(info.key, tab_idx) {
                 return Some((
                     window,
                     super::HitType::Activate {
@@ -2443,7 +2428,7 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     pub fn window_under(&self, pos: Point<f64, Logical>) -> Option<(&W, super::HitType)> {
-        let scale = Scale::from(self.scale);
+        let scale = Scale::from(self.scale());
         let fullscreen = self.fullscreen_render_state();
 
         if let Some(hit) = self.tab_bar_hit(pos) {
@@ -2453,10 +2438,10 @@ impl<W: LayoutElement> TreeSpace<W> {
         let render_layouts: Vec<&LeafLayoutInfo> = self.display_layouts().collect();
         for info in render_layouts.iter().rev() {
             // Use O(1) key lookup instead of O(depth) path lookup.
-            if let Some(tile) = self.tree.get_tile(info.key) {
+            if let Some(tile) = self.arena.get_tile(info.key) {
                 let in_fullscreen_container = fullscreen
                     .container
-                    .is_some_and(|scope| self.tree.is_descendant(info.key, scope));
+                    .is_some_and(|scope| self.arena.is_descendant(info.key, scope));
                 let state = fullscreen.tile_state(
                     tile.window().id(),
                     info.visible,
@@ -2487,8 +2472,8 @@ impl<W: LayoutElement> TreeSpace<W> {
     pub fn window_loc(&self, window: &W) -> Option<Point<f64, Logical>> {
         let key = self.tiled_window_key(window.id())?;
         let info = self.display_layouts().find(|layout| layout.key == key)?;
-        let tile = self.tree.get_tile(key)?;
-        let scale = Scale::from(self.scale);
+        let tile = self.arena.get_tile(key)?;
+        let scale = Scale::from(self.scale());
 
         let mut tile_pos = info.rect.loc + tile.render_offset();
         tile_pos = tile_pos.to_physical_precise_round(scale).to_logical(scale);
@@ -2498,13 +2483,13 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     pub fn window_size(&self, window: &W) -> Option<Size<f64, Logical>> {
         let key = self.tiled_window_key(window.id())?;
-        let tile = self.tree.get_tile(key)?;
+        let tile = self.arena.get_tile(key)?;
         Some(tile.window_size())
     }
 
     pub fn is_fullscreen(&self, window: &W) -> bool {
         self.tiled_window_key(window.id()).is_some()
-            && self.tree.window_owns_fullscreen(window.id())
+            && self.arena.window_owns_fullscreen(window.id())
     }
 
     pub fn has_fullscreen_window(&self) -> bool {
@@ -2534,23 +2519,23 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     // Additional methods needed by workspace.rs
     pub fn tiles_mut(&mut self) -> impl Iterator<Item = &mut Tile<W>> + '_ {
-        let root = self.tree.workspace_root();
-        self.tree.tiles_in_branch_mut(root).into_iter()
+        let root = self.arena.workspace_root();
+        self.arena.tiles_in_branch_mut(root).into_iter()
     }
 
     pub fn tiles_with_render_positions(
         &self,
     ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>, bool)> + '_ {
-        let scale = Scale::from(self.scale);
+        let scale = Scale::from(self.scale());
         let fullscreen_container = self.render_fullscreen_container();
         self.display_layouts().filter_map(move |info| {
             // Use O(1) key lookup instead of O(depth) path lookup.
-            let tile = self.tree.get_tile(info.key)?;
+            let tile = self.arena.get_tile(info.key)?;
             let pos = info.rect.loc + tile.render_offset();
             let pos = pos.to_physical_precise_round(scale).to_logical(scale);
             let visible = info.visible
                 && fullscreen_container
-                    .is_none_or(|scope| self.tree.is_descendant(info.key, scope));
+                    .is_none_or(|scope| self.arena.is_descendant(info.key, scope));
             Some((tile, pos, visible))
         })
     }
@@ -2559,11 +2544,11 @@ impl<W: LayoutElement> TreeSpace<W> {
         &mut self,
         round: bool,
     ) -> impl Iterator<Item = (&mut Tile<W>, Point<f64, Logical>)> + '_ {
-        let scale = Scale::from(self.scale);
+        let scale = Scale::from(self.scale());
         let layouts: Vec<LeafLayoutInfo> = self.display_layouts().cloned().collect();
         let keys: Vec<NodeKey> = layouts.iter().map(|info| info.key).collect();
         let locs: Vec<Point<f64, Logical>> = layouts.iter().map(|info| info.rect.loc).collect();
-        self.tree
+        self.arena
             .tiles_mut_for_keys(&keys)
             .into_iter()
             .map(move |(idx, tile)| {
@@ -2578,11 +2563,11 @@ impl<W: LayoutElement> TreeSpace<W> {
     pub fn tiles_with_ipc_layouts(
         &self,
     ) -> impl Iterator<Item = (&Tile<W>, tiri_ipc::WindowLayout)> + '_ {
-        let scale = Scale::from(self.scale);
+        let scale = Scale::from(self.scale());
         let legacy_positions = self.legacy_tiling_positions();
 
         self.display_layouts().filter_map(move |info| {
-            let tile = self.tree.get_tile(info.key)?;
+            let tile = self.arena.get_tile(info.key)?;
             let mut layout = tile.ipc_layout_template();
             let tile_size = tile.tile_size();
             layout.tile_size = (tile_size.w, tile_size.h);
@@ -2601,18 +2586,18 @@ impl<W: LayoutElement> TreeSpace<W> {
     fn legacy_tiling_positions(&self) -> HashMap<Vec<usize>, (usize, usize)> {
         let mut positions = HashMap::new();
 
-        if self.tree.root_children_len() == 0 {
+        if self.arena.root_children_len() == 0 {
             return positions;
         }
 
-        if self.tree.root_container().is_none() {
+        if self.arena.root_container().is_none() {
             positions.insert(Vec::new(), (1, 1));
             return positions;
         }
 
-        for root_idx in 0..self.tree.root_children_len() {
+        for root_idx in 0..self.arena.root_children_len() {
             for (leaf_idx, path) in self
-                .tree
+                .arena
                 .leaf_paths_under(&[root_idx])
                 .into_iter()
                 .enumerate()
@@ -2625,7 +2610,7 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     pub fn are_transitions_ongoing(&self) -> bool {
-        self.tiles().any(|tile| tile.are_transitions_ongoing()) || !self.closing_windows.is_empty()
+        self.tiles().any(|tile| tile.are_transitions_ongoing())
     }
 
     pub fn update_shaders(&mut self) {
@@ -2635,12 +2620,12 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     pub fn active_window(&self) -> Option<&W> {
-        self.tree
-            .focused_window_in_branch(self.tree.workspace_root())
+        self.arena
+            .focused_window_in_branch(self.arena.workspace_root())
     }
 
     pub fn is_empty(&self) -> bool {
-        self.tree.is_empty()
+        self.arena.is_empty()
     }
 
     pub fn add_tile(
@@ -2653,9 +2638,9 @@ impl<W: LayoutElement> TreeSpace<W> {
     ) {
         let id = tile.window().id().clone();
         if let Some(index) = col_idx {
-            self.tree.insert_leaf_at(index, tile, activate);
+            self.arena.insert_leaf_at(index, tile, activate);
         } else {
-            self.tree.insert_window_with_focus(tile, activate);
+            self.arena.insert_window_with_focus(tile, activate);
         }
         self.sync_fullscreen_window();
         self.layout_after_tiled_insert(&id);
@@ -2669,7 +2654,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         _width: ColumnWidth,
     ) {
         let id = tile.window().id().clone();
-        self.tree.insert_leaf_after(next_to, tile, activate);
+        self.arena.insert_leaf_after(next_to, tile, activate);
         self.sync_fullscreen_window();
         self.layout_after_tiled_insert(&id);
     }
@@ -2683,7 +2668,7 @@ impl<W: LayoutElement> TreeSpace<W> {
     ) {
         let id = tile.window().id().clone();
         if self
-            .tree
+            .arena
             .insert_leaf_in_root_container(root_idx, tile_idx, tile, activate)
         {
             self.sync_fullscreen_window();
@@ -2706,9 +2691,9 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     pub fn insert_subtree_with_focus(&mut self, subtree: DetachedNode<W>, focus: bool) {
-        self.tree.insert_subtree_with_focus(subtree, focus);
+        self.arena.insert_subtree_with_focus(subtree, focus);
         self.sync_fullscreen_window();
-        self.tree.layout();
+        self.arena.layout();
     }
 
     pub fn add_subtree_as_workspace_tiling_fallback(
@@ -2716,23 +2701,23 @@ impl<W: LayoutElement> TreeSpace<W> {
         subtree: DetachedNode<W>,
         focus: bool,
     ) {
-        if self.tree.is_empty() {
-            self.tree.insert_subtree_with_focus(subtree, focus);
+        if self.arena.is_empty() {
+            self.arena.insert_subtree_with_focus(subtree, focus);
         } else {
-            let index = self.tree.root_children_len();
-            self.tree.insert_subtree_at_root(index, subtree, focus);
+            let index = self.arena.root_children_len();
+            self.arena.insert_subtree_at_root(index, subtree, focus);
         }
         self.sync_fullscreen_window();
-        self.tree.layout();
+        self.arena.layout();
     }
 
     pub fn add_tile_as_workspace_tiling_fallback(&mut self, tile: Tile<W>, activate: bool) {
         let id = tile.window().id().clone();
-        if self.tree.is_empty() {
-            self.tree.insert_window_with_focus(tile, activate);
+        if self.arena.is_empty() {
+            self.arena.insert_window_with_focus(tile, activate);
         } else {
-            let index = self.tree.root_children_len();
-            self.tree.insert_leaf_at(index, tile, activate);
+            let index = self.arena.root_children_len();
+            self.arena.insert_leaf_at(index, tile, activate);
         }
         self.sync_fullscreen_window();
         self.layout_after_tiled_insert(&id);
@@ -2742,18 +2727,18 @@ impl<W: LayoutElement> TreeSpace<W> {
         &self,
         window: &W::Id,
     ) -> Option<super::container::InsertParentInfo> {
-        self.tree.insert_parent_info_for_window(window)
+        self.arena.insert_parent_info_for_window(window)
     }
 
     pub(super) fn replace_tiling_tile(&mut self, key: NodeKey, tile: Tile<W>) -> Option<Tile<W>> {
         if !self.is_tiling_leaf(key) {
             return None;
         }
-        self.tree.replace_leaf(key, tile)
+        self.arena.replace_leaf(key, tile)
     }
 
     pub(super) fn is_tiling_leaf(&self, key: NodeKey) -> bool {
-        self.tree.is_leaf(key) && self.tree.branch_root(key) == self.tree.workspace_root()
+        self.arena.is_leaf(key) && self.arena.branch_root(key) == self.arena.workspace_root()
     }
 
     pub(super) fn insert_tile_with_parent_info(
@@ -2762,13 +2747,13 @@ impl<W: LayoutElement> TreeSpace<W> {
         tile: Tile<W>,
         activate: bool,
     ) -> bool {
-        let root = self.tree.workspace_root();
+        let root = self.arena.workspace_root();
         if self
-            .tree
+            .arena
             .insert_leaf_with_parent_info(root, info, tile, activate)
         {
             self.sync_fullscreen_window();
-            self.tree.layout();
+            self.arena.layout();
             return true;
         }
 
@@ -2787,11 +2772,11 @@ impl<W: LayoutElement> TreeSpace<W> {
             return false;
         }
         if self
-            .tree
+            .arena
             .insert_leaf_split(target, direction, tile, activate)
         {
             self.sync_fullscreen_window();
-            self.tree.layout();
+            self.arena.layout();
             return true;
         }
 
@@ -2804,9 +2789,9 @@ impl<W: LayoutElement> TreeSpace<W> {
         tile: Tile<W>,
         activate: bool,
     ) -> bool {
-        if self.tree.insert_leaf_split_root(direction, tile, activate) {
+        if self.arena.insert_leaf_split_root(direction, tile, activate) {
             self.sync_fullscreen_window();
-            self.tree.layout();
+            self.arena.layout();
             return true;
         }
 
@@ -2815,13 +2800,13 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     pub fn active_tile_visual_rectangle(&self) -> Option<Rectangle<f64, Logical>> {
         let focused_key = self.focused_key();
-        self.tree
+        self.arena
             .leaf_layouts()
             .iter()
             .find(|info| Some(info.key) == focused_key)
             .and_then(|info| {
                 let mut rect = info.rect;
-                let tile = self.tree.get_tile(info.key)?;
+                let tile = self.arena.get_tile(info.key)?;
                 rect.loc += tile.render_offset();
                 Some(rect)
             })
@@ -2830,9 +2815,9 @@ impl<W: LayoutElement> TreeSpace<W> {
     /// Get mutable reference to the currently focused tile
     pub fn active_tile_mut(&mut self) -> Option<&mut Tile<W>> {
         let key = self
-            .tree
-            .focus_inactive_view_in_branch(self.tree.workspace_root())?;
-        self.tree.get_tile_mut(key)
+            .arena
+            .focus_inactive_view_in_branch(self.arena.workspace_root())?;
+        self.arena.get_tile_mut(key)
     }
 
     pub fn add_root_tiling_subtree(
@@ -2842,11 +2827,11 @@ impl<W: LayoutElement> TreeSpace<W> {
         activate: bool,
         _height: Option<WindowHeight>,
     ) {
-        let idx = root_idx.unwrap_or_else(|| self.tree.root_children_len());
-        self.tree
+        let idx = root_idx.unwrap_or_else(|| self.arena.root_children_len());
+        self.arena
             .insert_subtree_at_root(idx, subtree.into_subtree(), activate);
         self.sync_fullscreen_window();
-        self.tree.layout();
+        self.arena.layout();
     }
 
     pub fn add_column(
@@ -2859,9 +2844,9 @@ impl<W: LayoutElement> TreeSpace<W> {
         self.add_root_tiling_subtree(col_idx, column.into(), activate, height);
     }
     pub fn remove_tile(&mut self, window: &W::Id, transaction: Transaction) -> RemovedTile<W> {
-        self.tree.set_pending_transaction(transaction.clone());
+        self.arena.set_pending_transaction(transaction.clone());
         let tile = self
-            .tree
+            .arena
             .remove_window(window)
             .expect("attempted to remove missing window");
 
@@ -2876,20 +2861,20 @@ impl<W: LayoutElement> TreeSpace<W> {
         Some(self.remove_tile(&id, transaction))
     }
     pub fn remove_active_root_tiling_subtree(&mut self) -> Option<RootTilingSubtree<W>> {
-        let idx = self.tree.focused_root_index()?;
-        let subtree = self.tree.take_root_child_subtree(idx)?;
+        let idx = self.arena.focused_root_index()?;
+        let subtree = self.arena.take_root_child_subtree(idx)?;
         let subtree = RootTilingSubtree::from_subtree(subtree);
 
-        self.tree.layout();
+        self.arena.layout();
         Some(subtree)
     }
 
     /// Remove the leaf or explicitly selected parent addressed by `move container`.
     pub fn remove_active_tiling_subtree(&mut self) -> Option<RootTilingSubtree<W>> {
-        let subtree = self.tree.take_command_target_subtree()?;
+        let subtree = self.arena.take_command_target_subtree()?;
         let subtree = RootTilingSubtree::from_subtree(subtree);
 
-        self.tree.layout();
+        self.arena.layout();
         Some(subtree)
     }
 
@@ -2903,13 +2888,13 @@ impl<W: LayoutElement> TreeSpace<W> {
         _height: Option<PresetSize>,
         rules: &ResolvedWindowRules,
     ) -> Size<i32, Logical> {
-        let Some(preview) = self.tree.preview_new_leaf_geometry() else {
+        let Some(preview) = self.arena.preview_new_leaf_geometry() else {
             return Size::from((800, 600));
         };
 
         let mut size = preview.rect.size;
-        let mut border_config = self.options.layout.border.merged_with(&rules.border);
-        border_config.width = round_logical_in_physical_max1(self.scale, border_config.width);
+        let mut border_config = self.options().layout.border.merged_with(&rules.border);
+        border_config.width = round_logical_in_physical_max1(self.scale(), border_config.width);
 
         if !border_config.off {
             let width = border_config.width * 2.0;
@@ -2928,17 +2913,17 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     pub fn focus_root_container_first(&mut self) {
-        self.tree.focus_root_child(0);
+        self.arena.focus_root_child(0);
     }
 
     pub fn focus_first_leaf(&mut self) {
-        let _ = self.tree.focus_leaf_in_root_child(0, 1) || self.tree.focus_root_child(0);
+        let _ = self.arena.focus_leaf_in_root_child(0, 1) || self.arena.focus_root_child(0);
     }
 
     pub fn focus_root_container_last(&mut self) {
-        let len = self.tree.root_children_len();
+        let len = self.arena.root_children_len();
         if len > 0 {
-            self.tree.focus_root_child(len - 1);
+            self.arena.focus_root_child(len - 1);
         }
     }
 
@@ -2947,7 +2932,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         if idx == 0 {
             return;
         }
-        self.tree.focus_root_child(idx - 1);
+        self.arena.focus_root_child(idx - 1);
     }
 
     /// Leaves inside the current root container are 1-based.
@@ -2955,11 +2940,12 @@ impl<W: LayoutElement> TreeSpace<W> {
         if index == 0 {
             return;
         }
-        let root_idx = match self.tree.focused_root_index() {
+        let root_idx = match self.arena.focused_root_index() {
             Some(idx) => idx,
             None => return,
         };
-        self.tree.focus_leaf_in_root_child(root_idx, index as usize);
+        self.arena
+            .focus_leaf_in_root_child(root_idx, index as usize);
     }
 
     pub fn focus_column_first(&mut self) {
@@ -2979,61 +2965,61 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     pub fn focus_down_or_left(&mut self) {
-        let _ = self.tree.focus_in_direction(Direction::Down)
-            || self.tree.focus_in_direction(Direction::Left);
+        let _ = self.arena.focus_in_direction(Direction::Down)
+            || self.arena.focus_in_direction(Direction::Left);
     }
 
     pub fn focus_down_or_right(&mut self) {
-        let _ = self.tree.focus_in_direction(Direction::Down)
-            || self.tree.focus_in_direction(Direction::Right);
+        let _ = self.arena.focus_in_direction(Direction::Down)
+            || self.arena.focus_in_direction(Direction::Right);
     }
 
     pub fn focus_up_or_left(&mut self) {
-        let _ = self.tree.focus_in_direction(Direction::Up)
-            || self.tree.focus_in_direction(Direction::Left);
+        let _ = self.arena.focus_in_direction(Direction::Up)
+            || self.arena.focus_in_direction(Direction::Left);
     }
 
     pub fn focus_up_or_right(&mut self) {
-        let _ = self.tree.focus_in_direction(Direction::Up)
-            || self.tree.focus_in_direction(Direction::Right);
+        let _ = self.arena.focus_in_direction(Direction::Up)
+            || self.arena.focus_in_direction(Direction::Right);
     }
 
     pub fn focus_top(&mut self) {
-        self.tree.focus_first_leaf_in_focused_root_child();
+        self.arena.focus_first_leaf_in_focused_root_child();
     }
 
     pub fn focus_bottom(&mut self) {
-        self.tree.focus_last_leaf_in_focused_root_child();
+        self.arena.focus_last_leaf_in_focused_root_child();
     }
 
     fn move_root_child_with_layout(&mut self, current: usize, target: usize) -> bool {
         if current == target {
             return false;
         }
-        if target >= self.tree.root_children_len() {
+        if target >= self.arena.root_children_len() {
             return false;
         }
         self.mutate_tree(|tree| tree.move_root_child(current, target))
     }
 
     pub fn move_root_container_to_first(&mut self) {
-        if let Some(idx) = self.tree.focused_root_index() {
+        if let Some(idx) = self.arena.focused_root_index() {
             self.move_root_child_with_layout(idx, 0);
         }
     }
 
     pub fn move_root_container_to_last(&mut self) {
-        let len = self.tree.root_children_len();
+        let len = self.arena.root_children_len();
         if len == 0 {
             return;
         }
-        if let Some(idx) = self.tree.focused_root_index() {
+        if let Some(idx) = self.arena.focused_root_index() {
             self.move_root_child_with_layout(idx, len - 1);
         }
     }
 
     pub fn move_root_container_left(&mut self) -> bool {
-        let Some(idx) = self.tree.focused_root_index() else {
+        let Some(idx) = self.arena.focused_root_index() else {
             return false;
         };
         if idx == 0 {
@@ -3044,10 +3030,10 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 
     pub fn move_root_container_right(&mut self) -> bool {
-        let Some(idx) = self.tree.focused_root_index() else {
+        let Some(idx) = self.arena.focused_root_index() else {
             return false;
         };
-        let len = self.tree.root_children_len();
+        let len = self.arena.root_children_len();
         if idx + 1 >= len {
             return false;
         }
@@ -3060,7 +3046,7 @@ impl<W: LayoutElement> TreeSpace<W> {
             return;
         }
         let target = idx - 1;
-        if let Some(current) = self.tree.focused_root_index() {
+        if let Some(current) = self.arena.focused_root_index() {
             if current == target {
                 return;
             }
@@ -3090,7 +3076,7 @@ impl<W: LayoutElement> TreeSpace<W> {
 
     fn consume_or_expel_window(&mut self, window: Option<&W::Id>, direction: Direction) {
         if let Some(id) = window {
-            self.tree.focus_window_by_id(id);
+            self.arena.focus_window_by_id(id);
         }
 
         if !self.move_command_target(direction) {
@@ -3115,7 +3101,7 @@ impl<W: LayoutElement> TreeSpace<W> {
             return;
         };
         let id = tile.window().id().clone();
-        let currently_fullscreen = self.tree.window_owns_fullscreen(tile.window().id());
+        let currently_fullscreen = self.arena.window_owns_fullscreen(tile.window().id());
         let _ = self.set_fullscreen(&id, !currently_fullscreen);
     }
 
@@ -3135,27 +3121,27 @@ impl<W: LayoutElement> TreeSpace<W> {
             return;
         };
         let current_percent = self
-            .tree
+            .arena
             .child_percent(parent_key, child_idx)
             .unwrap_or(1.0);
 
         if let Some(percent) = self.cycle_presets(available, current_percent, presets, forwards) {
             if self
-                .tree
+                .arena
                 .set_child_percent(parent_key, child_idx, layout, percent)
             {
-                self.tree.layout();
+                self.arena.layout();
             }
         }
     }
 
     pub fn toggle_window_height(&mut self, window: Option<&W::Id>, forwards: bool) {
-        let presets = self.options.layout.preset_window_heights.clone();
+        let presets = self.options().layout.preset_window_heights.clone();
         self.toggle_window_dimension(window, Layout::SplitV, &presets, forwards);
     }
 
     pub fn toggle_window_width(&mut self, window: Option<&W::Id>, forwards: bool) {
-        let presets = self.options.layout.preset_column_widths.clone();
+        let presets = self.options().layout.preset_column_widths.clone();
         self.toggle_window_dimension(window, Layout::SplitH, &presets, forwards);
     }
 
@@ -3246,7 +3232,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         // different node from the one `find_resize_parent` climbed to, and then spent as a
         // delta from the target's own span. `resize set width 50 ppt` therefore means "half of
         // whatever holds me", not "half of whoever pays".
-        let target_span = self.tree.node_span(key, layout).unwrap_or(0.0);
+        let target_span = self.arena.node_span(key, layout).unwrap_or(0.0);
         let reference = self.ppt_reference(key, layout);
         let pixels = match change {
             SizeChange::AdjustFixed(delta) => f64::from(delta),
@@ -3263,7 +3249,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         };
         let child_spans = (0..child_count)
             .map(|idx| {
-                self.tree
+                self.arena
                     .child_rect_in(parent_key, idx)
                     .map(|rect| match layout {
                         Layout::SplitH => rect.size.w,
@@ -3280,22 +3266,22 @@ impl<W: LayoutElement> TreeSpace<W> {
             child_spans,
         };
         if self
-            .tree
+            .arena
             .resize_child(parent_key, child_idx, layout, reach, delta, space)
         {
-            if parent_key == self.tree.workspace_root() {
-                self.tree.layout();
+            if parent_key == self.arena.workspace_root() {
+                self.arena.layout();
             } else {
-                self.tree.layout_container_subtree(parent_key);
+                self.arena.layout_container_subtree(parent_key);
             }
         }
     }
 
     pub fn set_fullscreen(&mut self, window: &W::Id, is_fullscreen: bool) -> bool {
-        let selected_container = self.tree.selected_container_key();
+        let selected_container = self.arena.selected_container_key();
 
         if is_fullscreen {
-            if self.tree.window_owns_fullscreen(window) {
+            if self.arena.window_owns_fullscreen(window) {
                 return false;
             }
 
@@ -3304,32 +3290,35 @@ impl<W: LayoutElement> TreeSpace<W> {
             };
 
             let already_focused = self
-                .tree
+                .arena
                 .focused_window()
                 .is_some_and(|focused| focused.id() == window);
             if selected_container.is_none()
                 && !already_focused
-                && !self.tree.focus_window_by_id(window)
+                && !self.arena.focus_window_by_id(window)
             {
                 return false;
             }
 
-            if let Some(tile) = self.tree.get_tile_mut(key) {
-                tile.request_fullscreen(!self.options.animations.off, None);
+            let animate = !self.options().animations.off;
+            if let Some(tile) = self.arena.get_tile_mut(key) {
+                tile.request_fullscreen(animate, None);
             }
 
-            self.tree.set_fullscreen_key(Some(key));
-            self.tree.layout();
+            self.arena.set_fullscreen_key(Some(key));
+            self.arena.layout();
             if let Some(selected_key) = selected_container {
-                self.tree.select_container(selected_key);
+                self.arena.select_container(selected_key);
             }
             true
         } else {
             let Some(key) = self.tiled_window_key(window) else {
                 return false;
             };
-            let fullscreen_matches = self.tree.window_owns_fullscreen(window);
-            let Some(tile) = self.tree.get_tile_mut(key) else {
+            let fullscreen_matches = self.arena.window_owns_fullscreen(window);
+            let working_area_size = self.working_area().size;
+            let animate = !self.options().animations.off;
+            let Some(tile) = self.arena.get_tile_mut(key) else {
                 return false;
             };
             let is_window_fullscreen = tile.window().pending_sizing_mode().is_fullscreen();
@@ -3342,14 +3331,14 @@ impl<W: LayoutElement> TreeSpace<W> {
             // non-fullscreen request has gone out there is nothing for it to notice. The size
             // is provisional — the arrange right below re-decides it against the slot the
             // window lands in.
-            tile.request_tile_size(self.working_area.size, !self.options.animations.off, None);
+            tile.request_tile_size(working_area_size, animate, None);
 
             if fullscreen_matches {
-                self.tree.set_fullscreen_key(None);
+                self.arena.set_fullscreen_key(None);
             }
-            self.tree.layout();
+            self.arena.layout();
             if let Some(selected_key) = selected_container {
-                self.tree.select_container(selected_key);
+                self.arena.select_container(selected_key);
             }
             true
         }
@@ -3361,18 +3350,18 @@ impl<W: LayoutElement> TreeSpace<W> {
     /// and arranges the complete subtree while every descendant remains an ordinary tiled
     /// client. The NodeKey carries that distinction across both tiled and floating branches.
     pub(super) fn toggle_fullscreen_container(&mut self, key: NodeKey) -> bool {
-        if self.tree.container_info(key).is_none() {
+        if self.arena.container_info(key).is_none() {
             return false;
         }
-        let is_fullscreen = self.tree.fullscreen_key() == Some(key);
+        let is_fullscreen = self.arena.fullscreen_key() == Some(key);
 
         if is_fullscreen {
-            self.tree.set_fullscreen_key(None);
+            self.arena.set_fullscreen_key(None);
         } else {
-            self.tree.set_fullscreen_key(Some(key));
+            self.arena.set_fullscreen_key(Some(key));
         }
 
-        self.tree.layout();
+        self.arena.layout();
         true
     }
 
@@ -3381,27 +3370,29 @@ impl<W: LayoutElement> TreeSpace<W> {
         // its own fullscreen pointer. Adopt the arriving fullscreen only when the destination
         // has none; otherwise revoke the stale request. This makes the single pointer true at
         // the protocol boundary too, rather than leaving two clients pending fullscreen.
-        let tiled_root = self.tree.workspace_root();
+        let tiled_root = self.arena.workspace_root();
         let pending_keys: Vec<_> = self
-            .tree
+            .arena
             .tiles_in_branch(tiled_root)
             .into_iter()
             .filter(|tile| tile.window().pending_sizing_mode().is_fullscreen())
             .map(Tile::node_key)
             .collect();
-        let authority = self.tree.fullscreen_key();
+        let authority = self.arena.fullscreen_key();
         let keep = authority.or_else(|| pending_keys.first().copied());
         if authority.is_none() {
             if let Some(key) = keep {
-                self.tree.set_fullscreen_key(Some(key));
+                self.arena.set_fullscreen_key(Some(key));
             }
         }
 
+        let working_area_size = self.working_area().size;
+        let animate = !self.options().animations.off;
         for key in pending_keys.into_iter().filter(|key| Some(*key) != keep) {
-            let Some(tile) = self.tree.get_tile_mut(key) else {
+            let Some(tile) = self.arena.get_tile_mut(key) else {
                 continue;
             };
-            tile.request_tile_size(self.working_area.size, !self.options.animations.off, None);
+            tile.request_tile_size(working_area_size, animate, None);
         }
     }
 
@@ -3414,17 +3405,17 @@ impl<W: LayoutElement> TreeSpace<W> {
     pub fn center_window(&mut self, _window: Option<&W::Id>) {}
 
     pub fn expand_column_to_available_width(&mut self) {
-        let Some(idx) = self.tree.focused_root_index() else {
+        let Some(idx) = self.arena.focused_root_index() else {
             return;
         };
-        let Some(root_key) = self.tree.root_node_key() else {
+        let Some(root_key) = self.arena.root_node_key() else {
             return;
         };
         if self
-            .tree
+            .arena
             .set_child_percent(root_key, idx, Layout::SplitH, 1.0)
         {
-            self.tree.layout();
+            self.arena.layout();
         }
     }
 
@@ -3437,7 +3428,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         let Some(key) = self.tiled_window_key(id) else {
             return false;
         };
-        if let Some(tile) = self.tree.get_tile_mut(key) {
+        if let Some(tile) = self.arena.get_tile_mut(key) {
             tile.start_open_animation();
             return true;
         }
@@ -3445,6 +3436,7 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
     pub fn start_close_animation_for_window<R: NiriRenderer>(
         &mut self,
+        tiling: &mut TilingSpace<W>,
         renderer: &mut R,
         window: &W::Id,
         blocker: crate::utils::transaction::TransactionBlocker,
@@ -3454,7 +3446,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         };
 
         let Some((rect, visible)) = self
-            .tree
+            .arena
             .leaf_layouts()
             .iter()
             .find(|info| info.key == key)
@@ -3466,12 +3458,12 @@ impl<W: LayoutElement> TreeSpace<W> {
         let visible = visible
             && self
                 .render_fullscreen_container()
-                .is_none_or(|scope| self.tree.is_descendant(key, scope));
+                .is_none_or(|scope| self.arena.is_descendant(key, scope));
         if !visible {
             return;
         }
 
-        let Some(tile) = self.tree.get_tile_mut(key) else {
+        let Some(tile) = self.arena.get_tile_mut(key) else {
             return;
         };
 
@@ -3487,10 +3479,10 @@ impl<W: LayoutElement> TreeSpace<W> {
             0.,
             1.,
             0.,
-            self.options.animations.window_close.anim,
+            self.options().animations.window_close.anim,
         );
 
-        let scale = Scale::from(self.scale);
+        let scale = Scale::from(self.scale());
         let res = ClosingWindow::new(
             renderer.as_gles_renderer(),
             snapshot,
@@ -3502,7 +3494,7 @@ impl<W: LayoutElement> TreeSpace<W> {
         );
         match res {
             Ok(closing) => {
-                self.closing_windows.push(closing);
+                tiling.closing_windows.push(closing);
             }
             Err(err) => {
                 warn!("error creating a closing window animation: {err:?}");
@@ -3510,28 +3502,28 @@ impl<W: LayoutElement> TreeSpace<W> {
         }
     }
 
-    pub fn refresh(&mut self, is_active: bool, is_focused: bool) {
-        let _span = tracy_client::span!("TreeSpace::refresh");
-        let applied = self.tree.apply_pending_layouts_if_ready();
-        if applied && self.tree.take_pending_relayout() {
-            self.tree.layout();
+    pub fn refresh(&mut self, tiling: &TilingSpace<W>, is_active: bool, is_focused: bool) {
+        let _span = tracy_client::span!("ContainerTree::refresh");
+        let applied = self.arena.apply_pending_layouts_if_ready();
+        if applied && self.arena.take_pending_relayout() {
+            self.arena.layout();
         }
-        let has_pending = self.tree.has_pending_layouts();
-        let mut layouts = std::mem::take(&mut self.state_layout_scratch);
+        let has_pending = self.arena.has_pending_layouts();
+        let mut layouts = std::mem::take(&mut self.render.state_layout_scratch);
         layouts.clear();
         {
-            let _span = tracy_client::span!("TreeSpace::project_state_layouts_for_refresh");
+            let _span = tracy_client::span!("ContainerTree::project_state_layouts_for_refresh");
             if has_pending {
-                layouts.extend(self.tree.pending_leaf_layouts().map(LeafFrameInfo::from));
+                layouts.extend(self.arena.pending_leaf_layouts().map(LeafFrameInfo::from));
             } else {
-                layouts.extend(self.tree.leaf_layouts().iter().map(LeafFrameInfo::from));
+                layouts.extend(self.arena.leaf_layouts().iter().map(LeafFrameInfo::from));
             }
         }
         #[cfg(feature = "profile-with-tracy")]
         {
             tracy_client::plot!("layout.refresh_leaf_projections", layouts.len() as f64);
         }
-        let tiled_root = self.tree.workspace_root();
+        let tiled_root = self.arena.workspace_root();
         layouts.retain(|info| info.branch == tiled_root);
         let focused_key = self.focused_key();
         let fullscreen_container = self.render_fullscreen_container();
@@ -3546,34 +3538,35 @@ impl<W: LayoutElement> TreeSpace<W> {
             None
         };
 
+        let options = self.options().clone();
         let ctx = WindowStateContext {
             focused_key,
             workspace_active: is_active,
-            deactivate_unfocused: self.options.deactivate_unfocused_windows && !is_focused,
+            deactivate_unfocused: options.deactivate_unfocused_windows && !is_focused,
             request_size: !has_pending,
-            working_area_size: self.working_area.size,
-            options: &self.options,
+            working_area_size: self.working_area().size,
+            options: &options,
             fullscreen_id: fullscreen_id.as_ref(),
             windowed_fullscreen_id: windowed_fullscreen_id.as_ref(),
             has_fullscreen_container: fullscreen_container.is_some(),
-            view_size: self.view_size,
+            view_size: self.view_size(),
         };
         // See the other state pass: never drive window state from a stale snapshot.
-        let skip_state_pass = self.tree.pending_layout_is_stale();
-        let resize_data = self.interactive_resize_data_by_leaf(&layouts);
+        let skip_state_pass = self.arena.pending_layout_is_stale();
+        let resize_data = self.interactive_resize_data_by_leaf(tiling, &layouts);
         for info in &layouts {
             if skip_state_pass {
                 break;
             }
             let in_fullscreen_container =
-                fullscreen_container.is_some_and(|scope| self.tree.is_descendant(info.key, scope));
+                fullscreen_container.is_some_and(|scope| self.arena.is_descendant(info.key, scope));
             // Use O(1) key lookup instead of O(depth) path lookup.
-            if let Some(tile) = self.tree.get_tile_mut(info.key) {
+            if let Some(tile) = self.arena.get_tile_mut(info.key) {
                 let resize = resize_data.get(&info.key).copied();
                 Self::update_window_state(tile, info, resize, in_fullscreen_container, &ctx);
             }
         }
-        self.state_layout_scratch = layouts;
+        self.render.state_layout_scratch = layouts;
     }
     pub fn render_above_top_layer(&self) -> bool {
         // Render above the top layer (e.g. waybar) for either fullscreen authority.
@@ -3584,22 +3577,18 @@ impl<W: LayoutElement> TreeSpace<W> {
                 .is_some_and(|tile| tile.window().is_pending_windowed_fullscreen())
     }
 
-    pub fn activation_view_distance(&self, _window: &W::Id) -> f64 {
-        self.viewport.activation_distance()
-    }
-
     pub fn popup_target_rect(&self, window: &W::Id) -> Option<Rectangle<f64, Logical>> {
         // Find the tile for this window and return its popup target rectangle
         for info in self.display_layouts() {
-            if let Some(tile) = self.tree.get_tile(info.key) {
+            if let Some(tile) = self.arena.get_tile(info.key) {
                 if tile.window().id() == window {
                     // Similar to tiling layout: constrain horizontally to window,
                     // vertically to the working area
                     let width = tile.window_size().w;
-                    let height = self.working_area.size.h;
+                    let height = self.working_area().size.h;
 
                     let mut target = Rectangle::from_size(Size::from((width, height)));
-                    target.loc.y += self.working_area.loc.y;
+                    target.loc.y += self.working_area().loc.y;
                     target.loc.y -= info.rect.loc.y;
                     target.loc.y -= tile.window_loc().y;
 
@@ -3609,33 +3598,15 @@ impl<W: LayoutElement> TreeSpace<W> {
         }
         None
     }
-
-    pub fn horizontal_view_gesture_begin(&mut self, is_touchpad: bool) {
-        self.viewport.begin_horizontal_gesture(is_touchpad);
-    }
-
-    pub fn horizontal_view_gesture_update(
-        &mut self,
-        delta: f64,
-        timestamp: Duration,
-        is_touchpad: bool,
-    ) -> Option<bool> {
-        self.viewport
-            .update_horizontal_gesture(delta, timestamp, is_touchpad)
-    }
-
-    pub fn horizontal_view_gesture_end(&mut self, cancelled: Option<bool>) -> bool {
-        self.viewport.end_horizontal_gesture(cancelled)
-    }
 }
 
-impl<W: LayoutElement> TreeSpace<W> {
+impl<W: LayoutElement> ContainerTree<W> {
     pub(crate) fn layout_tree(&self) -> Option<LayoutTreeNode> {
-        self.apply_workspace_fullscreen(self.tree.layout_tree()?)
+        self.apply_workspace_fullscreen(self.arena.layout_tree()?)
     }
 
     pub(crate) fn layout_tree_unfocused(&self) -> Option<LayoutTreeNode> {
-        self.apply_workspace_fullscreen(self.tree.layout_tree_unfocused()?)
+        self.apply_workspace_fullscreen(self.arena.layout_tree_unfocused()?)
     }
 
     /// What a fullscreen node does to the tree everyone else reads.
@@ -3650,21 +3621,21 @@ impl<W: LayoutElement> TreeSpace<W> {
         &self,
         mut root: LayoutTreeNode,
     ) -> Option<LayoutTreeNode> {
-        let Some(fullscreen_key) = self.tree.fullscreen_key() else {
+        let Some(fullscreen_key) = self.arena.fullscreen_key() else {
             return Some(root);
         };
         let fullscreen_windows: HashSet<u64> = self
-            .tree
+            .arena
             .tiles_in_branch(fullscreen_key)
             .into_iter()
             .map(|tile| tile.window().ipc_id())
             .collect();
         let fullscreen_leaf = self
-            .tree
+            .arena
             .get_tile(fullscreen_key)
             .map(|tile| tile.window().ipc_id());
         let fullscreen_leaf_uses_output = self
-            .tree
+            .arena
             .leaf_layouts()
             .iter()
             .find(|info| info.key == fullscreen_key)
@@ -3672,8 +3643,8 @@ impl<W: LayoutElement> TreeSpace<W> {
         let view = LayoutTreeRect {
             x: 0.0,
             y: 0.0,
-            width: self.view_size.w,
-            height: self.view_size.h,
+            width: self.view_size().w,
+            height: self.view_size().h,
         };
 
         fn walk(
@@ -3719,7 +3690,7 @@ impl<W: LayoutElement> TreeSpace<W> {
     }
 }
 
-impl<W: LayoutElement> TreeSpace<W> {
+impl<W: LayoutElement> ContainerTree<W> {
     fn update_window_state(
         tile: &mut Tile<W>,
         info: &LeafFrameInfo,
@@ -3933,7 +3904,7 @@ fn edge_visibility_for_tile(
 }
 
 fn split_indicator_edge_for_tile<W: LayoutElement>(
-    tree: &ContainerTree<W>,
+    tree: &ContainerArena<W>,
     key: NodeKey,
     edges: FocusRingEdges,
 ) -> Option<FocusRingIndicatorEdge> {
@@ -3951,7 +3922,7 @@ fn split_indicator_edge_for_tile<W: LayoutElement>(
 /// branch. Each cached layout carries the branch it was arranged in, so this is a filter
 /// rather than a walk up the tree per leaf.
 pub(super) fn branch_display_layouts<'a, W: LayoutElement>(
-    tree: &'a ContainerTree<W>,
+    tree: &'a ContainerArena<W>,
     branch: NodeKey,
 ) -> impl DoubleEndedIterator<Item = &'a LeafLayoutInfo> + 'a {
     // The committed layouts are what is on screen, so they are the answer whenever this
@@ -3990,7 +3961,7 @@ pub(super) fn available_span(gap: f64, total: f64, child_count: usize) -> f64 {
 /// this used to do and disagreed about, made `0.5%` mean either 0.5% or 50%.
 ///
 /// `ppt_reference` is the extent hundredths are read against, which is not `available`: see
-/// [`TreeSpace::ppt_reference`].
+/// [`ContainerTree::ppt_reference`].
 ///
 /// There is no floor here. sway's minimum is `MIN_SANE_W`/`MIN_SANE_H` (sway/tree/node.h:8-9)
 /// in pixels, checked while the space is moved and aborting the whole resize rather than
@@ -4018,7 +3989,7 @@ pub(super) fn percent_from_size_change(
     percent.clamp(0.0, 1.0)
 }
 
-/// What a tile needs to know about the space it is in: see [`TreeSpace::tile_config`].
+/// What a tile needs to know about the space it is in: see [`ContainerTree::tile_config`].
 #[derive(Debug, Clone)]
 pub(super) struct TileConfig {
     pub(super) view_size: Size<f64, Logical>,

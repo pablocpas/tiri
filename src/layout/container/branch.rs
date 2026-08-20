@@ -10,10 +10,10 @@
 
 #[cfg(test)]
 use super::Layout;
-use super::{ContainerData, ContainerTree, LayoutElement, NodeKey, TabBarInfo};
+use super::{ContainerArena, ContainerData, LayoutElement, NodeKey, TabBarInfo};
 use crate::layout::tile::Tile;
 
-impl<W: LayoutElement> ContainerTree<W> {
+impl<W: LayoutElement> ContainerArena<W> {
     /// The workspace's own root — the tiled branch.
     pub(in crate::layout) fn workspace_root(&self) -> NodeKey {
         self.root

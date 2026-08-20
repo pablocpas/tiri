@@ -1,7 +1,7 @@
 //! Split, layout-toggle and root-wrapping commands.
 
+use super::ContainerArena;
 use super::ContainerData;
-use super::ContainerTree;
 use super::FloatingGeometry;
 use super::Layout;
 use super::LayoutElement;
@@ -9,7 +9,7 @@ use super::NodeData;
 use super::NodeKey;
 use crate::layout::LayoutCycleEntry;
 
-impl<W: LayoutElement> ContainerTree<W> {
+impl<W: LayoutElement> ContainerArena<W> {
     /// Sway's `split none`: flatten the target's single-child parent, continuing through
     /// single-child container ancestors but never through the workspace.
     ///

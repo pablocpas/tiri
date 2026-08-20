@@ -1,7 +1,7 @@
 //! Detaching and reattaching subtrees (window removal, float/unfloat surgery).
 
+use super::ContainerArena;
 use super::ContainerData;
-use super::ContainerTree;
 use super::DetachedNode;
 #[cfg(test)]
 use super::InsertParentInfo;
@@ -10,7 +10,7 @@ use super::NodeData;
 use super::NodeKey;
 use crate::layout::tile::Tile;
 
-impl<W: LayoutElement> ContainerTree<W> {
+impl<W: LayoutElement> ContainerArena<W> {
     /// Remove a window by ID, returns the removed tile
     pub(in crate::layout) fn remove_window(&mut self, window_id: &W::Id) -> Option<Tile<W>> {
         let node_key = self.window_key(window_id)?;

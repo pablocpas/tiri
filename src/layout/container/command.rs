@@ -1,6 +1,6 @@
-use super::{ContainerTree, LayoutElement, NodeKey};
+use super::{ContainerArena, LayoutElement, NodeKey};
 
-impl<W: LayoutElement> ContainerTree<W> {
+impl<W: LayoutElement> ContainerArena<W> {
     /// Whether the root of the branch holding `key` is a container a command can be aimed at.
     ///
     /// The workspace is not one: a command that lands there means the workspace, and sway
@@ -9,7 +9,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// list. This used to be a `RootPolicy` argument threaded through forty-three call sites
     /// and it was never anything but this question, which the tree can now answer for itself.
     pub(in crate::layout) fn branch_is_addressable(&self, key: NodeKey) -> bool {
-        self.is_floating(key)
+        self.is_floating_root(key)
     }
 
     /// The node a command aimed at `branch_root` operates on.

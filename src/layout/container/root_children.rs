@@ -1,7 +1,7 @@
 //! Root-child ("column") compatibility layer over the tree root.
 
+use super::ContainerArena;
 use super::ContainerData;
-use super::ContainerTree;
 use super::DetachedNode;
 use super::LayoutElement;
 use super::NodeData;
@@ -9,7 +9,7 @@ use super::NodeKey;
 use super::WorkspaceData;
 use crate::layout::tile::Tile;
 
-impl<W: LayoutElement> ContainerTree<W> {
+impl<W: LayoutElement> ContainerArena<W> {
     /// Number of root-level children (columns).
     pub(in crate::layout) fn root_children_len(&self) -> usize {
         let root_key = self.root;

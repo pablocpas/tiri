@@ -1,11 +1,11 @@
 //! Translation between tree paths, node keys and windows.
 
-use super::ContainerTree;
+use super::ContainerArena;
 use super::LayoutElement;
 use super::NodeData;
 use super::NodeKey;
 
-impl<W: LayoutElement> ContainerTree<W> {
+impl<W: LayoutElement> ContainerArena<W> {
     /// Helper: get node key at path
     pub(super) fn get_node_key_at_path(&self, path: &[usize]) -> Option<NodeKey> {
         let root_key = self.root;

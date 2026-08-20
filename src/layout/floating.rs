@@ -17,12 +17,12 @@ use super::container::{
     floating_position_from_logical, scale_floating_position, Direction, InactiveTilingReference,
     InsertParentInfo, Layout, NodeKey, TabBarInfo,
 };
+use super::container_tree::{percent_from_size_change, ContainerTree, LeafFrameInfo, TileConfig};
 use super::focus_ring::{
     render_container_selection, ContainerSelectionStyle, FocusRingEdges, FocusRingRenderElement,
 };
 use super::legacy_column::ColumnWidth;
 use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
-use super::tree_space::{percent_from_size_change, LeafFrameInfo, TileConfig, TreeSpace};
 use super::workspace::{InteractiveResize, ResolvedSize};
 use super::{
     resize_edges_for_point, ConfigureIntent, InteractiveResizeData, LayoutCycleEntry,
@@ -54,7 +54,7 @@ pub const DIRECTIONAL_MOVE_PX: f64 = 10.;
 
 /// The floating side of a workspace: sway's `ws->floating`, and what tiri hangs off it.
 ///
-/// The groups themselves live in the workspace's space, which is why nothing here owns one.
+/// The groups themselves live in the workspace's container tree, so this side owns no nodes.
 /// A container crossing between the two lists is a move, not a reconstruction, so its key —
 /// and its place in the seat's order — survives the crossing the way it does in sway.
 #[derive(Debug)]
@@ -144,9 +144,9 @@ pub(super) enum FloatingResizeResult<WId> {
 /// All tiles across the floating containers, in container order.
 fn floating_tile_iter<'a, W: LayoutElement>(
     floating: &'a FloatingSpace<W>,
-    space: &'a TreeSpace<W>,
+    containers: &'a ContainerTree<W>,
 ) -> impl Iterator<Item = &'a Tile<W>> + 'a {
-    let tree = space.tree();
+    let tree = containers.arena();
     floating
         .containers
         .iter()
@@ -156,15 +156,15 @@ fn floating_tile_iter<'a, W: LayoutElement>(
 /// All tiles across the floating containers (mutable), in container order.
 fn floating_tile_iter_mut<'a, W: LayoutElement>(
     floating: &'a mut FloatingSpace<W>,
-    space: &'a mut TreeSpace<W>,
+    containers: &'a mut ContainerTree<W>,
 ) -> impl Iterator<Item = &'a mut Tile<W>> + 'a {
     let keys: Vec<NodeKey> = floating
         .containers
         .iter()
-        .flat_map(|container| space.tree().leaf_keys_in_branch(container.root))
+        .flat_map(|container| containers.arena().leaf_keys_in_branch(container.root))
         .collect();
-    space
-        .tree_mut()
+    containers
+        .arena_mut()
         .tiles_mut_for_keys(&keys)
         .into_iter()
         .map(|(_, tile)| tile)
@@ -240,63 +240,63 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
     }
 
-    fn container_area(&self, space: &TreeSpace<W>, idx: usize) -> Rectangle<f64, Logical> {
+    fn container_area(&self, containers: &ContainerTree<W>, idx: usize) -> Rectangle<f64, Logical> {
         let root = self.containers[idx].root;
-        space
-            .tree()
+        containers
+            .arena()
             .floating_container_area(root)
             .expect("every floating stack entry must name a floating root")
     }
 
     fn set_container_logical_pos(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         idx: usize,
         logical_pos: Point<f64, Logical>,
     ) -> Point<f64, Logical> {
-        space
-            .tree_mut()
+        containers
+            .arena_mut()
             .set_floating_logical_pos(self.containers[idx].root, logical_pos)
     }
 
     fn set_container_size(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         idx: usize,
         size: Size<f64, Logical>,
     ) -> Rectangle<f64, Logical> {
-        space
-            .tree_mut()
+        containers
+            .arena_mut()
             .set_floating_size(self.containers[idx].root, size)
     }
 
     pub fn update_config(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         view_size: Size<f64, Logical>,
         working_area: Rectangle<f64, Logical>,
         scale: f64,
         options: Rc<Options>,
     ) {
-        let tree = space.tree_mut();
+        let tree = containers.arena_mut();
         for container in &self.containers {
             tree.update_floating_working_area(container.root, working_area);
         }
         tree.layout();
 
-        for tile in self.tiles_mut(space) {
+        for tile in self.tiles_mut(containers) {
             tile.update_config(view_size, scale, options.clone());
         }
     }
 
-    pub fn update_shaders(&mut self, space: &mut TreeSpace<W>) {
-        for tile in self.tiles_mut(space) {
+    pub fn update_shaders(&mut self, containers: &mut ContainerTree<W>) {
+        for tile in self.tiles_mut(containers) {
             tile.update_shaders();
         }
     }
 
-    pub fn advance_animations(&mut self, space: &mut TreeSpace<W>) {
-        for tile in self.tiles_mut(space) {
+    pub fn advance_animations(&mut self, containers: &mut ContainerTree<W>) {
+        for tile in self.tiles_mut(containers) {
             tile.advance_animations();
         }
 
@@ -306,32 +306,33 @@ impl<W: LayoutElement> FloatingSpace<W> {
         });
     }
 
-    pub fn are_animations_ongoing(&self, space: &TreeSpace<W>) -> bool {
-        self.tiles(space).any(Tile::are_animations_ongoing) || !self.closing_windows.is_empty()
+    pub fn are_animations_ongoing(&self, containers: &ContainerTree<W>) -> bool {
+        self.tiles(containers).any(Tile::are_animations_ongoing) || !self.closing_windows.is_empty()
     }
 
-    pub fn are_transitions_ongoing(&self, space: &TreeSpace<W>) -> bool {
-        self.tiles(space).any(Tile::are_transitions_ongoing) || !self.closing_windows.is_empty()
+    pub fn are_transitions_ongoing(&self, containers: &ContainerTree<W>) -> bool {
+        self.tiles(containers).any(Tile::are_transitions_ongoing)
+            || !self.closing_windows.is_empty()
     }
 
     pub fn update_render_elements(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         is_active: bool,
         view_rect: Rectangle<f64, Logical>,
         layer: RenderLayer,
     ) {
         let _span = tracy_client::span!("FloatingSpace::update_render_elements");
-        let active = self.active_window_id(space);
-        let fullscreen_id = self.fullscreen_window_id(space).cloned();
+        let active = self.active_window_id(containers);
+        let fullscreen_id = self.fullscreen_window_id(containers).cloned();
         let selection_is_container = self
-            .active_container_idx(space)
-            .is_some_and(|idx| self.selected_is_container_in(space, idx));
-        let scale = space.scale();
-        let floating_has_focus = space.side_is_active(true);
-        let applied = space.tree_mut().apply_pending_layouts_if_ready();
-        if applied && space.tree_mut().take_pending_relayout() {
-            space.tree_mut().layout();
+            .active_container_idx(containers)
+            .is_some_and(|idx| self.selected_is_container_in(containers, idx));
+        let scale = containers.scale();
+        let floating_has_focus = containers.side_is_active(true);
+        let applied = containers.arena_mut().apply_pending_layouts_if_ready();
+        if applied && containers.arena_mut().take_pending_relayout() {
+            containers.arena_mut().layout();
         }
         let mut layouts = std::mem::take(&mut self.render_layout_scratch);
         for container in &mut self.containers {
@@ -340,8 +341,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 let _span =
                     tracy_client::span!("FloatingSpace::project_display_layouts_for_render");
                 layouts.extend(
-                    super::tree_space::branch_display_layouts(space.tree(), container.root)
-                        .map(LeafFrameInfo::from),
+                    super::container_tree::branch_display_layouts(
+                        containers.arena(),
+                        container.root,
+                    )
+                    .map(LeafFrameInfo::from),
                 );
             }
             #[cfg(feature = "profile-with-tracy")]
@@ -354,10 +358,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
             // compared against each other. Only when the float holds a real sub-layout does
             // sway recurse into `render_container`, and then the per-level rule applies to the
             // windows inside it as it would anywhere else.
-            let float_has_sublayout = space.tree().window_count_in_branch(container.root) > 1;
+            let float_has_sublayout = containers.arena().window_count_in_branch(container.root) > 1;
             for info in layouts.iter().copied() {
-                let is_focus_head = float_has_sublayout && space.tree().is_focus_head(info.key);
-                if let Some(tile) = space.tree_mut().get_tile_mut(info.key) {
+                let is_focus_head =
+                    float_has_sublayout && containers.arena().is_focus_head(info.key);
+                if let Some(tile) = containers.arena_mut().get_tile_mut(info.key) {
                     // Skip tiles belonging to a different render layer.
                     if layer.is_normal() == tile.is_moving_between_workspaces() {
                         continue;
@@ -379,7 +384,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
                     // `is_active` is the workspace, not the focus: the floating side owns
                     // the focus only when the workspace says it does. Reading it as focus
-                    // painted this space's active window `focused` while a tiled window
+                    // painted this workspace's active window `focused` while a tiled window
                     // held the keyboard, so both wore the focused border at once.
                     let is_focused = if is_fullscreen_tile {
                         floating_has_focus
@@ -402,25 +407,30 @@ impl<W: LayoutElement> FloatingSpace<W> {
         self.render_layout_scratch = layouts;
     }
 
-    pub fn tiles<'a>(&'a self, space: &'a TreeSpace<W>) -> impl Iterator<Item = &'a Tile<W>> + 'a {
-        floating_tile_iter(self, space)
+    pub fn tiles<'a>(
+        &'a self,
+        containers: &'a ContainerTree<W>,
+    ) -> impl Iterator<Item = &'a Tile<W>> + 'a {
+        floating_tile_iter(self, containers)
     }
 
     pub fn tiles_mut<'a>(
         &'a mut self,
-        space: &'a mut TreeSpace<W>,
+        containers: &'a mut ContainerTree<W>,
     ) -> impl Iterator<Item = &'a mut Tile<W>> + 'a {
-        floating_tile_iter_mut(self, space)
+        floating_tile_iter_mut(self, containers)
     }
 
     pub fn tiles_with_offsets<'a>(
         &'a self,
-        space: &'a TreeSpace<W>,
+        containers: &'a ContainerTree<W>,
     ) -> impl Iterator<Item = (&'a Tile<W>, Point<f64, Logical>)> + 'a {
-        let tree = space.tree();
+        let tree = containers.arena();
         let mut tiles = Vec::new();
         for container in &self.containers {
-            for info in super::tree_space::branch_display_layouts(space.tree(), container.root) {
+            for info in
+                super::container_tree::branch_display_layouts(containers.arena(), container.root)
+            {
                 if let Some(tile) = tree.get_tile(info.key) {
                     tiles.push((tile, info.rect.loc));
                 }
@@ -431,23 +441,24 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     pub(super) fn resize_hit_under(
         &self,
-        space: &TreeSpace<W>,
+        containers: &ContainerTree<W>,
         pos: Point<f64, Logical>,
     ) -> FloatingResizeResult<W::Id> {
-        let tree = space.tree();
-        if self.has_fullscreen_window(space) {
+        let tree = containers.arena();
+        if self.has_fullscreen_window(containers) {
             return FloatingResizeResult::None;
         }
 
-        let scale = Scale::from(space.scale());
+        let scale = Scale::from(containers.scale());
         for container in &self.containers {
             let container_area = tree
                 .floating_container_area(container.root)
                 .expect("every floating stack entry must name a floating root");
-            let gap = space.branch_gap(container.root);
+            let gap = containers.branch_gap(container.root);
             let tab_bar_infos = tree.tab_bar_layouts_in_branch(container.root);
-            for info in super::tree_space::branch_display_layouts(space.tree(), container.root)
-                .filter(|info| info.visible)
+            for info in
+                super::container_tree::branch_display_layouts(containers.arena(), container.root)
+                    .filter(|info| info.visible)
             {
                 let Some(tile) = tree.get_tile(info.key) else {
                     continue;
@@ -475,7 +486,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                     &info.path,
                     pos,
                     gap,
-                    space.scale(),
+                    containers.scale(),
                 ) {
                     return FloatingResizeResult::Blocked;
                 }
@@ -508,10 +519,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     pub fn resize_edges_under(
         &self,
-        space: &TreeSpace<W>,
+        containers: &ContainerTree<W>,
         pos: Point<f64, Logical>,
     ) -> Option<ResizeEdge> {
-        match self.resize_hit_under(space, pos) {
+        match self.resize_hit_under(containers, pos) {
             FloatingResizeResult::Hit(hit) => Some(hit.edges),
             FloatingResizeResult::Blocked => Some(ResizeEdge::empty()),
             FloatingResizeResult::None => None,
@@ -520,13 +531,14 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     fn tiles_with_offsets_visible<'a>(
         &'a self,
-        space: &'a TreeSpace<W>,
+        containers: &'a ContainerTree<W>,
     ) -> impl Iterator<Item = (&'a Tile<W>, Point<f64, Logical>)> + 'a {
-        let tree = space.tree();
+        let tree = containers.arena();
         let mut tiles = Vec::new();
         for container in &self.containers {
-            for info in super::tree_space::branch_display_layouts(space.tree(), container.root)
-                .filter(|info| info.visible)
+            for info in
+                super::container_tree::branch_display_layouts(containers.arena(), container.root)
+                    .filter(|info| info.visible)
             {
                 if let Some(tile) = tree.get_tile(info.key) {
                     tiles.push((tile, info.rect.loc));
@@ -538,18 +550,20 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     pub fn tiles_with_offsets_mut<'a>(
         &'a mut self,
-        space: &'a mut TreeSpace<W>,
+        containers: &'a mut ContainerTree<W>,
     ) -> impl Iterator<Item = (&'a mut Tile<W>, Point<f64, Logical>)> + 'a {
         let mut keys = Vec::new();
         let mut locs = Vec::new();
         for container in &self.containers {
-            for info in super::tree_space::branch_display_layouts(space.tree(), container.root) {
+            for info in
+                super::container_tree::branch_display_layouts(containers.arena(), container.root)
+            {
                 keys.push(info.key);
                 locs.push(info.rect.loc);
             }
         }
-        space
-            .tree_mut()
+        containers
+            .arena_mut()
             .tiles_mut_for_keys(&keys)
             .into_iter()
             .map(move |(idx, tile)| (tile, locs[idx]))
@@ -557,10 +571,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     pub fn tiles_with_render_positions<'a>(
         &'a self,
-        space: &'a TreeSpace<W>,
+        containers: &'a ContainerTree<W>,
     ) -> impl Iterator<Item = (&'a Tile<W>, Point<f64, Logical>)> + 'a {
-        let scale = space.scale();
-        self.tiles_with_offsets_visible(space)
+        let scale = containers.scale();
+        self.tiles_with_offsets_visible(containers)
             .map(move |(tile, offset)| {
                 let pos = offset + tile.render_offset();
                 // Round to physical pixels.
@@ -571,41 +585,41 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     fn tab_bar_hit<'a>(
         &'a self,
-        space: &'a TreeSpace<W>,
+        containers: &'a ContainerTree<W>,
         pos: Point<f64, Logical>,
     ) -> Option<(&'a W, super::HitType)> {
         // A 1px pad makes the floating bar's edges forgiving to hit: next to them is the
         // desktop, not another window.
         self.containers
             .iter()
-            .find_map(|container| space.branch_tab_bar_hit(container.root, pos, 1))
+            .find_map(|container| containers.branch_tab_bar_hit(container.root, pos, 1))
     }
 
     pub fn window_under<'a>(
         &'a self,
-        space: &'a TreeSpace<W>,
+        containers: &'a ContainerTree<W>,
         pos: Point<f64, Logical>,
     ) -> Option<(&'a W, super::HitType)> {
-        if let Some(fullscreen_id) = self.fullscreen_window_id(space) {
+        if let Some(fullscreen_id) = self.fullscreen_window_id(containers) {
             let tile = self
-                .tiles(space)
+                .tiles(containers)
                 .find(|t| t.window().id() == fullscreen_id)?;
             return super::HitType::hit_tile(tile, Point::from((0.0, 0.0)), pos);
         }
 
-        let fullscreen_scope = self.fullscreen_key(space);
+        let fullscreen_scope = self.fullscreen_key(containers);
         let tab_hit = if let Some(scope) = fullscreen_scope {
-            space.branch_tab_bar_hit(scope, pos, 1)
+            containers.branch_tab_bar_hit(scope, pos, 1)
         } else {
-            self.tab_bar_hit(space, pos)
+            self.tab_bar_hit(containers, pos)
         };
         if let Some(hit) = tab_hit {
             return Some(hit);
         }
 
-        for (tile, tile_pos) in self.tiles_with_render_positions(space) {
+        for (tile, tile_pos) in self.tiles_with_render_positions(containers) {
             if fullscreen_scope
-                .is_some_and(|scope| !space.tree().is_descendant(tile.node_key(), scope))
+                .is_some_and(|scope| !containers.arena().is_descendant(tile.node_key(), scope))
             {
                 continue;
             }
@@ -619,11 +633,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     pub fn tiles_with_render_positions_mut<'a>(
         &'a mut self,
-        space: &'a mut TreeSpace<W>,
+        containers: &'a mut ContainerTree<W>,
         round: bool,
     ) -> impl Iterator<Item = (&'a mut Tile<W>, Point<f64, Logical>)> + 'a {
-        let scale = space.scale();
-        self.tiles_with_offsets_mut(space)
+        let scale = containers.scale();
+        self.tiles_with_offsets_mut(containers)
             .map(move |(tile, offset)| {
                 let mut pos = offset + tile.render_offset();
                 // Round to physical pixels.
@@ -636,30 +650,35 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     pub fn tiles_with_ipc_layouts<'a>(
         &'a self,
-        space: &'a TreeSpace<W>,
+        containers: &'a ContainerTree<W>,
     ) -> impl Iterator<Item = (&'a Tile<W>, WindowLayout)> + 'a {
-        let scale = space.scale();
-        self.tiles_with_offsets(space).map(move |(tile, offset)| {
-            // Do not include animated render offset here to avoid IPC spam.
-            let pos = offset;
-            // Round to physical pixels.
-            let pos = pos.to_physical_precise_round(scale).to_logical(scale);
+        let scale = containers.scale();
+        self.tiles_with_offsets(containers)
+            .map(move |(tile, offset)| {
+                // Do not include animated render offset here to avoid IPC spam.
+                let pos = offset;
+                // Round to physical pixels.
+                let pos = pos.to_physical_precise_round(scale).to_logical(scale);
 
-            let layout = WindowLayout {
-                tile_pos_in_workspace_view: Some(pos.into()),
-                ..tile.ipc_layout_template()
-            };
-            (tile, layout)
-        })
+                let layout = WindowLayout {
+                    tile_pos_in_workspace_view: Some(pos.into()),
+                    ..tile.ipc_layout_template()
+                };
+                (tile, layout)
+            })
     }
 
     pub fn new_window_toplevel_bounds(
         &self,
-        space: &TreeSpace<W>,
+        containers: &ContainerTree<W>,
         rules: &ResolvedWindowRules,
     ) -> Size<i32, Logical> {
-        let border_config = space.options().layout.border.merged_with(&rules.border);
-        compute_toplevel_bounds(border_config, space.working_area().size)
+        let border_config = containers
+            .options()
+            .layout
+            .border
+            .merged_with(&rules.border);
+        compute_toplevel_bounds(border_config, containers.working_area().size)
     }
 
     /// Returns the geometry of the active window relative to and clamped to the working area.
@@ -667,29 +686,29 @@ impl<W: LayoutElement> FloatingSpace<W> {
     /// During animations, assumes the final tile position.
     pub fn active_window_visual_rectangle(
         &self,
-        space: &TreeSpace<W>,
+        containers: &ContainerTree<W>,
     ) -> Option<Rectangle<f64, Logical>> {
-        let active_id = self.active_window_id(space)?;
+        let active_id = self.active_window_id(containers)?;
         let (tile, offset) = self
-            .tiles_with_offsets_visible(space)
+            .tiles_with_offsets_visible(containers)
             .find(|(tile, _)| tile.window().id() == &active_id)?;
 
         let window_pos = offset + tile.window_loc();
         let window_size = tile.window_size();
         let window_rect = Rectangle::new(window_pos, window_size);
 
-        space.working_area().intersection(window_rect)
+        containers.working_area().intersection(window_rect)
     }
 
     pub fn popup_target_rect(
         &self,
-        space: &TreeSpace<W>,
+        containers: &ContainerTree<W>,
         id: &W::Id,
     ) -> Option<Rectangle<f64, Logical>> {
-        for (tile, pos) in self.tiles_with_offsets_visible(space) {
+        for (tile, pos) in self.tiles_with_offsets_visible(containers) {
             if tile.window().id() == id {
                 // Position within the working area.
-                let mut target = space.working_area();
+                let mut target = containers.working_area();
                 target.loc -= pos;
                 target.loc -= tile.window_loc();
 
@@ -699,8 +718,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
         None
     }
 
-    fn idx_of(&self, space: &TreeSpace<W>, id: &W::Id) -> Option<usize> {
-        let tree = space.tree();
+    fn idx_of(&self, containers: &ContainerTree<W>, id: &W::Id) -> Option<usize> {
+        let tree = containers.arena();
         let key = tree.window_key(id)?;
         let root = tree.branch_root(key);
         self.containers
@@ -708,76 +727,81 @@ impl<W: LayoutElement> FloatingSpace<W> {
             .position(|container| container.root == root)
     }
 
-    fn contains(&self, space: &TreeSpace<W>, id: &W::Id) -> bool {
-        self.idx_of(space, id).is_some()
+    fn contains(&self, containers: &ContainerTree<W>, id: &W::Id) -> bool {
+        self.idx_of(containers, id).is_some()
     }
 
     /// The focused floating view, or the floating MRU while tiling has keyboard focus.
     ///
     /// Focus belongs to the workspace tree's seat. `FloatingSpace` deliberately owns no
     /// projection of it; the only ordering kept here is visual stacking.
-    fn active_window_id(&self, space: &TreeSpace<W>) -> Option<W::Id> {
-        space.active_floating_window_id()
+    fn active_window_id(&self, containers: &ContainerTree<W>) -> Option<W::Id> {
+        containers.active_floating_window_id()
     }
 
     /// Floating projection of the workspace's single fullscreen node.
-    pub(super) fn fullscreen_key(&self, space: &TreeSpace<W>) -> Option<NodeKey> {
-        let tree = space.tree();
+    pub(super) fn fullscreen_key(&self, containers: &ContainerTree<W>) -> Option<NodeKey> {
+        let tree = containers.arena();
         let key = tree.fullscreen_key()?;
-        (tree.holds_node(key) && tree.is_floating(key)).then_some(key)
+        (tree.holds_node(key) && tree.is_in_floating_branch(key)).then_some(key)
     }
 
     /// Floating leaf that owns fullscreen at the client protocol boundary.
-    fn fullscreen_window_id<'a>(&self, space: &'a TreeSpace<W>) -> Option<&'a W::Id> {
-        self.fullscreen_key(space)?;
-        space.tree().fullscreen_leaf_window_id()
+    fn fullscreen_window_id<'a>(&self, containers: &'a ContainerTree<W>) -> Option<&'a W::Id> {
+        self.fullscreen_key(containers)?;
+        containers.arena().fullscreen_leaf_window_id()
     }
 
-    fn active_container_idx(&self, space: &TreeSpace<W>) -> Option<usize> {
-        let active_id = self.active_window_id(space)?;
-        self.idx_of(space, &active_id)
+    fn active_container_idx(&self, containers: &ContainerTree<W>) -> Option<usize> {
+        let active_id = self.active_window_id(containers)?;
+        self.idx_of(containers, &active_id)
     }
 
-    fn selected_is_container_in(&self, space: &TreeSpace<W>, idx: usize) -> bool {
-        space.selected_container_in(self.containers[idx].root)
+    fn selected_is_container_in(&self, containers: &ContainerTree<W>, idx: usize) -> bool {
+        containers.selected_container_in(self.containers[idx].root)
     }
 
     /// The node a command targets inside container `idx`: its root when the whole floating
     /// wrapper is selected, otherwise the tree's own selection.
-    fn selected_key_in(&self, space: &TreeSpace<W>, idx: usize) -> Option<NodeKey> {
-        let tree = space.tree();
+    fn selected_key_in(&self, containers: &ContainerTree<W>, idx: usize) -> Option<NodeKey> {
+        let tree = containers.arena();
         tree.branch_position(self.containers[idx].root)
     }
 
-    fn tile_at_mut<'a>(&self, space: &'a mut TreeSpace<W>, id: &W::Id) -> Option<&'a mut Tile<W>> {
-        let tree = space.tree_mut();
+    fn tile_at_mut<'a>(
+        &self,
+        containers: &'a mut ContainerTree<W>,
+        id: &W::Id,
+    ) -> Option<&'a mut Tile<W>> {
+        let tree = containers.arena_mut();
         let key = tree.window_key(id)?;
-        tree.is_floating(key)
+        tree.is_in_floating_branch(key)
             .then(|| tree.get_tile_mut(key))
             .flatten()
     }
 
-    pub fn active_window<'a>(&self, space: &'a TreeSpace<W>) -> Option<&'a W> {
-        let tree = space.tree();
-        let id = self.active_window_id(space)?;
+    pub fn active_window<'a>(&self, containers: &'a ContainerTree<W>) -> Option<&'a W> {
+        let tree = containers.arena();
+        let id = self.active_window_id(containers)?;
         let key = tree.window_key(&id)?;
-        tree.is_floating(key)
+        tree.is_in_floating_branch(key)
             .then(|| tree.get_tile(key).map(Tile::window))
             .flatten()
     }
 
-    pub fn active_window_mut<'a>(&self, space: &'a mut TreeSpace<W>) -> Option<&'a mut W> {
-        let id = self.active_window_id(space)?;
-        let tree = space.tree_mut();
+    pub fn active_window_mut<'a>(&self, containers: &'a mut ContainerTree<W>) -> Option<&'a mut W> {
+        let id = self.active_window_id(containers)?;
+        let tree = containers.arena_mut();
         let key = tree.window_key(&id)?;
-        tree.is_floating(key)
+        tree.is_in_floating_branch(key)
             .then(|| tree.get_tile_mut(key).map(Tile::window_mut))
             .flatten()
     }
 
-    pub fn has_window(&self, space: &TreeSpace<W>, id: &W::Id) -> bool {
-        let tree = space.tree();
-        tree.window_key(id).is_some_and(|key| tree.is_floating(key))
+    pub fn has_window(&self, containers: &ContainerTree<W>, id: &W::Id) -> bool {
+        let tree = containers.arena();
+        tree.window_key(id)
+            .is_some_and(|key| tree.is_in_floating_branch(key))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -786,38 +810,41 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     pub fn set_fullscreen(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         window: &W::Id,
         is_fullscreen: bool,
     ) {
         if is_fullscreen {
-            if self.is_fullscreen(space, window) {
+            if self.is_fullscreen(containers, window) {
                 return;
             }
 
-            if let Some(previous) = self.fullscreen_window_id(space).cloned() {
+            if let Some(previous) = self.fullscreen_window_id(containers).cloned() {
                 if previous != *window {
-                    self.set_fullscreen(space, &previous, false);
+                    self.set_fullscreen(containers, &previous, false);
                 }
             }
 
-            let Some(key) = space
-                .tree()
+            let Some(key) = containers
+                .arena()
                 .window_key(window)
-                .filter(|key| space.tree().is_floating(*key))
+                .filter(|key| containers.arena().is_in_floating_branch(*key))
             else {
                 return;
             };
 
             // Store the floating size before going fullscreen.
-            if let Some(tile) = self.tiles_mut(space).find(|t| t.window().id() == window) {
+            if let Some(tile) = self
+                .tiles_mut(containers)
+                .find(|t| t.window().id() == window)
+            {
                 Self::store_floating_size_for_restore(tile);
                 tile.request_fullscreen(true, None);
             }
 
-            space.tree_mut().set_fullscreen_key(Some(key));
+            containers.arena_mut().set_fullscreen_key(Some(key));
         } else {
-            if !self.is_fullscreen(space, window) {
+            if !self.is_fullscreen(containers, window) {
                 return;
             }
 
@@ -825,76 +852,88 @@ impl<W: LayoutElement> FloatingSpace<W> {
             // retargeting an in-flight compositor size. Fullscreen is precisely such a target;
             // restore the live base now so the ordinary floating arrange below cannot overwrite
             // the saved client size with the pre-fullscreen target.
-            if let Some(idx) = self.idx_of(space, window) {
-                let restore_size = self.container_area(space, idx).size;
-                self.set_container_size(space, idx, restore_size);
+            if let Some(idx) = self.idx_of(containers, window) {
+                let restore_size = self.container_area(containers, idx).size;
+                self.set_container_size(containers, idx, restore_size);
             }
 
             // Restore the floating size.
-            if let Some(tile) = self.tiles_mut(space).find(|t| t.window().id() == window) {
+            if let Some(tile) = self
+                .tiles_mut(containers)
+                .find(|t| t.window().id() == window)
+            {
                 let size = tile.floating_window_size.unwrap_or_default();
                 tile.window_mut().request_size_once(size, true);
             }
 
-            space.tree_mut().set_fullscreen_key(None);
+            containers.arena_mut().set_fullscreen_key(None);
         }
-        space.tree_mut().layout();
+        containers.arena_mut().layout();
     }
 
-    pub fn is_fullscreen(&self, space: &TreeSpace<W>, window: &W::Id) -> bool {
-        self.fullscreen_window_id(space)
+    pub fn is_fullscreen(&self, containers: &ContainerTree<W>, window: &W::Id) -> bool {
+        self.fullscreen_window_id(containers)
             .is_some_and(|id| id == window)
     }
 
-    pub fn has_fullscreen_window(&self, space: &TreeSpace<W>) -> bool {
-        self.fullscreen_key(space).is_some()
+    pub fn has_fullscreen_window(&self, containers: &ContainerTree<W>) -> bool {
+        self.fullscreen_key(containers).is_some()
     }
 
-    pub fn selected_is_container(&self, space: &TreeSpace<W>, id: Option<&W::Id>) -> bool {
-        let active = self.active_window_id(space);
+    pub fn selected_is_container(&self, containers: &ContainerTree<W>, id: Option<&W::Id>) -> bool {
+        let active = self.active_window_id(containers);
         let Some(id) = id.or(active.as_ref()) else {
             return false;
         };
-        let Some(idx) = self.idx_of(space, id) else {
+        let Some(idx) = self.idx_of(containers, id) else {
             return false;
         };
-        self.selected_is_container_in(space, idx)
+        self.selected_is_container_in(containers, idx)
     }
 
-    pub(super) fn active_wrapper_selected(&self, space: &TreeSpace<W>) -> bool {
-        let tree = space.tree();
-        let Some(idx) = self.active_container_idx(space) else {
+    pub(super) fn active_wrapper_selected(&self, containers: &ContainerTree<W>) -> bool {
+        let tree = containers.arena();
+        let Some(idx) = self.active_container_idx(containers) else {
             return false;
         };
         tree.selected_container_key() == Some(self.containers[idx].root)
     }
 
-    pub(super) fn close_window_ids_for_active_selection(&self, space: &TreeSpace<W>) -> Vec<W::Id> {
-        let Some(idx) = self.active_container_idx(space) else {
+    pub(super) fn close_window_ids_for_active_selection(
+        &self,
+        containers: &ContainerTree<W>,
+    ) -> Vec<W::Id> {
+        let Some(idx) = self.active_container_idx(containers) else {
             return Vec::new();
         };
-        space.close_window_ids_in_branch(self.containers[idx].root)
+        containers.close_window_ids_in_branch(self.containers[idx].root)
     }
 
-    pub(super) fn select_wrapper_for_window(&self, space: &mut TreeSpace<W>, id: &W::Id) -> bool {
-        let Some(idx) = self.idx_of(space, id) else {
+    pub(super) fn select_wrapper_for_window(
+        &self,
+        containers: &mut ContainerTree<W>,
+        id: &W::Id,
+    ) -> bool {
+        let Some(idx) = self.idx_of(containers, id) else {
             return false;
         };
-        space.tree_mut().select_container(self.containers[idx].root)
+        containers
+            .arena_mut()
+            .select_container(self.containers[idx].root)
     }
 
-    pub fn clear_selection_context(&self, space: &mut TreeSpace<W>) {
-        let tree = space.tree_mut();
+    pub fn clear_selection_context(&self, containers: &mut ContainerTree<W>) {
+        let tree = containers.arena_mut();
         tree.clear_selection();
     }
 
-    pub fn add_tile(&mut self, space: &mut TreeSpace<W>, tile: Tile<W>, activate: bool) {
-        self.add_tile_at(space, 0, tile, activate);
+    pub fn add_tile(&mut self, containers: &mut ContainerTree<W>, tile: Tile<W>, activate: bool) {
+        self.add_tile_at(containers, 0, tile, activate);
     }
 
     pub fn add_tile_with_restore_hint(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         mut tile: Tile<W>,
         activate: bool,
     ) {
@@ -909,10 +948,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 .containers
                 .iter()
                 .position(|container| container.id == container_id)
-                .filter(|idx| !space.branch_root_is_lone_window(self.containers[*idx].root))
+                .filter(|idx| !containers.branch_root_is_lone_window(self.containers[*idx].root))
             {
                 self.add_tile_to_container_idx_with_parent_info(
-                    space,
+                    containers,
                     idx,
                     tile,
                     activate,
@@ -922,7 +961,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             }
         }
 
-        self.add_tile(space, tile, activate);
+        self.add_tile(containers, tile, activate);
     }
 
     fn prepare_tile_for_floating(
@@ -1014,12 +1053,12 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     fn add_tile_at(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         mut idx: usize,
         mut tile: Tile<W>,
         activate: bool,
     ) {
-        let config = space.tile_config();
+        let config = containers.tile_config();
         // A view that maps fullscreen keeps the state on the list it lands in —
         // `container_set_fullscreen` never moves a node between lists, so arriving floating is
         // not a reason to leave fullscreen. Only a view that is not fullscreen gets normalized
@@ -1042,8 +1081,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         // Make sure the tile isn't inserted below its parent.
         for (i, container) in self.containers.iter().enumerate().take(idx) {
-            if space
-                .tree_mut()
+            if containers
+                .arena_mut()
                 .windows_in_branch(container.root)
                 .iter()
                 .any(|parent| tile.window().is_child_of(parent))
@@ -1055,19 +1094,21 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         let tile_size = requested_tile_size.unwrap_or_else(|| tile.tile_size());
         let pos = self
-            .stored_or_default_tile_pos(space.working_area(), &tile)
-            .unwrap_or_else(|| center_preferring_top_left_in_area(space.working_area(), tile_size));
+            .stored_or_default_tile_pos(containers.working_area(), &tile)
+            .unwrap_or_else(|| {
+                center_preferring_top_left_in_area(containers.working_area(), tile_size)
+            });
         let rect = Rectangle::new(pos, tile_size);
 
-        let (root, leaf) = space.tree_mut().float_new_group(tile, rect);
+        let (root, leaf) = containers.arena_mut().float_new_group(tile, rect);
         // `workspace->fullscreen` names the node on whichever list it lives.
-        if maps_fullscreen && space.tree().fullscreen_key().is_none() {
-            space.tree_mut().set_fullscreen_key(Some(leaf));
+        if maps_fullscreen && containers.arena().fullscreen_key().is_none() {
+            containers.arena_mut().set_fullscreen_key(Some(leaf));
         }
-        if activate || space.tree().focused_node_key().is_none() {
-            space.tree_mut().focus_node(leaf);
+        if activate || containers.arena().focused_node_key().is_none() {
+            containers.arena_mut().focus_node(leaf);
         }
-        space.tree_mut().layout();
+        containers.arena_mut().layout();
 
         let container = FloatingContainer {
             id: self.next_container_id,
@@ -1077,59 +1118,59 @@ impl<W: LayoutElement> FloatingSpace<W> {
         self.next_container_id += 1;
 
         self.containers.insert(idx, container);
-        self.bring_up_descendants_of(space, idx);
+        self.bring_up_descendants_of(containers, idx);
     }
 
     pub(super) fn add_tile_to_active_container(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         tile: Tile<W>,
         activate: bool,
     ) -> bool {
-        let Some(idx) = self.active_container_idx(space) else {
+        let Some(idx) = self.active_container_idx(containers) else {
             return false;
         };
-        self.add_tile_to_container_idx(space, idx, tile, activate)
+        self.add_tile_to_container_idx(containers, idx, tile, activate)
     }
 
     pub(super) fn add_tile_to_container_of(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         id: &W::Id,
         tile: Tile<W>,
         activate: bool,
     ) -> bool {
-        let Some(idx) = self.idx_of(space, id) else {
+        let Some(idx) = self.idx_of(containers, id) else {
             return false;
         };
 
-        self.add_tile_to_container_idx(space, idx, tile, activate)
+        self.add_tile_to_container_idx(containers, idx, tile, activate)
     }
 
     fn add_tile_to_container_idx(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         idx: usize,
         mut tile: Tile<W>,
         activate: bool,
     ) -> bool {
-        let config = space.tile_config();
+        let config = containers.tile_config();
         let (win_id, _) = Self::prepare_tile_for_floating(&config, &mut tile);
         let root = self.containers[idx].root;
-        if space.tree_mut().selected_container_key() == Some(root) {
-            let insert_idx = space.tree_mut().branch_children_len(root);
-            space
-                .tree_mut()
+        if containers.arena_mut().selected_container_key() == Some(root) {
+            let insert_idx = containers.arena_mut().branch_children_len(root);
+            containers
+                .arena_mut()
                 .insert_leaf_into_branch(root, insert_idx, tile, activate);
         } else {
-            space
-                .tree_mut()
+            containers
+                .arena_mut()
                 .insert_window_into_branch(root, tile, activate);
         }
-        space.tree_mut().layout();
+        containers.arena_mut().layout();
 
         if activate {
-            self.activate_window(space, &win_id);
+            self.activate_window(containers, &win_id);
         }
 
         true
@@ -1137,29 +1178,29 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     fn add_tile_to_container_idx_with_parent_info(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         idx: usize,
         mut tile: Tile<W>,
         activate: bool,
         info: &InsertParentInfo,
     ) {
-        let config = space.tile_config();
+        let config = containers.tile_config();
         let (win_id, _) = Self::prepare_tile_for_floating(&config, &mut tile);
 
         let root = self.containers[idx].root;
-        let _ = space
-            .tree_mut()
+        let _ = containers
+            .arena_mut()
             .insert_leaf_with_parent_info(root, info, tile, activate);
-        space.tree_mut().layout();
+        containers.arena_mut().layout();
 
         if activate {
-            self.activate_window(space, &win_id);
+            self.activate_window(containers, &win_id);
         }
     }
 
-    pub(super) fn active_container_allows_splits(&self, space: &TreeSpace<W>) -> bool {
-        let tree = space.tree();
-        let Some(_idx) = self.active_container_idx(space) else {
+    pub(super) fn active_container_allows_splits(&self, containers: &ContainerTree<W>) -> bool {
+        let tree = containers.arena();
+        let Some(_idx) = self.active_container_idx(containers) else {
             return false;
         };
         tree.focused_container_allows_splits()
@@ -1171,8 +1212,12 @@ impl<W: LayoutElement> FloatingSpace<W> {
     /// when the named window happens to be the focused one. A floating window that is its own
     /// root has no container to join, and reading someone else's answer for it sent a new tile
     /// into a group that was not there.
-    pub(super) fn container_allows_splits(&self, space: &TreeSpace<W>, id: &W::Id) -> bool {
-        let tree = space.tree();
+    pub(super) fn container_allows_splits(
+        &self,
+        containers: &ContainerTree<W>,
+        id: &W::Id,
+    ) -> bool {
+        let tree = containers.arena();
         let Some(key) = tree.window_key(id) else {
             return false;
         };
@@ -1181,65 +1226,65 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     pub(super) fn container_pos(
         &self,
-        space: &TreeSpace<W>,
+        containers: &ContainerTree<W>,
         id: &W::Id,
     ) -> Option<Point<f64, Logical>> {
-        let idx = self.idx_of(space, id)?;
-        Some(self.container_area(space, idx).loc)
+        let idx = self.idx_of(containers, id)?;
+        Some(self.container_area(containers, idx).loc)
     }
 
     pub(super) fn move_container_for_window_to(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         id: &W::Id,
         pos: Point<f64, Logical>,
         animate: bool,
     ) -> bool {
-        let Some(idx) = self.idx_of(space, id) else {
+        let Some(idx) = self.idx_of(containers, id) else {
             return false;
         };
-        self.move_container_to(space, idx, pos, animate);
+        self.move_container_to(containers, idx, pos, animate);
         true
     }
 
     pub fn add_tile_above(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         above: &W::Id,
         mut tile: Tile<W>,
         activate: bool,
     ) {
-        let idx = self.idx_of(space, above).unwrap();
+        let idx = self.idx_of(containers, above).unwrap();
 
-        let above_area = self.container_area(space, idx);
+        let above_area = self.container_area(containers, idx);
         let tile_size = tile.tile_size();
         let pos =
             above_area.loc + (above_area.size.to_point() - tile_size.to_point()).downscale(2.);
-        let pos = self.clamp_within_working_area(space.working_area(), pos, tile_size);
-        tile.floating_pos = Some(self.logical_to_size_frac(space.working_area(), pos));
+        let pos = self.clamp_within_working_area(containers.working_area(), pos, tile_size);
+        tile.floating_pos = Some(self.logical_to_size_frac(containers.working_area(), pos));
 
-        self.add_tile_at(space, idx, tile, activate);
+        self.add_tile_at(containers, idx, tile, activate);
     }
 
     pub(super) fn add_subtree(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         key: NodeKey,
         mut rect: Rectangle<f64, Logical>,
         activate: bool,
         focus: Option<&W::Id>,
         workspace_floated: bool,
     ) -> bool {
-        let config = space.tile_config();
-        let fullscreen_key = space.tree().fullscreen_key();
+        let config = containers.tile_config();
+        let fullscreen_key = containers.arena().fullscreen_key();
         let fullscreen_restore_size = fullscreen_key
             .filter(|fullscreen| *fullscreen == key)
-            .and_then(|fullscreen| space.tree().fullscreen_restore_geometry(fullscreen))
+            .and_then(|fullscreen| containers.arena().fullscreen_restore_geometry(fullscreen))
             .map(|rect| rect.size);
         let mut prepared_leaf = None;
         let mut preserved_fullscreen_leaf = false;
-        if space.tree_mut().is_leaf(key) {
-            if let Some(tile) = space.tree_mut().get_tile_mut(key) {
+        if containers.arena_mut().is_leaf(key) {
+            if let Some(tile) = containers.arena_mut().get_tile_mut(key) {
                 if fullscreen_key == Some(key)
                     && tile.window().pending_sizing_mode().is_fullscreen()
                 {
@@ -1266,8 +1311,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
             }
             if !preserved_fullscreen_leaf {
                 let requested = prepared_leaf.and_then(|(_, requested)| requested);
-                let working_area = space.working_area();
-                if let Some(tile) = space.tree().get_tile(key) {
+                let working_area = containers.working_area();
+                if let Some(tile) = containers.arena().get_tile(key) {
                     let size = requested.unwrap_or_else(|| tile.tile_size());
                     let pos = self
                         .stored_or_default_tile_pos(working_area, tile)
@@ -1279,24 +1324,24 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         let area = rect;
         let root = if workspace_floated {
-            space.tree_mut().float_whole_workspace(area)
+            containers.arena_mut().float_whole_workspace(area)
         } else {
-            space.tree_mut().float_as_group(key, area)
+            containers.arena_mut().float_as_group(key, area)
         };
         let Some(root) = root else {
             return false;
         };
 
-        let keys = space.tree_mut().leaf_keys_in_branch(root);
+        let keys = containers.arena_mut().leaf_keys_in_branch(root);
         for key in keys {
             if prepared_leaf.is_some_and(|(prepared, _)| prepared == key) {
                 continue;
             }
             let fullscreen_restore_size = (fullscreen_key == Some(key))
-                .then(|| space.tree().fullscreen_restore_geometry(key))
+                .then(|| containers.arena().fullscreen_restore_geometry(key))
                 .flatten()
                 .map(|rect| rect.size);
-            if let Some(tile) = space.tree_mut().get_tile_mut(key) {
+            if let Some(tile) = containers.arena_mut().get_tile_mut(key) {
                 if fullscreen_key == Some(key)
                     && tile.window().pending_sizing_mode().is_fullscreen()
                 {
@@ -1312,10 +1357,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
         if activate {
             if let Some(id) = focus {
-                space.tree_mut().focus_window_by_id(id);
+                containers.arena_mut().focus_window_by_id(id);
             }
         }
-        space.tree_mut().layout();
+        containers.arena_mut().layout();
 
         let container = FloatingContainer {
             id: self.next_container_id,
@@ -1331,12 +1376,12 @@ impl<W: LayoutElement> FloatingSpace<W> {
         self.next_container_id += 1;
 
         self.containers.insert(0, container);
-        self.bring_up_descendants_of(space, 0);
+        self.bring_up_descendants_of(containers, 0);
         true
     }
 
-    fn bring_up_descendants_of(&mut self, space: &TreeSpace<W>, idx: usize) {
-        let tree = space.tree();
+    fn bring_up_descendants_of(&mut self, containers: &ContainerTree<W>, idx: usize) {
+        let tree = containers.arena();
         let base_windows = tree.windows_in_branch(self.containers[idx].root);
         let mut seen_windows = base_windows;
         let mut descendants: Vec<usize> = Vec::new();
@@ -1360,98 +1405,101 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
     }
 
-    pub fn remove_active_tile(&mut self, space: &mut TreeSpace<W>) -> Option<RemovedTile<W>> {
-        let id = self.active_window_id(space)?;
-        Some(self.remove_tile(space, &id))
+    pub fn remove_active_tile(
+        &mut self,
+        containers: &mut ContainerTree<W>,
+    ) -> Option<RemovedTile<W>> {
+        let id = self.active_window_id(containers)?;
+        Some(self.remove_tile(containers, &id))
     }
 
-    pub fn remove_tile(&mut self, space: &mut TreeSpace<W>, id: &W::Id) -> RemovedTile<W> {
-        let idx = self.idx_of(space, id).unwrap();
-        self.remove_tile_from_container(space, idx, id)
+    pub fn remove_tile(&mut self, containers: &mut ContainerTree<W>, id: &W::Id) -> RemovedTile<W> {
+        let idx = self.idx_of(containers, id).unwrap();
+        self.remove_tile_from_container(containers, idx, id)
     }
 
     pub(super) fn unfloat_container(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         id: &W::Id,
         reference: Option<&InactiveTilingReference>,
         as_workspace: bool,
         focus: bool,
     ) -> bool {
-        let Some(idx) = self.idx_of(space, id) else {
+        let Some(idx) = self.idx_of(containers, id) else {
             return false;
         };
         let root = self.containers[idx].root;
-        if space
-            .tree()
+        if containers
+            .arena()
             .fullscreen_key()
-            .is_some_and(|key| space.tree().is_descendant(key, root))
+            .is_some_and(|key| containers.arena().is_descendant(key, root))
         {
-            space.tree_mut().set_fullscreen_key(None);
+            containers.arena_mut().set_fullscreen_key(None);
         }
 
         if let Some(resize) = &self.interactive_resize {
-            if self.idx_of(space, &resize.window) == Some(idx) {
+            if self.idx_of(containers, &resize.window) == Some(idx) {
                 self.interactive_resize = None;
             }
         }
 
-        for tile in space.tree_mut().tiles_in_branch_mut(root) {
+        for tile in containers.arena_mut().tiles_in_branch_mut(root) {
             Self::store_floating_size_for_restore(tile);
         }
         let changed = if as_workspace {
-            space.tree_mut().unfloat_as_workspace(root, focus)
+            containers.arena_mut().unfloat_as_workspace(root, focus)
         } else if let Some(reference) = reference {
-            space
-                .tree_mut()
+            containers
+                .arena_mut()
                 .unfloat_with_tiling_reference(root, reference, focus)
         } else {
-            space.tree_mut().unfloat_into_workspace(root, focus)
+            containers.arena_mut().unfloat_into_workspace(root, focus)
         };
         if !changed {
             return false;
         }
         self.containers.remove(idx);
-        space.tree_mut().layout();
+        containers.arena_mut().layout();
 
         true
     }
 
     pub(super) fn unfloat_window(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         id: &W::Id,
         reference: Option<&InactiveTilingReference>,
         focus: bool,
     ) -> bool {
-        let Some(idx) = self.idx_of(space, id) else {
+        let Some(idx) = self.idx_of(containers, id) else {
             return false;
         };
-        let Some(key) = space.tree_mut().window_key(id) else {
+        let Some(key) = containers.arena_mut().window_key(id) else {
             return false;
         };
-        if space.tree().window_owns_fullscreen(id) {
+        if containers.arena().window_owns_fullscreen(id) {
             // Clear the workspace pointer before the node crosses branches so the arrange below
             // computes its tiled geometry, not another fullscreen frame that no longer has an
             // owner after this operation.
-            space.tree_mut().set_fullscreen_key(None);
+            containers.arena_mut().set_fullscreen_key(None);
         }
-        let pos = space
-            .tree()
+        let pos = containers
+            .arena()
             .floating_position(self.containers[idx].root)
             .expect("every floating stack entry must name a floating root");
-        if let Some(tile) = space.tree_mut().get_tile_mut(key) {
+        if let Some(tile) = containers.arena_mut().get_tile_mut(key) {
             Self::store_floating_size_for_restore(tile);
             tile.floating_pos = Some(pos);
             tile.set_scratchpad(false);
         }
-        let Some(group_empty) = space.tree_mut().unfloat_node(key, reference, focus) else {
+        let Some(group_empty) = containers.arena_mut().unfloat_node(key, reference, focus) else {
             return false;
         };
         if group_empty {
             self.containers.remove(idx);
         }
-        space.tree_mut().layout();
+        containers.arena_mut().layout();
         if self
             .interactive_resize
             .as_ref()
@@ -1462,27 +1510,30 @@ impl<W: LayoutElement> FloatingSpace<W> {
         true
     }
 
-    pub(super) fn active_container_is_workspace_floated(&self, space: &TreeSpace<W>) -> bool {
-        self.active_window_id(space)
+    pub(super) fn active_container_is_workspace_floated(
+        &self,
+        containers: &ContainerTree<W>,
+    ) -> bool {
+        self.active_window_id(containers)
             .as_ref()
-            .and_then(|id| self.idx_of(space, id))
+            .and_then(|id| self.idx_of(containers, id))
             .is_some_and(|idx| self.containers[idx].kind.is_workspace_wrapper())
     }
 
     fn remove_tile_from_container(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         idx: usize,
         id: &W::Id,
     ) -> RemovedTile<W> {
-        let container_pos = space
-            .tree()
+        let container_pos = containers
+            .arena()
             .floating_position(self.containers[idx].root)
             .expect("every floating stack entry must name a floating root");
         let container_id = self.containers[idx].id;
-        let insert_hint = space.tree().insert_parent_info_for_window(id);
-        let mut tile = space
-            .tree_mut()
+        let insert_hint = containers.arena().insert_parent_info_for_window(id);
+        let mut tile = containers
+            .arena_mut()
             .remove_window(id)
             .expect("window must exist in floating container");
 
@@ -1493,13 +1544,13 @@ impl<W: LayoutElement> FloatingSpace<W> {
             }
         }
 
-        if space
-            .tree()
+        if containers
+            .arena()
             .window_count_in_branch(self.containers[idx].root)
             == 0
         {
             let root = self.containers.remove(idx).root;
-            space.tree_mut().forget_floating_root(root);
+            containers.arena_mut().forget_floating_root(root);
         }
 
         Self::store_floating_size_for_restore(&mut tile);
@@ -1525,13 +1576,13 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     pub fn start_close_animation_for_window(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         renderer: &mut GlesRenderer,
         id: &W::Id,
         blocker: TransactionBlocker,
     ) {
         let (tile, tile_pos) = self
-            .tiles_with_render_positions_mut(space, false)
+            .tiles_with_render_positions_mut(containers, false)
             .find(|(tile, _)| tile.window().id() == id)
             .unwrap();
 
@@ -1542,33 +1593,33 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let tile_size = tile.tile_size();
 
         self.start_close_animation_for_tile(
-            space, renderer, snapshot, tile_size, tile_pos, blocker,
+            containers, renderer, snapshot, tile_size, tile_pos, blocker,
         );
     }
 
     pub fn activate_window_without_raising(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         id: &W::Id,
     ) -> bool {
-        let Some(_idx) = self.idx_of(space, id) else {
+        let Some(_idx) = self.idx_of(containers, id) else {
             return false;
         };
 
-        space.tree_mut().clear_selection();
-        let _ = space.tree_mut().focus_window_by_id(id);
+        containers.arena_mut().clear_selection();
+        let _ = containers.arena_mut().focus_window_by_id(id);
         true
     }
 
-    pub fn activate_window(&mut self, space: &mut TreeSpace<W>, id: &W::Id) -> bool {
-        let Some(idx) = self.idx_of(space, id) else {
+    pub fn activate_window(&mut self, containers: &mut ContainerTree<W>, id: &W::Id) -> bool {
+        let Some(idx) = self.idx_of(containers, id) else {
             return false;
         };
 
         self.raise_container(idx, 0);
-        self.bring_up_descendants_of(space, 0);
-        space.tree_mut().clear_selection();
-        let _ = space.tree_mut().focus_window_by_id(id);
+        self.bring_up_descendants_of(containers, 0);
+        containers.arena_mut().clear_selection();
+        let _ = containers.arena_mut().focus_window_by_id(id);
 
         true
     }
@@ -1582,7 +1633,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     pub fn start_close_animation_for_tile(
         &mut self,
-        space: &TreeSpace<W>,
+        containers: &ContainerTree<W>,
         renderer: &mut GlesRenderer,
         snapshot: TileRenderSnapshot,
         tile_size: Size<f64, Logical>,
@@ -1590,14 +1641,14 @@ impl<W: LayoutElement> FloatingSpace<W> {
         blocker: TransactionBlocker,
     ) {
         let anim = Animation::new(
-            space.clock().clone(),
+            containers.clock().clone(),
             0.,
             1.,
             0.,
-            space.options().animations.window_close.anim,
+            containers.options().animations.window_close.anim,
         );
 
-        let scale = Scale::from(space.scale());
+        let scale = Scale::from(containers.scale());
         let res = ClosingWindow::new(
             renderer, snapshot, scale, tile_size, tile_pos, blocker, anim,
         );
@@ -1611,8 +1662,12 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
     }
 
-    fn resolve_target_id(&self, space: &TreeSpace<W>, id: Option<&W::Id>) -> Option<W::Id> {
-        id.cloned().or_else(|| self.active_window_id(space))
+    fn resolve_target_id(
+        &self,
+        containers: &ContainerTree<W>,
+        id: Option<&W::Id>,
+    ) -> Option<W::Id> {
+        id.cloned().or_else(|| self.active_window_id(containers))
     }
 
     fn next_preset_idx(
@@ -1655,17 +1710,17 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     pub fn toggle_window_width(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         id: Option<&W::Id>,
         forwards: bool,
     ) {
-        let Some(id) = self.resolve_target_id(space, id) else {
+        let Some(id) = self.resolve_target_id(containers, id) else {
             return;
         };
-        let available_size = space.working_area().size.w;
-        let presets = space.options().layout.preset_column_widths.clone();
+        let available_size = containers.working_area().size.w;
+        let presets = containers.options().layout.preset_column_widths.clone();
 
-        let Some(tile) = self.tile_at_mut(space, &id) else {
+        let Some(tile) = self.tile_at_mut(containers, &id) else {
             return;
         };
         let current_window = tile.window_expected_or_current_size().w;
@@ -1680,17 +1735,17 @@ impl<W: LayoutElement> FloatingSpace<W> {
         );
 
         let preset = presets[preset_idx];
-        self.set_window_width(space, Some(&id), SizeChange::from(preset), true);
+        self.set_window_width(containers, Some(&id), SizeChange::from(preset), true);
 
-        if let Some(tile) = self.tile_at_mut(space, &id) {
+        if let Some(tile) = self.tile_at_mut(containers, &id) {
             tile.floating_preset_width_idx = Some(preset_idx);
         }
 
         self.interactive_resize_end(Some(&id));
     }
 
-    pub fn start_open_animation(&self, space: &mut TreeSpace<W>, id: &W::Id) -> bool {
-        if let Some(tile) = self.tile_at_mut(space, id) {
+    pub fn start_open_animation(&self, containers: &mut ContainerTree<W>, id: &W::Id) -> bool {
+        if let Some(tile) = self.tile_at_mut(containers, id) {
             tile.start_open_animation();
             true
         } else {
@@ -1700,17 +1755,17 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     pub fn toggle_window_height(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         id: Option<&W::Id>,
         forwards: bool,
     ) {
-        let Some(id) = self.resolve_target_id(space, id) else {
+        let Some(id) = self.resolve_target_id(containers, id) else {
             return;
         };
-        let available_size = space.working_area().size.h;
-        let presets = space.options().layout.preset_window_heights.clone();
+        let available_size = containers.working_area().size.h;
+        let presets = containers.options().layout.preset_window_heights.clone();
 
-        let Some(tile) = self.tile_at_mut(space, &id) else {
+        let Some(tile) = self.tile_at_mut(containers, &id) else {
             return;
         };
         let current_window = tile.window_expected_or_current_size().h;
@@ -1725,9 +1780,9 @@ impl<W: LayoutElement> FloatingSpace<W> {
         );
 
         let preset = presets[preset_idx];
-        self.set_window_height(space, Some(&id), SizeChange::from(preset), true);
+        self.set_window_height(containers, Some(&id), SizeChange::from(preset), true);
 
-        if let Some(tile) = self.tile_at_mut(space, &id) {
+        if let Some(tile) = self.tile_at_mut(containers, &id) {
             tile.floating_preset_height_idx = Some(preset_idx);
         }
 
@@ -1736,7 +1791,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     fn resize_container_dimension(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         idx: usize,
         change: SizeChange,
         axis: ResizeAxis,
@@ -1744,11 +1799,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
     ) {
         let is_width = axis == ResizeAxis::Horizontal;
         let available = if is_width {
-            space.working_area().size.w
+            containers.working_area().size.w
         } else {
-            space.working_area().size.h
+            containers.working_area().size.h
         };
-        let current_area = self.container_area(space, idx);
+        let current_area = self.container_area(containers, idx);
         let current = if is_width {
             current_area.size.w
         } else {
@@ -1780,90 +1835,98 @@ impl<W: LayoutElement> FloatingSpace<W> {
         } else {
             Size::from((current_area.size.w, new_size))
         };
-        self.set_container_size(space, idx, size);
+        self.set_container_size(containers, idx, size);
         if anchor == FloatingResizeAnchor::Center {
             let centered_pos = Point::from((
                 current_area.loc.x + (current_area.size.w - size.w) / 2.,
                 current_area.loc.y + (current_area.size.h - size.h) / 2.,
             ));
-            self.set_container_logical_pos(space, idx, centered_pos);
+            self.set_container_logical_pos(containers, idx, centered_pos);
         }
         let root = self.containers[idx].root;
-        space.tree_mut().layout_branch(root);
+        containers.arena_mut().layout_branch(root);
     }
 
     fn resize_container_around_center(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         idx: usize,
         change: SizeChange,
         axis: ResizeAxis,
     ) {
-        self.resize_container_dimension(space, idx, change, axis, FloatingResizeAnchor::Center);
+        self.resize_container_dimension(
+            containers,
+            idx,
+            change,
+            axis,
+            FloatingResizeAnchor::Center,
+        );
     }
 
     pub fn set_window_width(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         id: Option<&W::Id>,
         change: SizeChange,
         animate: bool,
     ) {
-        let active = self.active_window_id(space);
+        let active = self.active_window_id(containers);
         let Some(target_id) = id.or(active.as_ref()) else {
             return;
         };
-        let idx = self.idx_of(space, target_id).unwrap();
-        let selection_is_container = id.is_none() && self.selected_is_container_in(space, idx);
+        let idx = self.idx_of(containers, target_id).unwrap();
+        let selection_is_container = id.is_none() && self.selected_is_container_in(containers, idx);
         if selection_is_container {
-            self.resize_container_around_center(space, idx, change, ResizeAxis::Horizontal);
+            self.resize_container_around_center(containers, idx, change, ResizeAxis::Horizontal);
             return;
         }
 
         let key = if let Some(id) = id {
-            match space.tree_mut().window_key(id) {
+            match containers.arena_mut().window_key(id) {
                 Some(key) => key,
                 None => return,
             }
         } else {
-            match self.selected_key_in(space, idx) {
+            match self.selected_key_in(containers, idx) {
                 Some(key) => key,
                 None => return,
             }
         };
 
-        if let Some(tile) = space.tree_mut().get_tile_mut(key) {
+        if let Some(tile) = containers.arena_mut().get_tile_mut(key) {
             tile.floating_preset_width_idx = None;
         }
 
         let Some((parent_key, child_idx, available, child_count, _)) =
-            space.container_metrics_for(key, Layout::SplitH)
+            containers.container_metrics_for(key, Layout::SplitH)
         else {
-            self.resize_container_around_center(space, idx, change, ResizeAxis::Horizontal);
+            self.resize_container_around_center(containers, idx, change, ResizeAxis::Horizontal);
             return;
         };
         if child_count <= 1 {
-            self.resize_container_around_center(space, idx, change, ResizeAxis::Horizontal);
+            self.resize_container_around_center(containers, idx, change, ResizeAxis::Horizontal);
             return;
         }
 
-        let current_percent = space
-            .tree_mut()
+        let current_percent = containers
+            .arena_mut()
             .child_percent(parent_key, child_idx)
             .unwrap_or(1.0);
         let percent = percent_from_size_change(
             current_percent,
             available,
-            || space.ppt_reference(key, Layout::SplitH),
+            || containers.ppt_reference(key, Layout::SplitH),
             change,
         );
 
-        if space
-            .tree_mut()
+        if containers
+            .arena_mut()
             .set_child_percent(parent_key, child_idx, Layout::SplitH, percent)
         {
             let _ = animate;
-            space.tree_mut().layout_branch(self.containers[idx].root);
+            containers
+                .arena_mut()
+                .layout_branch(self.containers[idx].root);
         }
     }
 
@@ -1874,7 +1937,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     /// than becoming interactive state owned by the input layer.
     pub fn resize_window(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         id: Option<&W::Id>,
         request: ResizeRequest,
     ) {
@@ -1882,25 +1945,25 @@ impl<W: LayoutElement> FloatingSpace<W> {
             ResizeRequest::Axis {
                 axis: ResizeAxis::Horizontal,
                 change,
-            } => self.set_window_width(space, id, change, true),
+            } => self.set_window_width(containers, id, change, true),
             ResizeRequest::Axis {
                 axis: ResizeAxis::Vertical,
                 change,
-            } => self.set_window_height(space, id, change, true),
+            } => self.set_window_height(containers, id, change, true),
             ResizeRequest::Edge { direction, amount } => {
-                self.resize_window_edge(space, id, direction, amount)
+                self.resize_window_edge(containers, id, direction, amount)
             }
         }
     }
 
     fn resize_window_edge(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         id: Option<&W::Id>,
         direction: Direction,
         amount: i32,
     ) {
-        let Some(id) = self.resolve_target_id(space, id) else {
+        let Some(id) = self.resolve_target_id(containers, id) else {
             return;
         };
         let amount = f64::from(amount);
@@ -1911,87 +1974,89 @@ impl<W: LayoutElement> FloatingSpace<W> {
             Direction::Down => (ResizeEdge::BOTTOM, Point::from((0., amount))),
         };
 
-        if self.interactive_resize_begin(space, id.clone(), edge) {
-            self.interactive_resize_update(space, &id, delta);
+        if self.interactive_resize_begin(containers, id.clone(), edge) {
+            self.interactive_resize_update(containers, &id, delta);
             self.interactive_resize_end(Some(&id));
         }
     }
 
     pub fn set_window_height(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         id: Option<&W::Id>,
         change: SizeChange,
         animate: bool,
     ) {
-        let active = self.active_window_id(space);
+        let active = self.active_window_id(containers);
         let Some(target_id) = id.or(active.as_ref()) else {
             return;
         };
-        let idx = self.idx_of(space, target_id).unwrap();
-        let selection_is_container = id.is_none() && self.selected_is_container_in(space, idx);
+        let idx = self.idx_of(containers, target_id).unwrap();
+        let selection_is_container = id.is_none() && self.selected_is_container_in(containers, idx);
         if selection_is_container {
-            self.resize_container_around_center(space, idx, change, ResizeAxis::Vertical);
+            self.resize_container_around_center(containers, idx, change, ResizeAxis::Vertical);
             return;
         }
 
         let key = if let Some(id) = id {
-            match space.tree_mut().window_key(id) {
+            match containers.arena_mut().window_key(id) {
                 Some(key) => key,
                 None => return,
             }
         } else {
-            match self.selected_key_in(space, idx) {
+            match self.selected_key_in(containers, idx) {
                 Some(key) => key,
                 None => return,
             }
         };
 
-        if let Some(tile) = space.tree_mut().get_tile_mut(key) {
+        if let Some(tile) = containers.arena_mut().get_tile_mut(key) {
             tile.floating_preset_height_idx = None;
         }
 
         let Some((parent_key, child_idx, available, child_count, _)) =
-            space.container_metrics_for(key, Layout::SplitV)
+            containers.container_metrics_for(key, Layout::SplitV)
         else {
-            self.resize_container_around_center(space, idx, change, ResizeAxis::Vertical);
+            self.resize_container_around_center(containers, idx, change, ResizeAxis::Vertical);
             return;
         };
         if child_count <= 1 {
-            self.resize_container_around_center(space, idx, change, ResizeAxis::Vertical);
+            self.resize_container_around_center(containers, idx, change, ResizeAxis::Vertical);
             return;
         }
 
-        let current_percent = space
-            .tree_mut()
+        let current_percent = containers
+            .arena_mut()
             .child_percent(parent_key, child_idx)
             .unwrap_or(1.0);
         let percent = percent_from_size_change(
             current_percent,
             available,
-            || space.ppt_reference(key, Layout::SplitV),
+            || containers.ppt_reference(key, Layout::SplitV),
             change,
         );
 
-        if space
-            .tree_mut()
+        if containers
+            .arena_mut()
             .set_child_percent(parent_key, child_idx, Layout::SplitV, percent)
         {
             let _ = animate;
-            space.tree_mut().layout_branch(self.containers[idx].root);
+            containers
+                .arena_mut()
+                .layout_branch(self.containers[idx].root);
         }
     }
 
     fn focus_directional(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         distance: impl Fn(Point<f64, Logical>, Point<f64, Logical>) -> f64,
     ) -> bool {
-        let Some(active_id) = self.active_window_id(space) else {
+        let Some(active_id) = self.active_window_id(containers) else {
             return false;
         };
         let (active_tile, active_pos) = match self
-            .tiles_with_offsets_visible(space)
+            .tiles_with_offsets_visible(containers)
             .find(|(tile, _)| tile.window().id() == &active_id)
         {
             Some(value) => value,
@@ -2000,7 +2065,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let center = active_pos + active_tile.tile_size().downscale(2.);
 
         let result = self
-            .tiles_with_offsets_visible(space)
+            .tiles_with_offsets_visible(containers)
             .filter(|(tile, _)| tile.window().id() != &active_id)
             .map(|(tile, pos)| {
                 let other_center = pos + tile.tile_size().downscale(2.);
@@ -2010,7 +2075,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             .min_by(|(_, dist_a), (_, dist_b)| f64::total_cmp(dist_a, dist_b));
         if let Some((tile, _)) = result {
             let id = tile.window().id().clone();
-            self.activate_window(space, &id);
+            self.activate_window(containers, &id);
             true
         } else {
             false
@@ -2019,17 +2084,17 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     fn focus_within_active_container(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         direction: Direction,
         allow_wrap: bool,
     ) -> bool {
-        let Some(idx) = self.active_container_idx(space) else {
+        let Some(idx) = self.active_container_idx(containers) else {
             return false;
         };
-        let allow_wrap = allow_wrap && !self.selected_is_container_in(space, idx);
+        let allow_wrap = allow_wrap && !self.selected_is_container_in(containers, idx);
         let root = self.containers[idx].root;
-        let moved = space
-            .tree_mut()
+        let moved = containers
+            .arena_mut()
             .focus_in_direction_in_branch(root, direction, allow_wrap);
         if moved {
             return true;
@@ -2038,12 +2103,12 @@ impl<W: LayoutElement> FloatingSpace<W> {
         false
     }
 
-    fn focus_in_stack_order(&mut self, space: &mut TreeSpace<W>, delta: isize) -> bool {
+    fn focus_in_stack_order(&mut self, containers: &mut ContainerTree<W>, delta: isize) -> bool {
         if self.containers.len() <= 1 {
             return false;
         }
 
-        let Some(idx) = self.active_container_idx(space) else {
+        let Some(idx) = self.active_container_idx(containers) else {
             return false;
         };
         let len = self.containers.len() as isize;
@@ -2053,13 +2118,13 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
 
         let root = self.containers[target_idx].root;
-        let Some(id) = space
-            .tree_mut()
+        let Some(id) = containers
+            .arena_mut()
             .focused_window_in_branch(root)
             .map(|win| win.id().clone())
             .or_else(|| {
-                space
-                    .tree_mut()
+                containers
+                    .arena_mut()
                     .windows_in_branch(root)
                     .into_iter()
                     .next()
@@ -2069,20 +2134,20 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return false;
         };
 
-        self.activate_window(space, &id);
+        self.activate_window(containers, &id);
         true
     }
 
     fn focus_in_stable_container_order(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         descending: bool,
     ) -> bool {
         if self.containers.len() <= 1 {
             return false;
         }
 
-        let Some(active_idx) = self.active_container_idx(space) else {
+        let Some(active_idx) = self.active_container_idx(containers) else {
             return false;
         };
 
@@ -2106,13 +2171,13 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
 
         let root = self.containers[target_idx].root;
-        let Some(id) = space
-            .tree_mut()
+        let Some(id) = containers
+            .arena_mut()
             .focused_window_in_branch(root)
             .map(|win| win.id().clone())
             .or_else(|| {
-                space
-                    .tree_mut()
+                containers
+                    .arena_mut()
                     .windows_in_branch(root)
                     .into_iter()
                     .next()
@@ -2122,147 +2187,147 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return false;
         };
 
-        self.activate_window(space, &id);
+        self.activate_window(containers, &id);
         true
     }
 
-    fn should_cycle_top_level_stable_order(&self, space: &TreeSpace<W>) -> bool {
+    fn should_cycle_top_level_stable_order(&self, containers: &ContainerTree<W>) -> bool {
         self.containers.len() > 1
             && self
-                .active_container_idx(space)
-                .is_some_and(|idx| space.branch_root_is_lone_window(self.containers[idx].root))
+                .active_container_idx(containers)
+                .is_some_and(|idx| containers.branch_root_is_lone_window(self.containers[idx].root))
             && self
                 .containers
                 .iter()
-                .all(|container| space.branch_root_is_lone_window(container.root))
+                .all(|container| containers.branch_root_is_lone_window(container.root))
     }
 
-    pub fn focus_left(&mut self, space: &mut TreeSpace<W>) -> bool {
-        if self.focus_within_active_container(space, Direction::Left, true) {
+    pub fn focus_left(&mut self, containers: &mut ContainerTree<W>) -> bool {
+        if self.focus_within_active_container(containers, Direction::Left, true) {
             return true;
         }
-        if self.should_cycle_top_level_stable_order(space) {
-            return self.focus_in_stable_container_order(space, true);
+        if self.should_cycle_top_level_stable_order(containers) {
+            return self.focus_in_stable_container_order(containers, true);
         }
-        self.focus_in_stack_order(space, 1)
-            || self.focus_directional(space, |focus, other| focus.x - other.x)
+        self.focus_in_stack_order(containers, 1)
+            || self.focus_directional(containers, |focus, other| focus.x - other.x)
     }
 
-    pub fn focus_left_no_wrap(&mut self, space: &mut TreeSpace<W>) -> bool {
-        if self.focus_within_active_container(space, Direction::Left, false) {
+    pub fn focus_left_no_wrap(&mut self, containers: &mut ContainerTree<W>) -> bool {
+        if self.focus_within_active_container(containers, Direction::Left, false) {
             return true;
         }
-        self.focus_directional(space, |focus, other| focus.x - other.x)
+        self.focus_directional(containers, |focus, other| focus.x - other.x)
     }
 
-    pub fn focus_window_by_id(&mut self, space: &mut TreeSpace<W>, id: &W::Id) -> bool {
-        let Some(_idx) = self.idx_of(space, id) else {
+    pub fn focus_window_by_id(&mut self, containers: &mut ContainerTree<W>, id: &W::Id) -> bool {
+        let Some(_idx) = self.idx_of(containers, id) else {
             return false;
         };
 
-        space.tree_mut().clear_selection();
-        let _ = space.tree_mut().focus_window_by_id(id);
+        containers.arena_mut().clear_selection();
+        let _ = containers.arena_mut().focus_window_by_id(id);
         true
     }
 
-    pub fn focus_right(&mut self, space: &mut TreeSpace<W>) -> bool {
-        if self.focus_within_active_container(space, Direction::Right, true) {
+    pub fn focus_right(&mut self, containers: &mut ContainerTree<W>) -> bool {
+        if self.focus_within_active_container(containers, Direction::Right, true) {
             return true;
         }
-        if self.should_cycle_top_level_stable_order(space) {
-            return self.focus_in_stable_container_order(space, false);
+        if self.should_cycle_top_level_stable_order(containers) {
+            return self.focus_in_stable_container_order(containers, false);
         }
-        self.focus_in_stack_order(space, -1)
-            || self.focus_directional(space, |focus, other| other.x - focus.x)
+        self.focus_in_stack_order(containers, -1)
+            || self.focus_directional(containers, |focus, other| other.x - focus.x)
     }
 
-    pub fn focus_right_no_wrap(&mut self, space: &mut TreeSpace<W>) -> bool {
-        if self.focus_within_active_container(space, Direction::Right, false) {
+    pub fn focus_right_no_wrap(&mut self, containers: &mut ContainerTree<W>) -> bool {
+        if self.focus_within_active_container(containers, Direction::Right, false) {
             return true;
         }
-        self.focus_directional(space, |focus, other| other.x - focus.x)
+        self.focus_directional(containers, |focus, other| other.x - focus.x)
     }
 
-    pub fn focus_up(&mut self, space: &mut TreeSpace<W>) -> bool {
-        if self.focus_within_active_container(space, Direction::Up, true) {
+    pub fn focus_up(&mut self, containers: &mut ContainerTree<W>) -> bool {
+        if self.focus_within_active_container(containers, Direction::Up, true) {
             return true;
         }
-        self.focus_directional(space, |focus, other| focus.y - other.y)
+        self.focus_directional(containers, |focus, other| focus.y - other.y)
     }
 
-    pub fn focus_up_no_wrap(&mut self, space: &mut TreeSpace<W>) -> bool {
-        if self.focus_within_active_container(space, Direction::Up, false) {
+    pub fn focus_up_no_wrap(&mut self, containers: &mut ContainerTree<W>) -> bool {
+        if self.focus_within_active_container(containers, Direction::Up, false) {
             return true;
         }
-        self.focus_directional(space, |focus, other| focus.y - other.y)
+        self.focus_directional(containers, |focus, other| focus.y - other.y)
     }
 
-    pub fn focus_down(&mut self, space: &mut TreeSpace<W>) -> bool {
-        if self.focus_within_active_container(space, Direction::Down, true) {
+    pub fn focus_down(&mut self, containers: &mut ContainerTree<W>) -> bool {
+        if self.focus_within_active_container(containers, Direction::Down, true) {
             return true;
         }
-        self.focus_directional(space, |focus, other| other.y - focus.y)
+        self.focus_directional(containers, |focus, other| other.y - focus.y)
     }
 
-    pub fn focus_down_no_wrap(&mut self, space: &mut TreeSpace<W>) -> bool {
-        if self.focus_within_active_container(space, Direction::Down, false) {
+    pub fn focus_down_no_wrap(&mut self, containers: &mut ContainerTree<W>) -> bool {
+        if self.focus_within_active_container(containers, Direction::Down, false) {
             return true;
         }
-        self.focus_directional(space, |focus, other| other.y - focus.y)
+        self.focus_directional(containers, |focus, other| other.y - focus.y)
     }
 
-    pub fn focus_leftmost(&mut self, space: &mut TreeSpace<W>) {
+    pub fn focus_leftmost(&mut self, containers: &mut ContainerTree<W>) {
         let result = self
-            .tiles_with_offsets_visible(space)
+            .tiles_with_offsets_visible(containers)
             .min_by(|(_, pos_a), (_, pos_b)| f64::total_cmp(&pos_a.x, &pos_b.x));
         if let Some((tile, _)) = result {
             let id = tile.window().id().clone();
-            self.activate_window(space, &id);
+            self.activate_window(containers, &id);
         }
     }
 
-    pub fn focus_rightmost(&mut self, space: &mut TreeSpace<W>) {
+    pub fn focus_rightmost(&mut self, containers: &mut ContainerTree<W>) {
         let result = self
-            .tiles_with_offsets_visible(space)
+            .tiles_with_offsets_visible(containers)
             .max_by(|(_, pos_a), (_, pos_b)| f64::total_cmp(&pos_a.x, &pos_b.x));
         if let Some((tile, _)) = result {
             let id = tile.window().id().clone();
-            self.activate_window(space, &id);
+            self.activate_window(containers, &id);
         }
     }
 
-    pub fn focus_topmost(&mut self, space: &mut TreeSpace<W>) {
+    pub fn focus_topmost(&mut self, containers: &mut ContainerTree<W>) {
         let result = self
-            .tiles_with_offsets_visible(space)
+            .tiles_with_offsets_visible(containers)
             .min_by(|(_, pos_a), (_, pos_b)| f64::total_cmp(&pos_a.y, &pos_b.y));
         if let Some((tile, _)) = result {
             let id = tile.window().id().clone();
-            self.activate_window(space, &id);
+            self.activate_window(containers, &id);
         }
     }
 
-    pub fn focus_bottommost(&mut self, space: &mut TreeSpace<W>) {
+    pub fn focus_bottommost(&mut self, containers: &mut ContainerTree<W>) {
         let result = self
-            .tiles_with_offsets_visible(space)
+            .tiles_with_offsets_visible(containers)
             .max_by(|(_, pos_a), (_, pos_b)| f64::total_cmp(&pos_a.y, &pos_b.y));
         if let Some((tile, _)) = result {
             let id = tile.window().id().clone();
-            self.activate_window(space, &id);
+            self.activate_window(containers, &id);
         }
     }
 
-    pub(super) fn focus_parent(&mut self, space: &mut TreeSpace<W>) -> bool {
-        let Some(idx) = self.active_container_idx(space) else {
+    pub(super) fn focus_parent(&mut self, containers: &mut ContainerTree<W>) -> bool {
+        let Some(idx) = self.active_container_idx(containers) else {
             return false;
         };
         let root = self.containers[idx].root;
-        if space.handle_focus_parent_in_branch_fullscreen_scope(root) {
+        if containers.handle_focus_parent_in_branch_fullscreen_scope(root) {
             return true;
         }
 
         // One step, not a walk: `select_parent_in` stops at the branch root, so there is
         // never a second ancestor to consider inside the group.
-        if space.tree_mut().select_parent_in(root) {
+        if containers.arena_mut().select_parent_in(root) {
             return true;
         }
 
@@ -2270,133 +2335,137 @@ impl<W: LayoutElement> FloatingSpace<W> {
         // the workspace — which Workspace represents outside ContainerTree. A lone floating
         // window is its own root, so this is the first step from it too: sway has no extra
         // stop for a view that floats, because there is no container around it to stop on.
-        space.tree_mut().select_parent()
+        containers.arena_mut().select_parent()
     }
 
-    pub(super) fn focus_child_from_workspace(&mut self, space: &mut TreeSpace<W>) -> bool {
-        let Some(idx) = self.active_container_idx(space) else {
+    pub(super) fn focus_child_from_workspace(&mut self, containers: &mut ContainerTree<W>) -> bool {
+        let Some(idx) = self.active_container_idx(containers) else {
             return false;
         };
         let root = self.containers[idx].root;
-        space.tree_mut().select_container(root) && space.tree_mut().select_child()
+        containers.arena_mut().select_container(root) && containers.arena_mut().select_child()
     }
 
-    pub fn focus_child(&mut self, space: &mut TreeSpace<W>) -> bool {
-        let Some(idx) = self.active_container_idx(space) else {
+    pub fn focus_child(&mut self, containers: &mut ContainerTree<W>) -> bool {
+        let Some(idx) = self.active_container_idx(containers) else {
             return false;
         };
         let root = self.containers[idx].root;
-        space
-            .tree_mut()
+        containers
+            .arena_mut()
             .selected_container_key()
-            .is_some_and(|key| space.tree_mut().is_descendant(key, root))
-            && space.tree_mut().select_child()
+            .is_some_and(|key| containers.arena_mut().is_descendant(key, root))
+            && containers.arena_mut().select_child()
     }
 
     fn consume_or_expel_window(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         window: Option<&W::Id>,
         direction: Direction,
     ) {
         if let Some(id) = window {
-            if !self.activate_window(space, id) {
+            if !self.activate_window(containers, id) {
                 return;
             }
         }
 
-        let Some(idx) = self.active_container_idx(space) else {
+        let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
 
-        if self.move_tree_command_target(space, idx, direction) {
+        if self.move_tree_command_target(containers, idx, direction) {
             return;
         }
 
-        self.split_container(space, idx, Layout::SplitV);
+        self.split_container(containers, idx, Layout::SplitV);
     }
 
     pub fn consume_or_expel_window_left(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         window: Option<&W::Id>,
     ) {
-        self.consume_or_expel_window(space, window, Direction::Left);
+        self.consume_or_expel_window(containers, window, Direction::Left);
     }
 
     pub fn consume_or_expel_window_right(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         window: Option<&W::Id>,
     ) {
-        self.consume_or_expel_window(space, window, Direction::Right);
+        self.consume_or_expel_window(containers, window, Direction::Right);
     }
 
-    pub fn consume_into_column(&mut self, space: &mut TreeSpace<W>) {
-        let Some(idx) = self.active_container_idx(space) else {
+    pub fn consume_into_column(&mut self, containers: &mut ContainerTree<W>) {
+        let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        self.split_container(space, idx, Layout::SplitV);
+        self.split_container(containers, idx, Layout::SplitV);
     }
 
-    pub fn expel_from_column(&mut self, space: &mut TreeSpace<W>) {
-        let Some(idx) = self.active_container_idx(space) else {
+    pub fn expel_from_column(&mut self, containers: &mut ContainerTree<W>) {
+        let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        self.split_container(space, idx, Layout::SplitH);
+        self.split_container(containers, idx, Layout::SplitH);
     }
 
     fn move_tree_command_target(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         idx: usize,
         direction: Direction,
     ) -> bool {
-        space.move_in_branch(self.containers[idx].root, direction)
+        containers.move_in_branch(self.containers[idx].root, direction)
     }
 
-    pub fn set_column_display(&mut self, space: &mut TreeSpace<W>, display: ColumnDisplay) {
+    pub fn set_column_display(
+        &mut self,
+        containers: &mut ContainerTree<W>,
+        display: ColumnDisplay,
+    ) {
         let target_layout = match display {
             ColumnDisplay::Normal => Layout::SplitV,
             ColumnDisplay::Tabbed => Layout::Tabbed,
         };
 
-        let Some(idx) = self.active_container_idx(space) else {
+        let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        space.set_layout_in_branch(self.containers[idx].root, target_layout);
+        containers.set_layout_in_branch(self.containers[idx].root, target_layout);
     }
 
-    pub fn toggle_column_tabbed_display(&mut self, space: &mut TreeSpace<W>) {
-        let Some(idx) = self.active_container_idx(space) else {
+    pub fn toggle_column_tabbed_display(&mut self, containers: &mut ContainerTree<W>) {
+        let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        let target = match space.selection_layout_in(self.containers[idx].root) {
+        let target = match containers.selection_layout_in(self.containers[idx].root) {
             Some(Layout::Tabbed) => Layout::SplitV,
             _ => Layout::Tabbed,
         };
-        space.set_layout_in_branch(self.containers[idx].root, target);
+        containers.set_layout_in_branch(self.containers[idx].root, target);
     }
 
-    pub fn split_horizontal(&mut self, space: &mut TreeSpace<W>) {
-        let Some(idx) = self.active_container_idx(space) else {
+    pub fn split_horizontal(&mut self, containers: &mut ContainerTree<W>) {
+        let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        self.split_container(space, idx, Layout::SplitH);
+        self.split_container(containers, idx, Layout::SplitH);
     }
 
-    pub fn split_vertical(&mut self, space: &mut TreeSpace<W>) {
-        let Some(idx) = self.active_container_idx(space) else {
+    pub fn split_vertical(&mut self, containers: &mut ContainerTree<W>) {
+        let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        self.split_container(space, idx, Layout::SplitV);
+        self.split_container(containers, idx, Layout::SplitV);
     }
 
-    pub fn split_none(&mut self, space: &mut TreeSpace<W>) {
-        let Some(idx) = self.active_container_idx(space) else {
+    pub fn split_none(&mut self, containers: &mut ContainerTree<W>) {
+        let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        let Some(root) = space.unsplit_in_branch(self.containers[idx].root) else {
+        let Some(root) = containers.unsplit_in_branch(self.containers[idx].root) else {
             return;
         };
         self.containers[idx].root = root;
@@ -2411,13 +2480,13 @@ impl<W: LayoutElement> FloatingSpace<W> {
     /// publishes it from then on. Reading that here rather than writing it back means no
     /// operation has to remember to keep a copy in step — split, layout mode, cycle, expel and
     /// whatever comes next are all right by construction.
-    fn root_kind(&self, space: &TreeSpace<W>, idx: usize) -> FloatingRootKind {
+    fn root_kind(&self, containers: &ContainerTree<W>, idx: usize) -> FloatingRootKind {
         let stored = self.containers[idx].kind;
         if stored != FloatingRootKind::ImplicitWindowGroup {
             return stored;
         }
-        if space
-            .tree()
+        if containers
+            .arena()
             .branch_container(self.containers[idx].root)
             .is_some_and(|root| root.is_user_container())
         {
@@ -2427,126 +2496,131 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
     }
 
-    fn split_container(&mut self, space: &mut TreeSpace<W>, idx: usize, layout: Layout) -> bool {
+    fn split_container(
+        &mut self,
+        containers: &mut ContainerTree<W>,
+        idx: usize,
+        layout: Layout,
+    ) -> bool {
         let root = self.containers[idx].root;
-        if !space.split_in_branch(root, layout) {
+        if !containers.split_in_branch(root, layout) {
             return false;
         }
         // Splitting a floating root puts a new container in its slot, so the group is addressed
         // by a different key afterwards — the same handover `split_none` does in reverse. Asked
         // of the old root, which is now an ordinary child, this answers with the new one.
-        self.containers[idx].root = space.tree().branch_root(root);
+        self.containers[idx].root = containers.arena().branch_root(root);
         true
     }
 
-    pub fn set_layout_mode(&mut self, space: &mut TreeSpace<W>, layout: Layout) {
-        let Some(idx) = self.active_container_idx(space) else {
+    pub fn set_layout_mode(&mut self, containers: &mut ContainerTree<W>, layout: Layout) {
+        let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        space.set_layout_in_branch(self.containers[idx].root, layout);
+        containers.set_layout_in_branch(self.containers[idx].root, layout);
     }
 
-    pub fn toggle_split_layout(&mut self, space: &mut TreeSpace<W>) {
-        let Some(idx) = self.active_container_idx(space) else {
+    pub fn toggle_split_layout(&mut self, containers: &mut ContainerTree<W>) {
+        let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        space.toggle_split_in_branch(self.containers[idx].root);
+        containers.toggle_split_in_branch(self.containers[idx].root);
     }
 
-    pub fn toggle_layout_all(&mut self, space: &mut TreeSpace<W>) {
-        let Some(idx) = self.active_container_idx(space) else {
+    pub fn toggle_layout_all(&mut self, containers: &mut ContainerTree<W>) {
+        let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        space.toggle_layout_all_in_branch(self.containers[idx].root);
+        containers.toggle_layout_all_in_branch(self.containers[idx].root);
     }
 
-    pub fn set_default_layout(&mut self, space: &mut TreeSpace<W>) {
-        let Some(idx) = self.active_container_idx(space) else {
+    pub fn set_default_layout(&mut self, containers: &mut ContainerTree<W>) {
+        let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        space.set_default_layout_in_branch(self.containers[idx].root);
+        containers.set_default_layout_in_branch(self.containers[idx].root);
     }
 
     pub(super) fn toggle_layout_cycle(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         cycle: &[LayoutCycleEntry],
     ) {
-        let Some(idx) = self.active_container_idx(space) else {
+        let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        space.toggle_layout_cycle_in_branch(self.containers[idx].root, cycle);
+        containers.toggle_layout_cycle_in_branch(self.containers[idx].root, cycle);
     }
 
     fn move_container_to(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         idx: usize,
         new_pos: Point<f64, Logical>,
         animate: bool,
     ) {
         if animate {
-            self.move_container_and_animate(space, idx, new_pos);
+            self.move_container_and_animate(containers, idx, new_pos);
         } else {
-            self.set_container_logical_pos(space, idx, new_pos);
+            self.set_container_logical_pos(containers, idx, new_pos);
         }
 
         let root = self.containers[idx].root;
-        space.tree_mut().layout_branch(root);
+        containers.arena_mut().layout_branch(root);
 
         self.interactive_resize_end(None);
     }
 
-    fn move_by(&mut self, space: &mut TreeSpace<W>, amount: Point<f64, Logical>) {
-        let Some(active_id) = self.active_window_id(space) else {
+    fn move_by(&mut self, containers: &mut ContainerTree<W>, amount: Point<f64, Logical>) {
+        let Some(active_id) = self.active_window_id(containers) else {
             return;
         };
-        if self.is_fullscreen(space, &active_id) {
+        if self.is_fullscreen(containers, &active_id) {
             return;
         }
-        let idx = self.idx_of(space, &active_id).unwrap();
+        let idx = self.idx_of(containers, &active_id).unwrap();
 
-        let new_pos = self.container_area(space, idx).loc + amount;
-        self.move_container_to(space, idx, new_pos, true)
+        let new_pos = self.container_area(containers, idx).loc + amount;
+        self.move_container_to(containers, idx, new_pos, true)
     }
 
-    pub fn move_left(&mut self, space: &mut TreeSpace<W>) {
-        self.move_by(space, Point::from((-DIRECTIONAL_MOVE_PX, 0.)));
+    pub fn move_left(&mut self, containers: &mut ContainerTree<W>) {
+        self.move_by(containers, Point::from((-DIRECTIONAL_MOVE_PX, 0.)));
     }
 
-    pub fn move_right(&mut self, space: &mut TreeSpace<W>) {
-        self.move_by(space, Point::from((DIRECTIONAL_MOVE_PX, 0.)));
+    pub fn move_right(&mut self, containers: &mut ContainerTree<W>) {
+        self.move_by(containers, Point::from((DIRECTIONAL_MOVE_PX, 0.)));
     }
 
-    pub fn move_up(&mut self, space: &mut TreeSpace<W>) {
-        self.move_by(space, Point::from((0., -DIRECTIONAL_MOVE_PX)));
+    pub fn move_up(&mut self, containers: &mut ContainerTree<W>) {
+        self.move_by(containers, Point::from((0., -DIRECTIONAL_MOVE_PX)));
     }
 
-    pub fn move_down(&mut self, space: &mut TreeSpace<W>) {
-        self.move_by(space, Point::from((0., DIRECTIONAL_MOVE_PX)));
+    pub fn move_down(&mut self, containers: &mut ContainerTree<W>) {
+        self.move_by(containers, Point::from((0., DIRECTIONAL_MOVE_PX)));
     }
 
     pub fn move_window(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         id: Option<&W::Id>,
         x: PositionChange,
         y: PositionChange,
         animate: bool,
     ) {
-        let Some(id) = self.resolve_target_id(space, id) else {
+        let Some(id) = self.resolve_target_id(containers, id) else {
             return;
         };
-        if self.is_fullscreen(space, &id) {
+        if self.is_fullscreen(containers, &id) {
             return;
         }
-        let idx = self.idx_of(space, &id).unwrap();
+        let idx = self.idx_of(containers, &id).unwrap();
 
-        let mut pos = self.container_area(space, idx).loc;
+        let mut pos = self.container_area(containers, idx).loc;
 
-        let available_width = space.working_area().size.w;
-        let available_height = space.working_area().size.h;
-        let working_area_loc = space.working_area().loc;
+        let available_width = containers.working_area().size.w;
+        let available_height = containers.working_area().size.h;
+        let working_area_loc = containers.working_area().loc;
 
         const MAX_F: f64 = 10000.;
 
@@ -2577,49 +2651,49 @@ impl<W: LayoutElement> FloatingSpace<W> {
             }
         }
 
-        self.move_container_to(space, idx, pos, animate);
+        self.move_container_to(containers, idx, pos, animate);
     }
 
-    pub fn center_window(&mut self, space: &mut TreeSpace<W>, id: Option<&W::Id>) {
-        let Some(id) = self.resolve_target_id(space, id) else {
+    pub fn center_window(&mut self, containers: &mut ContainerTree<W>, id: Option<&W::Id>) {
+        let Some(id) = self.resolve_target_id(containers, id) else {
             return;
         };
-        if self.is_fullscreen(space, &id) {
+        if self.is_fullscreen(containers, &id) {
             return;
         }
-        let idx = self.idx_of(space, &id).unwrap();
+        let idx = self.idx_of(containers, &id).unwrap();
 
         let new_pos = center_preferring_top_left_in_area(
-            space.working_area(),
-            self.container_area(space, idx).size,
+            containers.working_area(),
+            self.container_area(containers, idx).size,
         );
-        self.move_container_to(space, idx, new_pos, true);
+        self.move_container_to(containers, idx, new_pos, true);
     }
 
-    pub fn descendants_added(&mut self, space: &TreeSpace<W>, id: &W::Id) -> bool {
-        let Some(idx) = self.idx_of(space, id) else {
+    pub fn descendants_added(&mut self, containers: &ContainerTree<W>, id: &W::Id) -> bool {
+        let Some(idx) = self.idx_of(containers, id) else {
             return false;
         };
 
-        self.bring_up_descendants_of(space, idx);
+        self.bring_up_descendants_of(containers, idx);
         true
     }
 
     pub fn update_window(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         id: &W::Id,
         serial: Option<Serial>,
     ) -> bool {
-        let Some(container_idx) = self.idx_of(space, id) else {
+        let Some(container_idx) = self.idx_of(containers, id) else {
             return false;
         };
 
         {
-            let Some(key) = space.tree_mut().window_key(id) else {
+            let Some(key) = containers.arena_mut().window_key(id) else {
                 return false;
             };
-            let Some(tile) = space.tree_mut().get_tile_mut(key) else {
+            let Some(tile) = containers.arena_mut().get_tile_mut(key) else {
                 return false;
             };
 
@@ -2640,13 +2714,13 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
 
         let root = self.containers[container_idx].root;
-        space.tree_mut().layout_branch(root);
+        containers.arena_mut().layout_branch(root);
 
-        if space.tree().window_count_in_branch(root) == 1 {
-            let Some(key) = space.tree_mut().window_key(id) else {
+        if containers.arena().window_count_in_branch(root) == 1 {
+            let Some(key) = containers.arena_mut().window_key(id) else {
                 return true;
             };
-            let Some(tile) = space.tree_mut().get_tile(key) else {
+            let Some(tile) = containers.arena_mut().get_tile(key) else {
                 return true;
             };
             // Fullscreen is a temporary output-sized commit, not a new floating resize base.
@@ -2654,8 +2728,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
             // ordinary floating size.
             if tile.window().pending_sizing_mode().is_normal() {
                 let tile_size = tile.tile_size();
-                space
-                    .tree_mut()
+                containers
+                    .arena_mut()
                     .record_floating_resize_base(root, tile_size);
             }
         }
@@ -2665,18 +2739,18 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     fn render_elements<R: NiriRenderer>(
         &self,
-        space: &TreeSpace<W>,
+        containers: &ContainerTree<W>,
         mut ctx: RenderCtx<R>,
         xray_pos: XrayPos,
         view_rect: Rectangle<f64, Logical>,
         focus_ring: bool,
         layer: RenderLayer,
     ) -> Vec<FloatingSpaceRenderElement<R>> {
-        let tree = space.tree();
-        let tile_count = self.tiles(space).count();
+        let tree = containers.arena();
+        let tile_count = self.tiles(containers).count();
         let estimated_capacity = tile_count * 4 + self.closing_windows.len() + tile_count / 2;
         let mut elements = Vec::with_capacity(estimated_capacity);
-        let scale = Scale::from(space.scale());
+        let scale = Scale::from(containers.scale());
 
         // Draw the closing windows on top of the other windows.
         //
@@ -2691,23 +2765,23 @@ impl<W: LayoutElement> FloatingSpace<W> {
             elements.push(elem.into());
         }
 
-        let active = self.active_window_id(space);
-        let fullscreen_key = self.fullscreen_key(space);
-        let fullscreen_id = self.fullscreen_window_id(space).cloned();
+        let active = self.active_window_id(containers);
+        let fullscreen_key = self.fullscreen_key(containers);
+        let fullscreen_id = self.fullscreen_window_id(containers).cloned();
         let selection_is_container = self
-            .active_container_idx(space)
-            .is_some_and(|idx| self.selected_is_container_in(space, idx));
+            .active_container_idx(containers)
+            .is_some_and(|idx| self.selected_is_container_in(containers, idx));
 
         // Like tiling, push container selection before the regular window
         // contents so it stays visually on top after the global reverse-order
         // composition pass in the renderer.
-        if (focus_ring || space.side_is_active(true))
+        if (focus_ring || containers.side_is_active(true))
             && selection_is_container
             && fullscreen_id.is_none()
         {
-            if let Some(idx) = self.active_container_idx(space) {
+            if let Some(idx) = self.active_container_idx(containers) {
                 if let Some((_, local_rect, _)) = self
-                    .selected_key_in(space, idx)
+                    .selected_key_in(containers, idx)
                     .and_then(|key| tree.container_info(key))
                 {
                     let rect = local_rect;
@@ -2715,10 +2789,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
                         ctx.renderer,
                         rect,
                         view_rect,
-                        space.scale(),
-                        space.side_is_active(true),
-                        space.options().layout.focus_ring,
-                        space.options().layout.border,
+                        containers.scale(),
+                        containers.side_is_active(true),
+                        containers.options().layout.focus_ring,
+                        containers.options().layout.border,
                         ContainerSelectionStyle::Floating,
                         &mut |elem| {
                             elements.push(FloatingSpaceRenderElement::ContainerSelection(elem))
@@ -2728,11 +2802,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
             }
         }
 
-        if !space.options().layout.tab_bar.off && fullscreen_id.is_none() {
-            let mut cache = space.tab_bar_cache_mut();
+        if !containers.options().layout.tab_bar.off && fullscreen_id.is_none() {
+            let mut cache = containers.tab_bar_cache_mut();
             let gles = ctx.renderer.as_gles_renderer();
-            let tab_bar_config = space.options().layout.tab_bar.clone();
-            let is_active_workspace = space.side_is_active(true);
+            let tab_bar_config = containers.options().layout.tab_bar.clone();
+            let is_active_workspace = containers.side_is_active(true);
             let target = ctx.target;
 
             let roots: Vec<NodeKey> = if let Some(scope) = fullscreen_key {
@@ -2744,7 +2818,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                     .collect()
             };
             for root in roots {
-                let gap = space.branch_gap(root);
+                let gap = containers.branch_gap(root);
                 for info in tree.tab_bar_layouts_in_branch(root) {
                     let mut info = info.clone();
                     if gap > 0.0 && info.path.is_empty() {
@@ -2756,7 +2830,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                         &info,
                         &tab_bar_config,
                         is_active_workspace,
-                        space.scale(),
+                        containers.scale(),
                         target,
                     );
                     let (buffer, tab_widths_px) = match cache.get(&info.key) {
@@ -2772,7 +2846,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                             &info.tabs,
                             is_active_workspace,
                             target,
-                            space.scale(),
+                            containers.scale(),
                         ) {
                             Ok(TabBarRenderOutput {
                                 buffer,
@@ -2813,8 +2887,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         if let Some(fullscreen_id) = fullscreen_id.as_ref() {
             // Only render the fullscreen tile at (0, 0).
-            if let Some(tile) = self.tiles(space).find(|t| t.window().id() == fullscreen_id) {
-                let is_focused = space.side_is_active(true);
+            if let Some(tile) = self
+                .tiles(containers)
+                .find(|t| t.window().id() == fullscreen_id)
+            {
+                let is_focused = containers.side_is_active(true);
                 let pos = Point::from((0.0, 0.0));
                 let tile_xray_pos = xray_pos.offset(pos);
                 tile.render(
@@ -2826,7 +2903,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 );
             }
         } else {
-            for (tile, tile_pos) in self.tiles_with_render_positions(space) {
+            for (tile, tile_pos) in self.tiles_with_render_positions(containers) {
                 // Skip tiles belonging to a different render layer.
                 if layer.is_normal() == tile.is_moving_between_workspaces() {
                     continue;
@@ -2840,7 +2917,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                     continue;
                 }
 
-                let is_focused = space.side_is_active(true)
+                let is_focused = containers.side_is_active(true)
                     && Some(tile.window().id()) == active.as_ref()
                     && !selection_is_container;
                 let draw_focus = focus_ring && is_focused;
@@ -2858,7 +2935,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     #[allow(clippy::too_many_arguments)]
     pub fn render<R: NiriRenderer>(
         &self,
-        space: &TreeSpace<W>,
+        containers: &ContainerTree<W>,
         ctx: RenderCtx<R>,
         xray_pos: XrayPos,
         view_rect: Rectangle<f64, Logical>,
@@ -2866,23 +2943,23 @@ impl<W: LayoutElement> FloatingSpace<W> {
         layer: RenderLayer,
         push: &mut dyn FnMut(FloatingSpaceRenderElement<R>),
     ) {
-        for elem in self.render_elements(space, ctx, xray_pos, view_rect, focus_ring, layer) {
+        for elem in self.render_elements(containers, ctx, xray_pos, view_rect, focus_ring, layer) {
             push(elem);
         }
     }
 
     pub fn interactive_resize_begin(
         &mut self,
-        space: &TreeSpace<W>,
+        containers: &ContainerTree<W>,
         window: W::Id,
         edges: ResizeEdge,
     ) -> bool {
-        let tree = space.tree();
+        let tree = containers.arena();
         if self.interactive_resize.is_some() {
             return false;
         }
 
-        let Some(idx) = self.idx_of(space, &window) else {
+        let Some(idx) = self.idx_of(containers, &window) else {
             return false;
         };
 
@@ -2901,7 +2978,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let original_window_pos = container_area.loc;
         let original_container_size = container_area.size;
         let resize_container_edges =
-            super::tree_space::branch_display_layouts(space.tree(), container.root)
+            super::container_tree::branch_display_layouts(containers.arena(), container.root)
                 .find(|info| info.key == key)
                 .map(|info| {
                     let mut rect = info.rect;
@@ -2925,11 +3002,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     pub fn interactive_resize_update(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         window: &W::Id,
         delta: Point<f64, Logical>,
     ) -> bool {
-        let Some(idx) = self.idx_of(space, window) else {
+        let Some(idx) = self.idx_of(containers, window) else {
             return false;
         };
 
@@ -2955,10 +3032,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
             )
         };
         let (mut min_size, mut max_size, resize_container_h, resize_container_v) = {
-            let Some(tile) = space
-                .tree_mut()
+            let Some(tile) = containers
+                .arena_mut()
                 .window_key(window)
-                .and_then(|key| space.tree_mut().get_tile(key))
+                .and_then(|key| containers.arena_mut().get_tile(key))
             else {
                 return false;
             };
@@ -3021,7 +3098,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         if edges.intersects(ResizeEdge::LEFT_RIGHT) {
             if resize_container_h {
                 self.resize_container_dimension(
-                    space,
+                    containers,
                     idx,
                     SizeChange::SetFixed(target_width),
                     ResizeAxis::Horizontal,
@@ -3029,7 +3106,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 );
             } else {
                 self.set_window_width(
-                    space,
+                    containers,
                     Some(window),
                     SizeChange::SetFixed(target_width),
                     false,
@@ -3040,7 +3117,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         if edges.intersects(ResizeEdge::TOP_BOTTOM) {
             if resize_container_v {
                 self.resize_container_dimension(
-                    space,
+                    containers,
                     idx,
                     SizeChange::SetFixed(target_height),
                     ResizeAxis::Vertical,
@@ -3048,7 +3125,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 );
             } else {
                 self.set_window_height(
-                    space,
+                    containers,
                     Some(window),
                     SizeChange::SetFixed(target_height),
                     false,
@@ -3079,9 +3156,9 @@ impl<W: LayoutElement> FloatingSpace<W> {
             if (resize_container_h && move_pos.x != 0.0)
                 || (resize_container_v && move_pos.y != 0.0)
             {
-                self.set_container_logical_pos(space, idx, original_pos + move_pos);
+                self.set_container_logical_pos(containers, idx, original_pos + move_pos);
                 let root = self.containers[idx].root;
-                space.tree_mut().layout_branch(root);
+                containers.arena_mut().layout_branch(root);
             }
         }
 
@@ -3102,22 +3179,30 @@ impl<W: LayoutElement> FloatingSpace<W> {
         self.interactive_resize = None;
     }
 
-    pub fn refresh(&mut self, space: &mut TreeSpace<W>, is_active: bool, is_focused: bool) {
+    pub fn refresh(
+        &mut self,
+        containers: &mut ContainerTree<W>,
+        is_active: bool,
+        is_focused: bool,
+    ) {
         let _span = tracy_client::span!("FloatingSpace::refresh");
-        let active = self.active_window_id(space);
-        let deactivate_unfocused = space.options().deactivate_unfocused_windows;
-        let disable_resize_throttling = space.options().disable_resize_throttling;
-        let border_base = space.options().layout.border;
-        let working_area_size = space.working_area().size;
+        let active = self.active_window_id(containers);
+        let deactivate_unfocused = containers.options().deactivate_unfocused_windows;
+        let disable_resize_throttling = containers.options().disable_resize_throttling;
+        let border_base = containers.options().layout.border;
+        let working_area_size = containers.working_area().size;
         let resize_target = self.interactive_resize.as_ref().and_then(|resize| {
-            let idx = self.idx_of(space, &resize.window)?;
+            let idx = self.idx_of(containers, &resize.window)?;
             let mut ids = Vec::new();
-            for tile in space.tree_mut().tiles_in_branch(self.containers[idx].root) {
+            for tile in containers
+                .arena_mut()
+                .tiles_in_branch(self.containers[idx].root)
+            {
                 ids.push(tile.window().id().clone());
             }
             Some((resize.data, ids))
         });
-        for tile in self.tiles_mut(space) {
+        for tile in self.tiles_mut(containers) {
             let resize_data = resize_target.as_ref().and_then(|(data, ids)| {
                 ids.iter()
                     .any(|id| id == tile.window().id())
@@ -3188,21 +3273,21 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     fn move_container_and_animate(
         &mut self,
-        space: &mut TreeSpace<W>,
+        containers: &mut ContainerTree<W>,
         idx: usize,
         new_pos: Point<f64, Logical>,
     ) {
         // Moves up to this logical pixel distance are not animated.
         const ANIMATION_THRESHOLD_SQ: f64 = 10. * 10.;
 
-        let prev_pos = self.container_area(space, idx).loc;
-        let new_pos = self.set_container_logical_pos(space, idx, new_pos);
+        let prev_pos = self.container_area(containers, idx).loc;
+        let new_pos = self.set_container_logical_pos(containers, idx, new_pos);
 
         let diff = prev_pos - new_pos;
         if diff.x * diff.x + diff.y * diff.y > ANIMATION_THRESHOLD_SQ {
             let delta = prev_pos - new_pos;
             let root = self.containers[idx].root;
-            for tile in space.tree_mut().tiles_in_branch_mut(root) {
+            for tile in containers.arena_mut().tiles_in_branch_mut(root) {
                 tile.animate_move_from(delta);
             }
         }
@@ -3210,12 +3295,16 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     pub fn new_window_size(
         &self,
-        space: &TreeSpace<W>,
+        containers: &ContainerTree<W>,
         width: Option<PresetSize>,
         height: Option<PresetSize>,
         rules: &ResolvedWindowRules,
     ) -> Size<i32, Logical> {
-        let border = space.options().layout.border.merged_with(&rules.border);
+        let border = containers
+            .options()
+            .layout
+            .border
+            .merged_with(&rules.border);
 
         let resolve = |size: Option<PresetSize>, working_area_size: f64| {
             if let Some(size) = size {
@@ -3235,8 +3324,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
             }
         };
 
-        let width = resolve(width, space.working_area().size.w);
-        let height = resolve(height, space.working_area().size.h);
+        let width = resolve(width, containers.working_area().size.w);
+        let height = resolve(height, containers.working_area().size.h);
 
         Size::from((width, height))
     }
@@ -3285,35 +3374,39 @@ impl<W: LayoutElement> FloatingSpace<W> {
     }
 
     #[cfg(test)]
-    pub fn wrapper_selected_for_window(&self, space: &TreeSpace<W>, id: &W::Id) -> bool {
-        let tree = space.tree();
-        self.idx_of(space, id)
+    pub fn wrapper_selected_for_window(&self, containers: &ContainerTree<W>, id: &W::Id) -> bool {
+        let tree = containers.arena();
+        self.idx_of(containers, id)
             .is_some_and(|idx| tree.selected_container_key() == Some(self.containers[idx].root))
     }
 
     #[cfg(test)]
-    pub fn root_layout_for_window(&self, space: &TreeSpace<W>, id: &W::Id) -> Option<Layout> {
-        let tree = space.tree();
-        let idx = self.idx_of(space, id)?;
+    pub fn root_layout_for_window(
+        &self,
+        containers: &ContainerTree<W>,
+        id: &W::Id,
+    ) -> Option<Layout> {
+        let tree = containers.arena();
+        let idx = self.idx_of(containers, id)?;
         tree.branch_layout(self.containers[idx].root)
     }
 
     #[cfg(test)]
-    pub fn debug_tree_for_window(&self, space: &TreeSpace<W>, id: &W::Id) -> Option<String>
+    pub fn debug_tree_for_window(&self, containers: &ContainerTree<W>, id: &W::Id) -> Option<String>
     where
         W::Id: std::fmt::Display,
     {
-        let tree = space.tree();
-        let idx = self.idx_of(space, id)?;
+        let tree = containers.arena();
+        let idx = self.idx_of(containers, id)?;
         Some(tree.debug_branch(self.containers[idx].root))
     }
 
-    pub fn verify_invariants(&self, space: &TreeSpace<W>) {
+    pub fn verify_invariants(&self, containers: &ContainerTree<W>) {
         use std::collections::HashSet;
 
-        let tree = space.tree();
-        assert!(space.scale() > 0.);
-        assert!(space.scale().is_finite());
+        let tree = containers.arena();
+        assert!(containers.scale() > 0.);
+        assert!(containers.scale().is_finite());
 
         let stack_roots: HashSet<_> = self
             .containers
@@ -3337,17 +3430,17 @@ impl<W: LayoutElement> FloatingSpace<W> {
             tree.floating_container_area(container.root)
                 .expect("every floating stack entry must name a floating root");
             for tile in tree.tiles_in_branch(container.root) {
-                assert!(Rc::ptr_eq(space.options(), &tile.options));
-                assert_eq!(space.view_size(), tile.view_size());
-                assert_eq!(*space.clock(), tile.clock);
-                assert_eq!(space.scale(), tile.scale());
+                assert!(Rc::ptr_eq(containers.options(), &tile.options));
+                assert_eq!(containers.view_size(), tile.view_size());
+                assert_eq!(*containers.clock(), tile.clock);
+                assert_eq!(containers.scale(), tile.scale());
                 tile.verify_invariants();
 
                 if let Some(idx) = tile.floating_preset_width_idx {
-                    assert!(idx < space.options().layout.preset_column_widths.len());
+                    assert!(idx < containers.options().layout.preset_column_widths.len());
                 }
                 if let Some(idx) = tile.floating_preset_height_idx {
-                    assert!(idx < space.options().layout.preset_window_heights.len());
+                    assert!(idx < containers.options().layout.preset_window_heights.len());
                 }
 
                 let is_fullscreen_tile = tree.window_owns_fullscreen(tile.window().id());
@@ -3361,10 +3454,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
             }
         }
 
-        if let Some(id) = self.active_window_id(space) {
+        if let Some(id) = self.active_window_id(containers) {
             assert!(!self.containers.is_empty());
             assert!(
-                self.contains(space, &id),
+                self.contains(containers, &id),
                 "active window must be present in tiles"
             );
         } else {
@@ -3373,7 +3466,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         if let Some(resize) = &self.interactive_resize {
             assert!(
-                self.contains(space, &resize.window),
+                self.contains(containers, &resize.window),
                 "interactive resize window must be present in tiles"
             );
         }
@@ -3381,8 +3474,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
 }
 
 impl<W: LayoutElement> FloatingSpace<W> {
-    pub(crate) fn layout_tree_nodes(&self, space: &TreeSpace<W>) -> Vec<LayoutTreeNode> {
-        let tree = space.tree();
+    pub(crate) fn layout_tree_nodes(&self, containers: &ContainerTree<W>) -> Vec<LayoutTreeNode> {
+        let tree = containers.arena();
         self.containers
             .iter()
             .enumerate()
@@ -3393,8 +3486,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 let mut path = vec![idx];
                 let mut root =
                     tree.layout_tree_for_branch(container.root, focused_key, &mut path, true)?;
-                root.floating_root_kind = Some(self.root_kind(space, idx).ipc());
-                space.apply_workspace_fullscreen(root)
+                root.floating_root_kind = Some(self.root_kind(containers, idx).ipc());
+                containers.apply_workspace_fullscreen(root)
             })
             .collect()
     }

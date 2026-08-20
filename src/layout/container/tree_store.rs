@@ -2,8 +2,8 @@
 
 use smithay::utils::{Logical, Rectangle};
 
+use super::ContainerArena;
 use super::ContainerData;
-use super::ContainerTree;
 use super::Layout;
 use super::LayoutElement;
 use super::LayoutParentData;
@@ -12,7 +12,7 @@ use super::NodeKey;
 use super::WorkspaceData;
 use crate::layout::tile::Tile;
 
-impl<W: LayoutElement> ContainerTree<W> {
+impl<W: LayoutElement> ContainerArena<W> {
     /// Whether this arena still holds a node.
     pub(in crate::layout) fn holds_node(&self, key: NodeKey) -> bool {
         self.nodes.contains_key(key)

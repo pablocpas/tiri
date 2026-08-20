@@ -8,7 +8,7 @@ fn workspace_node_key(
 ) -> super::super::container::NodeKey {
     layout
         .workspaces()
-        .find_map(|(_, _, workspace)| workspace.tiling().tree().window_key(&window))
+        .find_map(|(_, _, workspace)| workspace.container_tree().arena().window_key(&window))
         .expect("window in a workspace tree")
 }
 
@@ -16,7 +16,7 @@ fn window_node_sizing(layout: &Layout<TestWindow>, window: usize) -> (f64, f64, 
     layout
         .workspaces()
         .find_map(|(_, _, workspace)| {
-            let tree = workspace.tiling().tree();
+            let tree = workspace.container_tree().arena();
             let key = tree.window_key(&window)?;
             tree.debug_node_sizing(key)
         })
@@ -103,7 +103,7 @@ fn moving_a_container_between_workspaces_keeps_all_node_identities() {
             .workspaces()
             .find_map(|(_, _, workspace)| workspace.has_window(&1).then_some(workspace))
             .expect("source workspace");
-        let tree = workspace.tiling().tree();
+        let tree = workspace.container_tree().arena();
         let first = tree.window_key(&1).expect("first source leaf");
         let second = tree.window_key(&2).expect("second source leaf");
         let container = tree.parent_of(first).expect("source container");
@@ -118,7 +118,7 @@ fn moving_a_container_between_workspaces_keeps_all_node_identities() {
         .workspaces()
         .find_map(|(_, _, workspace)| workspace.has_window(&1).then_some(workspace))
         .expect("target workspace");
-    let tree = workspace.tiling().tree();
+    let tree = workspace.container_tree().arena();
     assert_eq!(tree.window_key(&1), Some(first));
     assert_eq!(tree.window_key(&2), Some(second));
     assert_eq!(tree.parent_of(first), Some(container));
@@ -156,7 +156,7 @@ fn moving_a_container_to_an_empty_workspace_unwraps_it_like_sway() {
         "the empty workspace takes the arriving container's layout"
     );
     assert_snapshot!(
-        workspace.tiling().debug_tree().as_str(),
+        workspace.container_tree().debug_tree().as_str(),
         @"
     SplitV
       Window 1
@@ -199,7 +199,7 @@ fn assert_moving_window_out_of_workspace_group_moves_one(
     assert!(!source.has_window(&2));
     assert!(!target.has_window(&1));
 
-    let tab_bars = source.tiling().tree().tab_bar_layouts();
+    let tab_bars = source.container_tree().arena().tab_bar_layouts();
     assert_eq!(
         tab_bars.len(),
         1,
@@ -352,7 +352,7 @@ fn sticky_and_scratchpad_roundtrips_keep_node_identity() {
     layout.toggle_window_sticky(Some(&1));
     let sticky_key = layout
         .monitors()
-        .find_map(|monitor| monitor.sticky_space.tree().window_key(&1))
+        .find_map(|monitor| monitor.sticky_containers.arena().window_key(&1))
         .expect("sticky node");
     assert_eq!(sticky_key, key);
 
@@ -394,10 +394,10 @@ fn empty_workspace_layout_commands_do_not_wrap_next_open() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert_eq!(workspace.floating().tiles().count(), 0);
-    assert_eq!(workspace.tiling().tiles().count(), 1);
-    let tree = workspace.tiling().debug_tree();
+    assert_eq!(workspace.container_tree().tiles().count(), 1);
+    let tree = workspace.container_tree().debug_tree();
     assert!(
-        !workspace.tiling().has_containers(),
+        !workspace.container_tree().has_containers(),
         "open_window after empty-workspace layout commands should create a leaf root:\n{tree}",
     );
 }
@@ -439,7 +439,7 @@ fn empty_workspace_uses_workspace_command_context_like_sway() {
     );
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree().replace(" *", "");
+    let tree = workspace.container_tree().debug_tree().replace(" *", "");
     assert!(
         tree.starts_with("Tabbed\n"),
         "empty-workspace commands should persist and apply once tiling appears:\n{tree}",
@@ -466,13 +466,13 @@ fn top_level_leaf_layout_noops_when_matching_workspace_layout_like_sway() {
     let before = layout
         .active_workspace()
         .expect("active workspace")
-        .tiling()
+        .container_tree()
         .debug_tree();
     assert!(
         !layout
             .active_workspace()
             .expect("active workspace")
-            .tiling()
+            .container_tree()
             .has_containers(),
         "precondition: first tiling window should remain a leaf root:\n{before}",
     );
@@ -482,7 +482,7 @@ fn top_level_leaf_layout_noops_when_matching_workspace_layout_like_sway() {
     let after = layout
         .active_workspace()
         .expect("active workspace")
-        .tiling()
+        .container_tree()
         .debug_tree();
     assert_eq!(
         after, before,
@@ -509,13 +509,13 @@ fn top_level_leaf_toggle_split_uses_workspace_layout_state_like_sway() {
     let before = layout
         .active_workspace()
         .expect("active workspace")
-        .tiling()
+        .container_tree()
         .debug_tree();
     assert!(
         !layout
             .active_workspace()
             .expect("active workspace")
-            .tiling()
+            .container_tree()
             .has_containers(),
         "precondition: single top-level window should be a leaf root:\n{before}",
     );
@@ -523,7 +523,7 @@ fn top_level_leaf_toggle_split_uses_workspace_layout_state_like_sway() {
     layout.toggle_split_layout();
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let after = workspace.tiling().debug_tree().replace(" *", "");
+    let after = workspace.container_tree().debug_tree().replace(" *", "");
     // Measured against sway 1.11: `layout toggle split` on a lone window builds a splitv
     // container for it while the workspace keeps splith.
     assert_eq!(
@@ -559,7 +559,7 @@ fn workspace_toggle_split_uses_prev_split_layout_like_sway() {
     );
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree().replace(" *", "");
+    let tree = workspace.container_tree().debug_tree().replace(" *", "");
     assert!(
         tree.starts_with("SplitV\n"),
         "layout toggle split from tabbed workspace layout should restore previous split layout:\n{tree}",
@@ -626,7 +626,7 @@ fn workspace_node_selection_and_focus_child_return_to_the_active_child() {
         assert_eq!(workspace.debug_command_target(), "workspace");
         assert!(workspace.is_tiling_workspace_context_active());
         assert!(
-            !workspace.tiling().selected_is_container(),
+            !workspace.container_tree().selected_is_container(),
             "the workspace is its own node, not a hidden selected container",
         );
     }
@@ -636,7 +636,7 @@ fn workspace_node_selection_and_focus_child_return_to_the_active_child() {
     let workspace = layout.active_workspace().expect("active workspace");
     assert_eq!(workspace.debug_command_target(), "tiling_container");
     assert!(
-        workspace.tiling().selected_is_container(),
+        workspace.container_tree().selected_is_container(),
         "focus_child from workspace context should return to the remembered root child container",
     );
     assert_eq!(layout.close_window_ids_for_active_selection(), vec![2, 3]);
@@ -665,7 +665,7 @@ fn focus_parent_selection_has_visual_geometry_for_container_and_workspace() {
         assert_eq!(workspace.debug_command_target(), "tiling_container");
         assert!(
             workspace
-                .tiling()
+                .container_tree()
                 .debug_selection_visual_geometry()
                 .is_some(),
             "a selected container must produce the geometry for its focus-parent indicator",
@@ -678,7 +678,7 @@ fn focus_parent_selection_has_visual_geometry_for_container_and_workspace() {
     assert_eq!(workspace.debug_command_target(), "workspace");
     assert!(
         workspace
-            .tiling()
+            .container_tree()
             .debug_selection_visual_geometry()
             .is_some(),
         "the real workspace node must also produce focus-parent indicator geometry",
@@ -697,7 +697,7 @@ fn a_one_entry_layout_cycle_selects_that_entry_like_sway() {
         layout
             .workspaces()
             .find_map(|(_, _, workspace)| {
-                let tree = workspace.tiling().tree();
+                let tree = workspace.container_tree().arena();
                 let leaf = tree.window_key(&1)?;
                 tree.container_info(tree.parent_of(leaf)?)
             })
@@ -758,11 +758,11 @@ fn selected_floating_container_does_not_answer_for_the_tiled_side() {
     let workspace = layout.active_workspace().expect("active workspace");
     assert_eq!(workspace.debug_command_target(), "floating_container");
     assert!(
-        !workspace.tiling().selected_is_container(),
+        !workspace.container_tree().selected_is_container(),
         "a floating container is not a selected container of the tiled branch",
     );
     assert_eq!(
-        workspace.tiling().debug_selection_visual_geometry(),
+        workspace.container_tree().debug_selection_visual_geometry(),
         None,
         "the tiling pass must not draw a selection indicator for a floating container",
     );
@@ -1156,7 +1156,7 @@ fn open_right_of_on_different_workspace() {
         "the second workspace must remain active"
     );
     assert_eq!(
-        mon.workspaces[0].tiling().active_column_idx(),
+        mon.workspaces[0].container_tree().active_column_idx(),
         1,
         "the new window must become active"
     );
@@ -1197,7 +1197,7 @@ fn open_right_of_on_different_workspace_ewaf() {
         "the second workspace must remain active"
     );
     assert_eq!(
-        mon.workspaces[1].tiling().active_column_idx(),
+        mon.workspaces[1].container_tree().active_column_idx(),
         1,
         "the new window must become active"
     );
@@ -2415,7 +2415,7 @@ fn killing_workspace_selection_does_not_leave_new_windows_stuck_in_workspace_con
         // is trivially the workspace. What matters is that it does not survive the next
         // window, which the second half of this test checks.
         assert_eq!(workspace.debug_command_target(), "workspace");
-        assert!(!workspace.tiling().selected_is_container());
+        assert!(!workspace.container_tree().selected_is_container());
     }
 
     check_ops_on_layout(
@@ -2465,11 +2465,11 @@ fn layout_matching_workspace_on_top_level_leaf_keeps_workspace_root_implicit() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert!(
-        workspace.tiling().debug_root_is_workspace_node(),
+        workspace.container_tree().debug_root_is_workspace_node(),
         "layout matching workspace layout on a top-level leaf must stay in workspace context",
     );
 
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -2497,11 +2497,11 @@ fn layout_on_top_level_leaf_builds_a_wrapper_and_leaves_the_workspace_alone() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert!(
-        workspace.tiling().debug_root_is_workspace_node(),
+        workspace.container_tree().debug_root_is_workspace_node(),
         "the workspace root must stay implicit: the command was aimed at a window",
     );
 
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"

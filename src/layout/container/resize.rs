@@ -2,7 +2,7 @@
 
 use smithay::utils::{Logical, Point};
 
-use super::ContainerTree;
+use super::ContainerArena;
 use super::Layout;
 use super::LayoutElement;
 use super::NodeKey;
@@ -35,7 +35,7 @@ fn is_vertical(edge: ResizeEdge) -> bool {
     edge == ResizeEdge::TOP || edge == ResizeEdge::BOTTOM
 }
 
-impl<W: LayoutElement> ContainerTree<W> {
+impl<W: LayoutElement> ContainerArena<W> {
     /// Resolve the resize targets for a drag on `window`'s `edges`.
     ///
     /// Returns the edges that actually resolved to a target (a window with no resizable

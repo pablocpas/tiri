@@ -3,7 +3,7 @@
 use smithay::utils::Logical;
 use smithay::utils::Rectangle;
 
-use super::ContainerTree;
+use super::ContainerArena;
 use super::Layout;
 use super::LayoutElement;
 use super::NodeKey;
@@ -19,7 +19,7 @@ pub(super) struct PreviewContainer<'a> {
     pub(super) gap: f64,
 }
 
-impl<W: LayoutElement> ContainerTree<W> {
+impl<W: LayoutElement> ContainerArena<W> {
     pub(in crate::layout) fn preview_new_leaf_geometry(&self) -> Option<PreviewLeafGeometry> {
         let root_rect = self.layout_area();
         let root_key = self.root;

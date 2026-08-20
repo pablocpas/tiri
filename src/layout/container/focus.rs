@@ -1,12 +1,12 @@
 //! Focus and selection: state, queries and directional navigation.
 
-use super::ContainerTree;
+use super::ContainerArena;
 use super::Direction;
 use super::LayoutElement;
 use super::NodeData;
 use super::NodeKey;
 
-impl<W: LayoutElement> ContainerTree<W> {
+impl<W: LayoutElement> ContainerArena<W> {
     pub(in crate::layout) fn focused_leaf_targets_workspace_layout(&self) -> bool {
         self.effective_focused_key()
             .and_then(|key| self.parent_of(key))
@@ -581,7 +581,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// by the workspace.
     pub(in crate::layout) fn inactive_floating_window_id(&self) -> Option<W::Id> {
         self.seat.order().iter().find_map(|key| {
-            self.is_floating(*key)
+            self.is_in_floating_branch(*key)
                 .then(|| self.get_tile(*key))
                 .flatten()
                 .map(|tile| tile.window().id().clone())
@@ -596,7 +596,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// There is no floating-side focus cache to reconcile with either answer.
     pub(in crate::layout) fn active_floating_window_id(&self) -> Option<W::Id> {
         self.focused_key()
-            .filter(|key| self.is_floating(*key))
+            .filter(|key| self.is_in_floating_branch(*key))
             .and_then(|key| self.get_tile(key))
             .map(|tile| tile.window().id().clone())
             .or_else(|| self.inactive_floating_window_id())
@@ -657,7 +657,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 }
 
-impl<W: LayoutElement> ContainerTree<W> {
+impl<W: LayoutElement> ContainerArena<W> {
     /// A node and its ancestors, the node first — the order sway adds them to the seat in.
     pub(super) fn focus_chain(&self, key: NodeKey) -> Vec<NodeKey> {
         let mut chain = Vec::new();

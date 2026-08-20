@@ -36,6 +36,7 @@ use std::mem;
 use std::rc::Rc;
 use std::time::Duration;
 
+use container_tree::RootTilingSubtree;
 use legacy_column::{Column, ColumnWidth};
 use monitor::{InsertHint, InsertPosition, InsertWorkspace, MonitorAddWindowTarget};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
@@ -51,7 +52,6 @@ use tiri_config::{
     Config, CornerRadius, LayoutPart, PresetSize, Workspace as WorkspaceConfig, WorkspaceReference,
 };
 use tiri_ipc::{ColumnDisplay, LayoutTree, PositionChange, SizeChange, WindowLayout};
-use tree_space::RootTilingSubtree;
 use workspace::{WorkspaceAddWindowTarget, WorkspaceId, WorkspaceLifetime};
 
 use self::container::InsertParentInfo;
@@ -90,6 +90,7 @@ pub(crate) enum LayoutCycleEntry {
 
 pub mod closing_window;
 pub mod container;
+pub mod container_tree;
 pub mod floating;
 pub mod focus_ring;
 pub mod insert_hint_element;
@@ -101,7 +102,7 @@ pub mod shadow;
 pub mod tab_bar;
 pub mod tab_indicator;
 pub mod tile;
-pub mod tree_space;
+pub mod tiling_space;
 mod viewport;
 pub mod workspace;
 
@@ -1915,7 +1916,7 @@ impl<W: LayoutElement> Layout<W> {
                     // and sticky_floating are separate fields.
                     if let Some(tile) = mon
                         .sticky_floating
-                        .tiles_mut(&mut mon.sticky_space)
+                        .tiles_mut(&mut mon.sticky_containers)
                         .find(|tile| tile.window().is_wl_surface(wl_surface))
                     {
                         return Some((tile.window_mut(), Some(&mon.output)));

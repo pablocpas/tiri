@@ -1,7 +1,9 @@
 use insta::assert_snapshot;
 use proptest::prelude::*;
 
-use super::super::container::{ContainerData, ContainerTree, Direction, Layout as ContainerLayout};
+use super::super::container::{
+    ContainerArena, ContainerData, Direction, Layout as ContainerLayout,
+};
 use super::super::tile::Tile;
 use super::*;
 
@@ -23,17 +25,17 @@ fn removing_window_above_preserves_focused_window() {
     // Focus middle window and remove the window above it.
     check_ops_on_layout(&mut layout, [Op::FocusWindow(2)]);
     let workspace = layout.active_workspace().expect("active workspace");
-    assert_eq!(workspace.tiling().focused_window_id(), Some(2));
+    assert_eq!(workspace.container_tree().focused_window_id(), Some(2));
     check_ops_on_layout(&mut layout, [Op::CloseWindow(1)]);
     let workspace = layout.active_workspace().expect("active workspace");
     assert_eq!(
-        workspace.tiling().focused_window_id(),
+        workspace.container_tree().focused_window_id(),
         Some(2),
         "removing the window above should not move focus",
     );
 }
 pub(super) struct TreeHarness {
-    pub(super) tree: ContainerTree<TestWindow>,
+    pub(super) tree: ContainerArena<TestWindow>,
     options: Rc<Options>,
     clock: Clock,
     view_size: Size<f64, Logical>,
@@ -46,7 +48,7 @@ impl TreeHarness {
         let view_size = Size::from((800.0, 600.0));
         let working_area = Rectangle::from_size(view_size);
         let scale = 1.0;
-        let tree = ContainerTree::new(view_size, working_area, scale, options.clone());
+        let tree = ContainerArena::new(view_size, working_area, scale, options.clone());
         Self {
             tree,
             options,
@@ -550,7 +552,7 @@ fn move_right_enters_container_with_different_layout() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -581,7 +583,7 @@ fn move_right_escapes_to_grandparent_on_layout_mismatch() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -614,7 +616,7 @@ fn focus_descends_into_last_focused_child() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -650,7 +652,7 @@ fn preserve_explicit_same_layout_container_on_cleanup() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -683,7 +685,7 @@ fn a_container_leaves_nothing_behind_when_its_last_window_closes() {
     let workspace = layout.active_workspace().expect("active workspace");
     assert_eq!(workspace.debug_workspace_layout(), ContainerLayout::SplitH);
     assert_snapshot!(
-        workspace.tiling().debug_tree().as_str(),
+        workspace.container_tree().debug_tree().as_str(),
         @r"
     SplitH
       Window 2 *
@@ -712,7 +714,7 @@ fn cleanup_preserves_single_explicit_split_for_future_inserts() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -780,7 +782,7 @@ fn move_left_enters_single_child_container() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -809,7 +811,7 @@ fn move_right_swaps_with_sibling_in_same_layout() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -839,7 +841,7 @@ fn move_down_swaps_in_splitv() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -871,7 +873,7 @@ fn move_down_enters_container_with_different_layout() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -902,7 +904,7 @@ fn move_left_enters_container_with_different_layout() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -935,7 +937,7 @@ fn move_up_enters_container_with_different_layout() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -966,7 +968,7 @@ fn move_up_escapes_to_grandparent_on_layout_mismatch() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -998,7 +1000,7 @@ fn preserve_single_child_container_with_different_layout() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1029,7 +1031,7 @@ fn replace_single_child_container_with_same_layout() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1083,7 +1085,7 @@ fn move_left_swaps_in_tabbed_layout() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1114,7 +1116,7 @@ fn split_inside_tabbed_creates_nested_split() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1236,7 +1238,7 @@ fn toggle_split_layout_switches_orientation() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1261,7 +1263,7 @@ fn sway_112_layout_flattens_a_doubly_nested_lone_container_once() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1417,7 +1419,7 @@ fn toggle_layout_all_cycles_through_all_layouts() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1447,7 +1449,7 @@ fn move_down_swaps_in_stacked_layout() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1520,7 +1522,7 @@ fn move_left_at_edge_is_noop() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1549,7 +1551,7 @@ fn move_up_at_an_edge_crosses_the_workspace() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1574,7 +1576,7 @@ fn split_on_empty_workspace_applies_to_next_window() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert_snapshot!(
-        workspace.tiling().debug_tree().as_str(),
+        workspace.container_tree().debug_tree().as_str(),
         @r"
     SplitV
       Window 1 *
@@ -1591,7 +1593,7 @@ fn split_on_empty_workspace_applies_to_next_window() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert_snapshot!(
-        workspace.tiling().debug_tree().as_str(),
+        workspace.container_tree().debug_tree().as_str(),
         @"
     SplitV
       Window 1
@@ -1639,7 +1641,7 @@ fn layout_persists_after_last_window_closed() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert_snapshot!(
-        workspace.tiling().debug_tree().as_str(),
+        workspace.container_tree().debug_tree().as_str(),
         @"
     SplitV
       Window 2
@@ -1687,7 +1689,7 @@ fn split_on_single_window_persists_after_close() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert_eq!(workspace.debug_workspace_layout(), ContainerLayout::SplitV);
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @r"
@@ -1711,7 +1713,7 @@ fn split_parallel_with_siblings_wraps_focused_leaf_horizontal() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1738,7 +1740,7 @@ fn split_parallel_with_siblings_wraps_focused_leaf_vertical() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1800,7 +1802,7 @@ fn move_right_out_of_a_single_child_container_lands_where_it_was() {
         Op::MoveColumnRight,
     ]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1837,7 +1839,7 @@ fn move_left_out_of_a_single_child_container_lands_where_it_was() {
         Op::MoveColumnLeft,
     ]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1871,7 +1873,7 @@ fn move_out_of_explicit_parallel_split_preserves_container_for_reentry() {
         Op::MoveColumnRight,
     ]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let after_move_out = workspace.tiling().debug_tree();
+    let after_move_out = workspace.container_tree().debug_tree();
     assert_snapshot!(
         after_move_out.as_str(),
         @"
@@ -1885,7 +1887,7 @@ fn move_out_of_explicit_parallel_split_preserves_container_for_reentry() {
     );
     check_ops_on_layout(&mut layout, [Op::MoveColumnLeft]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let after_move_back = workspace.tiling().debug_tree();
+    let after_move_back = workspace.container_tree().debug_tree();
     assert_snapshot!(
         after_move_back.as_str(),
         @"
@@ -1928,13 +1930,13 @@ fn focus_parent_child_roundtrip_in_nested_splitv() {
         Op::FocusWindow(3),
     ]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree_before = workspace.tiling().debug_tree();
+    let tree_before = workspace.container_tree().debug_tree();
     // Go up to parent (SplitV container)
     check_ops_on_layout(&mut layout, [Op::FocusParent]);
     // Go back down to child (should return to window 3)
     check_ops_on_layout(&mut layout, [Op::FocusChild]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree_after = workspace.tiling().debug_tree();
+    let tree_after = workspace.container_tree().debug_tree();
     // Tree should be the same (window 3 still focused)
     assert_eq!(tree_before.as_str(), tree_after.as_str());
 }
@@ -1982,7 +1984,7 @@ fn floating_a_subtree_keeps_its_identity() {
         .window_key(&1)
         .expect("the window should be in the tree");
 
-    assert!(!harness.tree.is_floating(key));
+    assert!(!harness.tree.is_in_floating_branch(key));
     let box_of_its_own = Rectangle::new(Point::from((100.0, 50.0)), Size::from((300.0, 200.0)));
     let floating_root = harness
         .tree
@@ -1995,7 +1997,7 @@ fn floating_a_subtree_keeps_its_identity() {
     harness.tree.verify_invariants();
 
     assert!(
-        harness.tree.is_floating(key),
+        harness.tree.is_in_floating_branch(key),
         "the node should now be on the floating side",
     );
     assert_eq!(
@@ -2022,7 +2024,7 @@ fn floating_a_subtree_keeps_its_identity() {
         Some(key),
         "and the same key on the way back",
     );
-    assert!(!harness.tree.is_floating(key));
+    assert!(!harness.tree.is_in_floating_branch(key));
     assert!(harness.tree.floating_roots().next().is_none());
     harness.tree.layout();
     harness.tree.verify_invariants();

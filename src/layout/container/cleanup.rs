@@ -6,14 +6,14 @@
 //! `workspace_squash` only after a directional move. A container left holding one child by
 //! a `close` therefore stays, and the identical shape reached by a `move` does not.
 
+use super::ContainerArena;
 use super::ContainerData;
-use super::ContainerTree;
 use super::Layout;
 use super::LayoutElement;
 use super::NodeData;
 use super::NodeKey;
 
-impl<W: LayoutElement> ContainerTree<W> {
+impl<W: LayoutElement> ContainerArena<W> {
     /// sway's `container_reap_empty`: destroy a container the command has emptied, and any
     /// ancestor it empties in turn.
     ///

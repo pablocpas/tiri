@@ -2208,7 +2208,7 @@ fn single_leaf_stacked_layout_wraps_immediately() {
     // workspace keeps its orientation. The workspace is not what becomes stacked — only a
     // command aimed at the workspace itself does that.
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree().replace(" *", "");
+    let tree = workspace.container_tree().debug_tree().replace(" *", "");
     assert_eq!(
         tree.trim_end(),
         "SplitH\n  Stacked\n    Window 1",
@@ -2237,7 +2237,7 @@ fn repeated_layout_split_on_nested_single_child_split_is_noop() {
     // Measured against sway 1.11: one splitv container under the workspace, no matter how
     // many times the layout is restated. Repeating a layout never nests.
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree().replace(" *", "");
+    let tree = workspace.container_tree().debug_tree().replace(" *", "");
     assert_eq!(
         tree.trim_end(),
         "SplitH\n  SplitV\n    Window 1",
@@ -2268,7 +2268,7 @@ fn layout_splith_on_single_child_preserved_split_stays_flat() {
 
     {
         let workspace = layout.active_workspace().expect("active workspace");
-        let tree = workspace.tiling().debug_tree().replace(" *", "");
+        let tree = workspace.container_tree().debug_tree().replace(" *", "");
         assert_eq!(
             tree.trim_end(),
             "SplitH\n  Window 1\n  SplitH\n    Window 2",
@@ -2279,7 +2279,7 @@ fn layout_splith_on_single_child_preserved_split_stays_flat() {
     layout.set_layout_mode(ContainerLayout::SplitH);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree().replace(" *", "");
+    let tree = workspace.container_tree().debug_tree().replace(" *", "");
     assert_eq!(
         tree.trim_end(),
         "SplitH\n  Window 1\n  SplitH\n    Window 2",
@@ -2418,7 +2418,7 @@ fn tiling_focus_parent_on_root_inserts_new_window_as_sibling() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree().replace(" *", "");
+    let tree = workspace.container_tree().debug_tree().replace(" *", "");
     assert!(
         tree.contains("SplitH\n  Stacked\n    Window 1\n    Window 2\n    Window 3\n  Window 4")
             || tree.contains(
@@ -2451,7 +2451,7 @@ fn focus_left_wraps_within_split_container_like_sway() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert_eq!(layout.focus().map(|win| *win.id()), Some(3));
     assert!(
         tree.contains("Window 3 *"),

@@ -487,12 +487,12 @@ fn interactive_move_restore_to_floating_animates_horizontal_view() {
 
     // Window 1 should now be removed from the workspace (in the interactive move state).
     // Window 2 should be the only window in the tiling space.
-    let tiling = layout.active_workspace().unwrap().tiling();
+    let tiling = layout.active_workspace().unwrap().container_tree();
     assert_eq!(tiling.tiles().count(), 1);
     assert!(tiling.tiles().next().unwrap().window().id() == &2);
 
     // In tiri, this path does not currently trigger a follow-up tiling animation.
-    assert!(!tiling.are_animations_ongoing());
+    assert!(!layout.active_workspace().unwrap().are_animations_ongoing());
 }
 
 #[test]
@@ -573,7 +573,7 @@ fn unfullscreen_preserves_view_pos() {
     let mut layout = check_ops(ops);
 
     // View pos is looking at the first window.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling().view_pos(), @"0");
+    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 
     let ops = [
         Op::FullscreenWindow(2),
@@ -583,7 +583,7 @@ fn unfullscreen_preserves_view_pos() {
     check_ops_on_layout(&mut layout, ops);
 
     // View pos = width of first window + gap.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling().view_pos(), @"0");
+    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 
     let ops = [
         Op::FullscreenWindow(2),
@@ -593,7 +593,7 @@ fn unfullscreen_preserves_view_pos() {
     check_ops_on_layout(&mut layout, ops);
 
     // View pos is back to showing the first window.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling().view_pos(), @"0");
+    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 }
 
 #[test]
@@ -619,7 +619,7 @@ fn unfullscreen_of_tabbed_preserves_view_pos() {
     let mut layout = check_ops(ops);
 
     // View pos is looking at the first window.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling().view_pos(), @"0");
+    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 
     let ops = [
         Op::FullscreenWindow(2),
@@ -630,7 +630,7 @@ fn unfullscreen_of_tabbed_preserves_view_pos() {
     check_ops_on_layout(&mut layout, ops);
 
     // View pos = width of first window + gap.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling().view_pos(), @"0");
+    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 
     let ops = [
         Op::FullscreenWindow(3),
@@ -640,13 +640,13 @@ fn unfullscreen_of_tabbed_preserves_view_pos() {
     check_ops_on_layout(&mut layout, ops);
 
     // View pos is still on the second column because the second tile hasn't unfullscreened yet.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling().view_pos(), @"0");
+    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 
     let ops = [Op::Communicate(2), Op::CompleteAnimations];
     check_ops_on_layout(&mut layout, ops);
 
     // View pos is back to showing the first window.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling().view_pos(), @"0");
+    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 }
 
 #[test]
@@ -672,7 +672,7 @@ fn unfullscreen_of_tabbed_via_change_to_normal_preserves_view_pos() {
     let mut layout = check_ops(ops);
 
     // View pos is looking at the first window.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling().view_pos(), @"0");
+    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 
     let ops = [
         Op::FullscreenWindow(2),
@@ -683,7 +683,7 @@ fn unfullscreen_of_tabbed_via_change_to_normal_preserves_view_pos() {
     check_ops_on_layout(&mut layout, ops);
 
     // View pos = width of first window + gap.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling().view_pos(), @"0");
+    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 
     let ops = [
         Op::SetColumnDisplay(ColumnDisplay::Normal),
@@ -693,13 +693,13 @@ fn unfullscreen_of_tabbed_via_change_to_normal_preserves_view_pos() {
     check_ops_on_layout(&mut layout, ops);
 
     // View pos is still on the second column because the second tile hasn't unfullscreened yet.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling().view_pos(), @"0");
+    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 
     let ops = [Op::Communicate(2), Op::CompleteAnimations];
     check_ops_on_layout(&mut layout, ops);
 
     // View pos is back to showing the first window.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling().view_pos(), @"0");
+    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 }
 
 #[test]
@@ -720,7 +720,7 @@ fn removing_only_fullscreen_tile_updates_horizontal_view() {
     let mut layout = check_ops(ops);
 
     // View pos with gap.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling().view_pos(), @"0");
+    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 
     let ops = [
         Op::FullscreenWindow(2),
@@ -731,7 +731,7 @@ fn removing_only_fullscreen_tile_updates_horizontal_view() {
     check_ops_on_layout(&mut layout, ops);
 
     // View pos without gap because we went fullscreen.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling().view_pos(), @"0");
+    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 
     let ops = [
         Op::FullscreenWindow(2),
@@ -742,7 +742,7 @@ fn removing_only_fullscreen_tile_updates_horizontal_view() {
     check_ops_on_layout(&mut layout, ops);
 
     // View pos without gap because other tile is still fullscreen.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling().view_pos(), @"0");
+    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 
     let ops = [
         // Expel the fullscreen window from the column, changing the column to non-fullscreen.
@@ -753,7 +753,7 @@ fn removing_only_fullscreen_tile_updates_horizontal_view() {
 
     // View pos should include gap now that the column is no longer fullscreen.
     // FIXME: currently, removing a tile doesn't cause the horizontal view to update.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling().view_pos(), @"0");
+    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 }
 
 #[test]
@@ -790,9 +790,9 @@ fn fullscreen_directional_focus_stays_on_active_window_like_sway() {
     );
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert!(
-        workspace.tiling().focused_window_id() == Some(3),
+        workspace.container_tree().focused_window_id() == Some(3),
         "focus should remain on the fullscreen window after directional focus:\n{tree}"
     );
 }
@@ -834,7 +834,7 @@ fn fullscreen_command_keeps_a_selected_container_as_the_authority() {
     check_ops_on_layout(&mut layout, [Op::ToggleFullscreenFocused]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().tree();
+    let tree = workspace.container_tree().arena();
     let authority = tree.fullscreen_key().expect("fullscreen authority");
 
     assert!(
@@ -971,9 +971,9 @@ fn floating_fullscreen_container_uses_the_same_render_and_input_scope() {
             "a floating container must cover exclusive layers just like a tiled one",
         );
 
-        let tree = workspace.tiling().tree();
+        let tree = workspace.container_tree().arena();
         let authority = tree.fullscreen_key().expect("fullscreen authority");
-        assert!(tree.is_floating(authority));
+        assert!(tree.is_in_floating_branch(authority));
         assert!(tree.get_tile(authority).is_none());
         assert_eq!(tree.tiles_in_branch(authority).len(), 2);
 
@@ -1016,7 +1016,11 @@ fn floating_fullscreen_container_uses_the_same_render_and_input_scope() {
 
     check_ops_on_layout(&mut layout, [Op::ToggleFullscreenFocused]);
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.tiling().tree().fullscreen_key().is_none());
+    assert!(workspace
+        .container_tree()
+        .arena()
+        .fullscreen_key()
+        .is_none());
     assert_eq!(layout.close_window_ids_for_active_selection(), vec![2, 3]);
 }
 
@@ -1045,9 +1049,9 @@ fn fullscreen_targets_the_container_created_by_floating_the_workspace() {
     check_ops_on_layout(&mut layout, [Op::ToggleFullscreenFocused]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().tree();
+    let tree = workspace.container_tree().arena();
     let authority = tree.fullscreen_key().expect("fullscreen authority");
-    assert!(tree.is_floating(authority));
+    assert!(tree.is_in_floating_branch(authority));
     assert!(tree.get_tile(authority).is_none());
     assert_eq!(tree.tiles_in_branch(authority).len(), 2);
     assert!(workspace.render_above_top_layer());
@@ -1056,8 +1060,8 @@ fn fullscreen_targets_the_container_created_by_floating_the_workspace() {
     assert!(layout
         .active_workspace()
         .expect("active workspace")
-        .tiling()
-        .tree()
+        .container_tree()
+        .arena()
         .fullscreen_key()
         .is_none(),);
 }
@@ -1111,13 +1115,13 @@ fn fullscreen_focus_parent_is_noop_like_sway() {
         "focus_parent should not enter workspace context while fullscreen is active"
     );
     assert!(
-        !workspace.tiling().selected_is_container(),
+        !workspace.container_tree().selected_is_container(),
         "focus_parent should not select a tiling container while fullscreen is active"
     );
 
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert!(
-        workspace.tiling().focused_window_id() == Some(3),
+        workspace.container_tree().focused_window_id() == Some(3),
         "focus should remain on the fullscreen window after focus_parent:\n{tree}"
     );
 }
@@ -1140,7 +1144,7 @@ fn fullscreen_focus_parent_can_select_the_fullscreen_owner() {
     let workspace = layout.active_workspace().expect("active workspace");
     assert_eq!(layout.focus().map(|win| *win.id()), Some(1));
     assert_eq!(workspace.debug_command_target(), "tiling_container");
-    assert!(workspace.tiling().selected_is_container());
+    assert!(workspace.container_tree().selected_is_container());
 }
 #[test]
 fn fullscreen_open_window_does_not_steal_focus_like_sway() {
@@ -1177,9 +1181,9 @@ fn fullscreen_open_window_does_not_steal_focus_like_sway() {
     );
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().debug_tree();
+    let tree = workspace.container_tree().debug_tree();
     assert!(
-        workspace.tiling().focused_window_id() == Some(3),
+        workspace.container_tree().focused_window_id() == Some(3),
         "focus should remain on fullscreen window after opening a new tiling window:\n{tree}"
     );
 }

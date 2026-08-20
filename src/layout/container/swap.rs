@@ -12,11 +12,11 @@
 //! [`LayoutParentData::swap_child_slots`]. Two commands, two rules, and the difference is
 //! observable the moment the two slots are not the same size.
 
-use super::ContainerTree;
+use super::ContainerArena;
 use super::LayoutElement;
 use super::NodeKey;
 
-impl<W: LayoutElement> ContainerTree<W> {
+impl<W: LayoutElement> ContainerArena<W> {
     /// Exchange the places of two nodes, and their shares with them.
     ///
     /// Returns whether anything moved. The refusals are sway's, plus one of tiri's own:

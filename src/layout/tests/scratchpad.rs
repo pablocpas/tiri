@@ -584,8 +584,8 @@ fn space_root(layout: &Layout<TestWindow>) -> crate::layout::container::NodeKey 
     layout
         .active_workspace()
         .expect("active workspace")
-        .tiling()
-        .tree()
+        .container_tree()
+        .arena()
         .workspace_root()
 }
 
@@ -595,8 +595,8 @@ fn tiled_window_rects(
     layout
         .active_workspace()
         .expect("active workspace")
-        .tiling()
-        .tree()
+        .container_tree()
+        .arena()
         .leaf_layouts()
         .iter()
         .filter(|info| info.branch == space_root(layout))
@@ -688,7 +688,7 @@ fn a_shown_scratchpad_window_has_a_size() {
     layout.update_render_elements(None);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.tiling().tree();
+    let tree = workspace.container_tree().arena();
     let key = tree
         .window_key(&3)
         .expect("the scratchpad window is mapped");
@@ -729,7 +729,7 @@ fn a_hidden_scratchpad_window_is_laid_out_while_it_is_hidden() {
         "the hidden window is on the scratchpad workspace"
     );
 
-    let tree = scratchpad.tiling().tree();
+    let tree = scratchpad.container_tree().arena();
     let key = tree.window_key(&2).expect("hidden window is in the arena");
     let root = tree.branch_root(key);
     let area = tree
@@ -764,7 +764,7 @@ fn hiding_a_tiled_window_gives_it_half_the_width_and_three_quarters_of_the_heigh
     layout.update_render_elements(None);
 
     let scratchpad = layout.scratchpad_for_test();
-    let working_area = scratchpad.tiling().parent_area().size;
+    let working_area = scratchpad.container_tree().parent_area().size;
     let tile = scratchpad
         .tiles()
         .find(|tile| tile.window().id() == &2)

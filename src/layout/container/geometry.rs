@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use smithay::utils::{Logical, Point, Rectangle, Size};
 use smithay::wayland::compositor::{Blocker, BlockerState};
 
-use super::{ContainerTree, Layout, LayoutElement, LeafLayoutInfo, NodeData, NodeKey};
+use super::{ContainerArena, Layout, LayoutElement, LeafLayoutInfo, NodeData, NodeKey};
 use crate::layout::tab_bar::tab_bar_row_height;
 use crate::layout::tile::Tile;
 use crate::utils::transaction::{Transaction, TransactionBlocker};
@@ -70,7 +70,7 @@ struct LayoutRequest {
     size: Size<i32, Logical>,
 }
 
-impl<W: LayoutElement> ContainerTree<W> {
+impl<W: LayoutElement> ContainerArena<W> {
     /// Calculate and apply layout to the tree.
     pub(in crate::layout) fn layout(&mut self) {
         self.layout_with_resize_animation(true);
@@ -516,7 +516,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Keep a leaf's node box when tree surgery changes how its parent decorates it.
     ///
     /// A leaf directly under tabs is the awkward representation boundary in tiri: the
-    /// cached rectangle is its content box, while [`ContainerTree::node_geometry`] answers
+    /// cached rectangle is its content box, while [`ContainerArena::node_geometry`] answers
     /// with the whole pending box sway keeps on the container. If `cmd_layout` flattens that
     /// parent and then finds that the surviving layout already has the requested value, it
     /// does not arrange. sway's box nevertheless stays whole; only the tab decoration that
@@ -723,7 +723,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// anything for a floating container, so a group of windows floated together sits flush
     /// however the workspace is configured.
     pub(super) fn gap_in(&self, key: NodeKey) -> f64 {
-        if self.is_floating(key) {
+        if self.is_in_floating_branch(key) {
             0.0
         } else {
             self.options.layout.gaps

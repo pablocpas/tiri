@@ -18,8 +18,8 @@
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use super::{
-    ContainerData, ContainerTree, FloatingGeometry, InactiveTilingReference, Layout, LayoutElement,
-    NodeData, NodeKey,
+    ContainerArena, ContainerData, FloatingGeometry, InactiveTilingReference, Layout,
+    LayoutElement, NodeData, NodeKey,
 };
 use crate::layout::tile::Tile;
 use crate::layout::SizeFrac;
@@ -97,7 +97,7 @@ impl FloatingGeometry {
     }
 }
 
-impl<W: LayoutElement> ContainerTree<W> {
+impl<W: LayoutElement> ContainerArena<W> {
     /// Floating roots discovered from their own root state.
     ///
     /// Stacking belongs to `FloatingSpace`; the tree deliberately has no parallel root list.
@@ -207,12 +207,13 @@ impl<W: LayoutElement> ContainerTree<W> {
             .is_some_and(|container| container.floating_geometry.is_some())
     }
 
-    /// Whether a node is floating, which in sway is a question about ancestry.
+    /// Whether a node belongs to one of the workspace's floating branches.
     ///
-    /// `container_is_floating` walks up to the top and asks which of the workspace's two lists
-    /// the topmost ancestor is in. Same here: a node is floating when the root of its branch
-    /// is one of the floating ones.
-    pub(in crate::layout) fn is_floating(&self, key: NodeKey) -> bool {
+    /// This is sway's `container_is_floating_or_child`: walk to the top-level ancestor and ask
+    /// whether that ancestor is one of the workspace's floating roots. Keep it distinct from
+    /// `is_floating_root`, because commands such as directional move treat a floating root and
+    /// one of its descendants differently.
+    pub(in crate::layout) fn is_in_floating_branch(&self, key: NodeKey) -> bool {
         self.is_floating_root(self.branch_root(key))
     }
 
@@ -273,7 +274,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     ) -> bool {
         if key == self.root
             || !matches!(self.get_node(key), Some(NodeData::Container(_)))
-            || self.is_floating(key)
+            || self.is_in_floating_branch(key)
         {
             return false;
         }
@@ -470,7 +471,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         reference: Option<&InactiveTilingReference>,
         focus: bool,
     ) -> Option<bool> {
-        if !self.is_floating(key) {
+        if !self.is_in_floating_branch(key) {
             return None;
         }
         let group = self.branch_root(key);

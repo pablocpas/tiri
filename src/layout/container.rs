@@ -328,7 +328,7 @@ pub struct ContainerData<W: LayoutElement> {
 /// older transaction may replace that cache while a newer compositor target still has to be
 /// requested. `resize_base_size` similarly records a client-observed size without overwriting
 /// the newer target. They are different meanings, but they live together on the root that owns
-/// both rather than being coordinated across `ContainerTree` and `FloatingSpace`.
+/// both rather than being coordinated across `ContainerArena` and `FloatingSpace`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct FloatingGeometry {
     pos: Point<f64, SizeFrac>,
@@ -469,9 +469,9 @@ impl ParentStore {
     }
 }
 
-/// Root container tree for a workspace
+/// Stable node arena and topology backing a workspace's shared container tree.
 #[derive(Debug)]
-pub struct ContainerTree<W: LayoutElement> {
+pub(super) struct ContainerArena<W: LayoutElement> {
     /// Nodes currently belonging to this workspace.
     nodes: NodeStore<W>,
     /// Parent pointer for each node (None for root)
@@ -825,10 +825,10 @@ impl<W: LayoutElement> DetachedNode<W> {
 }
 
 // ============================================================================
-// ContainerTree Implementation
+// ContainerArena Implementation
 // ============================================================================
 
-impl<W: LayoutElement> ContainerTree<W> {
+impl<W: LayoutElement> ContainerArena<W> {
     /// Create a new empty container tree
     pub(super) fn new(
         view_size: Size<f64, Logical>,
