@@ -952,6 +952,11 @@ impl<W: LayoutElement> TreeSpace<W> {
         &self.options
     }
 
+    /// True while a configure this space sent is still unanswered.
+    pub fn has_pending_layouts(&self) -> bool {
+        self.tree.has_pending_layouts()
+    }
+
     pub fn verify_invariants(&self) {
         self.tree.verify_invariants();
     }

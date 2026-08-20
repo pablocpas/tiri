@@ -341,6 +341,39 @@ debug {
 }
 ```
 
+### `verify-layout-invariants`
+
+<sup>Since: next release</sup>
+
+After every event-loop iteration that touched the layout, check every structural invariant the
+layout tree is supposed to hold — one fullscreen window per workspace, unique workspace ids and
+names, options synchronized between the layout and each monitor, tile sizes rounded to whole
+physical pixels, and the rest.
+
+The checks describe a layout **at rest**, so they are skipped while any window still owes tiri
+an answer to a configure. Mid-transaction the tree legitimately holds states the invariants
+reject — a split whose child fractions have not been renormalized yet, for one — and checking
+there reports the compositor working correctly as a failure. This is the same condition the
+test suite verifies under, where every check follows the client commits and the animations.
+
+**A violation aborts the session with the failed assertion.** That is the point: the useful
+output is which invariant broke and the backtrace that reached it, and a compositor that carries
+a corrupt tree forward turns one bug into a session of unexplainable ones. Do not leave this on
+in a session you are not prepared to lose.
+
+The test suite runs the same checks after every operation. This flag exists for the bugs the
+suite cannot reach — the ones that need a real client, a real output being hotplugged, or a
+configure arriving at an awkward moment.
+
+The check walks the whole tree, so it costs real time on every layout change. It is off by
+default and it is not free.
+
+```kdl
+debug {
+    verify-layout-invariants
+}
+```
+
 ### `disable-frame-scheduling`
 
 Disables frame scheduling, a latency optimization that only applies on the TTY backend with fixed-refresh (non-VRR) outputs.

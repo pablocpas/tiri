@@ -2546,7 +2546,6 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     /// The layout-wide history owns scopes only; node focus is verified by each workspace.
-    #[cfg(test)]
     fn verify_seat_focus(&self) {
         assert!(
             self.seat_focus.len() <= self.seat_focus.max_len(),
@@ -3542,8 +3541,19 @@ impl<W: LayoutElement> Layout<W> {
         compute_overview_zoom(&self.options, progress)
     }
 
-    #[cfg(test)]
-    fn verify_invariants(&self) {
+    /// True while any workspace is still waiting on a configure it sent.
+    pub(crate) fn has_pending_layouts(&self) -> bool {
+        self.workspaces().any(|(_, _, ws)| ws.has_pending_layouts())
+    }
+
+    /// Assert every structural invariant the layout is supposed to hold.
+    ///
+    /// Panics on the first violation, by design: the interesting output is the assertion and
+    /// the state that reached it, and a compositor that carries a broken tree forward turns
+    /// one bug into a session of unexplainable ones. The test suite runs this after every op;
+    /// `debug { verify-layout-invariants; }` runs it in a live session, where the classes of
+    /// bug that only a real client can produce actually live.
+    pub(crate) fn verify_invariants(&self) {
         use std::collections::HashSet;
 
         use approx::assert_abs_diff_eq;

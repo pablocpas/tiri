@@ -3379,7 +3379,11 @@ impl<W: LayoutElement> Workspace<W> {
         self.space.debug_workspace_layout()
     }
 
-    #[cfg(test)]
+    /// True while a configure this workspace sent is still unanswered.
+    pub fn has_pending_layouts(&self) -> bool {
+        self.space.has_pending_layouts()
+    }
+
     pub fn verify_invariants(&self, move_win_id: Option<&W::Id>) {
         use approx::assert_abs_diff_eq;
 

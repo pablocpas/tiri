@@ -85,12 +85,10 @@ impl<WindowId: Clone + PartialEq> SeatFocusStack<WindowId> {
         }
     }
 
-    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.stack_mru.len()
     }
 
-    #[cfg(test)]
     pub fn max_len(&self) -> usize {
         self.max_len
     }

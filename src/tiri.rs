@@ -1120,6 +1120,26 @@ impl State {
             let _span = tracy_client::span!("State::refresh::refresh_a11y");
             self.niri.refresh_a11y();
         }
+
+        // Last, and only when the layout was touched: this is the point in the iteration
+        // where everything else has had its say.
+        //
+        // The pending gate is not an optimization. The invariants describe a layout at rest,
+        // and mid-transaction the tree holds states they reject — a split whose child
+        // fractions have not been renormalized yet, for one. Without the gate a burst of
+        // actions faster than the clients answer their configures reports the compositor
+        // working correctly as a failure. The test suite checks under the same condition:
+        // every `verify_invariants` there follows the client commits.
+        //
+        // Off by default: it walks the whole tree and panics on the first violation. See
+        // `debug { verify-layout-invariants; }` in the wiki.
+        if refresh.contains(RefreshFlags::LAYOUT)
+            && !self.niri.layout.has_pending_layouts()
+            && self.niri.config.borrow().debug.verify_layout_invariants
+        {
+            let _span = tracy_client::span!("State::refresh::verify_layout_invariants");
+            self.niri.layout.verify_invariants();
+        }
     }
 
     fn notify_blocker_cleared(&mut self) {

@@ -708,7 +708,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
             .position(|container| container.root == root)
     }
 
-    #[cfg(test)]
     fn contains(&self, space: &TreeSpace<W>, id: &W::Id) -> bool {
         self.idx_of(space, id).is_some()
     }
@@ -3309,7 +3308,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
         Some(tree.debug_branch(self.containers[idx].root))
     }
 
-    #[cfg(test)]
     pub fn verify_invariants(&self, space: &TreeSpace<W>) {
         use std::collections::HashSet;
 
