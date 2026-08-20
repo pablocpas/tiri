@@ -3349,13 +3349,6 @@ impl<W: LayoutElement> Layout<W> {
         workspace.set_column_display(display);
     }
 
-    pub fn center_column(&mut self) {
-        let Some(workspace) = self.active_workspace_mut() else {
-            return;
-        };
-        workspace.center_column();
-    }
-
     pub fn center_window(&mut self, id: Option<&W::Id>) {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if id.is_none() || id == Some(move_.tile.window().id()) {
@@ -3385,13 +3378,6 @@ impl<W: LayoutElement> Layout<W> {
             return;
         };
         workspace.center_window(id);
-    }
-
-    pub fn center_visible_columns(&mut self) {
-        let Some(workspace) = self.active_workspace_mut() else {
-            return;
-        };
-        workspace.center_visible_columns();
     }
 
     pub fn focus(&self) -> Option<&W> {

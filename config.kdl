@@ -591,8 +591,7 @@ binds {
     Mod+F { fullscreen-window; }
 
     Mod+Ctrl+F { expand-column-to-available-width; }
-    Mod+C { center-column; }
-    Mod+Ctrl+C { center-visible-columns; }
+    Mod+C { center-window; }
 
     // Resize commands. These keep Mod held down, avoiding plain Ctrl+Arrow
     // conflicts with applications.

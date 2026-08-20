@@ -239,10 +239,8 @@ fn action_refresh_impact(action: &Action) -> ActionRefreshImpact {
         | Action::SwapWindowWithId(..)
         | Action::ToggleColumnTabbedDisplay
         | Action::SetColumnDisplay(..)
-        | Action::CenterColumn
         | Action::CenterWindow
         | Action::CenterWindowById(..)
-        | Action::CenterVisibleColumns
         | Action::FocusWorkspaceDown
         | Action::FocusWorkspaceDownUnderMouse
         | Action::FocusWorkspaceUp
@@ -2062,10 +2060,6 @@ impl State {
                     self.niri.layout.toggle_window_height(Some(&window), false);
                 }
             }
-            Action::CenterColumn => {
-                self.niri.layout.center_column();
-                self.niri.queue_redraw_active_output();
-            }
             Action::CenterWindow => {
                 self.niri.layout.center_window(None);
                 self.niri.queue_redraw_active_output();
@@ -2077,10 +2071,6 @@ impl State {
                     self.niri.layout.center_window(Some(&window));
                     self.niri.queue_redraw_window_by_id(id);
                 }
-            }
-            Action::CenterVisibleColumns => {
-                self.niri.layout.center_visible_columns();
-                self.niri.queue_redraw_active_output();
             }
             Action::FocusMonitorLeft => {
                 if let Some(output) = self.niri.output_left() {

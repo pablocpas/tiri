@@ -243,11 +243,9 @@ pub enum Action {
     SwapWindowWithId(u64),
     ToggleColumnTabbedDisplay,
     SetColumnDisplay(#[knuffel(argument, str)] ColumnDisplay),
-    CenterColumn,
     CenterWindow,
     #[knuffel(skip)]
     CenterWindowById(u64),
-    CenterVisibleColumns,
     FocusWorkspaceDown,
     #[knuffel(skip)]
     FocusWorkspaceDownUnderMouse,
@@ -618,10 +616,8 @@ impl From<tiri_ipc::Action> for Action {
             tiri_ipc::Action::ToggleColumnTabbedDisplay {} => Self::ToggleColumnTabbedDisplay,
             tiri_ipc::Action::SetColumnDisplay { display } => Self::SetColumnDisplay(display),
             tiri_ipc::Action::ToggleLayoutAll {} => Self::ToggleLayoutAll,
-            tiri_ipc::Action::CenterColumn {} => Self::CenterColumn,
             tiri_ipc::Action::CenterWindow { id: None } => Self::CenterWindow,
             tiri_ipc::Action::CenterWindow { id: Some(id) } => Self::CenterWindowById(id),
-            tiri_ipc::Action::CenterVisibleColumns {} => Self::CenterVisibleColumns,
             tiri_ipc::Action::FocusWorkspaceDown {} => Self::FocusWorkspaceDown,
             tiri_ipc::Action::FocusWorkspaceUp {} => Self::FocusWorkspaceUp,
             tiri_ipc::Action::FocusWorkspace { reference } => {

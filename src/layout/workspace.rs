@@ -2036,20 +2036,17 @@ impl<W: LayoutElement> Workspace<W> {
         );
     }
 
-    pub fn center_column(&mut self) {
-        self.dispatch_active_layer(|f, tree| f.center_window(tree, None), |t| t.center_column());
-    }
-
+    /// sway's `move position center`, which is a floating-layer command.
+    ///
+    /// A tiled window has no position to set — it fills the slot its container gives it — so
+    /// the tiling half is inert rather than inventing a meaning for centering inside a tree.
+    /// sway says the same thing by refusing `move position` on a tiled container.
     pub fn center_window(&mut self, id: Option<&W::Id>) {
         self.dispatch_for_window(
             id,
             |f, tree| f.center_window(tree, id),
             |t| t.center_window(id),
         );
-    }
-
-    pub fn center_visible_columns(&mut self) {
-        self.dispatch_active_layer(|_, _| {}, |t| t.center_visible_columns());
     }
 
     pub fn toggle_width(&mut self, forwards: bool) {

@@ -2538,3 +2538,45 @@ fn a_lone_float_is_never_focused_inactive() {
     // drops straight to unfocused however recently it was focused.
     assert_eq!(decorations[&2], Decoration::Unfocused);
 }
+
+/// `move position center` is a floating-layer command; a tiled window has no position.
+///
+/// sway refuses it outright — "Cannot move tiled container by position". tiri accepts the
+/// action and does nothing, because the same binding has to keep working when the focus
+/// moves to a floating window. This pins the "nothing" half: without it, the inert branch in
+/// `TreeSpace::center_window` looks like an unfinished stub and invites someone to invent a
+/// meaning for centering a window inside a tree.
+#[test]
+fn centering_a_tiled_window_does_nothing() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::CompleteAnimations,
+    ]);
+
+    let before = [tile_rect(&layout, 1), tile_rect(&layout, 2)];
+
+    check_ops_on_layout(
+        &mut layout,
+        [
+            Op::CenterWindow { id: Some(1) },
+            Op::CenterWindow { id: None },
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::CompleteAnimations,
+        ],
+    );
+
+    let after = [tile_rect(&layout, 1), tile_rect(&layout, 2)];
+    assert_eq!(
+        before, after,
+        "centering moved a tiled window; it has no position of its own to set"
+    );
+}

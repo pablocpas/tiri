@@ -576,10 +576,9 @@ binds {
     // Makes the column "fill the rest of the space".
     Mod+Ctrl+F { expand-column-to-available-width; }
 
-    Mod+C { center-column; }
-
-    // Center all fully visible columns on screen.
-    Mod+Ctrl+C { center-visible-columns; }
+    // Centre a floating window in the working area. Tiled windows fill the slot their
+    // container gives them, so this does nothing to them.
+    Mod+C { center-window; }
 
     // Finer width adjustments.
     // This command can also:

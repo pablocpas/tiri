@@ -599,12 +599,10 @@ enum Op {
     ),
     ToggleColumnTabbedDisplay,
     SetColumnDisplay(#[proptest(strategy = "arbitrary_column_display()")] ColumnDisplay),
-    CenterColumn,
     CenterWindow {
         #[proptest(strategy = "proptest::option::of(1..=5usize)")]
         id: Option<usize>,
     },
-    CenterVisibleColumns,
     FocusWorkspaceDown,
     FocusWorkspaceUp,
     FocusWorkspace(#[proptest(strategy = "0..=4usize")] usize),
@@ -1327,12 +1325,10 @@ impl Op {
             }
             Op::ToggleColumnTabbedDisplay => layout.toggle_column_tabbed_display(),
             Op::SetColumnDisplay(display) => layout.set_column_display(display),
-            Op::CenterColumn => layout.center_column(),
             Op::CenterWindow { id } => {
                 let id = id.filter(|id| layout.has_window(id));
                 layout.center_window(id.as_ref());
             }
-            Op::CenterVisibleColumns => layout.center_visible_columns(),
             Op::FocusWorkspaceDown => layout.switch_workspace_down(),
             Op::FocusWorkspaceUp => layout.switch_workspace_up(),
             Op::FocusWorkspace(idx) => layout.switch_workspace(idx),
@@ -2613,7 +2609,6 @@ fn operations_dont_panic() {
         Op::MoveColumnRightOrToMonitorRight(1),
         Op::ConsumeWindowIntoColumn,
         Op::ExpelWindowFromColumn,
-        Op::CenterColumn,
         Op::FocusWorkspaceDown,
         Op::FocusWorkspaceUp,
         Op::FocusWorkspace(1),
@@ -2786,7 +2781,6 @@ fn operations_from_starting_state_dont_panic() {
         Op::MoveColumnRightOrToMonitorRight(1),
         Op::ConsumeWindowIntoColumn,
         Op::ExpelWindowFromColumn,
-        Op::CenterColumn,
         Op::FocusWorkspaceDown,
         Op::FocusWorkspaceUp,
         Op::FocusWorkspace(1),

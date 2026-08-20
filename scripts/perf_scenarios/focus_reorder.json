@@ -44,11 +44,6 @@
     },
     {
       "kind": "action",
-      "name": "CenterColumn",
-      "label": "center_column"
-    },
-    {
-      "kind": "action",
       "name": "MoveColumnToLast",
       "label": "move_to_last"
     },

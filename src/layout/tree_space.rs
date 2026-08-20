@@ -3400,11 +3400,13 @@ impl<W: LayoutElement> TreeSpace<W> {
         }
     }
 
-    // No-ops: centering only makes sense with a scrolling viewport; in the i3 model the
-    // viewport is fixed and every root child is always fully visible.
-    pub fn center_column(&mut self) {}
+    /// Inert: a tiled window has no position of its own to centre.
+    ///
+    /// It fills the slot its container hands it, so there is nothing here to move without
+    /// inventing a meaning for centering inside a tree. sway says this by refusing `move
+    /// position` on a tiled container; tiri says it by doing nothing, which
+    /// `centering_a_tiled_window_does_nothing` pins.
     pub fn center_window(&mut self, _window: Option<&W::Id>) {}
-    pub fn center_visible_columns(&mut self) {}
 
     pub fn expand_column_to_available_width(&mut self) {
         let Some(idx) = self.tree.focused_root_index() else {

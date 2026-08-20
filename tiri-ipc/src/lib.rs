@@ -690,9 +690,10 @@ pub enum Action {
     },
     /// Cycle focused container layout: split horizontal -> split vertical -> stacked -> tabbed.
     ToggleLayoutAll {},
-    /// Center the focused column on the screen.
-    CenterColumn {},
     /// Center a window on the screen.
+    ///
+    /// Only floating windows can be positioned; on a tiled window this does nothing, the
+    /// way sway refuses `move position` outside the floating layer.
     #[cfg_attr(
         feature = "clap",
         clap(about = "Center the focused window on the screen")
@@ -704,8 +705,6 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg(long))]
         id: Option<u64>,
     },
-    /// Center all fully visible columns on the screen.
-    CenterVisibleColumns {},
     /// Focus the workspace below.
     FocusWorkspaceDown {},
     /// Focus the workspace above.
