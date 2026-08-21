@@ -14,8 +14,8 @@ use tiri_ipc::{
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::container::{
-    floating_position_from_logical, scale_floating_position, Direction, InactiveTilingReference,
-    InsertParentInfo, Layout, NodeKey, TabBarInfo,
+    floating_position_from_logical, scale_floating_position, Direction, FloatingRootKind,
+    InactiveTilingReference, InsertParentInfo, Layout, NodeKey, TabBarInfo,
 };
 use super::container_tree::{percent_from_size_change, ContainerTree, LeafFrameInfo, TileConfig};
 use super::focus_ring::{
@@ -54,17 +54,12 @@ pub const DIRECTIONAL_MOVE_PX: f64 = 10.;
 
 /// The floating side of a workspace: sway's `ws->floating`, and what tiri hangs off it.
 ///
-/// The groups themselves live in the workspace's container tree, so this side owns no nodes.
-/// A container crossing between the two lists is a move, not a reconstruction, so its key —
-/// and its place in the seat's order — survives the crossing the way it does in sway.
+/// The groups, their geometry and their stacking order live in one authoritative collection
+/// inside the workspace's container tree. This side owns only transient interaction/render
+/// state. A container crossing between lists is a move, not a reconstruction, so its key and
+/// its place in the seat's order survive the crossing the way they do in sway.
 #[derive(Debug)]
 pub struct FloatingSpace<W: LayoutElement> {
-    /// Floating groups in top-to-bottom order.
-    containers: Vec<FloatingContainer>,
-
-    /// Next floating container id.
-    next_container_id: u64,
-
     /// Ongoing interactive resize.
     interactive_resize: Option<InteractiveResize<W>>,
 
@@ -84,29 +79,6 @@ niri_render_elements! {
     }
 }
 
-/// One floating group: which branch of the workspace tree it is, and where it sits.
-#[derive(Debug)]
-struct FloatingContainer {
-    id: u64,
-    /// The branch's root — sway's entry in `ws->floating`.
-    root: NodeKey,
-    /// Provenance as of creation. Read it through [`FloatingSpace::root_kind`], which
-    /// promotes an implicit root the tree has since made addressable.
-    kind: FloatingRootKind,
-}
-
-/// Semantic provenance of a floating root.
-///
-/// A one-window group is the window: sway floats a view as itself and publishes it as a
-/// window, so there is no container to report. The other two variants are real containers that
-/// sway also publishes, even when they contain only one window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FloatingRootKind {
-    ImplicitWindowGroup,
-    FloatedContainer,
-    WorkspaceWrapper,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FloatingResizeAnchor {
     Center,
@@ -114,10 +86,6 @@ enum FloatingResizeAnchor {
 }
 
 impl FloatingRootKind {
-    fn is_workspace_wrapper(self) -> bool {
-        self == Self::WorkspaceWrapper
-    }
-
     fn ipc(self) -> LayoutTreeFloatingRootKind {
         match self {
             Self::ImplicitWindowGroup => LayoutTreeFloatingRootKind::ImplicitWindowGroup,
@@ -143,25 +111,21 @@ pub(super) enum FloatingResizeResult<WId> {
 
 /// All tiles across the floating containers, in container order.
 fn floating_tile_iter<'a, W: LayoutElement>(
-    floating: &'a FloatingSpace<W>,
     containers: &'a ContainerTree<W>,
 ) -> impl Iterator<Item = &'a Tile<W>> + 'a {
     let tree = containers.arena();
-    floating
-        .containers
-        .iter()
-        .flat_map(|container| tree.tiles_in_branch(container.root))
+    tree.floating_roots()
+        .flat_map(|root| tree.tiles_in_branch(root))
 }
 
 /// All tiles across the floating containers (mutable), in container order.
 fn floating_tile_iter_mut<'a, W: LayoutElement>(
-    floating: &'a mut FloatingSpace<W>,
     containers: &'a mut ContainerTree<W>,
 ) -> impl Iterator<Item = &'a mut Tile<W>> + 'a {
-    let keys: Vec<NodeKey> = floating
-        .containers
-        .iter()
-        .flat_map(|container| containers.arena().leaf_keys_in_branch(container.root))
+    let keys: Vec<NodeKey> = containers
+        .arena()
+        .floating_roots()
+        .flat_map(|root| containers.arena().leaf_keys_in_branch(root))
         .collect();
     containers
         .arena_mut()
@@ -232,16 +196,25 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     pub fn new() -> Self {
         Self {
-            containers: Vec::new(),
-            next_container_id: 1,
             interactive_resize: None,
             closing_windows: Vec::new(),
             render_layout_scratch: Vec::new(),
         }
     }
 
+    fn root(containers: &ContainerTree<W>, idx: usize) -> NodeKey {
+        containers
+            .arena()
+            .floating_root_at(idx)
+            .expect("floating index must name an authoritative root entry")
+    }
+
+    fn root_count(containers: &ContainerTree<W>) -> usize {
+        containers.arena().floating_root_count()
+    }
+
     fn container_area(&self, containers: &ContainerTree<W>, idx: usize) -> Rectangle<f64, Logical> {
-        let root = self.containers[idx].root;
+        let root = Self::root(containers, idx);
         containers
             .arena()
             .floating_container_area(root)
@@ -254,9 +227,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
         idx: usize,
         logical_pos: Point<f64, Logical>,
     ) -> Point<f64, Logical> {
+        let root = Self::root(containers, idx);
         containers
             .arena_mut()
-            .set_floating_logical_pos(self.containers[idx].root, logical_pos)
+            .set_floating_logical_pos(root, logical_pos)
     }
 
     fn set_container_size(
@@ -265,9 +239,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
         idx: usize,
         size: Size<f64, Logical>,
     ) -> Rectangle<f64, Logical> {
-        containers
-            .arena_mut()
-            .set_floating_size(self.containers[idx].root, size)
+        let root = Self::root(containers, idx);
+        containers.arena_mut().set_floating_size(root, size)
     }
 
     pub fn update_config(
@@ -278,9 +251,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
         scale: f64,
         options: Rc<Options>,
     ) {
+        let roots: Vec<_> = containers.arena().floating_roots().collect();
         let tree = containers.arena_mut();
-        for container in &self.containers {
-            tree.update_floating_working_area(container.root, working_area);
+        for root in roots {
+            tree.update_floating_working_area(root, working_area);
         }
         tree.layout();
 
@@ -335,17 +309,15 @@ impl<W: LayoutElement> FloatingSpace<W> {
             containers.arena_mut().layout();
         }
         let mut layouts = std::mem::take(&mut self.render_layout_scratch);
-        for container in &mut self.containers {
+        let roots: Vec<_> = containers.arena().floating_roots().collect();
+        for root in roots {
             layouts.clear();
             {
                 let _span =
                     tracy_client::span!("FloatingSpace::project_display_layouts_for_render");
                 layouts.extend(
-                    super::container_tree::branch_display_layouts(
-                        containers.arena(),
-                        container.root,
-                    )
-                    .map(LeafFrameInfo::from),
+                    super::container_tree::branch_display_layouts(containers.arena(), root)
+                        .map(LeafFrameInfo::from),
                 );
             }
             #[cfg(feature = "profile-with-tracy")]
@@ -358,7 +330,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             // compared against each other. Only when the float holds a real sub-layout does
             // sway recurse into `render_container`, and then the per-level rule applies to the
             // windows inside it as it would anywhere else.
-            let float_has_sublayout = containers.arena().window_count_in_branch(container.root) > 1;
+            let float_has_sublayout = containers.arena().window_count_in_branch(root) > 1;
             for info in layouts.iter().copied() {
                 let is_focus_head =
                     float_has_sublayout && containers.arena().is_focus_head(info.key);
@@ -411,14 +383,14 @@ impl<W: LayoutElement> FloatingSpace<W> {
         &'a self,
         containers: &'a ContainerTree<W>,
     ) -> impl Iterator<Item = &'a Tile<W>> + 'a {
-        floating_tile_iter(self, containers)
+        floating_tile_iter(containers)
     }
 
     pub fn tiles_mut<'a>(
         &'a mut self,
         containers: &'a mut ContainerTree<W>,
     ) -> impl Iterator<Item = &'a mut Tile<W>> + 'a {
-        floating_tile_iter_mut(self, containers)
+        floating_tile_iter_mut(containers)
     }
 
     pub fn tiles_with_offsets<'a>(
@@ -427,10 +399,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
     ) -> impl Iterator<Item = (&'a Tile<W>, Point<f64, Logical>)> + 'a {
         let tree = containers.arena();
         let mut tiles = Vec::new();
-        for container in &self.containers {
-            for info in
-                super::container_tree::branch_display_layouts(containers.arena(), container.root)
-            {
+        for root in tree.floating_roots() {
+            for info in super::container_tree::branch_display_layouts(containers.arena(), root) {
                 if let Some(tile) = tree.get_tile(info.key) {
                     tiles.push((tile, info.rect.loc));
                 }
@@ -450,15 +420,14 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
 
         let scale = Scale::from(containers.scale());
-        for container in &self.containers {
+        for root in tree.floating_roots() {
             let container_area = tree
-                .floating_container_area(container.root)
+                .floating_container_area(root)
                 .expect("every floating stack entry must name a floating root");
-            let gap = containers.branch_gap(container.root);
-            let tab_bar_infos = tree.tab_bar_layouts_in_branch(container.root);
-            for info in
-                super::container_tree::branch_display_layouts(containers.arena(), container.root)
-                    .filter(|info| info.visible)
+            let gap = containers.branch_gap(root);
+            let tab_bar_infos = tree.tab_bar_layouts_in_branch(root);
+            for info in super::container_tree::branch_display_layouts(containers.arena(), root)
+                .filter(|info| info.visible)
             {
                 let Some(tile) = tree.get_tile(info.key) else {
                     continue;
@@ -535,10 +504,9 @@ impl<W: LayoutElement> FloatingSpace<W> {
     ) -> impl Iterator<Item = (&'a Tile<W>, Point<f64, Logical>)> + 'a {
         let tree = containers.arena();
         let mut tiles = Vec::new();
-        for container in &self.containers {
-            for info in
-                super::container_tree::branch_display_layouts(containers.arena(), container.root)
-                    .filter(|info| info.visible)
+        for root in tree.floating_roots() {
+            for info in super::container_tree::branch_display_layouts(containers.arena(), root)
+                .filter(|info| info.visible)
             {
                 if let Some(tile) = tree.get_tile(info.key) {
                     tiles.push((tile, info.rect.loc));
@@ -554,10 +522,9 @@ impl<W: LayoutElement> FloatingSpace<W> {
     ) -> impl Iterator<Item = (&'a mut Tile<W>, Point<f64, Logical>)> + 'a {
         let mut keys = Vec::new();
         let mut locs = Vec::new();
-        for container in &self.containers {
-            for info in
-                super::container_tree::branch_display_layouts(containers.arena(), container.root)
-            {
+        let roots: Vec<_> = containers.arena().floating_roots().collect();
+        for root in roots {
+            for info in super::container_tree::branch_display_layouts(containers.arena(), root) {
                 keys.push(info.key);
                 locs.push(info.rect.loc);
             }
@@ -590,9 +557,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
     ) -> Option<(&'a W, super::HitType)> {
         // A 1px pad makes the floating bar's edges forgiving to hit: next to them is the
         // desktop, not another window.
-        self.containers
-            .iter()
-            .find_map(|container| containers.branch_tab_bar_hit(container.root, pos, 1))
+        containers
+            .arena()
+            .floating_roots()
+            .find_map(|root| containers.branch_tab_bar_hit(root, pos, 1))
     }
 
     pub fn window_under<'a>(
@@ -722,9 +690,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let tree = containers.arena();
         let key = tree.window_key(id)?;
         let root = tree.branch_root(key);
-        self.containers
-            .iter()
-            .position(|container| container.root == root)
+        tree.floating_root_index(root)
     }
 
     fn contains(&self, containers: &ContainerTree<W>, id: &W::Id) -> bool {
@@ -758,14 +724,14 @@ impl<W: LayoutElement> FloatingSpace<W> {
     }
 
     fn selected_is_container_in(&self, containers: &ContainerTree<W>, idx: usize) -> bool {
-        containers.selected_container_in(self.containers[idx].root)
+        containers.selected_container_in(Self::root(containers, idx))
     }
 
     /// The node a command targets inside container `idx`: its root when the whole floating
     /// wrapper is selected, otherwise the tree's own selection.
     fn selected_key_in(&self, containers: &ContainerTree<W>, idx: usize) -> Option<NodeKey> {
         let tree = containers.arena();
-        tree.branch_position(self.containers[idx].root)
+        tree.branch_position(Self::root(containers, idx))
     }
 
     fn tile_at_mut<'a>(
@@ -804,8 +770,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
             .is_some_and(|key| tree.is_in_floating_branch(key))
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.containers.is_empty()
+    pub fn is_empty(&self, containers: &ContainerTree<W>) -> bool {
+        containers.arena().floating_root_count() == 0
     }
 
     pub fn set_fullscreen(
@@ -891,12 +857,13 @@ impl<W: LayoutElement> FloatingSpace<W> {
         self.selected_is_container_in(containers, idx)
     }
 
+    #[cfg(test)]
     pub(super) fn active_wrapper_selected(&self, containers: &ContainerTree<W>) -> bool {
         let tree = containers.arena();
         let Some(idx) = self.active_container_idx(containers) else {
             return false;
         };
-        tree.selected_container_key() == Some(self.containers[idx].root)
+        tree.selected_container_key() == Some(Self::root(containers, idx))
     }
 
     pub(super) fn close_window_ids_for_active_selection(
@@ -906,20 +873,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let Some(idx) = self.active_container_idx(containers) else {
             return Vec::new();
         };
-        containers.close_window_ids_in_branch(self.containers[idx].root)
-    }
-
-    pub(super) fn select_wrapper_for_window(
-        &self,
-        containers: &mut ContainerTree<W>,
-        id: &W::Id,
-    ) -> bool {
-        let Some(idx) = self.idx_of(containers, id) else {
-            return false;
-        };
-        containers
-            .arena_mut()
-            .select_container(self.containers[idx].root)
+        containers.close_window_ids_in_branch(Self::root(containers, idx))
     }
 
     pub fn clear_selection_context(&self, containers: &mut ContainerTree<W>) {
@@ -944,11 +898,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
         // can a remembered position be restored into a group that is now one window: there is
         // no container there to hold two.
         if let Some((container_id, Some(insert_info))) = hint {
-            if let Some(idx) = self
-                .containers
-                .iter()
-                .position(|container| container.id == container_id)
-                .filter(|idx| !containers.branch_root_is_lone_window(self.containers[*idx].root))
+            if let Some(idx) = containers
+                .arena()
+                .floating_root_index_by_id(container_id)
+                .filter(|idx| !containers.branch_root_is_lone_window(Self::root(containers, *idx)))
             {
                 self.add_tile_to_container_idx_with_parent_info(
                     containers,
@@ -1080,10 +1033,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
         };
 
         // Make sure the tile isn't inserted below its parent.
-        for (i, container) in self.containers.iter().enumerate().take(idx) {
+        let roots: Vec<_> = containers.arena().floating_roots().take(idx).collect();
+        for (i, root) in roots.into_iter().enumerate() {
             if containers
                 .arena_mut()
-                .windows_in_branch(container.root)
+                .windows_in_branch(root)
                 .iter()
                 .any(|parent| tile.window().is_child_of(parent))
             {
@@ -1100,7 +1054,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             });
         let rect = Rectangle::new(pos, tile_size);
 
-        let (root, leaf) = containers.arena_mut().float_new_group(tile, rect);
+        let (_root, leaf) = containers.arena_mut().float_new_group(tile, rect, idx);
         // `workspace->fullscreen` names the node on whichever list it lives.
         if maps_fullscreen && containers.arena().fullscreen_key().is_none() {
             containers.arena_mut().set_fullscreen_key(Some(leaf));
@@ -1110,14 +1064,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
         containers.arena_mut().layout();
 
-        let container = FloatingContainer {
-            id: self.next_container_id,
-            root,
-            kind: FloatingRootKind::ImplicitWindowGroup,
-        };
-        self.next_container_id += 1;
-
-        self.containers.insert(idx, container);
         self.bring_up_descendants_of(containers, idx);
     }
 
@@ -1156,7 +1102,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     ) -> bool {
         let config = containers.tile_config();
         let (win_id, _) = Self::prepare_tile_for_floating(&config, &mut tile);
-        let root = self.containers[idx].root;
+        let root = Self::root(containers, idx);
         if containers.arena_mut().selected_container_key() == Some(root) {
             let insert_idx = containers.arena_mut().branch_children_len(root);
             containers
@@ -1167,7 +1113,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 .arena_mut()
                 .insert_window_into_branch(root, tile, activate);
         }
-        containers.arena_mut().layout();
+        // Sway's view-map path arranges the new view's parent, not the workspace. That is
+        // observable when this group contains workspace fullscreen: a workspace arrange
+        // stops at the fullscreen owner, while `arrange_container(root)` still lays out the
+        // complete floating group in its ordinary box.
+        containers.arena_mut().layout_container_subtree(root);
 
         if activate {
             self.activate_window(containers, &win_id);
@@ -1187,23 +1137,15 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let config = containers.tile_config();
         let (win_id, _) = Self::prepare_tile_for_floating(&config, &mut tile);
 
-        let root = self.containers[idx].root;
+        let root = Self::root(containers, idx);
         let _ = containers
             .arena_mut()
             .insert_leaf_with_parent_info(root, info, tile, activate);
-        containers.arena_mut().layout();
+        containers.arena_mut().layout_container_subtree(root);
 
         if activate {
             self.activate_window(containers, &win_id);
         }
-    }
-
-    pub(super) fn active_container_allows_splits(&self, containers: &ContainerTree<W>) -> bool {
-        let tree = containers.arena();
-        let Some(_idx) = self.active_container_idx(containers) else {
-            return false;
-        };
-        tree.focused_container_allows_splits()
     }
 
     /// Whether the window named here sits in a container a new sibling can join.
@@ -1271,8 +1213,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
         containers: &mut ContainerTree<W>,
         key: NodeKey,
         mut rect: Rectangle<f64, Logical>,
-        activate: bool,
-        focus: Option<&W::Id>,
         workspace_floated: bool,
     ) -> bool {
         let config = containers.tile_config();
@@ -1300,11 +1240,13 @@ impl<W: LayoutElement> FloatingSpace<W> {
                     prepared_leaf = Some((key, None));
                     preserved_fullscreen_leaf = true;
                 } else {
-                    if tile.floating_window_size.is_none() {
-                        let size = tile.window().natural_size();
-                        tile.floating_window_size =
-                            Some(Self::floating_constraints(&config, tile, size));
-                    }
+                    // `container_set_floating(true)` always runs Sway's natural-size pass for
+                    // a view. A previous floating resize is pending geometry, not persistent
+                    // restore state: after returning through tiled, enabling floating starts
+                    // from the client's natural size again.
+                    let size = tile.window().natural_size();
+                    tile.floating_window_size =
+                        Some(Self::floating_constraints(&config, tile, size));
                     let (_, requested) = Self::prepare_tile_for_floating(&config, tile);
                     prepared_leaf = Some((key, requested));
                 }
@@ -1323,14 +1265,27 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
 
         let area = rect;
-        let root = if workspace_floated {
-            containers.arena_mut().float_whole_workspace(area)
+        let kind = if workspace_floated {
+            FloatingRootKind::WorkspaceWrapper
+        } else if prepared_leaf.is_some() {
+            FloatingRootKind::ImplicitWindowGroup
         } else {
-            containers.arena_mut().float_as_group(key, area)
+            FloatingRootKind::FloatedContainer
+        };
+        let root = if workspace_floated {
+            containers.arena_mut().float_whole_workspace(area, 0)
+        } else {
+            containers.arena_mut().float_as_group(key, area, 0, kind)
         };
         let Some(root) = root else {
             return false;
         };
+
+        // `container_floating_resize_and_center` writes the new root's pending box
+        // immediately, for a view and for a container alike. A different fullscreen branch
+        // can make the following workspace arrange skip this floating branch; its descendants
+        // then keep their old boxes, but the root itself already reports this one.
+        containers.arena_mut().set_node_geometry(root, area);
 
         let keys = containers.arena_mut().leaf_keys_in_branch(root);
         for key in keys {
@@ -1355,39 +1310,21 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 }
             }
         }
-        if activate {
-            if let Some(id) = focus {
-                containers.arena_mut().focus_window_by_id(id);
-            }
-        }
         containers.arena_mut().layout();
 
-        let container = FloatingContainer {
-            id: self.next_container_id,
-            root,
-            kind: if workspace_floated {
-                FloatingRootKind::WorkspaceWrapper
-            } else if prepared_leaf.is_some() {
-                FloatingRootKind::ImplicitWindowGroup
-            } else {
-                FloatingRootKind::FloatedContainer
-            },
-        };
-        self.next_container_id += 1;
-
-        self.containers.insert(0, container);
         self.bring_up_descendants_of(containers, 0);
         true
     }
 
-    fn bring_up_descendants_of(&mut self, containers: &ContainerTree<W>, idx: usize) {
+    fn bring_up_descendants_of(&mut self, containers: &mut ContainerTree<W>, idx: usize) {
         let tree = containers.arena();
-        let base_windows = tree.windows_in_branch(self.containers[idx].root);
+        let roots: Vec<_> = tree.floating_roots().collect();
+        let base_windows = tree.windows_in_branch(roots[idx]);
         let mut seen_windows = base_windows;
         let mut descendants: Vec<usize> = Vec::new();
 
-        for (i, container_below) in self.containers.iter().enumerate().skip(idx + 1).rev() {
-            let windows = tree.windows_in_branch(container_below.root);
+        for (i, root_below) in roots.iter().enumerate().skip(idx + 1).rev() {
+            let windows = tree.windows_in_branch(*root_below);
             if windows
                 .iter()
                 .any(|win| seen_windows.iter().any(|parent| win.is_child_of(parent)))
@@ -1400,7 +1337,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let mut idx = idx;
         #[allow(clippy::explicit_counter_loop)]
         for descendant_idx in descendants.into_iter().rev() {
-            self.raise_container(descendant_idx, idx);
+            self.raise_container(containers, descendant_idx, idx);
             idx += 1;
         }
     }
@@ -1424,19 +1361,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
         id: &W::Id,
         reference: Option<&InactiveTilingReference>,
         as_workspace: bool,
-        focus: bool,
     ) -> bool {
         let Some(idx) = self.idx_of(containers, id) else {
             return false;
         };
-        let root = self.containers[idx].root;
-        if containers
-            .arena()
-            .fullscreen_key()
-            .is_some_and(|key| containers.arena().is_descendant(key, root))
-        {
-            containers.arena_mut().set_fullscreen_key(None);
-        }
+        let root = Self::root(containers, idx);
 
         if let Some(resize) = &self.interactive_resize {
             if self.idx_of(containers, &resize.window) == Some(idx) {
@@ -1448,18 +1377,17 @@ impl<W: LayoutElement> FloatingSpace<W> {
             Self::store_floating_size_for_restore(tile);
         }
         let changed = if as_workspace {
-            containers.arena_mut().unfloat_as_workspace(root, focus)
+            containers.arena_mut().unfloat_as_workspace(root)
         } else if let Some(reference) = reference {
             containers
                 .arena_mut()
-                .unfloat_with_tiling_reference(root, reference, focus)
+                .unfloat_with_tiling_reference(root, reference)
         } else {
-            containers.arena_mut().unfloat_into_workspace(root, focus)
+            containers.arena_mut().unfloat_into_workspace(root)
         };
         if !changed {
             return false;
         }
-        self.containers.remove(idx);
         containers.arena_mut().layout();
 
         true
@@ -1470,7 +1398,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
         containers: &mut ContainerTree<W>,
         id: &W::Id,
         reference: Option<&InactiveTilingReference>,
-        focus: bool,
     ) -> bool {
         let Some(idx) = self.idx_of(containers, id) else {
             return false;
@@ -1478,27 +1405,19 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let Some(key) = containers.arena_mut().window_key(id) else {
             return false;
         };
-        if containers.arena().window_owns_fullscreen(id) {
-            // Clear the workspace pointer before the node crosses branches so the arrange below
-            // computes its tiled geometry, not another fullscreen frame that no longer has an
-            // owner after this operation.
-            containers.arena_mut().set_fullscreen_key(None);
-        }
         let pos = containers
             .arena()
-            .floating_position(self.containers[idx].root)
+            .floating_position(Self::root(containers, idx))
             .expect("every floating stack entry must name a floating root");
         if let Some(tile) = containers.arena_mut().get_tile_mut(key) {
             Self::store_floating_size_for_restore(tile);
             tile.floating_pos = Some(pos);
             tile.set_scratchpad(false);
         }
-        let Some(group_empty) = containers.arena_mut().unfloat_node(key, reference, focus) else {
+        let Some(group_empty) = containers.arena_mut().unfloat_node(key, reference) else {
             return false;
         };
-        if group_empty {
-            self.containers.remove(idx);
-        }
+        let _ = group_empty;
         containers.arena_mut().layout();
         if self
             .interactive_resize
@@ -1517,7 +1436,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         self.active_window_id(containers)
             .as_ref()
             .and_then(|id| self.idx_of(containers, id))
-            .is_some_and(|idx| self.containers[idx].kind.is_workspace_wrapper())
+            .is_some_and(|idx| containers.arena().floating_root_is_workspace_wrapper(idx))
     }
 
     fn remove_tile_from_container(
@@ -1526,11 +1445,15 @@ impl<W: LayoutElement> FloatingSpace<W> {
         idx: usize,
         id: &W::Id,
     ) -> RemovedTile<W> {
+        let root = Self::root(containers, idx);
         let container_pos = containers
             .arena()
-            .floating_position(self.containers[idx].root)
+            .floating_position(root)
             .expect("every floating stack entry must name a floating root");
-        let container_id = self.containers[idx].id;
+        let container_id = containers
+            .arena()
+            .floating_root_id_at(idx)
+            .expect("floating index must have a stable reinsertion id");
         let insert_hint = containers.arena().insert_parent_info_for_window(id);
         let mut tile = containers
             .arena_mut()
@@ -1544,12 +1467,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             }
         }
 
-        if containers
-            .arena()
-            .window_count_in_branch(self.containers[idx].root)
-            == 0
-        {
-            let root = self.containers.remove(idx).root;
+        if containers.arena().window_count_in_branch(root) == 0 {
             containers.arena_mut().forget_floating_root(root);
         }
 
@@ -1616,7 +1534,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return false;
         };
 
-        self.raise_container(idx, 0);
+        self.raise_container(containers, idx, 0);
         self.bring_up_descendants_of(containers, 0);
         containers.arena_mut().clear_selection();
         let _ = containers.arena_mut().focus_window_by_id(id);
@@ -1624,11 +1542,14 @@ impl<W: LayoutElement> FloatingSpace<W> {
         true
     }
 
-    fn raise_container(&mut self, from_idx: usize, to_idx: usize) {
+    fn raise_container(
+        &mut self,
+        containers: &mut ContainerTree<W>,
+        from_idx: usize,
+        to_idx: usize,
+    ) {
         assert!(to_idx <= from_idx);
-
-        let container = self.containers.remove(from_idx);
-        self.containers.insert(to_idx, container);
+        assert!(containers.arena_mut().move_floating_root(from_idx, to_idx));
     }
 
     pub fn start_close_animation_for_tile(
@@ -1803,14 +1724,24 @@ impl<W: LayoutElement> FloatingSpace<W> {
         } else {
             containers.working_area().size.h
         };
-        let current_area = self.container_area(containers, idx);
+        let root = Self::root(containers, idx);
+        // sway edits the floating container's current pending box. While that same root owns
+        // workspace fullscreen, the current box is output-sized rather than the saved
+        // pre-fullscreen floating box.
+        let current_area = if containers.arena().fullscreen_key() == Some(root) {
+            containers
+                .arena()
+                .node_geometry(root)
+                .unwrap_or_else(|| self.container_area(containers, idx))
+        } else {
+            self.container_area(containers, idx)
+        };
         let current = if is_width {
             current_area.size.w
         } else {
             current_area.size.h
         };
 
-        const MAX_PX: f64 = 100000.;
         const MAX_F: f64 = 10000.;
 
         let current_px = current.round().clamp(0.0, i32::MAX as f64) as i32;
@@ -1828,7 +1759,14 @@ impl<W: LayoutElement> FloatingSpace<W> {
             }
         }
         .round()
-        .clamp(1., MAX_PX);
+        .clamp(
+            if is_width { 75. } else { 50. },
+            if is_width {
+                containers.view_size().w
+            } else {
+                containers.view_size().h
+            },
+        );
 
         let size = if is_width {
             Size::from((new_size, current_area.size.h))
@@ -1843,8 +1781,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
             ));
             self.set_container_logical_pos(containers, idx, centered_pos);
         }
-        let root = self.containers[idx].root;
-        containers.arena_mut().layout_branch(root);
+        let area = self.container_area(containers, idx);
+        containers
+            .arena_mut()
+            .layout_container_subtree_in(root, area);
     }
 
     fn resize_container_around_center(
@@ -1924,9 +1864,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
             .set_child_percent(parent_key, child_idx, Layout::SplitH, percent)
         {
             let _ = animate;
-            containers
-                .arena_mut()
-                .layout_branch(self.containers[idx].root);
+            let root = Self::root(containers, idx);
+            containers.arena_mut().layout_branch(root);
         }
     }
 
@@ -1966,18 +1905,57 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let Some(id) = self.resolve_target_id(containers, id) else {
             return;
         };
-        let amount = f64::from(amount);
-        let (edge, delta) = match direction {
-            Direction::Left => (ResizeEdge::LEFT, Point::from((-amount, 0.))),
-            Direction::Right => (ResizeEdge::RIGHT, Point::from((amount, 0.))),
-            Direction::Up => (ResizeEdge::TOP, Point::from((0., -amount))),
-            Direction::Down => (ResizeEdge::BOTTOM, Point::from((0., amount))),
+        let Some(idx) = self.idx_of(containers, &id) else {
+            return;
         };
-
-        if self.interactive_resize_begin(containers, id.clone(), edge) {
-            self.interactive_resize_update(containers, &id, delta);
-            self.interactive_resize_end(Some(&id));
+        let root = Self::root(containers, idx);
+        let current = if containers.arena().fullscreen_key() == Some(root) {
+            containers
+                .arena()
+                .node_geometry(root)
+                .unwrap_or_else(|| self.container_area(containers, idx))
+        } else {
+            self.container_area(containers, idx)
+        };
+        let amount = f64::from(amount);
+        let horizontal = matches!(direction, Direction::Left | Direction::Right);
+        let current_dimension = if horizontal {
+            current.size.w
+        } else {
+            current.size.h
+        };
+        let target_dimension = (current_dimension + amount).round().clamp(
+            if horizontal { 75. } else { 50. },
+            if horizontal {
+                containers.view_size().w
+            } else {
+                containers.view_size().h
+            },
+        );
+        let effective_growth = target_dimension - current_dimension;
+        if effective_growth == 0. {
+            return;
         }
+
+        let mut size = current.size;
+        let mut pos = current.loc;
+        if horizontal {
+            size.w = target_dimension;
+            if direction == Direction::Left {
+                pos.x -= effective_growth;
+            }
+        } else {
+            size.h = target_dimension;
+            if direction == Direction::Up {
+                pos.y -= effective_growth;
+            }
+        }
+        self.set_container_size(containers, idx, size);
+        self.set_container_logical_pos(containers, idx, pos);
+        let area = self.container_area(containers, idx);
+        containers
+            .arena_mut()
+            .layout_container_subtree_in(root, area);
     }
 
     pub fn set_window_height(
@@ -2041,10 +2019,69 @@ impl<W: LayoutElement> FloatingSpace<W> {
             .set_child_percent(parent_key, child_idx, Layout::SplitV, percent)
         {
             let _ = animate;
-            containers
-                .arena_mut()
-                .layout_branch(self.containers[idx].root);
+            let root = Self::root(containers, idx);
+            containers.arena_mut().layout_branch(root);
         }
+    }
+
+    fn directional_root(
+        &self,
+        containers: &ContainerTree<W>,
+        distance: impl Fn(Point<f64, Logical>, Point<f64, Logical>) -> f64,
+    ) -> Option<NodeKey> {
+        let active_idx = self.active_container_idx(containers)?;
+        let active_area = self.container_area(containers, active_idx);
+        let center = active_area.loc + active_area.size.downscale(2.);
+
+        let roots: Vec<_> = containers.arena().floating_roots().collect();
+        roots
+            .into_iter()
+            .enumerate()
+            // sway walks `ws->floating` bottom-to-top; Tiri stores render order top-to-bottom.
+            .rev()
+            .filter(|(idx, _)| *idx != active_idx)
+            .map(|(idx, root)| {
+                let area = self.container_area(containers, idx);
+                let other_center = area.loc + area.size.downscale(2.);
+                (root, distance(center, other_center))
+            })
+            // sway accepts a zero signed distance. Overlapping floating roots therefore
+            // focus the first other entry in workspace stack order instead of becoming a
+            // directional no-op.
+            .filter(|(_, dist)| *dist >= 0.)
+            .min_by(|(_, dist_a), (_, dist_b)| f64::total_cmp(dist_a, dist_b))
+            .map(|(root, _)| root)
+    }
+
+    /// Focus one `workspace->floating` entry and raise that entry exactly once.
+    ///
+    /// `descend` is false when sway's directional search returned the floating root itself,
+    /// and true when a tiling-style sibling step asks for its inactive view. A lone view is
+    /// both the root and the leaf, so the distinction only becomes visible for groups.
+    fn focus_root_at(
+        &mut self,
+        containers: &mut ContainerTree<W>,
+        idx: usize,
+        descend: bool,
+    ) -> bool {
+        let Some(root) = containers.arena().floating_root_at(idx) else {
+            return false;
+        };
+        let landing = descend
+            .then(|| containers.arena().focus_inactive_view(root))
+            .flatten();
+
+        self.raise_container(containers, idx, 0);
+        self.bring_up_descendants_of(containers, 0);
+
+        if let Some(landing) = landing {
+            containers.arena_mut().focus_node(landing);
+        } else if containers.branch_root_is_lone_window(root) {
+            containers.arena_mut().focus_node(root);
+        } else {
+            containers.arena_mut().select_container(root);
+        }
+        true
     }
 
     fn focus_directional(
@@ -2052,34 +2089,97 @@ impl<W: LayoutElement> FloatingSpace<W> {
         containers: &mut ContainerTree<W>,
         distance: impl Fn(Point<f64, Logical>, Point<f64, Logical>) -> f64,
     ) -> bool {
-        let Some(active_id) = self.active_window_id(containers) else {
+        let Some(root) = self.directional_root(containers, distance) else {
             return false;
         };
-        let (active_tile, active_pos) = match self
-            .tiles_with_offsets_visible(containers)
-            .find(|(tile, _)| tile.window().id() == &active_id)
-        {
-            Some(value) => value,
-            None => return false,
+        let Some(idx) = containers.arena().floating_root_index(root) else {
+            return false;
         };
-        let center = active_pos + active_tile.tile_size().downscale(2.);
+        self.focus_root_at(containers, idx, true)
+    }
 
-        let result = self
-            .tiles_with_offsets_visible(containers)
-            .filter(|(tile, _)| tile.window().id() != &active_id)
-            .map(|(tile, pos)| {
-                let other_center = pos + tile.tile_size().downscale(2.);
-                (tile, distance(center, other_center))
-            })
-            .filter(|(_, dist)| *dist > 0.)
-            .min_by(|(_, dist_a), (_, dist_b)| f64::total_cmp(dist_a, dist_b));
-        if let Some((tile, _)) = result {
-            let id = tile.window().id().clone();
-            self.activate_window(containers, &id);
-            true
-        } else {
-            false
+    /// sway's `focus next|prev [sibling]` from the floating side.
+    pub(super) fn focus_along_parent(
+        &mut self,
+        containers: &mut ContainerTree<W>,
+        forward: bool,
+        descend: bool,
+    ) -> bool {
+        let Some(active_idx) = self.active_container_idx(containers) else {
+            return false;
+        };
+        let root = Self::root(containers, active_idx);
+        let Some(position) = self.selected_key_in(containers, active_idx) else {
+            return false;
+        };
+        let Some(parent_layout) = containers.command_target_parent_layout() else {
+            return false;
+        };
+        let direction = match (parent_layout.is_horizontal(), forward) {
+            (true, true) => Direction::Right,
+            (true, false) => Direction::Left,
+            (false, true) => Direction::Down,
+            (false, false) => Direction::Up,
+        };
+
+        // The shared tree traversal owns every step inside the floating subtree.
+        if containers.focus_along_parent(forward, descend) {
+            return true;
         }
+        if containers.arena().fullscreen_key().is_some() || Self::root_count(containers) <= 1 {
+            return false;
+        }
+
+        if position == root {
+            // Starting on a top-level floating container uses sway's geometric floating
+            // search. It does not wrap and returns the root node rather than descending.
+            let candidate = match direction {
+                Direction::Left => {
+                    self.directional_root(containers, |focus, other| focus.x - other.x)
+                }
+                Direction::Right => {
+                    self.directional_root(containers, |focus, other| other.x - focus.x)
+                }
+                Direction::Up => {
+                    self.directional_root(containers, |focus, other| focus.y - other.y)
+                }
+                Direction::Down => {
+                    self.directional_root(containers, |focus, other| other.y - focus.y)
+                }
+            };
+            let Some(candidate) = candidate else {
+                return false;
+            };
+            let Some(idx) = containers.arena().floating_root_index(candidate) else {
+                return false;
+            };
+            return self.focus_root_at(containers, idx, false);
+        }
+
+        // Starting below a floating root follows the ordinary tiling walk. At the root level,
+        // sway treats `workspace->floating` as its sibling list, whose order is bottom-to-top;
+        // Tiri's render stack is the reverse. A direct `sibling` landing keeps the root
+        // selected, while the wrap fallback always descends.
+        if !containers
+            .arena()
+            .workspace_layout()
+            .is_parallel_to(direction)
+        {
+            return false;
+        }
+        let direct = if direction.is_leading() {
+            active_idx
+                .checked_add(1)
+                .filter(|idx| *idx < Self::root_count(containers))
+        } else {
+            active_idx.checked_sub(1)
+        };
+        let (target_idx, wrapped) = match direct {
+            Some(idx) => (idx, false),
+            None if direction.is_leading() => (0, true),
+            None => (Self::root_count(containers) - 1, true),
+        };
+        self.focus_root_at(containers, target_idx, descend || wrapped)
     }
 
     fn focus_within_active_container(
@@ -2092,7 +2192,15 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return false;
         };
         let allow_wrap = allow_wrap && !self.selected_is_container_in(containers, idx);
-        let root = self.containers[idx].root;
+        let branch_root = Self::root(containers, idx);
+        // Workspace fullscreen is a focus scope. A fullscreen container may still contain a
+        // real split whose descendants can be navigated, but focus must not reach a sibling
+        // elsewhere in the same floating group.
+        let root = containers
+            .arena()
+            .fullscreen_key()
+            .filter(|scope| containers.arena().is_descendant(*scope, branch_root))
+            .unwrap_or(branch_root);
         let moved = containers
             .arena_mut()
             .focus_in_direction_in_branch(root, direction, allow_wrap);
@@ -2104,20 +2212,20 @@ impl<W: LayoutElement> FloatingSpace<W> {
     }
 
     fn focus_in_stack_order(&mut self, containers: &mut ContainerTree<W>, delta: isize) -> bool {
-        if self.containers.len() <= 1 {
+        if Self::root_count(containers) <= 1 {
             return false;
         }
 
         let Some(idx) = self.active_container_idx(containers) else {
             return false;
         };
-        let len = self.containers.len() as isize;
+        let len = Self::root_count(containers) as isize;
         let target_idx = (idx as isize + delta).rem_euclid(len) as usize;
         if target_idx == idx {
             return false;
         }
 
-        let root = self.containers[target_idx].root;
+        let root = Self::root(containers, target_idx);
         let Some(id) = containers
             .arena_mut()
             .focused_window_in_branch(root)
@@ -2143,7 +2251,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         containers: &mut ContainerTree<W>,
         descending: bool,
     ) -> bool {
-        if self.containers.len() <= 1 {
+        if Self::root_count(containers) <= 1 {
             return false;
         }
 
@@ -2151,11 +2259,16 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return false;
         };
 
-        let mut ordered: Vec<_> = self
-            .containers
-            .iter()
-            .enumerate()
-            .map(|(idx, container)| (idx, container.id))
+        let mut ordered: Vec<_> = (0..Self::root_count(containers))
+            .map(|idx| {
+                (
+                    idx,
+                    containers
+                        .arena()
+                        .floating_root_id_at(idx)
+                        .expect("floating root must have a stable id"),
+                )
+            })
             .collect();
         ordered.sort_by_key(|(_, id)| *id);
         if descending {
@@ -2170,7 +2283,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return false;
         }
 
-        let root = self.containers[target_idx].root;
+        let root = Self::root(containers, target_idx);
         let Some(id) = containers
             .arena_mut()
             .focused_window_in_branch(root)
@@ -2192,19 +2305,22 @@ impl<W: LayoutElement> FloatingSpace<W> {
     }
 
     fn should_cycle_top_level_stable_order(&self, containers: &ContainerTree<W>) -> bool {
-        self.containers.len() > 1
-            && self
-                .active_container_idx(containers)
-                .is_some_and(|idx| containers.branch_root_is_lone_window(self.containers[idx].root))
-            && self
-                .containers
-                .iter()
-                .all(|container| containers.branch_root_is_lone_window(container.root))
+        Self::root_count(containers) > 1
+            && self.active_container_idx(containers).is_some_and(|idx| {
+                containers.branch_root_is_lone_window(Self::root(containers, idx))
+            })
+            && containers
+                .arena()
+                .floating_roots()
+                .all(|root| containers.branch_root_is_lone_window(root))
     }
 
     pub fn focus_left(&mut self, containers: &mut ContainerTree<W>) -> bool {
         if self.focus_within_active_container(containers, Direction::Left, true) {
             return true;
+        }
+        if containers.arena().fullscreen_key().is_some() {
+            return false;
         }
         if self.should_cycle_top_level_stable_order(containers) {
             return self.focus_in_stable_container_order(containers, true);
@@ -2216,6 +2332,9 @@ impl<W: LayoutElement> FloatingSpace<W> {
     pub fn focus_left_no_wrap(&mut self, containers: &mut ContainerTree<W>) -> bool {
         if self.focus_within_active_container(containers, Direction::Left, false) {
             return true;
+        }
+        if containers.arena().fullscreen_key().is_some() {
+            return false;
         }
         self.focus_directional(containers, |focus, other| focus.x - other.x)
     }
@@ -2234,6 +2353,9 @@ impl<W: LayoutElement> FloatingSpace<W> {
         if self.focus_within_active_container(containers, Direction::Right, true) {
             return true;
         }
+        if containers.arena().fullscreen_key().is_some() {
+            return false;
+        }
         if self.should_cycle_top_level_stable_order(containers) {
             return self.focus_in_stable_container_order(containers, false);
         }
@@ -2245,12 +2367,18 @@ impl<W: LayoutElement> FloatingSpace<W> {
         if self.focus_within_active_container(containers, Direction::Right, false) {
             return true;
         }
+        if containers.arena().fullscreen_key().is_some() {
+            return false;
+        }
         self.focus_directional(containers, |focus, other| other.x - focus.x)
     }
 
     pub fn focus_up(&mut self, containers: &mut ContainerTree<W>) -> bool {
         if self.focus_within_active_container(containers, Direction::Up, true) {
             return true;
+        }
+        if containers.arena().fullscreen_key().is_some() {
+            return false;
         }
         self.focus_directional(containers, |focus, other| focus.y - other.y)
     }
@@ -2259,6 +2387,9 @@ impl<W: LayoutElement> FloatingSpace<W> {
         if self.focus_within_active_container(containers, Direction::Up, false) {
             return true;
         }
+        if containers.arena().fullscreen_key().is_some() {
+            return false;
+        }
         self.focus_directional(containers, |focus, other| focus.y - other.y)
     }
 
@@ -2266,12 +2397,18 @@ impl<W: LayoutElement> FloatingSpace<W> {
         if self.focus_within_active_container(containers, Direction::Down, true) {
             return true;
         }
+        if containers.arena().fullscreen_key().is_some() {
+            return false;
+        }
         self.focus_directional(containers, |focus, other| other.y - focus.y)
     }
 
     pub fn focus_down_no_wrap(&mut self, containers: &mut ContainerTree<W>) -> bool {
         if self.focus_within_active_container(containers, Direction::Down, false) {
             return true;
+        }
+        if containers.arena().fullscreen_key().is_some() {
+            return false;
         }
         self.focus_directional(containers, |focus, other| other.y - focus.y)
     }
@@ -2320,7 +2457,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let Some(idx) = self.active_container_idx(containers) else {
             return false;
         };
-        let root = self.containers[idx].root;
+        if containers.focus_parent_is_obstructed_by_fullscreen() {
+            return true;
+        }
+        let root = Self::root(containers, idx);
         if containers.handle_focus_parent_in_branch_fullscreen_scope(root) {
             return true;
         }
@@ -2338,19 +2478,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
         containers.arena_mut().select_parent()
     }
 
-    pub(super) fn focus_child_from_workspace(&mut self, containers: &mut ContainerTree<W>) -> bool {
-        let Some(idx) = self.active_container_idx(containers) else {
-            return false;
-        };
-        let root = self.containers[idx].root;
-        containers.arena_mut().select_container(root) && containers.arena_mut().select_child()
-    }
-
     pub fn focus_child(&mut self, containers: &mut ContainerTree<W>) -> bool {
         let Some(idx) = self.active_container_idx(containers) else {
             return false;
         };
-        let root = self.containers[idx].root;
+        let root = Self::root(containers, idx);
         containers
             .arena_mut()
             .selected_container_key()
@@ -2417,7 +2549,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         idx: usize,
         direction: Direction,
     ) -> bool {
-        containers.move_in_branch(self.containers[idx].root, direction)
+        containers.move_in_branch(Self::root(containers, idx), direction)
     }
 
     pub fn set_column_display(
@@ -2433,18 +2565,19 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        containers.set_layout_in_branch(self.containers[idx].root, target_layout);
+        containers.set_layout_in_branch(Self::root(containers, idx), target_layout);
     }
 
     pub fn toggle_column_tabbed_display(&mut self, containers: &mut ContainerTree<W>) {
         let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        let target = match containers.selection_layout_in(self.containers[idx].root) {
+        let root = Self::root(containers, idx);
+        let target = match containers.selection_layout_in(root) {
             Some(Layout::Tabbed) => Layout::SplitV,
             _ => Layout::Tabbed,
         };
-        containers.set_layout_in_branch(self.containers[idx].root, target);
+        containers.set_layout_in_branch(root, target);
     }
 
     pub fn split_horizontal(&mut self, containers: &mut ContainerTree<W>) {
@@ -2465,10 +2598,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        let Some(root) = containers.unsplit_in_branch(self.containers[idx].root) else {
-            return;
-        };
-        self.containers[idx].root = root;
+        let root = Self::root(containers, idx);
+        let _ = containers.unsplit_in_branch(root);
     }
 
     /// A floating root's provenance, promoted on read.
@@ -2481,19 +2612,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
     /// operation has to remember to keep a copy in step — split, layout mode, cycle, expel and
     /// whatever comes next are all right by construction.
     fn root_kind(&self, containers: &ContainerTree<W>, idx: usize) -> FloatingRootKind {
-        let stored = self.containers[idx].kind;
-        if stored != FloatingRootKind::ImplicitWindowGroup {
-            return stored;
-        }
-        if containers
+        containers
             .arena()
-            .branch_container(self.containers[idx].root)
-            .is_some_and(|root| root.is_user_container())
-        {
-            FloatingRootKind::FloatedContainer
-        } else {
-            stored
-        }
+            .floating_root_kind_at(idx)
+            .expect("floating index must have semantic provenance")
     }
 
     fn split_container(
@@ -2502,14 +2624,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
         idx: usize,
         layout: Layout,
     ) -> bool {
-        let root = self.containers[idx].root;
+        let root = Self::root(containers, idx);
         if !containers.split_in_branch(root, layout) {
             return false;
         }
-        // Splitting a floating root puts a new container in its slot, so the group is addressed
-        // by a different key afterwards — the same handover `split_none` does in reverse. Asked
-        // of the old root, which is now an ordinary child, this answers with the new one.
-        self.containers[idx].root = containers.arena().branch_root(root);
+        // The arena replaces the authoritative root entry atomically when wrapping the old root.
         true
     }
 
@@ -2517,28 +2636,28 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        containers.set_layout_in_branch(self.containers[idx].root, layout);
+        containers.set_layout_in_branch(Self::root(containers, idx), layout);
     }
 
     pub fn toggle_split_layout(&mut self, containers: &mut ContainerTree<W>) {
         let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        containers.toggle_split_in_branch(self.containers[idx].root);
+        containers.toggle_split_in_branch(Self::root(containers, idx));
     }
 
     pub fn toggle_layout_all(&mut self, containers: &mut ContainerTree<W>) {
         let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        containers.toggle_layout_all_in_branch(self.containers[idx].root);
+        containers.toggle_layout_all_in_branch(Self::root(containers, idx));
     }
 
     pub fn set_default_layout(&mut self, containers: &mut ContainerTree<W>) {
         let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        containers.set_default_layout_in_branch(self.containers[idx].root);
+        containers.set_default_layout_in_branch(Self::root(containers, idx));
     }
 
     pub(super) fn toggle_layout_cycle(
@@ -2549,7 +2668,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        containers.toggle_layout_cycle_in_branch(self.containers[idx].root, cycle);
+        containers.toggle_layout_cycle_in_branch(Self::root(containers, idx), cycle);
     }
 
     fn move_container_to(
@@ -2565,7 +2684,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             self.set_container_logical_pos(containers, idx, new_pos);
         }
 
-        let root = self.containers[idx].root;
+        let root = Self::root(containers, idx);
         containers.arena_mut().layout_branch(root);
 
         self.interactive_resize_end(None);
@@ -2670,7 +2789,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         self.move_container_to(containers, idx, new_pos, true);
     }
 
-    pub fn descendants_added(&mut self, containers: &ContainerTree<W>, id: &W::Id) -> bool {
+    pub fn descendants_added(&mut self, containers: &mut ContainerTree<W>, id: &W::Id) -> bool {
         let Some(idx) = self.idx_of(containers, id) else {
             return false;
         };
@@ -2713,10 +2832,21 @@ impl<W: LayoutElement> FloatingSpace<W> {
             tile.update_window();
         }
 
-        let root = self.containers[container_idx].root;
-        containers.arena_mut().layout_branch(root);
+        let root = Self::root(containers, container_idx);
+        // A surface commit acknowledges (or independently changes) that view's content box;
+        // it is not an `arrange_workspace` call. The pending branch layout is applied by the
+        // transaction path. Arranging again here is observably wrong after `view_map` has
+        // directly arranged a floating parent containing the workspace-fullscreen view: the
+        // acknowledgement of its new sibling would expand that old view back to the output.
+        //
+        // sway/desktop/xdg_shell.c:291-344
+        // sway/tree/view.c:979-984
 
-        if containers.arena().window_count_in_branch(root) == 1 {
+        // Only a root which is itself the view can take its resize base from that view's
+        // commit. An explicit one-view tabbed/stacked/split container includes decoration and
+        // owns an independent outer box; feeding its child's content size back here erases
+        // that decoration from the container on every commit.
+        if containers.branch_root_is_lone_window(root) {
             let Some(key) = containers.arena_mut().window_key(id) else {
                 return true;
             };
@@ -2812,10 +2942,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             let roots: Vec<NodeKey> = if let Some(scope) = fullscreen_key {
                 vec![scope]
             } else {
-                self.containers
-                    .iter()
-                    .map(|container| container.root)
-                    .collect()
+                tree.floating_roots().collect()
             };
             for root in roots {
                 let gap = containers.branch_gap(root);
@@ -2963,7 +3090,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return false;
         };
 
-        let container = &self.containers[idx];
+        let root = Self::root(containers, idx);
         let Some(key) = tree.window_key(&window) else {
             return false;
         };
@@ -2973,12 +3100,12 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         let original_window_size = tile.window_size();
         let container_area = tree
-            .floating_container_area(container.root)
+            .floating_container_area(root)
             .expect("every floating stack entry must name a floating root");
         let original_window_pos = container_area.loc;
         let original_container_size = container_area.size;
         let resize_container_edges =
-            super::container_tree::branch_display_layouts(containers.arena(), container.root)
+            super::container_tree::branch_display_layouts(containers.arena(), root)
                 .find(|info| info.key == key)
                 .map(|info| {
                     let mut rect = info.rect;
@@ -3157,7 +3284,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 || (resize_container_v && move_pos.y != 0.0)
             {
                 self.set_container_logical_pos(containers, idx, original_pos + move_pos);
-                let root = self.containers[idx].root;
+                let root = Self::root(containers, idx);
                 containers.arena_mut().layout_branch(root);
             }
         }
@@ -3194,10 +3321,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let resize_target = self.interactive_resize.as_ref().and_then(|resize| {
             let idx = self.idx_of(containers, &resize.window)?;
             let mut ids = Vec::new();
-            for tile in containers
-                .arena_mut()
-                .tiles_in_branch(self.containers[idx].root)
-            {
+            let root = Self::root(containers, idx);
+            for tile in containers.arena_mut().tiles_in_branch(root) {
                 ids.push(tile.window().id().clone());
             }
             Some((resize.data, ids))
@@ -3286,7 +3411,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let diff = prev_pos - new_pos;
         if diff.x * diff.x + diff.y * diff.y > ANIMATION_THRESHOLD_SQ {
             let delta = prev_pos - new_pos;
-            let root = self.containers[idx].root;
+            let root = Self::root(containers, idx);
             for tile in containers.arena_mut().tiles_in_branch_mut(root) {
                 tile.animate_move_from(delta);
             }
@@ -3377,7 +3502,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     pub fn wrapper_selected_for_window(&self, containers: &ContainerTree<W>, id: &W::Id) -> bool {
         let tree = containers.arena();
         self.idx_of(containers, id)
-            .is_some_and(|idx| tree.selected_container_key() == Some(self.containers[idx].root))
+            .is_some_and(|idx| tree.selected_container_key() == Some(Self::root(containers, idx)))
     }
 
     #[cfg(test)]
@@ -3388,7 +3513,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     ) -> Option<Layout> {
         let tree = containers.arena();
         let idx = self.idx_of(containers, id)?;
-        tree.branch_layout(self.containers[idx].root)
+        tree.branch_layout(Self::root(containers, idx))
     }
 
     #[cfg(test)]
@@ -3398,7 +3523,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     {
         let tree = containers.arena();
         let idx = self.idx_of(containers, id)?;
-        Some(tree.debug_branch(self.containers[idx].root))
+        Some(tree.debug_branch(Self::root(containers, idx)))
     }
 
     pub fn verify_invariants(&self, containers: &ContainerTree<W>) {
@@ -3408,28 +3533,32 @@ impl<W: LayoutElement> FloatingSpace<W> {
         assert!(containers.scale() > 0.);
         assert!(containers.scale().is_finite());
 
-        let stack_roots: HashSet<_> = self
-            .containers
-            .iter()
-            .map(|container| container.root)
-            .collect();
+        let stack_roots: HashSet<_> = tree.floating_roots().collect();
         assert_eq!(
             stack_roots.len(),
-            self.containers.len(),
+            tree.floating_root_count(),
             "the floating stack must not contain duplicate roots"
         );
-        let tree_roots: HashSet<_> = tree.floating_roots().collect();
+        let stack_ids: HashSet<_> = (0..tree.floating_root_count())
+            .map(|idx| tree.floating_root_id_at(idx).expect("floating root id"))
+            .collect();
         assert_eq!(
-            stack_roots, tree_roots,
-            "the floating stack must cover every node marked as a floating root"
+            stack_ids.len(),
+            tree.floating_root_count(),
+            "the floating stack must not contain duplicate reinsertion ids"
         );
 
-        for container in &self.containers {
+        for root in tree.floating_roots() {
             use crate::layout::SizingMode;
 
-            tree.floating_container_area(container.root)
-                .expect("every floating stack entry must name a floating root");
-            for tile in tree.tiles_in_branch(container.root) {
+            assert!(
+                tree.holds_node(root),
+                "a floating root must exist in the arena"
+            );
+            assert_eq!(tree.parent_of(root), Some(tree.workspace_root()));
+            tree.floating_container_area(root)
+                .expect("every floating root must own its geometry");
+            for tile in tree.tiles_in_branch(root) {
                 assert!(Rc::ptr_eq(containers.options(), &tile.options));
                 assert_eq!(containers.view_size(), tile.view_size());
                 assert_eq!(*containers.clock(), tile.clock);
@@ -3455,13 +3584,13 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
 
         if let Some(id) = self.active_window_id(containers) {
-            assert!(!self.containers.is_empty());
+            assert!(tree.floating_root_count() > 0);
             assert!(
                 self.contains(containers, &id),
                 "active window must be present in tiles"
             );
         } else {
-            assert!(self.containers.is_empty());
+            assert_eq!(tree.floating_root_count(), 0);
         }
 
         if let Some(resize) = &self.interactive_resize {
@@ -3476,17 +3605,24 @@ impl<W: LayoutElement> FloatingSpace<W> {
 impl<W: LayoutElement> FloatingSpace<W> {
     pub(crate) fn layout_tree_nodes(&self, containers: &ContainerTree<W>) -> Vec<LayoutTreeNode> {
         let tree = containers.arena();
-        self.containers
-            .iter()
+        // Rendering keeps the topmost floating group first. sway's `floating_nodes` IPC list
+        // exposes the workspace list in the opposite, bottom-to-top order. Reverse only this
+        // projection: changing the stored order would invert hit testing, focus raising and
+        // rendering merely to make IPC look right.
+        let roots: Vec<_> = tree.floating_roots().collect();
+        roots
+            .into_iter()
             .enumerate()
-            .filter_map(|(idx, container)| {
+            .rev()
+            .enumerate()
+            .filter_map(|(ipc_idx, (stack_idx, root_key))| {
                 let focused_key = tree
                     .selected_node_key()
-                    .filter(|key| tree.is_descendant(*key, container.root));
-                let mut path = vec![idx];
+                    .filter(|key| tree.is_descendant(*key, root_key));
+                let mut path = vec![ipc_idx];
                 let mut root =
-                    tree.layout_tree_for_branch(container.root, focused_key, &mut path, true)?;
-                root.floating_root_kind = Some(self.root_kind(containers, idx).ipc());
+                    tree.layout_tree_for_branch(root_key, focused_key, &mut path, true)?;
+                root.floating_root_kind = Some(self.root_kind(containers, stack_idx).ipc());
                 containers.apply_workspace_fullscreen(root)
             })
             .collect()

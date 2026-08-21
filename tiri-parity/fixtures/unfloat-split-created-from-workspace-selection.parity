@@ -1,0 +1,27 @@
+# A split explicitly created while the workspace is selected remains a real container after
+# floating it and returning it to tiling.
+# recorded from sway version 1.12-dev
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ focus parent
+workspace splith focus=@
+  window 1 0.000,0.000 1.000x1.000
+
+$ split h
+workspace splith focus=@0
+  splith 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+
+$ floating toggle
+workspace splith focus=@0
+  splith 0.250,0.125 0.500x0.750
+    window 1 0.250,0.125 0.500x0.750 floating
+
+$ floating toggle
+workspace splith focus=@0
+  splith 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000

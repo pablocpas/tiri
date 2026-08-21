@@ -1,0 +1,36 @@
+# Workspace fullscreen blocks directional focus from cycling to a different floating root.
+# recorded from sway version 1.12-dev
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ floating toggle
+workspace splith focus=1
+  window 1 0.344,0.292 0.312x0.417 floating
+
+$ open
+workspace splith focus=2
+  window 2 0.000,0.000 1.000x1.000
+  window 1 0.344,0.292 0.312x0.417 floating
+
+$ fullscreen toggle
+workspace splith focus=2
+  window 2 0.000,0.000 1.000x1.000
+  window 1 0.344,0.292 0.312x0.417 hidden floating
+
+$ floating toggle
+workspace splith focus=2
+  window 1 0.344,0.292 0.312x0.417 hidden floating
+  window 2 0.000,0.000 1.000x1.000 floating
+
+$ focus parent
+workspace splith focus=2
+  window 1 0.344,0.292 0.312x0.417 hidden floating
+  window 2 0.000,0.000 1.000x1.000 floating
+
+$ focus left
+workspace splith focus=2
+  window 1 0.344,0.292 0.312x0.417 hidden floating
+  window 2 0.000,0.000 1.000x1.000 floating

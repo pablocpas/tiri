@@ -1098,18 +1098,22 @@ impl<W: LayoutElement> Tile<W> {
         self.marks.iter().any(|m| m == mark)
     }
 
-    pub(super) fn add_mark(&mut self, mark: String) {
-        if !self.has_mark(&mark) {
-            self.marks.push(mark);
-        }
-    }
-
     pub(super) fn remove_mark(&mut self, mark: &str) {
         self.marks.retain(|m| m != mark);
     }
 
     pub(super) fn clear_marks(&mut self) {
         self.marks.clear();
+    }
+
+    /// Marks live on an attached container node. A detached view carries them in its tile
+    /// until another arena constructs that node again.
+    pub(super) fn take_marks(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.marks)
+    }
+
+    pub(super) fn replace_marks(&mut self, marks: Vec<String>) {
+        self.marks = marks;
     }
     pub fn sizing_mode(&self) -> SizingMode {
         self.sizing_mode

@@ -64,30 +64,9 @@ impl<W: LayoutElement> ContainerArena<W> {
         node_key: NodeKey,
         focus: bool,
     ) {
-        let sibling_key = match self
-            .selected_key()
-            .filter(|key| self.get_node(*key).is_some() && self.branch_root(*key) == branch_root)
-        {
-            Some(key) if key != branch_root => Some(key),
-            Some(_) => self.active_child(branch_root),
-            None => self
-                .effective_focused_key()
-                .filter(|key| self.branch_root(*key) == branch_root)
-                .or_else(|| {
-                    // sway's `view_map` takes this exact two-step route when the active node
-                    // is floating: choose the most recent tiling node first, then the most
-                    // recent view inside that node. Going straight to a view under the whole
-                    // workspace loses a recently active container as the insertion context.
-                    self.focus_inactive_node_in_branch(branch_root)
-                        .and_then(|node| {
-                            if node == branch_root {
-                                self.focus_inactive_view_in_branch(branch_root)
-                            } else {
-                                self.focus_inactive_view(node)
-                            }
-                        })
-                }),
-        };
+        let sibling_key = self
+            .view_map_target()
+            .filter(|key| self.branch_root(*key) == branch_root);
 
         let insert_target = sibling_key
             .and_then(|key| {
@@ -104,6 +83,31 @@ impl<W: LayoutElement> ContainerArena<W> {
             parent_container.insert_child(insert_idx, node_key);
             self.set_parent(node_key, Some(parent_key));
             self.settle_focus_after_insert(node_key, focus);
+        }
+    }
+
+    /// The exact existing node beside which Sway maps a normal new view.
+    ///
+    /// `seat_get_focus_inactive(workspace)` is a read of the global focus stack, not of the
+    /// selected workspace's active tiled child. That distinction matters after focusing the
+    /// workspace from floating: the floating root remains first behind the workspace in the
+    /// stack. A top-level floating node is not an insertion parent, so `view_map` falls back
+    /// through the most recent tiling node and then its inactive view. A descendant inside a
+    /// floating split *is* a normal insertion target.
+    ///
+    /// sway/tree/view.c:802-824
+    pub(in crate::layout) fn view_map_target(&self) -> Option<NodeKey> {
+        let inactive = self.seat.order().iter().copied().find(|key| {
+            *key != self.root
+                && self.get_node(*key).is_some()
+                && self.is_descendant(*key, self.root)
+        })?;
+
+        if self.is_floating_root(inactive) {
+            self.focus_inactive_node_in_branch(self.root)
+                .and_then(|node| self.focus_inactive_view(node))
+        } else {
+            Some(inactive)
         }
     }
 

@@ -1835,11 +1835,7 @@ impl Op {
 fn marks_for(layout: &Layout<TestWindow>, id: usize) -> Vec<String> {
     layout
         .workspaces()
-        .find_map(|(_, _, ws)| {
-            ws.tiles()
-                .find(|tile| *tile.window().id() == id)
-                .map(|tile| tile.marks().to_vec())
-        })
+        .find_map(|(_, _, ws)| ws.has_window(&id).then(|| ws.marks_for_window(&id)))
         .unwrap_or_default()
 }
 

@@ -183,7 +183,7 @@ fn op_for(command: &str, next_id: &mut usize, client: (i32, i32)) -> Result<Op, 
         },
         ["layout", "toggle", "split"] => Op::ToggleSplitLayout,
         ["layout", "toggle", "all"] => Op::ToggleLayoutAll,
-        ["layout", "toggle", entries @ ..] if !entries.is_empty() => {
+        ["layout", "toggle", entries @ ..] if entries.len() >= 2 => {
             let cycle = entries
                 .iter()
                 .filter_map(|entry| match *entry {
@@ -309,4 +309,15 @@ fn op_for(command: &str, next_id: &mut usize, client: (i32, i32)) -> Result<Op, 
 fn workspace_index(target: &str) -> Result<usize, Reason> {
     let number: usize = target.parse().map_err(|_| Reason::BadArgument)?;
     number.checked_sub(1).ok_or(Reason::BadArgument)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse;
+
+    #[test]
+    fn explicit_layout_toggle_requires_at_least_two_entries_like_sway() {
+        assert!(parse("layout toggle tabbed", (400, 300)).is_err());
+        assert!(parse("layout toggle tabbed stacking", (400, 300)).is_ok());
+    }
 }

@@ -1,0 +1,20 @@
+# Mapping an activated tiled window clears a workspace selection even when a floating root remains.
+# recorded from sway version 1.12-dev
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ floating toggle
+workspace splith focus=1
+  window 1 0.344,0.292 0.312x0.417 floating
+
+$ focus parent
+workspace splith focus=@
+  window 1 0.344,0.292 0.312x0.417 floating
+
+$ open
+workspace splith focus=2
+  window 2 0.000,0.000 1.000x1.000
+  window 1 0.344,0.292 0.312x0.417 floating

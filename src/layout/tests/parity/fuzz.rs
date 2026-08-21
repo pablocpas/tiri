@@ -100,7 +100,6 @@ const VOCABULARY: &[(&str, u32)] = &[
     ("layout toggle", 1),
     ("layout toggle split", 2),
     ("layout toggle all", 2),
-    ("layout toggle tabbed", 1),
     ("layout toggle splith tabbed stacking splitv", 1),
     ("floating toggle", 2),
     ("fullscreen toggle", 2),
@@ -236,6 +235,21 @@ const SWAY_1_12_MOVE_RIGHT_AFTER_EXPLICIT_SPLITS_CRASH: &[&str] = &[
     "split vertical",
     "focus parent",
     "split vertical",
+    "move right",
+];
+
+/// Another exact route to the same `arrange_workspace <- cmd_move_in_direction` SIGSEGV.
+/// The reducer reproduced it in fresh Sway processes and the captured core named that stack;
+/// keeping the whole minimal script ensures an unrelated disconnect is never waived.
+const SWAY_1_12_MOVE_RIGHT_AFTER_FOCUS_CHILD_CRASH: &[&str] = &[
+    "open",
+    "open",
+    "move up",
+    "focus next sibling",
+    "split v",
+    "focus parent",
+    "focus parent",
+    "focus child",
     "move right",
 ];
 
@@ -514,6 +528,7 @@ fn is_known_reference_failure(name: &str, script: &[String], error: &str) -> boo
             "move right",
             SWAY_1_12_MOVE_RIGHT_AFTER_EXPLICIT_SPLITS_CRASH,
         ),
+        ("move right", SWAY_1_12_MOVE_RIGHT_AFTER_FOCUS_CHILD_CRASH),
         ("move left", SWAY_1_12_MOVE_LEFT_NESTED_SWITCHERS_CRASH),
         ("move down", SWAY_1_12_MOVE_DOWN_NESTED_TABS_CRASH),
     ]
@@ -562,6 +577,7 @@ fn pinned_sway_workspace_move_crashes_are_known_by_exact_script() {
             "move right",
             SWAY_1_12_MOVE_RIGHT_AFTER_EXPLICIT_SPLITS_CRASH,
         ),
+        ("move right", SWAY_1_12_MOVE_RIGHT_AFTER_FOCUS_CHILD_CRASH),
         ("move left", SWAY_1_12_MOVE_LEFT_NESTED_SWITCHERS_CRASH),
         ("move down", SWAY_1_12_MOVE_DOWN_NESTED_TABS_CRASH),
     ] {

@@ -1,0 +1,69 @@
+# Splitting a selected floating root wraps it; it does not replace the root's stacked layout.
+# recorded from sway version 1.12-dev
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ layout stacking
+workspace splith focus=1
+  stacked 0.000,0.000 1.000x1.000
+    window 1 0.000,0.032 1.000x0.968
+
+$ splitt
+workspace splith focus=1
+  stacked 0.000,0.000 1.000x1.000
+    splitv 0.000,0.064 1.000x0.936
+      window 1 0.000,0.032 1.000x0.968
+
+$ open
+workspace splith focus=2
+  stacked 0.000,0.000 1.000x1.000
+    splitv 0.000,0.064 1.000x0.936
+      window 1 0.000,0.032 1.000x0.485
+      window 2 0.000,0.517 1.000x0.483
+
+$ move down
+workspace splith focus=2
+  stacked 0.000,0.000 1.000x1.000
+    splitv 0.000,0.128 1.000x0.872
+      window 1 0.000,0.064 1.000x0.936 hidden
+    window 2 0.000,0.064 1.000x0.936
+
+$ focus parent
+workspace splith focus=@0
+  stacked 0.000,0.000 1.000x1.000
+    splitv 0.000,0.128 1.000x0.872
+      window 1 0.000,0.064 1.000x0.936 hidden
+    window 2 0.000,0.064 1.000x0.936
+
+$ split h
+workspace splith focus=@0
+  stacked 0.000,0.000 1.000x1.000
+    splitv 0.000,0.128 1.000x0.872
+      window 1 0.000,0.064 1.000x0.936 hidden
+    window 2 0.000,0.064 1.000x0.936
+
+$ floating toggle
+workspace splith focus=@0
+  stacked 0.250,0.125 0.500x0.750
+    splitv 0.250,0.253 0.500x0.622
+      window 1 0.250,0.189 0.500x0.686 hidden floating
+    window 2 0.250,0.189 0.500x0.686 floating
+
+$ split h
+workspace splith focus=@0/0
+  splith 0.250,0.125 0.500x0.750
+    stacked 0.250,0.125 0.500x0.750
+      splitv 0.250,0.253 0.500x0.622
+        window 1 0.250,0.189 0.500x0.686 hidden floating
+      window 2 0.250,0.189 0.500x0.686 floating
+
+$ resize grow width 100 px
+workspace splith focus=@0/0
+  splith 0.250,0.125 0.500x0.750
+    stacked 0.250,0.125 0.500x0.750
+      splitv 0.250,0.253 0.500x0.622
+        window 1 0.250,0.189 0.500x0.686 hidden floating
+      window 2 0.250,0.189 0.500x0.686 floating

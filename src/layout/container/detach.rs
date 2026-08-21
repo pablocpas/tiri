@@ -40,6 +40,17 @@ impl<W: LayoutElement> ContainerArena<W> {
         if let Some(cleanup_key) = cleanup_key {
             self.reap_empty(cleanup_key);
         }
+        // A fullscreen container can outlive its last child until its owning floating list
+        // drops the now-empty root. The workspace pointer must stop naming it before this
+        // operation arranges the workspace, though: sway clears `ws->fullscreen` as part of
+        // destroying the last view, then exposes the tiled branch that had been held at 0x0.
+        // Keeping the empty scope for even this arrange skips every surviving branch.
+        if self
+            .fullscreen_key
+            .is_some_and(|scope| self.branch_is_empty(scope))
+        {
+            self.fullscreen_key = None;
+        }
         self.prune_leaf_layouts();
 
         self.prune_selected_key();
@@ -164,14 +175,21 @@ impl<W: LayoutElement> ContainerArena<W> {
             children.push(self.extract_subtree(child_key));
         }
 
+        let sizing = container.sizing;
+        let layout = container.layout;
+        let user_created = container.user_created;
+        let prev_split_layout = container.prev_split_layout;
+        let (tile, marks) = container.into_detached_parts();
+
         // `sizing` is the split's own; a view's lives on its tile, here as in the arena.
         let detached = DetachedNode {
             key,
-            sizing: container.sizing,
-            layout: container.layout,
-            user_created: container.user_created,
-            prev_split_layout: container.prev_split_layout,
-            tile: container.into_tile(),
+            sizing,
+            layout,
+            marks,
+            user_created,
+            prev_split_layout,
+            tile,
             children,
             focus_stack,
         };
@@ -186,15 +204,26 @@ impl<W: LayoutElement> ContainerArena<W> {
     pub(super) fn insert_subtree(&mut self, subtree: DetachedNode<W>) -> NodeKey {
         // A view keeps the key it left with, the same as a split: node identity surviving the
         // crossing is what the whole detached representation exists for.
-        let container_key = subtree.key;
-        let node = match subtree.tile {
+        let DetachedNode {
+            key: container_key,
+            sizing,
+            layout,
+            marks,
+            tile,
+            children,
+            focus_stack,
+            user_created,
+            prev_split_layout,
+        } = subtree;
+        let mut node = match tile {
             Some(tile) => ContainerData::new_view(tile),
-            None => ContainerData::new(subtree.layout),
+            None => ContainerData::new(layout),
         };
+        node.marks = marks;
         self.insert_node_with_key(container_key, NodeData::Container(node));
 
         let mut child_keys = Vec::new();
-        for child in subtree.children {
+        for child in children {
             let child_key = self.insert_subtree(child);
             self.set_parent(child_key, Some(container_key));
             child_keys.push(child_key);
@@ -202,16 +231,15 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         if let Some(node) = self.get_real_container_mut(container_key) {
             node.children = child_keys;
-            node.sizing = subtree.sizing;
-            node.user_created = subtree.user_created;
-            node.prev_split_layout = subtree.prev_split_layout;
+            node.sizing = sizing;
+            node.user_created = user_created;
+            node.prev_split_layout = prev_split_layout;
         }
 
         // Back into the seat's order, keeping the sequence the subtree carried.
         // Appended rather than promoted: arriving is not being focused, and whatever
         // focuses next will raise its own chain.
-        let restored: Vec<NodeKey> = subtree
-            .focus_stack
+        let restored: Vec<NodeKey> = focus_stack
             .iter()
             .filter_map(|key| {
                 self.get_container(container_key)?

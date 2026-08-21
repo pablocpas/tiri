@@ -798,6 +798,204 @@ fn fullscreen_directional_focus_stays_on_active_window_like_sway() {
 }
 
 #[test]
+fn descendant_can_move_inside_a_fullscreen_container() {
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::SetLayoutSplitV,
+        Op::ToggleFullscreenFocused,
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::SplitVertical,
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::SplitVertical,
+        Op::MoveWindowUp,
+    ]);
+
+    fn parent_child_count(node: &tiri_ipc::LayoutTreeNode, id: u64) -> Option<usize> {
+        node.children
+            .iter()
+            .any(|child| child.window_id == Some(id))
+            .then_some(node.children.len())
+            .or_else(|| {
+                node.children
+                    .iter()
+                    .find_map(|child| parent_child_count(child, id))
+            })
+    }
+
+    let tree = layout.layout_tree();
+    assert_eq!(
+        tree.root
+            .as_ref()
+            .and_then(|root| parent_child_count(root, 1)),
+        Some(2),
+        "move must squash the empty single-child wrapper below the fullscreen owner",
+    );
+}
+
+#[test]
+fn swapping_below_fullscreen_exchanges_pending_node_boxes() {
+    fn find_window(node: &tiri_ipc::LayoutTreeNode, id: u64) -> Option<&tiri_ipc::LayoutTreeNode> {
+        (node.window_id == Some(id)).then_some(node).or_else(|| {
+            node.children
+                .iter()
+                .find_map(|child| find_window(child, id))
+        })
+    }
+
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::ToggleFullscreenFocused,
+        Op::SplitHorizontal,
+    ]);
+    let before = layout.layout_tree();
+    let target_width = before
+        .root
+        .as_ref()
+        .and_then(|root| find_window(root, 1))
+        .and_then(|node| node.rect)
+        .expect("target pending box")
+        .width;
+
+    check_ops_on_layout(&mut layout, [Op::SwapWithWindow(1)]);
+
+    let tree = layout.layout_tree();
+    let hidden = tree
+        .root
+        .as_ref()
+        .and_then(|root| find_window(root, 2))
+        .expect("swapped fullscreen descendant");
+    assert_eq!(hidden.rect.unwrap().width, target_width);
+}
+
+#[test]
+fn swapping_fullscreen_owner_focuses_its_replacement() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::ToggleFullscreenFocused,
+    ]);
+
+    check_ops_on_layout(&mut layout, [Op::SwapWithWindow(1)]);
+
+    let workspace = layout.active_workspace().expect("active workspace");
+    assert_eq!(workspace.container_tree().focused_window_id(), Some(1));
+    assert_eq!(
+        workspace
+            .container_tree()
+            .arena()
+            .fullscreen_representative_window_id(),
+        Some(&1),
+    );
+}
+
+#[test]
+fn swapping_fullscreen_owner_to_floating_preserves_the_floating_pending_box() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::ToggleWindowFloating { id: None },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::ToggleFullscreenFocused,
+    ]);
+
+    check_ops_on_layout(&mut layout, [Op::SwapWithWindow(1)]);
+
+    let floating = layout
+        .layout_tree()
+        .floating
+        .into_iter()
+        .find(|node| node.window_id == Some(2))
+        .expect("the old fullscreen owner should occupy the floating slot");
+    let rect = floating.rect.expect("floating pending box");
+    assert!(
+        rect.width > 0.0 && rect.height > 0.0,
+        "a hidden floating arrival must retain the slot box instead of falling back to zero"
+    );
+}
+
+#[test]
+fn focus_parent_cannot_select_a_container_obstructed_by_fullscreen() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::ToggleLayoutAll,
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::ToggleFullscreenFocused,
+        Op::SplitToggle,
+        Op::SwapWithWindow(1),
+    ]);
+
+    check_ops_on_layout(&mut layout, [Op::FocusParent]);
+
+    let workspace = layout.active_workspace().expect("active workspace");
+    assert_eq!(workspace.container_tree().focused_window_id(), Some(2));
+    assert_eq!(workspace.debug_command_target(), "tiling_window");
+}
+
+#[test]
+fn unfloat_group_preserves_its_fullscreen_descendant() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::ToggleWindowFloating { id: None },
+        Op::SplitToggle,
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+    ]);
+    let floating_rect = layout.layout_tree().floating[0]
+        .rect
+        .expect("floating group box");
+    check_ops_on_layout(
+        &mut layout,
+        [
+            Op::ToggleFullscreenFocused,
+            Op::ToggleWindowFloating { id: None },
+        ],
+    );
+
+    let workspace = layout.active_workspace().expect("active workspace");
+    assert!(!workspace.is_floating(&1));
+    assert!(!workspace.is_floating(&2));
+    let fullscreen = layout
+        .windows()
+        .find(|(_, window)| *window.id() == 2)
+        .map(|(_, window)| window.pending_sizing_mode().is_fullscreen());
+    assert_eq!(fullscreen, Some(true));
+    let root = layout.layout_tree().root.expect("unfloated split");
+    let root_rect = root.rect.unwrap();
+    assert!(root_rect.width > floating_rect.width);
+}
+
+#[test]
 fn fullscreen_command_keeps_a_selected_container_as_the_authority() {
     let mut layout = check_ops([
         Op::AddOutput(1),
@@ -1292,6 +1490,76 @@ fn fullscreen_focus_down_can_move_within_fullscreen_subtree_like_sway() {
         Some(4),
         "open_window should not steal focus even when focus is on non-fullscreen leaf inside fullscreen subtree (sway parity)"
     );
+}
+
+#[test]
+fn focus_next_sibling_moves_inside_fullscreen_container_but_not_through_it() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::ToggleFullscreenFocused,
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::SplitVertical,
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+    ]);
+
+    check_ops_on_layout(
+        &mut layout,
+        [Op::FocusAlongParent {
+            forward: true,
+            descend: false,
+        }],
+    );
+    assert_eq!(layout.focus().map(|win| *win.id()), Some(3));
+
+    check_ops_on_layout(
+        &mut layout,
+        [Op::FocusAlongParent {
+            forward: true,
+            descend: false,
+        }],
+    );
+    assert_eq!(
+        layout.focus().map(|win| *win.id()),
+        Some(3),
+        "the fullscreen owner stops the ancestor walk before it can wrap or leave its subtree",
+    );
+}
+
+#[test]
+fn focus_next_can_enter_a_fullscreen_sibling_after_a_floating_swap() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::ToggleFullscreenFocused,
+        Op::SplitVertical,
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::ToggleWindowFloating { id: None },
+        Op::SwapWithWindow(1),
+    ]);
+
+    assert_eq!(layout.focus().map(|win| *win.id()), Some(2));
+    check_ops_on_layout(
+        &mut layout,
+        [Op::FocusAlongParent {
+            forward: true,
+            descend: true,
+        }],
+    );
+    assert_eq!(layout.focus().map(|win| *win.id()), Some(3));
 }
 #[test]
 fn floating_fullscreen_roundtrip_restores_floating() {

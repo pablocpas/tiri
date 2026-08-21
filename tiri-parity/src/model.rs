@@ -90,6 +90,7 @@ pub struct Window {
 pub struct Container {
     pub layout: Layout,
     pub rect: FracRect,
+    pub marks: Vec<String>,
     pub nodes: Vec<Node>,
 }
 
@@ -221,7 +222,17 @@ fn render_nodes(nodes: &[Node], depth: usize, out: &mut String) {
                 let _ = writeln!(out, "{pad}window {} {}{}", w.id, render_rect(w.rect), flags);
             }
             Node::Container(c) => {
-                let _ = writeln!(out, "{pad}{} {}", c.layout.as_str(), render_rect(c.rect));
+                let mut flags = String::new();
+                for mark in &c.marks {
+                    let _ = write!(flags, " mark:{mark}");
+                }
+                let _ = writeln!(
+                    out,
+                    "{pad}{} {}{}",
+                    c.layout.as_str(),
+                    render_rect(c.rect),
+                    flags
+                );
                 render_nodes(&c.nodes, depth + 1, out);
             }
         }
@@ -272,6 +283,9 @@ fn diff_nodes(at: &str, expected: &[Node], actual: &[Node], out: &mut Vec<Differ
                 }
                 if !e.rect.approx_eq(a.rect) {
                     push(out, &at, render_rect(e.rect), render_rect(a.rect));
+                }
+                if e.marks != a.marks {
+                    push(out, &at, format!("{:?}", e.marks), format!("{:?}", a.marks));
                 }
                 diff_nodes(&at, &e.nodes, &a.nodes, out);
             }
@@ -447,9 +461,18 @@ fn parse_node(line: &str, no: usize) -> Result<Node, ParseError> {
     }
 
     let layout = Layout::from_sway(kind).ok_or(err("unknown node kind"))?;
+    let rect = parse_rect(&mut fields, no)?;
+    let mut marks = Vec::new();
+    for flag in fields {
+        match flag.strip_prefix("mark:") {
+            Some(mark) => marks.push(mark.to_owned()),
+            None => return Err(err("unknown container flag")),
+        }
+    }
     Ok(Node::Container(Container {
         layout,
-        rect: parse_rect(&mut fields, no)?,
+        rect,
+        marks,
         nodes: Vec::new(),
     }))
 }

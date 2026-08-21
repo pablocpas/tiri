@@ -122,6 +122,28 @@ fn marks_unique_across_windows() {
     assert!(marks_for(&layout, id1).is_empty());
     assert_eq!(marks_for(&layout, id2), vec![String::from("unique_mark")]);
 }
+
+#[test]
+fn a_leaf_mark_survives_cross_workspace_detach_and_attach() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+    ]);
+
+    layout.mark_focused(String::from("travels"), MarkMode::Replace);
+    check_ops_on_layout(
+        &mut layout,
+        [Op::MoveWindowToWorkspace {
+            window_id: Some(1),
+            workspace_idx: 1,
+            focus: true,
+        }],
+    );
+
+    assert_eq!(marks_for(&layout, 1), vec![String::from("travels")]);
+}
 #[test]
 fn unmark_takes_a_named_mark_off_its_holder_and_bare_unmark_clears_every_window() {
     let options = Options::from_config(&Config::default());

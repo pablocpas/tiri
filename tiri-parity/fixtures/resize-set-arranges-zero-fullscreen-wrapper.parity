@@ -1,0 +1,39 @@
+# `resize set height` also processes the omitted current width first. Its zero horizontal
+# delta still arranges the zero-sized wrapper created under fullscreen.
+# recorded from sway version 1.12-dev
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ splitv
+workspace splitv focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splitv focus=2
+  window 1 0.000,0.000 1.000x0.500
+  window 2 0.000,0.500 1.000x0.500
+
+$ focus up
+workspace splitv focus=1
+  window 1 0.000,0.000 1.000x0.500
+  window 2 0.000,0.500 1.000x0.500
+
+$ fullscreen toggle
+workspace splitv focus=1
+  window 1 0.000,0.000 1.000x1.000
+  window 2 0.000,0.500 1.000x0.500 hidden
+
+$ layout toggle split
+workspace splitv focus=1
+  splith 0.000,0.000 0.000x0.000
+    window 1 0.000,0.000 1.000x1.000
+    window 2 0.000,0.500 1.000x0.500 hidden
+
+$ resize set height 400 px
+workspace splitv focus=1
+  splith 0.000,0.000 0.000x0.000
+    window 1 0.000,0.000 0.000x0.000
+    window 2 0.000,0.000 0.000x0.000 hidden

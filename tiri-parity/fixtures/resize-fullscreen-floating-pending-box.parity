@@ -1,0 +1,27 @@
+# A direct floating resize edits the pending box even while the root owns workspace fullscreen.
+# recorded from sway version 1.12-dev
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splith focus=2
+  window 1 0.000,0.000 0.500x1.000
+  window 2 0.500,0.000 0.500x1.000
+
+$ fullscreen toggle
+workspace splith focus=2
+  window 1 0.000,0.000 0.500x1.000 hidden
+  window 2 0.000,0.000 1.000x1.000
+
+$ floating toggle
+workspace splith focus=2
+  window 1 0.000,0.000 0.500x1.000 hidden
+  window 2 0.000,0.000 1.000x1.000 floating
+
+$ resize set width 500 px
+workspace splith focus=2
+  window 1 0.000,0.000 0.500x1.000 hidden
+  window 2 0.305,0.000 0.391x1.000 floating

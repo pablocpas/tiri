@@ -288,7 +288,9 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// answers, and belongs to a branch nobody can reach.
     fn verify_floating_region(&self) {
         let mut seen = HashSet::new();
-        for key in self.floating_roots() {
+        let mut seen_ids = HashSet::new();
+        for root in &self.floating_roots {
+            let key = root.key;
             assert!(
                 self.nodes.contains_key(key),
                 "a floating root must point to an existing node"
@@ -306,15 +308,16 @@ impl<W: LayoutElement> ContainerArena<W> {
                 seen.insert(key),
                 "a node must not be listed as a floating root twice"
             );
+            assert!(
+                seen_ids.insert(root.id),
+                "a floating reinsertion id must occur exactly once"
+            );
 
             // A view is one too: sway's `ws->floating` holds whatever was floated, so the
             // floating root is a split only when the user built one (sway/tree/container.c:1104).
-            let container = self
-                .get_any_container(key)
+            self.get_any_container(key)
                 .expect("every floating root must be a container");
-            let geometry = container
-                .floating_geometry
-                .expect("every floating root must own geometry state");
+            let geometry = root.geometry;
             let target = geometry.target;
             assert!(
                 target.loc.x.is_finite()

@@ -41,6 +41,7 @@ mod inactive_reference;
 mod insert;
 mod invariants;
 mod ipc_projection;
+mod marks;
 mod movement;
 mod paths;
 mod preview;
@@ -280,6 +281,8 @@ pub struct DetachedNode<W: LayoutElement> {
     key: NodeKey,
     sizing: NodeSizing,
     layout: Layout,
+    /// Marks belong to the addressed node and travel with it across workspace arenas.
+    marks: Vec<String>,
     /// The view this node *is*, when it is one. Mirrors `ContainerData::tile`.
     tile: Option<Tile<W>>,
     children: Vec<DetachedNode<W>>,
@@ -307,6 +310,8 @@ pub struct WorkspaceData {
 #[derive(Debug)]
 pub struct ContainerData<W: LayoutElement> {
     common: LayoutParentData,
+    /// i3/sway marks name the container node, whether it is a view or a split.
+    marks: Vec<String>,
     /// The view this node *is*, when it is one. sway's `sway_container->view`.
     ///
     /// A node holding a tile never holds children, and vice versa.
@@ -315,14 +320,36 @@ pub struct ContainerData<W: LayoutElement> {
     user_created: bool,
     /// The fractions and resize reference spans belonging to this node itself.
     sizing: NodeSizing,
-    /// The complete geometry state when this node is a floating root.
-    ///
-    /// Its presence is also the root-membership marker. `FloatingSpace` owns only stacking and
-    /// semantic metadata; it never stores a second position, size, or root collection.
-    floating_geometry: Option<FloatingGeometry>,
 }
 
-/// The single geometry authority for a floating root.
+/// Semantic provenance of one entry in the workspace's floating stack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FloatingRootKind {
+    ImplicitWindowGroup,
+    FloatedContainer,
+    WorkspaceWrapper,
+}
+
+impl FloatingRootKind {
+    pub(super) fn is_workspace_wrapper(self) -> bool {
+        self == Self::WorkspaceWrapper
+    }
+}
+
+/// The single authority for one floating branch.
+///
+/// Entries live in [`ContainerArena::floating_roots`] in top-to-bottom order. Keeping the key,
+/// stable reinsertion id, semantic provenance and complete geometry in one record means a root
+/// cannot exist in the arena without its stack slot, or vice versa.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct FloatingRoot {
+    id: u64,
+    key: NodeKey,
+    kind: FloatingRootKind,
+    geometry: FloatingGeometry,
+}
+
+/// Geometry owned by a [`FloatingRoot`] stack entry.
 ///
 /// `target` must be distinct from the last arranged `ContainerData::geometry`: completing an
 /// older transaction may replace that cache while a newer compositor target still has to be
@@ -488,6 +515,12 @@ pub(super) struct ContainerArena<W: LayoutElement> {
     /// "is the parent the workspace?" was working around its absence, and each of those
     /// workarounds disagreed with sway somewhere.
     root: NodeKey,
+    /// Floating branches in render order, topmost first.
+    ///
+    /// This is the only floating-root collection and the only owner of their geometry and
+    /// semantic metadata. `FloatingSpace` owns only transient interaction/render state.
+    floating_roots: Vec<FloatingRoot>,
+    next_floating_root_id: u64,
     /// The seat's focus: what holds it, and the order everything was last in.
     ///
     /// Behind a type with private fields because the three used to be loose values assigned
@@ -655,21 +688,22 @@ impl<W: LayoutElement> ContainerData<W> {
     pub(super) fn new(layout: Layout) -> Self {
         Self {
             common: LayoutParentData::new(layout),
+            marks: Vec::new(),
             tile: None,
             user_created: false,
             sizing: NodeSizing::default(),
-            floating_geometry: None,
         }
     }
 
     /// Create the node a window *is*.
-    pub(super) fn new_view(tile: Tile<W>) -> Self {
+    pub(super) fn new_view(mut tile: Tile<W>) -> Self {
+        let marks = tile.take_marks();
         Self {
             common: LayoutParentData::new(Layout::SplitH),
+            marks,
             tile: Some(tile),
             user_created: false,
             sizing: NodeSizing::default(),
-            floating_geometry: None,
         }
     }
 
@@ -685,8 +719,37 @@ impl<W: LayoutElement> ContainerData<W> {
         self.tile.is_some()
     }
 
-    pub(super) fn into_tile(self) -> Option<Tile<W>> {
-        self.tile
+    pub(super) fn into_tile(mut self) -> Option<Tile<W>> {
+        let mut tile = self.tile.take()?;
+        tile.replace_marks(self.marks);
+        Some(tile)
+    }
+
+    /// Split a node into the parts needed by [`DetachedNode`].
+    fn into_detached_parts(self) -> (Option<Tile<W>>, Vec<String>) {
+        (self.tile, self.marks)
+    }
+
+    pub(super) fn marks(&self) -> &[String] {
+        &self.marks
+    }
+
+    pub(super) fn has_mark(&self, mark: &str) -> bool {
+        self.marks.iter().any(|candidate| candidate == mark)
+    }
+
+    pub(super) fn add_mark(&mut self, mark: String) {
+        if !self.has_mark(&mark) {
+            self.marks.push(mark);
+        }
+    }
+
+    pub(super) fn remove_mark(&mut self, mark: &str) {
+        self.marks.retain(|candidate| candidate != mark);
+    }
+
+    pub(super) fn clear_marks(&mut self) {
+        self.marks.clear();
     }
 
     /// Where this node's fractions live: on the tile when it is a view.
@@ -744,11 +807,13 @@ impl<W: LayoutElement> DerefMut for ContainerData<W> {
 
 impl<W: LayoutElement> DetachedNode<W> {
     /// The node a window is, keeping the key it already had.
-    pub(super) fn new_view(tile: Tile<W>) -> Self {
+    pub(super) fn new_view(mut tile: Tile<W>) -> Self {
+        let marks = tile.take_marks();
         Self {
             key: tile.node_key(),
             sizing: NodeSizing::default(),
             layout: Layout::SplitH,
+            marks,
             tile: Some(tile),
             children: Vec::new(),
             focus_stack: Vec::new(),
@@ -763,6 +828,7 @@ impl<W: LayoutElement> DetachedNode<W> {
             key: NodeKey::next(),
             sizing: NodeSizing::default(),
             layout,
+            marks: Vec::new(),
             tile: None,
             children,
             focus_stack,
@@ -814,7 +880,10 @@ impl<W: LayoutElement> DetachedNode<W> {
 
     fn collect_tiles_owned(self, tiles: &mut Vec<Tile<W>>) {
         match self.tile {
-            Some(tile) => tiles.push(tile),
+            Some(mut tile) => {
+                tile.replace_marks(self.marks);
+                tiles.push(tile);
+            }
             None => {
                 for child in self.children {
                     child.collect_tiles_owned(tiles);
@@ -851,6 +920,8 @@ impl<W: LayoutElement> ContainerArena<W> {
             nodes,
             parents,
             root,
+            floating_roots: Vec::new(),
+            next_floating_root_id: 1,
             seat,
             fullscreen_key: None,
             leaf_layouts: Vec::new(),
@@ -964,6 +1035,21 @@ pub(super) fn resolved_percents(percents: &[f64], count: usize) -> Vec<f64> {
         return even;
     }
 
+    if percents.iter().any(|percent| !percent.is_finite()) {
+        // `container_resize_tiled` validates only the command target's historical
+        // `child_total_*`. A sibling that has never been arranged on this axis can therefore
+        // divide its pending span by zero. In Sway the resulting infinity contaminates the
+        // normalization: every non-last child rounds to a zero box and the last child takes
+        // the parent's remainder (sway/tree/arrange.c:15-96).
+        //
+        // Keep that observable result without retaining NaN/inf in the model, where a later
+        // renderer or invariant check would turn Sway's arithmetic edge into memory-state
+        // corruption. `[0, ..., 1]` is the finite fixed point of the boxes that pass creates.
+        let mut collapsed = vec![0.0; count];
+        collapsed[count - 1] = 1.0;
+        return collapsed;
+    }
+
     let mut resolved: Vec<f64> = percents
         .iter()
         .map(|percent| {
@@ -1004,5 +1090,16 @@ fn layout_label(layout: Layout) -> &'static str {
         Layout::SplitV => "SplitV",
         Layout::Tabbed => "Tabbed",
         Layout::Stacked => "Stacked",
+    }
+}
+
+#[cfg(test)]
+mod resolved_percent_tests {
+    use super::resolved_percents;
+
+    #[test]
+    fn a_non_finite_resize_fraction_collapses_into_the_last_child_like_sway() {
+        assert_eq!(resolved_percents(&[0.5, f64::INFINITY], 2), [0.0, 1.0]);
+        assert_eq!(resolved_percents(&[f64::NAN, 0.5, 0.5], 3), [0.0, 0.0, 1.0],);
     }
 }

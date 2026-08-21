@@ -1,0 +1,45 @@
+# `focus parent` cannot select a real container outside the workspace-fullscreen subtree.
+# recorded from sway version 1.12-dev
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ layout toggle all
+workspace splith focus=1
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splith focus=2
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.500
+    window 2 0.000,0.500 1.000x0.500
+
+$ fullscreen toggle
+workspace splith focus=2
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.500 hidden
+    window 2 0.000,0.000 1.000x1.000
+
+$ split toggle
+workspace splith focus=2
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.500 hidden
+    splith 0.000,0.000 1.000x1.000
+      window 2 0.000,0.000 1.000x1.000
+
+$ swap container with 1
+workspace splith focus=2
+  splitv 0.000,0.000 1.000x1.000
+    window 2 0.000,0.000 1.000x0.500 hidden
+    splith 0.000,0.500 1.000x0.500
+      window 1 0.000,0.500 1.000x0.500
+
+$ focus parent
+workspace splith focus=2
+  splitv 0.000,0.000 1.000x1.000
+    window 2 0.000,0.000 1.000x0.500 hidden
+    splith 0.000,0.500 1.000x0.500
+      window 1 0.000,0.500 1.000x0.500

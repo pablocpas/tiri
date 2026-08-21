@@ -41,12 +41,22 @@ impl<W: LayoutElement> ContainerArena<W> {
             }
 
             let parent_key = self.parent_of(container_key);
-            let was_selected = self.selected_key() == Some(container_key);
+            let inherits_fullscreen_selection = self.selected_key() == Some(container_key)
+                && self.fullscreen_key.is_some_and(|fullscreen| {
+                    container_key == fullscreen || self.is_descendant(container_key, fullscreen)
+                });
             if let Some(parent_key) = parent_key {
-                if was_selected {
+                if inherits_fullscreen_selection {
+                    // Fullscreen destruction is the measured exception: selection walks up
+                    // the emptied fullscreen chain and can finish on the workspace itself.
+                    // `reconcile_focus_after_change` preserves that workspace selection while
+                    // replacing its inactive leaf.
                     self.seat.redirect_selection(Some(parent_key));
                     self.seat.unregister(container_key);
                 } else {
+                    // Ordinary destruction does not make a selected node's parent inherit
+                    // focus. The shared unregister path also preserves Sway's raw focus-order
+                    // side effect when this container was not selected.
                     self.unregister_unfocused_node(container_key, parent_key);
                 }
             }

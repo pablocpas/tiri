@@ -72,9 +72,10 @@ const SWAY_MIN_TILED_HEIGHT: f64 = 60.0;
 
 /// Workspace-wide container arena and the state shared by its tiled and floating branches.
 ///
-/// This is deliberately not the tiled side: both sides store their nodes in `arena`, share the
-/// tab-bar cache and render projections, and keep stable node identity while crossing sides.
-/// Tiled-only interaction state lives in [`TilingSpace`].
+/// This is deliberately not the tiled side: both sides store their nodes in `arena`, which also
+/// owns the single floating-root stack and its geometry. They share tab-bar/render projections
+/// and keep stable node identity while crossing sides. Tiled-only interaction state lives in
+/// [`TilingSpace`].
 #[derive(Debug)]
 pub struct ContainerTree<W: LayoutElement> {
     /// Stable arena shared by the tiled and floating branches.
@@ -334,6 +335,118 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     pub(super) fn arena_mut(&mut self) -> &mut ContainerArena<W> {
         &mut self.arena
+    }
+
+    pub(super) fn holds_node(&self, key: NodeKey) -> bool {
+        self.arena.holds_node(key)
+    }
+
+    pub(super) fn node_has_mark(&self, key: NodeKey, mark: &str) -> bool {
+        self.arena.node_has_mark(key, mark)
+    }
+
+    pub(super) fn add_mark_to_node(&mut self, key: NodeKey, mark: String) -> bool {
+        self.arena.add_mark_to_node(key, mark)
+    }
+
+    pub(super) fn remove_mark_from_node(&mut self, key: NodeKey, mark: &str) -> bool {
+        self.arena.remove_mark_from_node(key, mark)
+    }
+
+    pub(super) fn clear_marks_on_node(&mut self, key: NodeKey) -> bool {
+        self.arena.clear_marks_on_node(key)
+    }
+
+    pub(super) fn remove_mark_everywhere(&mut self, mark: &str) {
+        self.arena.remove_mark_everywhere(mark);
+    }
+
+    pub(super) fn clear_marks_everywhere(&mut self) {
+        self.arena.clear_marks_everywhere();
+    }
+
+    pub(super) fn window_id_with_mark(&self, mark: &str) -> Option<W::Id> {
+        let key = self.arena.node_with_mark(mark)?;
+        self.arena
+            .representative_window_for_node(key)
+            .map(|window| window.id().clone())
+    }
+
+    pub(super) fn swap_selected_with_mark(&mut self, mark: &str) -> bool {
+        let Some(target) = self.arena.node_with_mark(mark) else {
+            return false;
+        };
+        self.swap_selected_nodes(target)
+    }
+
+    /// Arrange the two parents that `container_swap` leaves behind.
+    ///
+    /// sway's command calls `arrange_node` on each new parent, not
+    /// `arrange_workspace`. That distinction is observable when the exchanged nodes live
+    /// below a fullscreen ancestor: both parent containers retain their zero pending boxes.
+    /// A workspace parent still expands to the regular whole-workspace arrange.
+    fn arrange_swapped_parents(&mut self, selected: NodeKey, target: NodeKey) {
+        let current_parent = self.arena.parent_of(selected);
+        let other_parent = self.arena.parent_of(target);
+        let workspace = self.arena.workspace_root();
+
+        let mut arrange = |parent| {
+            if parent == workspace {
+                self.arena.layout();
+            } else {
+                self.arena.layout_container_subtree(parent);
+            }
+        };
+        if let Some(parent) = current_parent {
+            arrange(parent);
+        }
+        if let Some(parent) = other_parent.filter(|parent| Some(*parent) != current_parent) {
+            arrange(parent);
+        }
+        self.arena.readdress_leaf_layouts();
+        // `arrange_container` computes visibility inside that subtree. IPC visibility still
+        // includes tabbed/stacked ancestors above it, which may not have been part of either
+        // arrange (notably a fullscreen wrapper swapped inside a zero-sized stack).
+        self.arena.refresh_focus_visibility();
+    }
+
+    fn swap_selected_nodes(&mut self, target: NodeKey) -> bool {
+        let Some(selected) = self.arena.selected_node_key() else {
+            return false;
+        };
+        if !self.arena.swap_nodes(selected, target) {
+            return false;
+        }
+        self.arrange_swapped_parents(selected, target);
+        true
+    }
+
+    fn swap_selected_at_floating_boundary(&mut self, target: NodeKey) -> bool {
+        let Some(selected) = self.arena.selected_node_key() else {
+            return false;
+        };
+        if !self.arena.swap_nodes_at_floating_boundary(selected, target) {
+            return false;
+        }
+        self.arrange_swapped_parents(selected, target);
+        true
+    }
+
+    pub(super) fn swap_selected_with_window_at_floating_boundary(
+        &mut self,
+        target: &W::Id,
+    ) -> bool {
+        let Some(target) = self.arena.window_key(target) else {
+            return false;
+        };
+        self.swap_selected_at_floating_boundary(target)
+    }
+
+    pub(super) fn swap_selected_with_mark_at_floating_boundary(&mut self, mark: &str) -> bool {
+        let Some(target) = self.arena.node_with_mark(mark) else {
+            return false;
+        };
+        self.swap_selected_at_floating_boundary(target)
     }
 
     /// The tiled side's cached leaf layouts. The floating groups are branches of the same
@@ -1689,15 +1802,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         direction: Direction,
         allow_wrap: bool,
     ) -> bool {
-        // A fullscreen node is the exact boundary for directional focus: focus can move among
-        // descendants of a fullscreen container, but never inspect one of its siblings. A
-        // fullscreen leaf is a one-node branch and therefore cannot move at all.
-        let fullscreen_scope = self.tiled_fullscreen_key();
-
-        if let Some(scope) = fullscreen_scope {
-            self.arena
-                .focus_in_direction_in_branch(scope, direction, false)
-        } else if !allow_wrap {
+        // The arena walk checks fullscreen at each ancestor exactly where sway does. That is
+        // deliberately not a preselected scope: a node outside fullscreen may enter the
+        // fullscreen sibling directly, while a descendant cannot climb through its owner.
+        if !allow_wrap {
             self.arena.focus_in_direction_no_wrap(direction)
         } else {
             self.arena.focus_in_direction(direction)
@@ -1738,9 +1846,6 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// sway's `focus next|prev [sibling]`.
     pub fn focus_along_parent(&mut self, forward: bool, descend: bool) -> bool {
-        if self.has_fullscreen_window() {
-            return false;
-        }
         self.arena.focus_along_parent(forward, descend)
     }
 
@@ -1751,10 +1856,35 @@ impl<W: LayoutElement> ContainerTree<W> {
             // the fullscreen node as the focus boundary; treating any fullscreen presence
             // as a blanket no-op also blocked `focus parent` after a fullscreen leaf had
             // been wrapped by `split`.
-            return self.arena.select_parent_in(fullscreen_key);
+            if self.arena.command_position_is_in(fullscreen_key) {
+                return self.arena.select_parent_in(fullscreen_key);
+            }
+            if self.focus_parent_is_obstructed_by_fullscreen() {
+                return false;
+            }
         }
 
         self.arena.select_parent()
+    }
+
+    /// Whether sway would reject the prospective real-container parent as fullscreen-obscured.
+    ///
+    /// A workspace node is not a container and remains focusable, which is why a top-level
+    /// sibling outside fullscreen can still climb to the workspace. Any real parent outside
+    /// the fullscreen subtree is rejected by `container_obstructing_fullscreen_container`.
+    pub(super) fn focus_parent_is_obstructed_by_fullscreen(&self) -> bool {
+        let Some(fullscreen) = self.arena.fullscreen_key() else {
+            return false;
+        };
+        let Some(position) = self.arena.selected_node_key() else {
+            return false;
+        };
+        if self.arena.is_descendant(position, fullscreen) {
+            return false;
+        }
+        self.arena
+            .parent_of(position)
+            .is_some_and(|parent| parent != self.arena.workspace_root())
     }
 
     /// Handle `focus parent` inside this branch's fullscreen boundary.
@@ -1772,6 +1902,9 @@ impl<W: LayoutElement> ContainerTree<W> {
         else {
             return false;
         };
+        if !self.arena.command_position_is_in(fullscreen) {
+            return false;
+        }
         let _ = self.arena.select_parent_in(fullscreen);
         true
     }
@@ -1870,8 +2003,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         if target == self.arena.workspace_root() {
             return false;
         }
-        self.tiled_fullscreen_key()
-            .is_some_and(|fullscreen| self.arena.is_descendant(target, fullscreen))
+        // `container_move_in_direction` refuses the container whose fullscreen mode is set,
+        // not every descendant inside a fullscreen container. Descendants may rearrange
+        // within that boundary; `move_node` stops them if climbing would cross the owner.
+        self.tiled_fullscreen_key() == Some(target)
     }
 
     // Move operations using ContainerTree
@@ -3165,31 +3300,73 @@ impl<W: LayoutElement> ContainerTree<W> {
         );
     }
 
-    /// Apply one semantic resize request to a tiled target.
+    /// Resolve a window-addressed resize and apply it to that container node.
     pub fn resize_window(&mut self, window: Option<&W::Id>, request: ResizeRequest) {
-        let (change, layout, reach) = match request {
+        let Some(target) = self.window_target(window) else {
+            return;
+        };
+        self.resize_node(target, request);
+    }
+
+    /// Apply one semantic tiled resize to an explicit node in either layout branch.
+    pub(super) fn resize_node(&mut self, target: NodeKey, request: ResizeRequest) {
+        match request {
             ResizeRequest::Axis {
                 axis: ResizeAxis::Horizontal,
                 change,
-            } => (change, Layout::SplitH, ResizeReach::Siblings),
+            } => {
+                let is_set = matches!(
+                    change,
+                    SizeChange::SetFixed(_) | SizeChange::SetProportion(_)
+                );
+                self.resize_node_with_reach(target, change, Layout::SplitH, ResizeReach::Siblings);
+                if is_set {
+                    // `resize set width` fills the omitted height with the target's current
+                    // pending height and processes it second. The resulting zero delta still
+                    // snaps fractions and arranges a matching vertical ancestor in sway.
+                    self.resize_node_with_reach(
+                        target,
+                        SizeChange::AdjustFixed(0),
+                        Layout::SplitV,
+                        ResizeReach::Siblings,
+                    );
+                }
+            }
             ResizeRequest::Axis {
                 axis: ResizeAxis::Vertical,
                 change,
-            } => (change, Layout::SplitV, ResizeReach::Siblings),
+            } => {
+                let is_set = matches!(
+                    change,
+                    SizeChange::SetFixed(_) | SizeChange::SetProportion(_)
+                );
+                if is_set {
+                    // sway parses `resize set` as a width-and-height command even when only
+                    // height was written. Width is processed first with its current value,
+                    // and a zero delta is observable because it arranges the resize parent.
+                    self.resize_node_with_reach(
+                        target,
+                        SizeChange::AdjustFixed(0),
+                        Layout::SplitH,
+                        ResizeReach::Siblings,
+                    );
+                }
+                self.resize_node_with_reach(target, change, Layout::SplitV, ResizeReach::Siblings);
+            }
             ResizeRequest::Edge { direction, amount } => {
                 let reach = if direction.is_leading() {
                     ResizeReach::Before
                 } else {
                     ResizeReach::After
                 };
-                (
+                self.resize_node_with_reach(
+                    target,
                     SizeChange::AdjustFixed(amount),
                     direction.split_layout(),
                     reach,
-                )
+                );
             }
-        };
-        self.resize_window_with_reach(window, change, layout, reach);
+        }
     }
 
     /// Resize a window's share within its nearest ancestor split along `layout`'s axis.
@@ -3198,16 +3375,16 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// extent, and the amount is taken from the siblings. Both halves are somewhere else —
     /// `percent_from_size_change` reads the request, `resize_child` moves the space — so this
     /// is only the sentence that joins them.
-    fn resize_window_with_reach(
+    fn resize_node_with_reach(
         &mut self,
-        window: Option<&W::Id>,
+        key: NodeKey,
         change: SizeChange,
         layout: Layout,
         reach: ResizeReach,
     ) {
-        let Some(key) = self.window_target(window) else {
+        if !self.arena.holds_node(key) || key == self.arena.workspace_root() {
             return;
-        };
+        }
         let Some((parent_key, child_idx, available, child_count, _)) =
             self.resize_container_metrics(key, layout, reach)
         else {
@@ -3421,7 +3598,10 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// sway's `swap container with`: exchange the selected node and the window `target`.
     pub fn swap_selected_with_window(&mut self, target: &W::Id) -> bool {
-        self.mutate_tree(|tree| tree.swap_selected_with_window(target))
+        let Some(target) = self.arena.window_key(target) else {
+            return false;
+        };
+        self.swap_selected_nodes(target)
     }
 
     pub fn start_open_animation(&mut self, id: &W::Id) -> bool {

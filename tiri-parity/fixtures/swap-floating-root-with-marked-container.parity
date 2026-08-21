@@ -1,0 +1,40 @@
+# A structural mark swaps the complete marked wrapper into the floating-list slot.
+# recorded from sway version 1.12-dev
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ layout toggle all
+workspace splith focus=1
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+
+$ focus parent
+workspace splith focus=@0
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+
+$ mark m1
+workspace splith focus=@0
+  splitv 0.000,0.000 1.000x1.000 mark:m1
+    window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splith focus=2
+  splitv 0.000,0.000 0.500x1.000 mark:m1
+    window 1 0.000,0.000 0.500x1.000
+  window 2 0.500,0.000 0.500x1.000
+
+$ floating toggle
+workspace splith focus=2
+  splitv 0.000,0.000 1.000x1.000 mark:m1
+    window 1 0.000,0.000 1.000x1.000
+  window 2 0.344,0.292 0.312x0.417 floating
+
+$ swap container with mark m1
+workspace splith focus=2
+  window 2 0.000,0.000 1.000x1.000
+  splitv 0.344,0.292 0.312x0.417 mark:m1
+    window 1 0.344,0.292 0.312x0.417 floating

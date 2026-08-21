@@ -335,7 +335,7 @@ fn resize_to_different_then_same() {
 }
 
 #[test]
-fn restore_floating_size() {
+fn refloating_recalculates_natural_size() {
     let (mut f, id, surface) = set_up();
 
     f.niri().layout.toggle_window_floating(None);
@@ -370,10 +370,11 @@ fn restore_floating_size() {
     f.niri().layout.toggle_window_floating(None);
     f.double_roundtrip(id);
 
-    // We should get a configure restoring out previous 200 × 200 size.
+    // Like sway, re-floating recalculates the natural size instead of retaining the previous
+    // floating resize.
     assert_snapshot!(
         f.client(id).window(&surface).format_recent_configures(),
-        @"size: 200 × 200, bounds: 1920 × 1080, states: [Activated]"
+        @"size: 100 × 100, bounds: 1920 × 1080, states: [Activated]"
     );
 }
 
@@ -905,10 +906,11 @@ window-rule {
     f.niri().layout.toggle_window_floating(None);
     f.double_roundtrip(id);
 
-    // Width is clamped by max-width on re-floating too.
+    // Re-floating starts from the natural width again, then applies min/max rules. The natural
+    // 100-pixel width is therefore clamped to the 200-pixel minimum.
     assert_snapshot!(
         f.client(id).window(&surface).format_recent_configures(),
-        @"size: 300 × 100, bounds: 1920 × 1080, states: [Activated]"
+        @"size: 200 × 100, bounds: 1920 × 1080, states: [Activated]"
     );
 }
 

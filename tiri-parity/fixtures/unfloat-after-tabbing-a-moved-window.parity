@@ -1,0 +1,45 @@
+# A floating round-trip must preserve the wrapper built by `move right` under a tabbed parent.
+# recorded from sway version 1.12-dev
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ layout toggle all
+workspace splith focus=1
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splith focus=2
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.500
+    window 2 0.000,0.500 1.000x0.500
+
+$ move right
+workspace splith focus=2
+  splitv 0.000,0.000 0.500x1.000
+    window 1 0.000,0.000 0.500x1.000
+  window 2 0.500,0.000 0.500x1.000
+
+$ layout tabbed
+workspace splith focus=2
+  tabbed 0.000,0.000 1.000x1.000
+    splitv 0.000,0.064 1.000x0.936
+      window 1 0.000,0.032 1.000x0.968 hidden
+    window 2 0.000,0.032 1.000x0.968
+
+$ floating toggle
+workspace splith focus=2
+  tabbed 0.000,0.000 1.000x1.000
+    splitv 0.000,0.064 1.000x0.936
+      window 1 0.000,0.032 1.000x0.968
+  window 2 0.344,0.292 0.312x0.417 floating
+
+$ floating toggle
+workspace splith focus=2
+  tabbed 0.000,0.000 1.000x1.000
+    splitv 0.000,0.064 1.000x0.936
+      window 1 0.000,0.032 1.000x0.968 hidden
+    window 2 0.000,0.032 1.000x0.968

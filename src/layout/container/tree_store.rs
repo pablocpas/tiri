@@ -1,6 +1,6 @@
 //! Workspace-local node storage primitives: raw node access and parent links.
 
-use smithay::utils::{Logical, Rectangle};
+use smithay::utils::{Logical, Point, Rectangle};
 
 use super::ContainerArena;
 use super::ContainerData;
@@ -238,6 +238,65 @@ impl<W: LayoutElement> ContainerArena<W> {
                     .unwrap_or_default(),
             ),
             NodeData::Container(container) => Some(container.geometry()),
+        }
+    }
+
+    /// Replace the pending node box without arranging its parent.
+    ///
+    /// Sway mutates these boxes directly during operations such as `container_swap` and an
+    /// unfloat. A view's node box lives in the leaf-layout cache while a real container owns
+    /// it directly; callers should not need to know which representation a stable node key
+    /// currently names.
+    pub(in crate::layout) fn set_node_geometry(
+        &mut self,
+        key: NodeKey,
+        geometry: Rectangle<f64, Logical>,
+    ) -> bool {
+        if self.get_node(key).is_some_and(|node| node.is_view()) {
+            let Some(info) = self.leaf_layouts.iter_mut().find(|info| info.key == key) else {
+                return false;
+            };
+            info.node_rect = geometry;
+            return true;
+        }
+
+        let Some(container) = self.get_real_container_mut(key) else {
+            return false;
+        };
+        container.set_geometry(geometry);
+        true
+    }
+
+    /// Translate every pending box in a subtree without arranging it.
+    ///
+    /// Floating movement in sway is a recursive mutation: the root container, every nested
+    /// split and every view/content box move by the same delta. Updating only the floating
+    /// root target and relying on a later workspace arrange loses the movement whenever that
+    /// branch is hidden behind another fullscreen subtree, because the arrange deliberately
+    /// does not visit it.
+    ///
+    /// sway/tree/container.c:1128-1144 (`container_floating_translate`)
+    pub(super) fn translate_subtree_geometry(&mut self, key: NodeKey, delta: Point<f64, Logical>) {
+        let children = self
+            .get_container(key)
+            .map(|container| container.children().to_vec())
+            .unwrap_or_default();
+
+        if self.get_node(key).is_some_and(|node| node.is_view()) {
+            if let Some(info) = self.leaf_layouts.iter_mut().find(|info| info.key == key) {
+                // `node_rect` is sway's pending container box; `rect` is the corresponding
+                // content/render box. `container_floating_translate` changes both.
+                info.node_rect.loc += delta;
+                info.rect.loc += delta;
+            }
+        } else if let Some(container) = self.get_real_container_mut(key) {
+            let mut geometry = container.geometry();
+            geometry.loc += delta;
+            container.set_geometry(geometry);
+        }
+
+        for child in children {
+            self.translate_subtree_geometry(child, delta);
         }
     }
 

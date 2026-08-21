@@ -1,0 +1,60 @@
+# A swap across the tiling/floating boundary exchanges pending node boxes even while fullscreen
+# prevents the arriving floating branch from being arranged.
+# recorded from sway version 1.12-dev
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ mark m1
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000 mark:m1
+
+$ floating toggle
+workspace splith focus=1
+  window 1 0.344,0.292 0.312x0.417 floating mark:m1
+
+$ open
+workspace splith focus=2
+  window 2 0.000,0.000 1.000x1.000
+  window 1 0.344,0.292 0.312x0.417 floating mark:m1
+
+$ layout toggle split
+workspace splith focus=2
+  splitv 0.000,0.000 1.000x1.000
+    window 2 0.000,0.000 1.000x1.000
+  window 1 0.344,0.292 0.312x0.417 floating mark:m1
+
+$ focus parent
+workspace splith focus=@0
+  splitv 0.000,0.000 1.000x1.000
+    window 2 0.000,0.000 1.000x1.000
+  window 1 0.344,0.292 0.312x0.417 floating mark:m1
+
+$ focus parent
+workspace splith focus=@
+  splitv 0.000,0.000 1.000x1.000
+    window 2 0.000,0.000 1.000x1.000
+  window 1 0.344,0.292 0.312x0.417 floating mark:m1
+
+$ open
+workspace splith focus=3
+  splitv 0.000,0.000 0.500x1.000
+    window 2 0.000,0.000 0.500x1.000
+  window 3 0.500,0.000 0.500x1.000
+  window 1 0.344,0.292 0.312x0.417 floating mark:m1
+
+$ fullscreen toggle
+workspace splith focus=3
+  splitv 0.000,0.000 0.500x1.000
+    window 2 0.000,0.000 0.500x1.000 hidden
+  window 3 0.000,0.000 1.000x1.000
+  window 1 0.344,0.292 0.312x0.417 hidden floating mark:m1
+
+$ swap container with mark m1
+workspace splith focus=1
+  splitv 0.000,0.000 0.500x1.000
+    window 2 0.000,0.000 0.500x1.000 hidden
+  window 1 0.000,0.000 1.000x1.000 mark:m1
+  window 3 0.344,0.292 0.312x0.417 hidden floating

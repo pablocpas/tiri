@@ -270,7 +270,7 @@ pub struct LayoutTreeNode {
     /// Whether this leaf window is currently in the scratchpad.
     #[serde(default)]
     pub is_scratchpad: bool,
-    /// Marks attached to this leaf window.
+    /// Marks attached to this container node, whether it is a window or a split.
     #[serde(default)]
     pub marks: Vec<String>,
     /// Rectangle of this node in workspace-view logical coordinates.
@@ -452,7 +452,7 @@ pub enum Action {
     },
     /// Show the scratchpad window (toggle if already visible).
     ScratchpadShow {},
-    /// Mark the focused window.
+    /// Mark the focused container, which may be a window or a structural split.
     Mark {
         /// Mark name.
         #[cfg_attr(feature = "clap", arg())]
@@ -464,9 +464,9 @@ pub enum Action {
     },
     /// Remove marks.
     Unmark {
-        /// Mark name to remove, from whichever window holds it.
+        /// Mark name to remove, from whichever container holds it.
         ///
-        /// If `None`, removes every mark from every window, which is what i3's bare
+        /// If `None`, removes every mark from every container, which is what i3's bare
         /// `unmark` does.
         #[cfg_attr(feature = "clap", arg())]
         name: Option<String>,
@@ -1332,17 +1332,17 @@ pub enum ColumnDisplay {
     Tabbed,
 }
 
-/// Marking mode for the focused window.
+/// Marking mode for the focused container.
 #[derive(Serialize, Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum MarkMode {
-    /// Replace marks on the focused window with the provided mark.
+    /// Replace marks on the focused container with the provided mark.
     #[default]
     Replace,
-    /// Add the mark to the focused window without clearing other marks.
+    /// Add the mark to the focused container without clearing other marks.
     Add,
-    /// Toggle the mark on the focused window.
+    /// Toggle the mark on the focused container.
     Toggle,
 }
 

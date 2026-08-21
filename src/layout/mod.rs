@@ -54,8 +54,8 @@ use tiri_config::{
 use tiri_ipc::{ColumnDisplay, LayoutTree, PositionChange, SizeChange, WindowLayout};
 use workspace::{WorkspaceAddWindowTarget, WorkspaceId, WorkspaceLifetime};
 
-use self::container::InsertParentInfo;
 pub use self::container::{Direction, Layout as ContainerLayout};
+use self::container::{InsertParentInfo, NodeKey};
 pub use self::monitor::MonitorRenderElement;
 use self::monitor::{Monitor, WorkspaceSwitch};
 use self::seat_focus::{SeatFocusNode, SeatFocusStack};
@@ -4755,60 +4755,64 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn mark_focused(&mut self, mark: String, mode: MarkMode) {
-        let Some(focused) = self.focus().map(|win| win.id().clone()) else {
+        let Some(target) = self.active_mark_target_key() else {
             return;
         };
 
-        let has_mark = self.tile_has_mark(&focused, &mark);
+        let has_mark = self.node_has_mark(target, &mark);
         if matches!(mode, MarkMode::Toggle) && has_mark {
-            self.remove_mark_from_tile(&focused, &mark);
+            self.remove_mark_from_node(target, &mark);
             return;
         }
 
         if matches!(mode, MarkMode::Replace) {
-            self.clear_marks_on_tile(&focused);
+            self.clear_marks_on_node(target);
         }
 
         self.remove_mark_everywhere(&mark);
-        self.add_mark_to_tile(&focused, mark);
+        self.add_mark_to_node(target, mark);
     }
 
-    /// The window carrying `mark`, if any.
+    /// A representative window below the node carrying `mark`, if any.
     ///
-    /// A mark names at most one window: [`Self::mark_focused`] takes it off everything else
-    /// before granting it, which is i3's rule and what makes a mark usable as an address.
+    /// Marks name containers, including structural ones. Callers that only need an output can
+    /// use the focused descendant without weakening the mark's actual node identity.
     pub fn window_id_with_mark(&self, mark: &str) -> Option<W::Id> {
-        if let Some(tile) = self.scratchpad.tiles().find(|tile| tile.has_mark(mark)) {
-            return Some(tile.window().id().clone());
-        }
-
-        for mon in self.monitors() {
-            if let Some(tile) = mon.sticky_tiles().find(|tile| tile.has_mark(mark)) {
-                return Some(tile.window().id().clone());
+        if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
+            if move_.tile.has_mark(mark) {
+                return Some(move_.tile.window().id().clone());
             }
         }
 
-        self.workspaces().find_map(|(_, _, ws)| {
-            ws.tiles()
-                .find(|tile| tile.has_mark(mark))
-                .map(|tile| tile.window().id().clone())
-        })
+        if let Some(id) = self.scratchpad.window_id_with_mark(mark) {
+            return Some(id);
+        }
+
+        if let Some(id) = self
+            .monitors()
+            .find_map(|monitor| monitor.sticky_window_id_with_mark(mark))
+        {
+            return Some(id);
+        }
+
+        self.workspaces()
+            .find_map(|(_, _, ws)| ws.window_id_with_mark(mark))
     }
 
     /// sway's `swap container with mark <mark>`.
     pub fn swap_window_with_mark(&mut self, mark: &str) -> bool {
-        let Some(target) = self.window_id_with_mark(mark) else {
+        let Some(workspace) = self.active_workspace_mut() else {
             return false;
         };
-        self.swap_window_with(&target)
+        workspace.swap_selected_with_mark(mark)
     }
 
-    /// i3's `unmark`: named, it takes that mark off whichever window holds it; bare, it
+    /// i3's `unmark`: named, it takes that mark off whichever container holds it; bare, it
     /// clears every mark in the layout.
     ///
-    /// The bare form really is the sweeping one — `sway/commands/unmark.c` says "remove all
-    /// marks from all views", and it is the criteria in front of the command, which tiri has
-    /// no equivalent of, that narrows it to one window. Clearing only the focused window's
+    /// The bare form really is the sweeping one — `sway/commands/unmark.c` walks every
+    /// container, and it is the criteria in front of the command, which tiri has no
+    /// equivalent of, that narrows it to one target. Clearing only the focused container's
     /// marks would leave no way to say the thing the command exists to say.
     pub fn unmark(&mut self, mark: Option<&str>) {
         match mark {
@@ -7230,105 +7234,111 @@ impl<W: LayoutElement> Layout<W> {
         moving_window.chain(rest).chain(sticky).chain(scratchpad)
     }
 
-    fn tile_has_mark(&self, id: &W::Id, mark: &str) -> bool {
-        if self
-            .scratchpad
-            .tiles()
-            .any(|tile| tile.window().id() == id && tile.has_mark(mark))
+    fn active_mark_target_key(&self) -> Option<NodeKey> {
+        self.active_monitor_ref()?.active_mark_target_key()
+    }
+
+    fn node_has_mark(&self, key: NodeKey, mark: &str) -> bool {
+        self.scratchpad.node_has_mark(key, mark)
+            || self
+                .monitors()
+                .any(|monitor| monitor.sticky_node_has_mark(key, mark))
+            || self
+                .workspaces()
+                .any(|(_, _, workspace)| workspace.node_has_mark(key, mark))
+    }
+
+    fn add_mark_to_node(&mut self, key: NodeKey, mark: String) {
+        if self.scratchpad.holds_node(key) {
+            let _ = self.scratchpad.add_mark_to_node(key, mark);
+            return;
+        }
+
+        if let Some(monitor) = self
+            .monitors_mut()
+            .find(|monitor| monitor.sticky_holds_node(key))
         {
-            return true;
+            let _ = monitor.add_mark_to_sticky_node(key, mark);
+            return;
         }
 
-        if self.monitors().any(|mon| {
-            mon.sticky_tiles()
-                .any(|tile| tile.window().id() == id && tile.has_mark(mark))
-        }) {
-            return true;
-        }
-
-        self.workspaces().any(|(_, _, ws)| {
-            ws.tiles()
-                .any(|tile| tile.window().id() == id && tile.has_mark(mark))
-        })
-    }
-
-    fn with_tile_mut_by_id<F>(&mut self, id: &W::Id, f: F) -> bool
-    where
-        F: FnOnce(&mut Tile<W>),
-    {
-        let mut f = Some(f);
-
-        if let Some(tile) = self
-            .scratchpad
-            .tiles_mut()
-            .find(|tile| tile.window().id() == id)
+        if let Some(workspace) = self
+            .workspaces_mut()
+            .find(|workspace| workspace.holds_node(key))
         {
-            f.take().unwrap()(tile);
-            return true;
+            let _ = workspace.add_mark_to_node(key, mark);
         }
-
-        for mon in self.monitors_mut() {
-            if let Some(tile) = mon.sticky_tiles_mut().find(|tile| tile.window().id() == id) {
-                f.take().unwrap()(tile);
-                return true;
-            }
-        }
-
-        for ws in self.workspaces_mut() {
-            if let Some(tile) = ws.tiles_mut().find(|tile| tile.window().id() == id) {
-                f.take().unwrap()(tile);
-                return true;
-            }
-        }
-
-        false
     }
 
-    fn add_mark_to_tile(&mut self, id: &W::Id, mark: String) {
-        let _ = self.with_tile_mut_by_id(id, |tile| tile.add_mark(mark));
+    fn remove_mark_from_node(&mut self, key: NodeKey, mark: &str) {
+        if self.scratchpad.holds_node(key) {
+            let _ = self.scratchpad.remove_mark_from_node(key, mark);
+            return;
+        }
+
+        if let Some(monitor) = self
+            .monitors_mut()
+            .find(|monitor| monitor.sticky_holds_node(key))
+        {
+            let _ = monitor.remove_mark_from_sticky_node(key, mark);
+            return;
+        }
+
+        if let Some(workspace) = self
+            .workspaces_mut()
+            .find(|workspace| workspace.holds_node(key))
+        {
+            let _ = workspace.remove_mark_from_node(key, mark);
+        }
     }
 
-    fn remove_mark_from_tile(&mut self, id: &W::Id, mark: &str) {
-        let _ = self.with_tile_mut_by_id(id, |tile| tile.remove_mark(mark));
-    }
+    fn clear_marks_on_node(&mut self, key: NodeKey) {
+        if self.scratchpad.holds_node(key) {
+            let _ = self.scratchpad.clear_marks_on_node(key);
+            return;
+        }
 
-    fn clear_marks_on_tile(&mut self, id: &W::Id) {
-        let _ = self.with_tile_mut_by_id(id, |tile| tile.clear_marks());
+        if let Some(monitor) = self
+            .monitors_mut()
+            .find(|monitor| monitor.sticky_holds_node(key))
+        {
+            let _ = monitor.clear_marks_on_sticky_node(key);
+            return;
+        }
+
+        if let Some(workspace) = self
+            .workspaces_mut()
+            .find(|workspace| workspace.holds_node(key))
+        {
+            let _ = workspace.clear_marks_on_node(key);
+        }
     }
 
     fn clear_marks_everywhere(&mut self) {
-        for tile in self.scratchpad.tiles_mut() {
-            tile.clear_marks();
+        if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
+            move_.tile.clear_marks();
         }
 
+        self.scratchpad.clear_marks_everywhere();
         for mon in self.monitors_mut() {
-            for tile in mon.sticky_tiles_mut() {
-                tile.clear_marks();
-            }
+            mon.clear_sticky_marks();
         }
-
         for ws in self.workspaces_mut() {
-            for tile in ws.tiles_mut() {
-                tile.clear_marks();
-            }
+            ws.clear_marks_everywhere();
         }
     }
 
     fn remove_mark_everywhere(&mut self, mark: &str) {
-        for tile in self.scratchpad.tiles_mut() {
-            tile.remove_mark(mark);
+        if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
+            move_.tile.remove_mark(mark);
         }
 
+        self.scratchpad.remove_mark_everywhere(mark);
         for mon in self.monitors_mut() {
-            for tile in mon.sticky_tiles_mut() {
-                tile.remove_mark(mark);
-            }
+            mon.remove_mark_from_sticky(mark);
         }
-
         for ws in self.workspaces_mut() {
-            for tile in ws.tiles_mut() {
-                tile.remove_mark(mark);
-            }
+            ws.remove_mark_everywhere(mark);
         }
     }
 

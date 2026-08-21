@@ -1,0 +1,29 @@
+# A selected inner split accepts mapped siblings even when its root came from the workspace.
+# recorded from sway version 1.12-dev
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ focus parent
+workspace splith focus=@
+  window 1 0.000,0.000 1.000x1.000
+
+$ floating toggle
+workspace splith focus=@0
+  splith 0.250,0.125 0.500x0.750
+    window 1 0.250,0.125 0.500x0.750 floating
+
+$ split toggle
+workspace splith focus=@0/0
+  splitv 0.250,0.125 0.500x0.750
+    splith 0.250,0.125 0.500x0.750
+      window 1 0.250,0.125 0.500x0.750 floating
+
+$ open
+workspace splith focus=2
+  splitv 0.250,0.125 0.500x0.750
+    splith 0.250,0.125 0.500x0.375
+      window 1 0.250,0.125 0.500x0.375 floating
+    window 2 0.250,0.500 0.500x0.375 floating

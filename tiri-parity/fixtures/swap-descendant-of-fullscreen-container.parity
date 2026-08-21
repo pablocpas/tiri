@@ -1,0 +1,42 @@
+# `swap` arranges the exchanged nodes' parents rather than the whole workspace. Below a
+# fullscreen ancestor, those parents therefore retain the zero pending boxes sway gave them.
+# recorded from sway version 1.12-dev
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ fullscreen toggle
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+  window 2 0.000,0.000 0.000x0.000 hidden
+
+$ focus parent
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+  window 2 0.000,0.000 0.000x0.000 hidden
+
+$ layout stacking
+workspace splith focus=1
+  stacked 0.000,0.000 0.000x0.000
+    window 1 0.000,0.000 1.000x1.000
+    window 2 0.000,0.064 0.000x-0.064 hidden
+
+$ split horizontal
+workspace splith focus=1
+  stacked 0.000,0.000 0.000x0.000
+    splith 0.000,0.000 1.000x1.000
+      window 1 0.000,0.000 1.000x1.000
+    window 2 0.000,0.064 0.000x-0.064 hidden
+
+$ swap container with 2
+workspace splith focus=1
+  stacked 0.000,0.000 0.000x0.000
+    splith 0.000,0.064 0.000x-0.064
+      window 2 0.000,0.064 0.000x0.000 hidden
+    window 1 0.000,0.064 0.000x-0.064 hidden

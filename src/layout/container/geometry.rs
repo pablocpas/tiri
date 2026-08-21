@@ -100,11 +100,26 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// sway's `arrange_container`: arrange one real container against the pending box it is
     /// currently holding, without applying the workspace fullscreen branch first.
     pub(in crate::layout) fn layout_container_subtree(&mut self, key: NodeKey) {
-        if self.get_container(key).is_none() {
+        let Some(area) = self.node_geometry(key) else {
+            return;
+        };
+        self.layout_container_subtree_in(key, area);
+    }
+
+    /// sway's `arrange_container` after its caller has just edited the pending box.
+    ///
+    /// A direct floating resize can do this while the same node owns workspace fullscreen.
+    /// The edited box, not a fresh fullscreen workspace arrange, is then observable in IPC.
+    pub(in crate::layout) fn layout_container_subtree_in(
+        &mut self,
+        key: NodeKey,
+        area: Rectangle<f64, Logical>,
+    ) {
+        if self.get_node(key).is_none() || key == self.root {
             return;
         }
         self.generation = self.generation.wrapping_add(1);
-        self.layout_atomic(true, Some(key));
+        self.layout_atomic(true, Some((key, area)));
     }
 
     pub(in crate::layout) fn layout_area(&self) -> Rectangle<f64, Logical> {
@@ -261,7 +276,11 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.fullscreen_key = Some(new_key);
     }
 
-    fn layout_atomic(&mut self, animate_resize: bool, subtree: Option<NodeKey>) {
+    fn layout_atomic(
+        &mut self,
+        animate_resize: bool,
+        subtree: Option<(NodeKey, Rectangle<f64, Logical>)>,
+    ) {
         self.apply_pending_layouts_if_ready();
         if !self.pending_layouts.is_empty() {
             // A branch still waiting is not re-arranged: this call only records that another
@@ -305,7 +324,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                     .chain(self.floating_roots().collect::<Vec<_>>())
                     .collect::<Vec<_>>()
             },
-            |key| vec![key],
+            |(key, _)| vec![key],
         );
         for key in resolve_roots {
             if !waiting.contains(&self.branch_root(key)) {
@@ -315,12 +334,10 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         let mut requested = false;
         let arrangements = match subtree {
-            Some(key) => self.node_geometry(key).map_or_else(Vec::new, |area| {
-                vec![(
-                    self.branch_root(key),
-                    self.collect_branch_layout_data(key, area),
-                )]
-            }),
+            Some((key, area)) => vec![(
+                self.branch_root(key),
+                self.collect_branch_layout_data(key, area),
+            )],
             None => self.arrange_each_branch(),
         };
         for (branch, data) in arrangements {
@@ -890,10 +907,23 @@ impl<W: LayoutElement> ContainerArena<W> {
                 let lengths = self.distribute_split_lengths(available, child_count, percents);
 
                 let mut cursor = if horizontal { rect.loc.x } else { rect.loc.y };
+                let end = if horizontal {
+                    rect.loc.x + rect.size.w
+                } else {
+                    rect.loc.y + rect.size.h
+                };
                 let mut rects = Vec::with_capacity(child_count);
                 for idx in 0..child_count {
-                    let length = *lengths.get(idx).unwrap_or(&0.0);
-                    let child_rect = if horizontal {
+                    // Sway computes the last child's size from the cursor after every earlier
+                    // minimum-size collapse, not from the nominal fraction remainder. An
+                    // earlier child narrower/shorter than 10 px becomes 0x0 and therefore
+                    // leaves its unused span to that last child.
+                    let length = if idx + 1 == child_count {
+                        (end - cursor).max(0.0)
+                    } else {
+                        *lengths.get(idx).unwrap_or(&0.0)
+                    };
+                    let mut child_rect = if horizontal {
                         Rectangle::new(
                             Point::from((cursor, rect.loc.y)),
                             Size::from((length, rect.size.h)),
@@ -904,8 +934,20 @@ impl<W: LayoutElement> ContainerArena<W> {
                             Size::from((rect.size.w, length)),
                         )
                     };
+                    // `apply_horiz_layout` and `apply_vert_layout` clear both dimensions when
+                    // either one falls below their hard 10 px layout floor. Keeping the cross
+                    // axis here produced a 0x720 pending node where Sway reports 0x0.
+                    //
+                    // sway/tree/arrange.c:75-96,160-181
+                    if child_rect.size.w < 10.0 || child_rect.size.h < 10.0 {
+                        child_rect.size = Size::from((0.0, 0.0));
+                    }
                     rects.push(child_rect);
-                    cursor += length + gap;
+                    cursor += if horizontal {
+                        child_rect.size.w
+                    } else {
+                        child_rect.size.h
+                    } + gap;
                 }
                 (rects, 0.0)
             }

@@ -1,0 +1,27 @@
+# A client commit must not replace an explicit floating container's outer size with its content size.
+# recorded from sway version 1.12-dev
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ layout toggle splith tabbed stacking splitv
+workspace splith focus=1
+  tabbed 0.000,0.000 1.000x1.000
+    window 1 0.000,0.032 1.000x0.968
+
+$ focus parent
+workspace splith focus=@0
+  tabbed 0.000,0.000 1.000x1.000
+    window 1 0.000,0.032 1.000x0.968
+
+$ floating toggle
+workspace splith focus=@0
+  tabbed 0.250,0.125 0.500x0.750
+    window 1 0.250,0.157 0.500x0.718 floating
+
+$ resize grow up 150 px
+workspace splith focus=@0
+  tabbed 0.250,-0.083 0.500x0.958
+    window 1 0.250,-0.051 0.500x0.926 floating

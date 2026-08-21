@@ -84,6 +84,17 @@ impl<W: LayoutElement> ContainerArena<W> {
             .then_some(key)
     }
 
+    /// Whether the node sway would put in the command handler lives in this subtree.
+    ///
+    /// A selected container is the command target even though keyboard focus remains on a
+    /// descendant view. Falling back to that leaf while a container is selected changes the
+    /// meaning of both `focus parent` and directional focus.
+    pub(in crate::layout) fn command_position_is_in(&self, scope_root: NodeKey) -> bool {
+        self.seat
+            .node()
+            .is_some_and(|key| self.is_descendant(key, scope_root))
+    }
+
     /// sway's `seat_set_focus` on a container: it becomes the selection *and* the most recent
     /// thing focused, ancestry included.
     ///
@@ -162,15 +173,25 @@ impl<W: LayoutElement> ContainerArena<W> {
             .or_else(|| self.focus_inactive_view_in_branch(branch_root))
     }
 
-    /// `focus parent` inside one branch. Its root has no parent, so the walk stops there.
-    pub(in crate::layout) fn select_parent_in(&mut self, branch_root: NodeKey) -> bool {
-        let Some(base_key) = self.branch_position(branch_root) else {
+    /// `focus parent` inside one subtree. Its root is the boundary, so the walk stops there.
+    ///
+    /// This accepts both a whole layout branch and a nested workspace-fullscreen scope. Using
+    /// `branch_position` here discarded a valid selected descendant of the latter because its
+    /// owning branch is still the workspace rather than the fullscreen node.
+    pub(in crate::layout) fn select_parent_in(&mut self, scope_root: NodeKey) -> bool {
+        let in_scope = |key| self.is_descendant(key, scope_root);
+        let Some(base_key) = self
+            .selected_key()
+            .filter(|key| in_scope(*key))
+            .or_else(|| self.focused_key().filter(|key| in_scope(*key)))
+            .or_else(|| self.focus_inactive_view(scope_root))
+        else {
             return false;
         };
         let Some(parent_key) = self.parent_of(base_key) else {
             return false;
         };
-        if !self.is_descendant(parent_key, branch_root) {
+        if !self.is_descendant(parent_key, scope_root) {
             return false;
         }
         self.select_node(parent_key);
@@ -211,20 +232,24 @@ impl<W: LayoutElement> ContainerArena<W> {
         let Some(selected_key) = self.selected_node_key() else {
             return false;
         };
-        let Some(parent_layout) = self
-            .parent_of(selected_key)
-            .and_then(|parent_key| self.get_container(parent_key).map(|parent| parent.layout()))
-        else {
+        let Some(direction) = self.direction_along_parent(selected_key, forward) else {
             return false;
         };
 
-        let direction = match (parent_layout.is_horizontal(), forward) {
+        self.clear_focus_history();
+        self.focus_in_direction_from_until(selected_key, direction, true, descend, None)
+    }
+
+    fn direction_along_parent(&self, key: NodeKey, forward: bool) -> Option<Direction> {
+        let parent_layout = self
+            .parent_of(key)
+            .and_then(|parent_key| self.get_container(parent_key).map(|parent| parent.layout()))?;
+        Some(match (parent_layout.is_horizontal(), forward) {
             (true, true) => Direction::Right,
             (true, false) => Direction::Left,
             (false, true) => Direction::Down,
             (false, false) => Direction::Up,
-        };
-        self.focus_in_direction_with(direction, true, descend)
+        })
     }
 
     pub(super) fn focus_in_direction_internal(
@@ -242,10 +267,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         descend: bool,
     ) -> bool {
         self.clear_focus_history();
-        if self.is_empty() {
-            return false;
-        }
-
         let Some(selected_key) = self.selected_node_key() else {
             return false;
         };
@@ -291,6 +312,13 @@ impl<W: LayoutElement> ContainerArena<W> {
         // before considering the branch root's parent; crossing it would leave the branch.
         let mut current = selected_key;
         while boundary != Some(current) {
+            // Sway tests fullscreen on the node currently being climbed, not as a global
+            // scope chosen before the walk. Descendants may therefore move among themselves,
+            // and an exterior sibling may enter a fullscreen container directly; only trying
+            // to climb through the fullscreen owner stops the search (and suppresses wrap).
+            if self.fullscreen_key == Some(current) {
+                return false;
+            }
             let Some(parent_key) = self.parent_of(current) else {
                 break;
             };

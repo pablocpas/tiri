@@ -13,9 +13,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Sway's `split none`: flatten the target's single-child parent, continuing through
     /// single-child container ancestors but never through the workspace.
     ///
-    /// The returned key is the branch root after the operation. Tiri needs that answer because
-    /// a floating group keeps its stacking metadata outside the arena, while sway can replace
-    /// the top-level floating container directly in the workspace list.
+    /// The returned key is the branch root after the operation.
     pub(in crate::layout) fn unsplit_target(&mut self, target_key: NodeKey) -> Option<NodeKey> {
         if target_key == self.root || self.get_node(target_key).is_none() {
             return None;
@@ -45,14 +43,12 @@ impl<W: LayoutElement> ContainerArena<W> {
                 // split alike — the exact reverse of the wrapper `container_split` builds.
                 // Transfer only the root-owned geometry; all subtree state remains on the
                 // child NodeKey.
-                let old_floating_geometry = self
-                    .get_any_container_mut(container_key)?
-                    .floating_geometry
-                    .take()?;
+                let root_idx = self.floating_root_index(container_key)?;
+                let working_area = self.floating_roots[root_idx].geometry.working_area;
                 let child_area = self.node_geometry(child_key)?;
-                let floating_geometry =
-                    FloatingGeometry::new(old_floating_geometry.working_area, child_area);
-                self.get_any_container_mut(child_key)?.floating_geometry = Some(floating_geometry);
+                self.floating_roots[root_idx].key = child_key;
+                self.floating_roots[root_idx].geometry =
+                    FloatingGeometry::new(working_area, child_area);
                 self.set_parent(child_key, Some(self.root));
                 self.transfer_fullscreen_to_replacement(container_key, child_key);
                 if self.selected_key() == Some(container_key) {
@@ -350,7 +346,15 @@ impl<W: LayoutElement> ContainerArena<W> {
         if self.branch_root(selected_key) == selected_key
             && self.branch_is_addressable(selected_key)
         {
-            return self.split_branch_root(selected_key, layout);
+            // A floating root occupies a workspace floating-list slot. sway's
+            // `container_split` always replaces that slot with a new split container and
+            // puts the selected root below it; changing the selected root's own layout would
+            // destroy tabbed/stacked semantics instead of adding the requested split.
+            let mut wrapper = ContainerData::new(layout);
+            wrapper.mark_user_created();
+            return self
+                .wrap_floating_root_in_new_container(selected_key, wrapper)
+                .is_some();
         }
 
         let Some(parent_key) = self.parent_of(selected_key) else {
@@ -417,6 +421,14 @@ impl<W: LayoutElement> ContainerArena<W> {
         let previous = self.root_container_layout();
         match self.wrap_workspace_children(previous, layout) {
             Some(wrapper_key) => {
+                // This wrapper came from the user's `split` command, not from Tiri's need to
+                // give a lone floating view a group root. That distinction becomes observable
+                // if the selected wrapper is floated and returned: sway keeps the explicit
+                // container, whereas `unfloat_group` is allowed to dissolve only an implicit
+                // one-window wrapper.
+                self.get_real_container_mut(wrapper_key)
+                    .expect("workspace split wrapper")
+                    .mark_user_created();
                 self.select_container(wrapper_key);
                 true
             }
@@ -770,13 +782,5 @@ impl<W: LayoutElement> ContainerArena<W> {
             return false;
         };
         container.child_count() > 1 || container.is_user_container()
-    }
-
-    /// Whether the focused container should accept new splits.
-    pub(in crate::layout) fn focused_container_allows_splits(&self) -> bool {
-        let Some(focused_key) = self.effective_focused_key() else {
-            return false;
-        };
-        self.container_of_allows_splits(focused_key)
     }
 }

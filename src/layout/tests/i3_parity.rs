@@ -1012,6 +1012,29 @@ fn i3_129_focus_after_close_prefers_focus_stack_leaf() {
         "after closing the bottom leaf, focus should return to top-right MRU leaf",
     );
 }
+
+#[test]
+fn closing_a_selected_container_does_not_select_its_parent() {
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::SplitToggle,
+        Op::FocusParent,
+        Op::ToggleSplitLayout,
+        Op::CloseFocused,
+    ]);
+
+    let workspace = layout.active_workspace().expect("active workspace");
+    assert_eq!(layout.focus().map(|window| *window.id()), Some(1));
+    assert_eq!(workspace.debug_command_target(), "tiling_window");
+    assert!(!workspace.container_tree().selected_is_container());
+}
+
 #[test]
 fn i3_129_kill_workspace_closes_tiling_and_floating_windows() {
     let mut layout = check_ops([

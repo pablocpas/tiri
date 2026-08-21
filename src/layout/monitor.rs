@@ -523,7 +523,8 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     fn sticky_is_visible(&self) -> bool {
-        !self.sticky_floating.is_empty() && self.active_workspace_ref().is_floating_visible()
+        !self.sticky_floating.is_empty(&self.sticky_containers)
+            && self.active_workspace_ref().is_floating_visible()
     }
 
     pub fn has_sticky_window(&self, window: &W::Id) -> bool {
@@ -533,6 +534,50 @@ impl<W: LayoutElement> Monitor<W> {
 
     pub fn sticky_is_active(&self) -> bool {
         self.sticky_is_active
+    }
+
+    pub(super) fn active_mark_target_key(&self) -> Option<NodeKey> {
+        if self.sticky_is_active {
+            let key = self
+                .sticky_containers
+                .arena()
+                .selected_node_key()
+                .unwrap_or_else(|| self.sticky_containers.arena().workspace_root());
+            return (key != self.sticky_containers.arena().workspace_root()).then_some(key);
+        }
+        self.active_workspace_ref().mark_target_key()
+    }
+
+    pub(super) fn sticky_holds_node(&self, key: NodeKey) -> bool {
+        self.sticky_containers.holds_node(key)
+    }
+
+    pub(super) fn sticky_node_has_mark(&self, key: NodeKey, mark: &str) -> bool {
+        self.sticky_containers.node_has_mark(key, mark)
+    }
+
+    pub(super) fn add_mark_to_sticky_node(&mut self, key: NodeKey, mark: String) -> bool {
+        self.sticky_containers.add_mark_to_node(key, mark)
+    }
+
+    pub(super) fn remove_mark_from_sticky_node(&mut self, key: NodeKey, mark: &str) -> bool {
+        self.sticky_containers.remove_mark_from_node(key, mark)
+    }
+
+    pub(super) fn clear_marks_on_sticky_node(&mut self, key: NodeKey) -> bool {
+        self.sticky_containers.clear_marks_on_node(key)
+    }
+
+    pub(super) fn remove_mark_from_sticky(&mut self, mark: &str) {
+        self.sticky_containers.remove_mark_everywhere(mark);
+    }
+
+    pub(super) fn clear_sticky_marks(&mut self) {
+        self.sticky_containers.clear_marks_everywhere();
+    }
+
+    pub(super) fn sticky_window_id_with_mark(&self, mark: &str) -> Option<W::Id> {
+        self.sticky_containers.window_id_with_mark(mark)
     }
 
     pub fn sticky_active_window_id(&self) -> Option<&W::Id> {
@@ -2678,7 +2723,7 @@ impl<W: LayoutElement> Monitor<W> {
                     // the normal pass.
                     if layer.is_normal()
                         && ws.id() == active_ws_id
-                        && !self.sticky_floating.is_empty()
+                        && !self.sticky_floating.is_empty(&self.sticky_containers)
                     {
                         let view_rect = Rectangle::from_size(self.view_size);
                         let sticky_focus_ring = focus_ring && self.sticky_is_active;

@@ -152,6 +152,7 @@ fn convert(
     Ok(Node::Container(Container {
         layout,
         rect: frac(node.rect, area),
+        marks: node.marks.clone(),
         nodes,
     }))
 }

@@ -1,0 +1,122 @@
+# Swapping across nested stacked branches keeps the branch containing the focused view active.
+# recorded from sway version 1.12-dev
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splith focus=2
+  window 1 0.000,0.000 0.500x1.000
+  window 2 0.500,0.000 0.500x1.000
+
+$ layout splitv
+workspace splith focus=2
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.500
+    window 2 0.000,0.500 1.000x0.500
+
+$ focus parent
+workspace splith focus=@0
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.500
+    window 2 0.000,0.500 1.000x0.500
+
+$ split vertical
+workspace splitv focus=@0
+  splitv 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x0.500
+    window 2 0.000,0.500 1.000x0.500
+
+$ layout toggle all
+workspace splitv focus=@0/0
+  stacked 0.000,0.000 1.000x1.000
+    splitv 0.000,0.064 1.000x0.936
+      window 1 0.000,0.032 1.000x0.485
+      window 2 0.000,0.517 1.000x0.483
+
+$ open
+workspace splitv focus=3
+  stacked 0.000,0.000 1.000x1.000
+    splitv 0.000,0.128 1.000x0.872
+      window 1 0.000,0.064 1.000x0.468 hidden
+      window 2 0.000,0.532 1.000x0.468 hidden
+    window 3 0.000,0.064 1.000x0.936
+
+$ open
+workspace splitv focus=4
+  stacked 0.000,0.000 1.000x1.000
+    splitv 0.000,0.192 1.000x0.808
+      window 1 0.000,0.096 1.000x0.453 hidden
+      window 2 0.000,0.549 1.000x0.451 hidden
+    window 3 0.000,0.096 1.000x0.904 hidden
+    window 4 0.000,0.096 1.000x0.904
+
+$ open
+workspace splitv focus=5
+  stacked 0.000,0.000 1.000x1.000
+    splitv 0.000,0.256 1.000x0.744
+      window 1 0.000,0.128 1.000x0.436 hidden
+      window 2 0.000,0.564 1.000x0.436 hidden
+    window 3 0.000,0.128 1.000x0.872 hidden
+    window 4 0.000,0.128 1.000x0.872 hidden
+    window 5 0.000,0.128 1.000x0.872
+
+$ move left
+workspace splith focus=5
+  window 5 0.000,0.000 0.500x1.000
+  splitv 0.500,0.000 0.500x1.000
+    stacked 0.500,0.000 0.500x1.000
+      splitv 0.500,0.192 0.500x0.808
+        window 1 0.500,0.096 0.500x0.453 hidden
+        window 2 0.500,0.549 0.500x0.451 hidden
+      window 3 0.500,0.096 0.500x0.904 hidden
+      window 4 0.500,0.096 0.500x0.904
+
+$ focus next
+workspace splith focus=4
+  window 5 0.000,0.000 0.500x1.000
+  splitv 0.500,0.000 0.500x1.000
+    stacked 0.500,0.000 0.500x1.000
+      splitv 0.500,0.192 0.500x0.808
+        window 1 0.500,0.096 0.500x0.453 hidden
+        window 2 0.500,0.549 0.500x0.451 hidden
+      window 3 0.500,0.096 0.500x0.904 hidden
+      window 4 0.500,0.096 0.500x0.904
+
+$ split toggle
+workspace splith focus=4
+  window 5 0.000,0.000 0.500x1.000
+  splitv 0.500,0.000 0.500x1.000
+    stacked 0.500,0.000 0.500x1.000
+      splitv 0.500,0.192 0.500x0.808
+        window 1 0.500,0.096 0.500x0.453 hidden
+        window 2 0.500,0.549 0.500x0.451 hidden
+      window 3 0.500,0.096 0.500x0.904 hidden
+      splitv 0.500,0.192 0.500x0.808
+        window 4 0.500,0.096 0.500x0.904
+
+$ layout stacking
+workspace splith focus=4
+  window 5 0.000,0.000 0.500x1.000
+  splitv 0.500,0.000 0.500x1.000
+    stacked 0.500,0.000 0.500x1.000
+      splitv 0.500,0.192 0.500x0.808
+        window 1 0.500,0.096 0.500x0.453 hidden
+        window 2 0.500,0.549 0.500x0.451 hidden
+      window 3 0.500,0.096 0.500x0.904 hidden
+      stacked 0.500,0.192 0.500x0.808
+        window 4 0.500,0.128 0.500x0.872
+
+$ swap container with 1
+workspace splith focus=4
+  window 5 0.000,0.000 0.500x1.000
+  splitv 0.500,0.000 0.500x1.000
+    stacked 0.500,0.000 0.500x1.000
+      splitv 0.500,0.192 0.500x0.808
+        window 4 0.500,0.096 0.500x0.453
+        window 2 0.500,0.549 0.500x0.451
+      window 3 0.500,0.096 0.500x0.904 hidden
+      stacked 0.500,0.192 0.500x0.808
+        window 1 0.500,0.128 0.500x0.872 hidden

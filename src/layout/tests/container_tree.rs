@@ -2,7 +2,7 @@ use insta::assert_snapshot;
 use proptest::prelude::*;
 
 use super::super::container::{
-    ContainerArena, ContainerData, Direction, Layout as ContainerLayout,
+    ContainerArena, ContainerData, Direction, FloatingRootKind, Layout as ContainerLayout,
 };
 use super::super::tile::Tile;
 use super::*;
@@ -1988,7 +1988,12 @@ fn floating_a_subtree_keeps_its_identity() {
     let box_of_its_own = Rectangle::new(Point::from((100.0, 50.0)), Size::from((300.0, 200.0)));
     let floating_root = harness
         .tree
-        .float_as_group(key, box_of_its_own)
+        .float_as_group(
+            key,
+            box_of_its_own,
+            0,
+            FloatingRootKind::ImplicitWindowGroup,
+        )
         .expect("the window should become a floating group");
     // Arranged before asking: a detach leaves the siblings' fractions raw on purpose, and the
     // arrange pass is what resolves them. Checking in between asks the tree to be settled
@@ -2048,7 +2053,12 @@ fn a_floating_branch_is_arranged_in_its_own_rectangle() {
     let box_of_its_own = Rectangle::new(Point::from((100.0, 50.0)), Size::from((300.0, 200.0)));
     let floating_root = harness
         .tree
-        .float_as_group(key, box_of_its_own)
+        .float_as_group(
+            key,
+            box_of_its_own,
+            0,
+            FloatingRootKind::ImplicitWindowGroup,
+        )
         .expect("the window should become a floating group");
     harness.tree.layout();
 
@@ -2085,7 +2095,12 @@ fn one_pass_arranges_the_tiled_side_and_the_floating_side() {
     let box_of_its_own = Rectangle::new(Point::from((120.0, 60.0)), Size::from((240.0, 180.0)));
     harness
         .tree
-        .float_as_group(floated_leaf, box_of_its_own)
+        .float_as_group(
+            floated_leaf,
+            box_of_its_own,
+            0,
+            FloatingRootKind::ImplicitWindowGroup,
+        )
         .expect("the window should become a floating group");
     harness.tree.layout();
     harness.tree.verify_invariants();
@@ -2133,7 +2148,7 @@ fn a_branch_answers_for_itself_and_the_leaf_sweep_answers_for_both() {
     let area = Rectangle::new(Point::from((0.0, 0.0)), Size::from((200.0, 200.0)));
     let floating_root = harness
         .tree
-        .float_as_group(floated_leaf, area)
+        .float_as_group(floated_leaf, area, 0, FloatingRootKind::ImplicitWindowGroup)
         .expect("the window should become a floating group");
     harness.tree.layout();
 
