@@ -93,12 +93,6 @@ pub enum FocusRingState {
     Urgent,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContainerSelectionStyle {
-    Tiling,
-    Floating,
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn render_container_selection<R: NiriRenderer>(
     renderer: &mut R,
@@ -108,14 +102,12 @@ pub fn render_container_selection<R: NiriRenderer>(
     is_active: bool,
     focus_ring: tiri_config::FocusRing,
     border: tiri_config::Border,
-    style: ContainerSelectionStyle,
     push: &mut dyn FnMut(FocusRingRenderElement),
 ) {
     if !rect.overlaps(clip_rect) {
         return;
     }
 
-    let using_border_fallback = focus_ring.off || focus_ring.width <= 0.0;
     let mut ring_config = container_selection_config(focus_ring, border);
     ring_config.width = round_logical_in_physical_max1(scale, ring_config.width);
     let mut ring = FocusRing::new(ring_config);
@@ -139,60 +131,24 @@ pub fn render_container_selection<R: NiriRenderer>(
         .to_physical_precise_round(output_scale)
         .to_logical(output_scale);
 
+    // The lane lives inside the node's box.
+    //
+    // A selection rect is a container's box, and a container's box is flush with its
+    // siblings': sway gives a floating container no inner gaps at all, and a workspace with
+    // `gaps 0` none either. Anything painted outside the box therefore lands on the
+    // neighbour, and which of the two you see is decided by the order the tree happens to
+    // be walked in. Inside, it is the node's own to paint, always.
+    //
+    // This is the same lane the border occupies, which is what i3 draws for the state of a
+    // node and where `container_selection_config` falls back when the ring is off.
     let width = ring.width();
-    let style_is_tiling = style == ContainerSelectionStyle::Tiling;
-    if style_is_tiling && using_border_fallback && width > 0.0 {
-        // Match tile border semantics: occupy the existing border lane, not an
-        // extra outer lane. This makes container selection replace gray border
-        // visually in tiling.
+    if width > 0.0 {
         let inset_x = width.min(rect.size.w / 2.0);
         let inset_y = width.min(rect.size.h / 2.0);
         rect.loc.x += inset_x;
         rect.loc.y += inset_y;
         rect.size.w = (rect.size.w - inset_x * 2.0).max(0.0);
         rect.size.h = (rect.size.h - inset_y * 2.0).max(0.0);
-    } else if style_is_tiling && width > 0.0 {
-        // Keep the ring external by default. Optionally move clipped sides inward
-        // so the selection border stays visible even when the container touches
-        // the clip bounds.
-        let eps = 0.5;
-        let clip_right = clip_rect.loc.x + clip_rect.size.w;
-        let clip_bottom = clip_rect.loc.y + clip_rect.size.h;
-        let rect_right = rect.loc.x + rect.size.w;
-        let rect_bottom = rect.loc.y + rect.size.h;
-
-        let clipped_left = (rect.loc.x - clip_rect.loc.x).abs() <= eps;
-        let clipped_top = (rect.loc.y - clip_rect.loc.y).abs() <= eps;
-        let clipped_right = (rect_right - clip_right).abs() <= eps;
-        let clipped_bottom = (rect_bottom - clip_bottom).abs() <= eps;
-
-        if clipped_left || clipped_top || clipped_right || clipped_bottom {
-            let inset_left = if clipped_left {
-                width.min(rect.size.w / 2.0)
-            } else {
-                0.0
-            };
-            let inset_right = if clipped_right {
-                width.min(rect.size.w / 2.0)
-            } else {
-                0.0
-            };
-            let inset_top = if clipped_top {
-                width.min(rect.size.h / 2.0)
-            } else {
-                0.0
-            };
-            let inset_bottom = if clipped_bottom {
-                width.min(rect.size.h / 2.0)
-            } else {
-                0.0
-            };
-
-            rect.loc.x += inset_left;
-            rect.loc.y += inset_top;
-            rect.size.w = (rect.size.w - inset_left - inset_right).max(0.0);
-            rect.size.h = (rect.size.h - inset_top - inset_bottom).max(0.0);
-        }
     }
 
     if rect.size.w <= 0.0 || rect.size.h <= 0.0 {

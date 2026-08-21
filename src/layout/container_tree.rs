@@ -30,8 +30,7 @@ use super::container::{
     ResizeDelta, ResizeReach, ResizeSpace, ResizeTarget,
 };
 use super::focus_ring::{
-    render_container_selection, ContainerSelectionStyle, FocusRingEdges, FocusRingIndicatorEdge,
-    FocusRingRenderElement,
+    render_container_selection, FocusRingEdges, FocusRingIndicatorEdge, FocusRingRenderElement,
 };
 use super::legacy_column::{Column, ColumnWidth};
 use super::monitor::{InsertPosition, SplitIndicator};
@@ -668,6 +667,27 @@ impl<W: LayoutElement> ContainerTree<W> {
             });
         }
 
+        // A tabbed or stacked container shows one child at a time, so the leaves under it
+        // add up to that child's box and nothing else — the same box a plain focused window
+        // would have. Selecting the container then looked exactly like selecting the window
+        // inside it. Its tab bar is the part of it that is always on screen and always its
+        // own, so the selection reaches up over it: what is highlighted is the whole
+        // switcher, which is what `focus parent` selected.
+        if let Some((layout, geometry, _)) = self.arena.container_info(key) {
+            if matches!(layout, Layout::Tabbed | Layout::Stacked) {
+                bounds = Some(match bounds {
+                    Some(acc) => {
+                        let top = acc.loc.y.min(geometry.loc.y);
+                        Rectangle::new(
+                            Point::from((acc.loc.x, top)),
+                            Size::from((acc.size.w, acc.loc.y + acc.size.h - top)),
+                        )
+                    }
+                    None => geometry,
+                });
+            }
+        }
+
         bounds.or_else(|| self.arena.container_info(key).map(|(_, rect, _)| rect))
     }
 
@@ -1216,7 +1236,6 @@ impl<W: LayoutElement> ContainerTree<W> {
                     selection_is_active,
                     self.options().layout.focus_ring,
                     selection_border,
-                    ContainerSelectionStyle::Tiling,
                     &mut |elem| elements.push(ContainerTreeRenderElement::ContainerSelection(elem)),
                 );
             }

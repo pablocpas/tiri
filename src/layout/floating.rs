@@ -18,9 +18,7 @@ use super::container::{
     InactiveTilingReference, InsertParentInfo, Layout, NodeKey, TabBarInfo,
 };
 use super::container_tree::{percent_from_size_change, ContainerTree, LeafFrameInfo, TileConfig};
-use super::focus_ring::{
-    render_container_selection, ContainerSelectionStyle, FocusRingEdges, FocusRingRenderElement,
-};
+use super::focus_ring::{render_container_selection, FocusRingEdges, FocusRingRenderElement};
 use super::legacy_column::ColumnWidth;
 use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
 use super::workspace::{InteractiveResize, ResolvedSize};
@@ -2928,7 +2926,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
                         containers.side_is_active(true),
                         containers.options().layout.focus_ring,
                         containers.options().layout.border,
-                        ContainerSelectionStyle::Floating,
                         &mut |elem| {
                             elements.push(FloatingSpaceRenderElement::ContainerSelection(elem))
                         },

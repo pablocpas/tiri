@@ -791,9 +791,18 @@ impl<W: LayoutElement> Tile<W> {
             1. - expanded_progress as f32,
         );
 
-        let radius = radius.expanded_by(self.focus_ring.width() as f32);
+        // The ring draws inside the tile's box, in the lane just outside the border's.
+        //
+        // niri puts it outside, which holds while every tile is separated by a gap. In a
+        // tree it is not: a container gives its children no gap at all when it is floating,
+        // and a workspace need not have one either, so an outward ring lands on the
+        // neighbour. Nothing may leave the node's box.
+        let ring_width = self.focus_ring.width();
+        let mut ring_size = animated_tile_size;
+        ring_size.w = (ring_size.w - ring_width * 2.).max(0.);
+        ring_size.h = (ring_size.h - ring_width * 2.).max(0.);
         self.focus_ring.update_render_elements(
-            animated_tile_size,
+            ring_size,
             state,
             !draw_focus_ring_with_background,
             edges,
@@ -1781,8 +1790,12 @@ impl<W: LayoutElement> Tile<W> {
         // semitransparent bars in maximized state (which is a bit weird) and in the overview (also
         // a bit weird).
         if focus_ring && expanded_progress < 1. {
-            self.focus_ring
-                .render(ctx.renderer, location, &mut |elem| push(elem.into()));
+            let width = self.focus_ring.width();
+            self.focus_ring.render(
+                ctx.renderer,
+                location + Point::from((width, width)),
+                &mut |elem| push(elem.into()),
+            );
         }
 
         if expanded_progress < 1. {
