@@ -113,7 +113,12 @@ input {
 // https://github.com/pablocpas/tiri/blob/main/docs/wiki/Configuration:-Layout.md
 layout {
     // Set gaps around windows in logical pixels.
-    gaps 16
+    //
+    // 8, not niri's 16: the border below lives inside each window's box and adds
+    // 4 px per side, so `gap + 4 + 4` is what actually separates two windows'
+    // contents. 8 puts that back at niri's 16 px rhythm, with half of it colored
+    // by the focus state instead of empty.
+    gaps 8
 
     // You can customize the widths that "switch-preset-column-width" (Mod+R) toggles between.
     preset-column-widths {
@@ -147,10 +152,20 @@ layout {
     // Alternatively, you can override it with a window rule called
     // `draw-border-with-background`.
 
-    // You can change how the focus ring looks.
+    // The focus ring is off: the border below is tiri's one decoration lane.
+    //
+    // The ring is drawn outside a window's box and only around the focused one.
+    // Neither holds up in a tree: a lane that marks focus has to be drawn on
+    // *every* window for `focused-inactive` to mean anything, and once it is, it
+    // has to sit inside the box or it paints over the neighbour — inside a
+    // container the boxes are flush, because sway gives floating containers no
+    // gaps. Inside the box, drawn always: that is the border.
+    //
+    // Turning it back on is supported; it just puts a second lane on the focused
+    // window.
     focus-ring {
-        // Uncomment this line to disable the focus ring.
-        // off
+        off
+
 
         // How many logical pixels the ring extends out from the windows.
         width 4
@@ -203,38 +218,59 @@ layout {
         border-width 1
         font "monospace 10"
 
-        active-bg "#285577"
-        inactive-bg "#222222"
-        urgent-bg "#900000"
-        active-fg "#ffffff"
-        inactive-fg "#888888"
+        // A tab and the border of the window it points at are the same color, the way
+        // i3 gives `focused` one value for both `background` and `child_border`: together
+        // they read as a single frame. Same hue-206 ramp as the `border` block.
+        active-bg "#7fc8ff"
+        focused-inactive-bg "#638cab"
+        inactive-bg "#505050"
+        urgent-bg "#9b0000"
+        active-fg "#103050"
+        focused-inactive-fg "#e6edf3"
+        inactive-fg "#d0d0d0"
         urgent-fg "#ffffff"
-        separator-color "#000000"
-        active-border "#4C7899"
-        inactive-border "#333333"
-        urgent-border "#2F343A"
+        separator-color "#2a2a2a"
+        active-border "#2e9ef4"
+        focused-inactive-border "#4b789b"
+        inactive-border "#6a6a6a"
+        urgent-border "#7a0000"
     }
 
-    // The default config uses a prominent focus ring because it remains visible
-    // with client-side-decorated windows. For a stricter i3/sway-style border
-    // setup, uncomment the profile include at the end of this file.
-
-    // You can also add a border. It's similar to the focus ring, but always visible.
+    // i3's structure, niri's blue.
+    //
+    // They are the same blue. niri's #7fc8ff and i3's #285577 both sit at hue 206;
+    // niri takes the bright, saturated end of that ramp and i3 the dark, muted one.
+    // So an i3-shaped decoration that still reads as niri is just i3 walking niri's
+    // end of the ramp.
+    //
+    // The four i3 states, all of them visible, along it:
+    //
+    //   active            #7fc8ff   hue 206  sat 100%  lum 75%   the focused window
+    //   focused-inactive  #638cab   hue 206  sat  30%  lum 53%   the window its own
+    //                                                            container would come
+    //                                                            back to
+    //   inactive          #505050   neutral gray       lum 31%   off the focus path
+    //
+    // The blue dims as you move away from the focus and lands on gray once you are
+    // off its path. That gray is niri's own `inactive-color`, which in niri never
+    // gets to show, because the ring is only ever drawn around the focused window.
     border {
-        // The settings are the same as for the focus ring.
-        // If you enable the border, you probably want to disable the focus ring.
-        off
+        on
 
-        width 2
-        active-color "#4C7899"
-        // Color of the split indicator for the focused window.
-        active-indicator-color "#ffb347"
-        // Color of borders for non-focused windows on the active workspace.
-        // focused-inactive-color "#505050"
-        inactive-color "#333333"
+        width 4
+        active-color "#7fc8ff"
+        focused-inactive-color "#638cab"
+        inactive-color "#505050"
 
         // Color of the border around windows that request your attention.
-        urgent-color "#2F343A"
+        urgent-color "#9b0000"
+
+        // The split indicator marks the edge the next window would open on. Same
+        // ramp, one step more saturated so it lifts off the border it sits in.
+        active-indicator-color "#2e9ef4"
+        focused-inactive-indicator-color "#4b789b"
+        inactive-indicator-color "#6a6a6a"
+        urgent-indicator-color "#9b0000"
 
         // Gradients can use a few different interpolation color spaces.
         // For example, this is a pastel rainbow gradient via in="oklch longer hue".
