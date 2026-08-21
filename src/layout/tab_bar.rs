@@ -246,6 +246,16 @@ pub fn render_tab_bar(
     text_layout.set_ellipsize(EllipsizeMode::End);
     text_layout.set_alignment(Alignment::Left);
 
+    // The strip below the rows is painted in the selected tab's color further down, so
+    // that tab and the window's frame are one shape. Known here because the rim of the tab
+    // that opens into it must not cut across the seam.
+    let row_count = if layout == Layout::Tabbed {
+        1
+    } else {
+        tab_count
+    };
+    let extra_height = height_px - row_height_px.saturating_mul(row_count as i32);
+
     let mut cursor_x = 0;
     for (idx, tab) in tabs.iter().enumerate() {
         let width = tab_widths[idx];
@@ -269,12 +279,21 @@ pub fn render_tab_bar(
             set_source_color(&cr, border);
             let bw = tab_border_width;
             cr.rectangle(f64::from(x), f64::from(y), f64::from(w), f64::from(bw));
-            cr.rectangle(
-                f64::from(x),
-                f64::from(y + h - bw),
-                f64::from(w),
-                f64::from(bw),
-            );
+            // The selected tab runs into the strip below without a seam: they are the same
+            // color and together they are the top of the frame around the window, the way
+            // i3 gives a title bar and its `child_border` one value. A rim there draws a
+            // line across the middle of that frame.
+            let opens_into_strip = extra_height > 0
+                && tab.is_focused
+                && (layout == Layout::Tabbed || idx + 1 == tab_count);
+            if !opens_into_strip {
+                cr.rectangle(
+                    f64::from(x),
+                    f64::from(y + h - bw),
+                    f64::from(w),
+                    f64::from(bw),
+                );
+            }
             cr.rectangle(f64::from(x), f64::from(y), f64::from(bw), f64::from(h));
             cr.rectangle(
                 f64::from(x + w - bw),
@@ -326,12 +345,6 @@ pub fn render_tab_bar(
         cursor_x += w;
     }
 
-    let row_count = if layout == Layout::Tabbed {
-        1
-    } else {
-        tab_count
-    };
-    let extra_height = height_px - row_height_px.saturating_mul(row_count as i32);
     if extra_height > 0 {
         let focused = tabs.iter().find(|tab| tab.is_focused).unwrap_or(&tabs[0]);
         let (bg, _fg, _border) = tab_colors(config, focused, is_active_workspace);

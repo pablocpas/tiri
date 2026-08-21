@@ -1515,13 +1515,18 @@ impl<W: LayoutElement> ContainerTree<W> {
         {
             let _span = tracy_client::span!("ContainerTree::collect_render_edges");
             render_edges.extend(render_layouts.iter().map(|info| {
-                let edges = edge_visibility_for_tile(
+                let mut edges = edge_visibility_for_tile(
                     self.options(),
                     layout_rect,
                     info.rect,
                     self.scale(),
                     is_single_window,
                 );
+                // The tab above this tile is its top decoration; the bar is grown to cover
+                // the lane (`tab_bar_rect`), so drawing it too would stack two.
+                if self.arena.parent_is_switcher(info.key) {
+                    edges.top = false;
+                }
                 let indicator_edge = split_indicator_edge_for_tile(&self.arena, info.key, edges);
                 (edges, indicator_edge)
             }));

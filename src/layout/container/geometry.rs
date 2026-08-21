@@ -1332,18 +1332,20 @@ impl<W: LayoutElement> ContainerArena<W> {
             return None;
         }
 
-        let ring_ext = if !self.options.layout.focus_ring.off {
-            self.options.layout.focus_ring.width
-        } else {
+        // The bar reaches down over the top border lane of the tile below it.
+        //
+        // i3's normal border style is a title bar on top and a border on the other three
+        // sides: the tab *is* the top decoration, and nothing is drawn under it. The
+        // children here are laid out below `switcher_content_offset`, which leaves their
+        // border lane sitting between the bar and the window — two stacked decorations
+        // where i3 has one. Growing the bar by that width covers the lane, and
+        // `edge_visibility_for_tile` stops drawing it. Layout is untouched: only what is
+        // painted (and what a click on the bar hits) changes.
+        let border_ext = if self.options.layout.border.off {
             0.0
+        } else {
+            self.options.layout.border.width
         };
-        let mut bar_rect = rect;
-        if ring_ext > 0.0 {
-            bar_rect.loc.x -= ring_ext;
-            bar_rect.loc.y -= ring_ext;
-            bar_rect.size.w += ring_ext * 2.0;
-            bar_rect.size.h += ring_ext;
-        }
 
         let spacing = self.tab_bar_spacing();
         let base_height = match layout {
@@ -1351,14 +1353,14 @@ impl<W: LayoutElement> ContainerArena<W> {
             Layout::Stacked => row_height * tab_count as f64,
             _ => 0.0,
         };
-        let bar_height = (base_height + ring_ext + spacing)
-            .min(bar_rect.size.h)
+        let bar_height = (base_height + border_ext + spacing)
+            .min(rect.size.h)
             .max(0.0);
         if bar_height <= 0.0 {
             return None;
         }
 
-        let bar_rect = Rectangle::new(bar_rect.loc, Size::from((bar_rect.size.w, bar_height)));
+        let bar_rect = Rectangle::new(rect.loc, Size::from((rect.size.w, bar_height)));
         Some((bar_rect, row_height))
     }
 }

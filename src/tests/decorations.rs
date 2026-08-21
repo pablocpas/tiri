@@ -6,7 +6,7 @@
 
 use client::ClientId;
 use smithay::backend::allocator::Fourcc;
-use smithay::utils::{Physical, Scale, Size, Transform};
+use smithay::utils::{Logical, Physical, Point, Scale, Size, Transform};
 use tiri_config::{Color, Config};
 use wayland_client::protocol::wl_surface::WlSurface;
 
@@ -219,5 +219,152 @@ fn tiled_siblings_of_the_focused_window_are_unfocused() {
         border_color(&mut f, first, &pixels, size),
         INACTIVE,
         "its sibling",
+    );
+}
+
+const TAB_ACTIVE_BG: [u8; 3] = [0x7f, 0xc8, 0xff];
+const TAB_ACTIVE_RIM: [u8; 3] = [0x2e, 0x9e, 0xf4];
+const TAB_INACTIVE_RIM: [u8; 3] = [0x6a, 0x6a, 0x6a];
+/// Deliberately nothing like the tab palette: these tests tell the two lanes apart by color.
+const BORDER_IN_TABS: [u8; 3] = [0xff, 0x00, 0xff];
+
+/// A window under a tab bar, with the border and the bar in colors that cannot be confused.
+fn tabbed_config() -> Config {
+    let color = |[r, g, b]: [u8; 3]| Color::from_rgba8_unpremul(r, g, b, 255);
+    let mut config = palette_config();
+    config.layout.gaps = 8.;
+    config.layout.border.width = BORDER_WIDTH;
+    config.layout.border.active_color = color(BORDER_IN_TABS);
+    config.layout.tab_bar.active_bg = color(TAB_ACTIVE_BG);
+    config.layout.tab_bar.border_width = 1.;
+    config.layout.tab_bar.active_border = color(TAB_ACTIVE_RIM);
+    config.layout.tab_bar.inactive_border = color(TAB_INACTIVE_RIM);
+
+    // The fixture's windows keep their own decorations, which would make the border paint as
+    // a rectangle behind the window instead of as the four lanes this is about.
+    config.window_rules.push(tiri_config::WindowRule {
+        draw_border_with_background: Some(false),
+        ..Default::default()
+    });
+    config
+}
+
+/// The visible tile's position and size.
+fn visible_tile(f: &mut Fixture) -> (Point<f64, Logical>, Size<f64, Logical>) {
+    f.niri()
+        .layout
+        .active_workspace()
+        .expect("active workspace")
+        .tiles_with_render_positions()
+        .find_map(|(tile, pos, visible)| visible.then(|| (pos, tile.tile_size())))
+        .expect("a visible tile")
+}
+
+fn pixel(pixels: &[u8], size: Size<i32, Physical>, x: i32, y: i32) -> [u8; 3] {
+    let idx = ((y * size.w + x) * 4) as usize;
+    [pixels[idx], pixels[idx + 1], pixels[idx + 2]]
+}
+
+fn three_tabbed_windows(f: &mut Fixture, id: ClientId, surfaces: &mut Vec<WlSurface>) -> u64 {
+    add_window(f, id, surfaces);
+    add_window(f, id, surfaces);
+    let last = add_window(f, id, surfaces);
+
+    f.niri()
+        .layout
+        .set_layout_mode(crate::layout::ContainerLayout::Tabbed);
+    // The tabbed arrange resizes every window; two rounds because the first one only gets
+    // the configures out.
+    settle(f, id, surfaces);
+    settle(f, id, surfaces);
+    last
+}
+
+/// i3's normal border style is a title bar on top and a border on the other three sides.
+/// The tab is that title bar, so the lane between it and the window belongs to the bar —
+/// painted in the selected tab's color — and the tile does not draw its own top border
+/// there. Getting this wrong stacks two decorations, which is what it looked like.
+#[test]
+fn a_tab_takes_the_place_of_the_top_border_of_the_window_under_it() {
+    let mut f = Fixture::with_config(tabbed_config());
+    f.niri_state().backend.headless().add_renderer().unwrap();
+    f.add_output(1, (1920, 1080));
+
+    let id = f.add_client();
+    let mut surfaces = Vec::new();
+    three_tabbed_windows(&mut f, id, &mut surfaces);
+
+    let (pos, tile) = visible_tile(&mut f);
+    let (pixels, size) = render(&mut f);
+
+    let x = (pos.x + tile.w / 2.).round() as i32;
+    let lane = (pos.y + BORDER_WIDTH / 2.).round() as i32;
+    assert_color(
+        pixel(&pixels, size, x, lane),
+        TAB_ACTIVE_BG,
+        "the lane between the tabs and the window",
+    );
+
+    // The other three sides still carry the border, so this is the top edge being replaced,
+    // not the border being turned off.
+    let y = (pos.y + tile.h / 2.).round() as i32;
+    let left = (pos.x + BORDER_WIDTH / 2.).round() as i32;
+    assert_color(
+        pixel(&pixels, size, left, y),
+        BORDER_IN_TABS,
+        "the left border of the window under the tabs",
+    );
+}
+
+
+/// The selected tab and the strip under the row are one shape — the top of the frame
+/// around the window, the way i3 gives a title bar and its `child_border` one value. The
+/// per-tab rim must not run along that seam, or it draws a line through the middle of it.
+/// The tabs that stay closed keep theirs.
+#[test]
+fn the_selected_tab_runs_into_the_window_frame_without_a_seam() {
+    let mut f = Fixture::with_config(tabbed_config());
+    f.niri_state().backend.headless().add_renderer().unwrap();
+    f.add_output(1, (1920, 1080));
+
+    let id = f.add_client();
+    let mut surfaces = Vec::new();
+    three_tabbed_windows(&mut f, id, &mut surfaces);
+
+    let (pos, tile) = visible_tile(&mut f);
+    let (pixels, size) = render(&mut f);
+
+    // The row of the bar that touches the strip. The third of three windows is the one
+    // holding the focus, so it owns the last tab.
+    let seam = (pos.y - 1.).round() as i32;
+    let selected = (pos.x + tile.w * 5. / 6.).round() as i32;
+    let closed = (pos.x + tile.w / 6.).round() as i32;
+
+    assert_color(
+        pixel(&pixels, size, selected, seam),
+        TAB_ACTIVE_BG,
+        "the bottom of the selected tab",
+    );
+    assert_color(
+        pixel(&pixels, size, closed, seam),
+        TAB_INACTIVE_RIM,
+        "the bottom of a tab that is not selected",
+    );
+
+    // Stacked puts the tabs in rows; only the last one touches the strip, and here that is
+    // the selected one again.
+    f.niri()
+        .layout
+        .set_layout_mode(crate::layout::ContainerLayout::Stacked);
+    settle(&mut f, id, &surfaces);
+    settle(&mut f, id, &surfaces);
+
+    let (pos, tile) = visible_tile(&mut f);
+    let (pixels, size) = render(&mut f);
+    let seam = (pos.y - 1.).round() as i32;
+    assert_color(
+        pixel(&pixels, size, (pos.x + tile.w / 2.).round() as i32, seam),
+        TAB_ACTIVE_BG,
+        "the bottom of the selected row, stacked",
     );
 }

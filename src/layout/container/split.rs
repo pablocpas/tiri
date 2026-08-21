@@ -257,6 +257,19 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     /// If `key`'s parent is an explicit split holding only `key`, that split's layout.
+    /// Whether this node's parent puts a tab bar above it.
+    ///
+    /// A child of a tabbed or stacked container wears i3's normal border style: the tab is
+    /// its top decoration, so it draws a border on the other three sides only. Asked at
+    /// render time, next to the other edge rules.
+    pub(in crate::layout) fn parent_is_switcher(&self, key: NodeKey) -> bool {
+        let Some(parent) = self.parent_of(key) else {
+            return false;
+        };
+        self.get_container(parent)
+            .is_some_and(|container| matches!(container.layout, Layout::Tabbed | Layout::Stacked))
+    }
+
     pub(in crate::layout) fn single_child_split_layout(&self, key: NodeKey) -> Option<Layout> {
         let parent_key = self.parent_of(key)?;
 

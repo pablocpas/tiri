@@ -334,6 +334,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
             for info in layouts.iter().copied() {
                 let is_focus_head =
                     float_has_sublayout && containers.arena().is_focus_head(info.key);
+                // Same rule as tiling: under a tab bar the tab is the top decoration.
+                let mut edges = FocusRingEdges::all();
+                if containers.arena().parent_is_switcher(info.key) {
+                    edges.top = false;
+                }
                 if let Some(tile) = containers.arena_mut().get_tile_mut(info.key) {
                     // Skip tiles belonging to a different render layer.
                     if layer.is_normal() == tile.is_moving_between_workspaces() {
@@ -369,7 +374,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                         is_active,
                         is_focused,
                         is_focus_head,
-                        FocusRingEdges::all(),
+                        edges,
                         None,
                         tile_view_rect,
                     );
