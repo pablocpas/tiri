@@ -37,6 +37,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                 container.children.len(),
             ) {
                 let focused_idx = self.active_child_index(node_key).unwrap_or(0);
+                let focused_key = self.focused_key();
                 let tabs = container
                     .children
                     .iter()
@@ -46,6 +47,8 @@ impl<W: LayoutElement> ContainerArena<W> {
                         TabBarTab {
                             title,
                             is_focused: idx == focused_idx,
+                            holds_focus: focused_key
+                                .is_some_and(|key| self.is_descendant(key, child_key)),
                             is_urgent: self.subtree_has_urgent(child_key),
                             block_out_from,
                         }

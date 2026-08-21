@@ -197,7 +197,14 @@ pub enum Direction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TabBarTab {
     pub title: String,
+    /// This tab is its container's selected child.
+    ///
+    /// On its own that is i3's `focused_inactive`: the tab the container would come back
+    /// to. It only reads as `focused` when the seat's focus is actually inside it, which
+    /// is what `holds_focus` says.
     pub is_focused: bool,
+    /// The focused leaf sits somewhere inside this tab's subtree.
+    pub holds_focus: bool,
     pub is_urgent: bool,
     pub block_out_from: Option<BlockOutFrom>,
 }

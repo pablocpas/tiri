@@ -861,6 +861,10 @@ impl<W: LayoutElement> Tile<W> {
                 let tabs = [TabBarTab {
                     title,
                     is_focused,
+                    // A split title bar holds one window, so "the selected child" and
+                    // "holds the focus" are the same question here. The middle state
+                    // needs the tree to answer, and a tile does not have it.
+                    holds_focus: is_focused,
                     is_urgent,
                     block_out_from,
                 }];

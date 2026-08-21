@@ -107,6 +107,14 @@ fn set_source_color(cr: &cairo::Context, color: Color) {
     cr.set_source_rgba(f64::from(r), f64::from(g), f64::from(b), f64::from(a));
 }
 
+/// The i3 decoration states, for a tab.
+///
+/// `focused` is the selected tab of the container the seat is actually in;
+/// `focused_inactive` is the selected tab of any other container — the one it would come
+/// back to. Without that middle state a container you are not in reports nothing about
+/// where its focus would land, which is the whole point of a tab bar in a tree. Matches
+/// the rule the tiles use (`Tile::update_render_elements`), so a tab and the border of
+/// the window under it always agree.
 fn tab_colors(
     config: &TabBar,
     tab: &TabBarTab,
@@ -114,8 +122,14 @@ fn tab_colors(
 ) -> (Color, Color, Color) {
     if tab.is_urgent {
         (config.urgent_bg, config.urgent_fg, config.urgent_border)
-    } else if tab.is_focused && is_active_workspace {
+    } else if tab.is_focused && tab.holds_focus && is_active_workspace {
         (config.active_bg, config.active_fg, config.active_border)
+    } else if tab.is_focused {
+        (
+            config.focused_inactive_bg,
+            config.focused_inactive_fg,
+            config.focused_inactive_border,
+        )
     } else {
         (
             config.inactive_bg,
@@ -130,6 +144,7 @@ fn tab_colors(
 pub struct TabBarTabState {
     pub title: String,
     pub is_focused: bool,
+    pub holds_focus: bool,
     pub is_urgent: bool,
     pub block_out: bool,
 }
@@ -164,9 +179,13 @@ pub fn tab_bar_state_from_info(
     let tabs = info
         .tabs
         .iter()
+        // The cache key has to separate everything `tab_colors` separates, and the
+        // workspace flag folds into `holds_focus` there: an inactive workspace demotes
+        // `focused` to `focused_inactive`, it does not demote the selected tab further.
         .map(|tab| TabBarTabState {
             title: tab.title.clone(),
-            is_focused: tab.is_focused && is_active,
+            is_focused: tab.is_focused,
+            holds_focus: tab.holds_focus && is_active,
             is_urgent: tab.is_urgent,
             block_out: target.should_block_out(tab.block_out_from),
         })

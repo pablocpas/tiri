@@ -605,13 +605,16 @@ pub struct TabBar {
     pub border_width: f64,
     pub font: String,
     pub active_bg: Color,
+    pub focused_inactive_bg: Color,
     pub inactive_bg: Color,
     pub urgent_bg: Color,
     pub active_fg: Color,
+    pub focused_inactive_fg: Color,
     pub inactive_fg: Color,
     pub urgent_fg: Color,
     pub separator_color: Color,
     pub active_border: Color,
+    pub focused_inactive_border: Color,
     pub inactive_border: Color,
     pub urgent_border: Color,
 }
@@ -627,15 +630,21 @@ impl Default for TabBar {
             separator_width: 1.0,
             border_width: 0.0,
             font: String::from("sans 12px"),
+            // The same hue-206 ramp the border walks, so a tab and the border of
+            // the window it points at are one frame, the way i3 gives `focused`
+            // the same value for `background` and `child_border`.
             active_bg: Color::from_rgba8_unpremul(0x7f, 0xc8, 0xff, 0xff),
-            inactive_bg: Color::from_rgba8_unpremul(0x3c, 0x3c, 0x3c, 0xff),
+            focused_inactive_bg: Color::from_rgba8_unpremul(0x63, 0x8c, 0xab, 0xff),
+            inactive_bg: Color::from_rgba8_unpremul(0x50, 0x50, 0x50, 0xff),
             urgent_bg: Color::from_rgba8_unpremul(0x9b, 0x00, 0x00, 0xff),
             active_fg: Color::from_rgba8_unpremul(0x10, 0x30, 0x50, 0xff),
-            inactive_fg: Color::from_rgba8_unpremul(0xbb, 0xbb, 0xbb, 0xff),
+            focused_inactive_fg: Color::from_rgba8_unpremul(0xe6, 0xed, 0xf3, 0xff),
+            inactive_fg: Color::from_rgba8_unpremul(0xd0, 0xd0, 0xd0, 0xff),
             urgent_fg: Color::from_rgba8_unpremul(0xff, 0xff, 0xff, 0xff),
             separator_color: Color::from_rgba8_unpremul(0x2a, 0x2a, 0x2a, 0xff),
             active_border: Color::from_rgba8_unpremul(0x2e, 0x9e, 0xf4, 0xff),
-            inactive_border: Color::from_rgba8_unpremul(0x3c, 0x3c, 0x3c, 0xff),
+            focused_inactive_border: Color::from_rgba8_unpremul(0x4b, 0x78, 0x9b, 0xff),
+            inactive_border: Color::from_rgba8_unpremul(0x6a, 0x6a, 0x6a, 0xff),
             urgent_border: Color::from_rgba8_unpremul(0x7a, 0x00, 0x00, 0xff),
         }
     }
@@ -661,13 +670,16 @@ impl MergeWith<TabBarPart> for TabBar {
         merge_clone!(
             (self, part),
             active_bg,
+            focused_inactive_bg,
             inactive_bg,
             urgent_bg,
             active_fg,
+            focused_inactive_fg,
             inactive_fg,
             urgent_fg,
             separator_color,
             active_border,
+            focused_inactive_border,
             inactive_border,
             urgent_border,
         );
@@ -697,11 +709,15 @@ pub struct TabBarPart {
     #[knuffel(child)]
     pub active_bg: Option<Color>,
     #[knuffel(child)]
+    pub focused_inactive_bg: Option<Color>,
+    #[knuffel(child)]
     pub inactive_bg: Option<Color>,
     #[knuffel(child)]
     pub urgent_bg: Option<Color>,
     #[knuffel(child)]
     pub active_fg: Option<Color>,
+    #[knuffel(child)]
+    pub focused_inactive_fg: Option<Color>,
     #[knuffel(child)]
     pub inactive_fg: Option<Color>,
     #[knuffel(child)]
@@ -710,6 +726,8 @@ pub struct TabBarPart {
     pub separator_color: Option<Color>,
     #[knuffel(child)]
     pub active_border: Option<Color>,
+    #[knuffel(child)]
+    pub focused_inactive_border: Option<Color>,
     #[knuffel(child)]
     pub inactive_border: Option<Color>,
     #[knuffel(child)]
@@ -1581,9 +1599,15 @@ mod tests {
             tab_bar.active_bg,
             Color::from_rgba8_unpremul(0x7f, 0xc8, 0xff, 0xff)
         );
+        // The ramp: `focused_inactive` sits between the two, and `inactive` is the same
+        // neutral gray the border ends on, so a tab and the border under it agree.
+        assert_eq!(
+            tab_bar.focused_inactive_bg,
+            Color::from_rgba8_unpremul(0x63, 0x8c, 0xab, 0xff)
+        );
         assert_eq!(
             tab_bar.inactive_bg,
-            Color::from_rgba8_unpremul(0x3c, 0x3c, 0x3c, 0xff)
+            Color::from_rgba8_unpremul(0x50, 0x50, 0x50, 0xff)
         );
         assert_eq!(
             tab_bar.urgent_bg,

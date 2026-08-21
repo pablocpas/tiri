@@ -225,6 +225,7 @@ fn tiled_siblings_of_the_focused_window_are_unfocused() {
 const TAB_ACTIVE_BG: [u8; 3] = [0x7f, 0xc8, 0xff];
 const TAB_ACTIVE_RIM: [u8; 3] = [0x2e, 0x9e, 0xf4];
 const TAB_INACTIVE_RIM: [u8; 3] = [0x6a, 0x6a, 0x6a];
+const TAB_FOCUSED_INACTIVE_BG: [u8; 3] = [0x63, 0x8c, 0xab];
 /// Deliberately nothing like the tab palette: these tests tell the two lanes apart by color.
 const BORDER_IN_TABS: [u8; 3] = [0xff, 0x00, 0xff];
 
@@ -236,6 +237,7 @@ fn tabbed_config() -> Config {
     config.layout.border.width = BORDER_WIDTH;
     config.layout.border.active_color = color(BORDER_IN_TABS);
     config.layout.tab_bar.active_bg = color(TAB_ACTIVE_BG);
+    config.layout.tab_bar.focused_inactive_bg = color(TAB_FOCUSED_INACTIVE_BG);
     config.layout.tab_bar.border_width = 1.;
     config.layout.tab_bar.active_border = color(TAB_ACTIVE_RIM);
     config.layout.tab_bar.inactive_border = color(TAB_INACTIVE_RIM);
@@ -251,12 +253,22 @@ fn tabbed_config() -> Config {
 
 /// The visible tile's position and size.
 fn visible_tile(f: &mut Fixture) -> (Point<f64, Logical>, Size<f64, Logical>) {
+    visible_tile_other_than(f, u64::MAX)
+}
+
+/// The visible tile that is not `skip`, for when a float is on screen too.
+fn visible_tile_other_than(
+    f: &mut Fixture,
+    skip: u64,
+) -> (Point<f64, Logical>, Size<f64, Logical>) {
     f.niri()
         .layout
         .active_workspace()
         .expect("active workspace")
         .tiles_with_render_positions()
-        .find_map(|(tile, pos, visible)| visible.then(|| (pos, tile.tile_size())))
+        .find_map(|(tile, pos, visible)| {
+            (visible && tile.window().id().get() != skip).then(|| (pos, tile.tile_size()))
+        })
         .expect("a visible tile")
 }
 
@@ -316,6 +328,46 @@ fn a_tab_takes_the_place_of_the_top_border_of_the_window_under_it() {
     );
 }
 
+/// The selected tab of a container the seat is not in is `focused_inactive`, like the
+/// window borders: it is where the focus would land on the way back in. Without the state
+/// a tab bar says nothing about a container you are not standing in.
+#[test]
+fn the_selected_tab_of_a_container_without_the_focus_is_focused_inactive() {
+    let mut f = Fixture::with_config(tabbed_config());
+    f.niri_state().backend.headless().add_renderer().unwrap();
+    f.add_output(1, (1920, 1080));
+
+    let id = f.add_client();
+    let mut surfaces = Vec::new();
+    let floated = three_tabbed_windows(&mut f, id, &mut surfaces);
+
+    let (pos, tile) = visible_tile(&mut f);
+    let x = (pos.x + tile.w / 2.).round() as i32;
+    let lane = (pos.y + BORDER_WIDTH / 2.).round() as i32;
+
+    let (pixels, size) = render(&mut f);
+    assert_color(
+        pixel(&pixels, size, x, lane),
+        TAB_ACTIVE_BG,
+        "the selected tab while the container holds the focus",
+    );
+
+    // Float the selected window out: the focus leaves the tabbed container, which keeps
+    // pointing at the tab it would come back to.
+    f.niri().layout.toggle_window_floating(None);
+    settle(&mut f, id, &surfaces);
+    settle(&mut f, id, &surfaces);
+
+    let (pos, tile) = visible_tile_other_than(&mut f, floated);
+    let x = (pos.x + tile.w / 2.).round() as i32;
+    let lane = (pos.y + BORDER_WIDTH / 2.).round() as i32;
+    let (pixels, size) = render(&mut f);
+    assert_color(
+        pixel(&pixels, size, x, lane),
+        TAB_FOCUSED_INACTIVE_BG,
+        "the selected tab once the focus is on the float",
+    );
+}
 
 /// The selected tab and the strip under the row are one shape — the top of the frame
 /// around the window, the way i3 gives a title bar and its `child_border` one value. The
