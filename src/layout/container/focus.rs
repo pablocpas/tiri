@@ -542,7 +542,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         &mut self,
         focused_removed: bool,
         former_ancestors: &[NodeKey],
-        removed_from_fullscreen: bool,
+        selection_was_below_fullscreen: bool,
     ) {
         // The node that left stops answering for anything, including for the container it
         // was in.
@@ -576,14 +576,29 @@ impl<W: LayoutElement> ContainerArena<W> {
             Some(key)
                 if self.selected_key().is_some_and(|selected| {
                     matches!(self.get_node(selected), Some(NodeData::Container(_)))
-                        || (removed_from_fullscreen
-                            && matches!(self.get_node(selected), Some(NodeData::Workspace(_))))
-                }) =>
+                        && self.leaf_under_key(selected).is_some()
+                }) || selection_was_below_fullscreen =>
             {
                 // A selected container that survives keeps owning focus while its inactive
                 // view is replaced. Fullscreen destruction is sway's exceptional inherited
                 // workspace selection: ordinary container destruction descends to the
                 // surviving sibling instead of making the next `close` target the workspace.
+                //
+                // Surviving means what sway means by it. `container_reap_empty` destroys a
+                // container the moment its last child leaves, so a selection sway would have
+                // dropped cannot go on redirecting focus here — and redirecting is all this
+                // arm does, leaving the seat's order pointing at the emptied branch. An
+                // emptied floating root outlives this call because the floating list drops
+                // it, which is exactly the case that needs saying so.
+                //
+                // The second condition is the workspace one, and it is about where the
+                // *selection* was rather than where the closed window was. A selection
+                // strictly below a fullscreen node loses every ancestor at once and comes
+                // back up at the workspace, which is what stays selected; a selection that
+                // *is* the fullscreen node loses only itself, and focus descends to the
+                // window that was waiting behind it. Both are recorded:
+                // `close-selected-fullscreen-container-keeps-parent-selection` and
+                // `close-the-last-window-of-a-selected-fullscreen-split`.
                 self.seat.redirect_focused_leaf(Some(key));
             }
             Some(key) => self.focus_node_key(key),

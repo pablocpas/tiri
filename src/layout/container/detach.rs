@@ -16,9 +16,15 @@ impl<W: LayoutElement> ContainerArena<W> {
         let node_key = self.window_key(window_id)?;
         let cleanup_key = self.parent_of(node_key);
         let was_focused = self.focused_key() == Some(node_key);
-        let removed_from_fullscreen = self
-            .fullscreen_key
-            .is_some_and(|scope| node_key == scope || self.is_descendant(node_key, scope));
+        // Not "was the closed window inside the fullscreen scope": what decides whether the
+        // workspace inherits the selection is where the *selection* was. See
+        // `reconcile_focus_after_change`.
+        let selection_was_below_fullscreen = match (self.selected_key(), self.fullscreen_key) {
+            (Some(selected), Some(scope)) => {
+                selected != scope && self.is_descendant(selected, scope)
+            }
+            _ => false,
+        };
         let former_ancestors = cleanup_key
             .map(|parent| self.focus_chain(parent))
             .unwrap_or_default();
@@ -54,7 +60,11 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.prune_leaf_layouts();
 
         self.prune_selected_key();
-        self.reconcile_focus_after_change(was_focused, &former_ancestors, removed_from_fullscreen);
+        self.reconcile_focus_after_change(
+            was_focused,
+            &former_ancestors,
+            selection_was_below_fullscreen,
+        );
 
         self.layout();
 

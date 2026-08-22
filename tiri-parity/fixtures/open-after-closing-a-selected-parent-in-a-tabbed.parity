@@ -1,0 +1,124 @@
+# closing the last view of a selected floating container leaves focus, and the next window's
+# insertion point, on the tiled view it fell back to.
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splith focus=2
+  window 1 0.000,0.000 0.500x1.000
+  window 2 0.500,0.000 0.500x1.000
+
+$ open
+workspace splith focus=3
+  window 1 0.000,0.000 0.334x1.000
+  window 2 0.334,0.000 0.334x1.000
+  window 3 0.667,0.000 0.333x1.000
+
+$ layout tabbed
+workspace splith focus=3
+  tabbed 0.000,0.000 1.000x1.000
+    window 1 0.000,0.032 1.000x0.968 hidden
+    window 2 0.000,0.032 1.000x0.968 hidden
+    window 3 0.000,0.032 1.000x0.968
+
+$ swap container with 1
+workspace splith focus=3
+  tabbed 0.000,0.000 1.000x1.000
+    window 3 0.000,0.032 1.000x0.968
+    window 2 0.000,0.032 1.000x0.968 hidden
+    window 1 0.000,0.032 1.000x0.968 hidden
+
+$ open
+workspace splith focus=4
+  tabbed 0.000,0.000 1.000x1.000
+    window 3 0.000,0.032 1.000x0.968 hidden
+    window 4 0.000,0.032 1.000x0.968
+    window 2 0.000,0.032 1.000x0.968 hidden
+    window 1 0.000,0.032 1.000x0.968 hidden
+
+$ split toggle
+workspace splith focus=4
+  tabbed 0.000,0.000 1.000x1.000
+    window 3 0.000,0.032 1.000x0.968 hidden
+    splitv 0.000,0.064 1.000x0.936
+      window 4 0.000,0.032 1.000x0.968
+    window 2 0.000,0.032 1.000x0.968 hidden
+    window 1 0.000,0.032 1.000x0.968 hidden
+
+$ focus left
+workspace splith focus=3
+  tabbed 0.000,0.000 1.000x1.000
+    window 3 0.000,0.032 1.000x0.968
+    splitv 0.000,0.064 1.000x0.936
+      window 4 0.000,0.032 1.000x0.968 hidden
+    window 2 0.000,0.032 1.000x0.968 hidden
+    window 1 0.000,0.032 1.000x0.968 hidden
+
+$ move up
+workspace splitv focus=3
+  window 3 0.000,0.000 1.000x0.500
+  splith 0.000,0.500 1.000x0.500
+    tabbed 0.000,0.500 1.000x0.500
+      splitv 0.000,0.564 1.000x0.436
+        window 4 0.000,0.532 1.000x0.468
+      window 2 0.000,0.532 1.000x0.468 hidden
+      window 1 0.000,0.532 1.000x0.468 hidden
+
+$ move right
+workspace splith focus=3
+  tabbed 0.000,0.000 0.500x1.000
+    splitv 0.000,0.064 0.500x0.936
+      window 4 0.000,0.032 0.500x0.968
+    window 2 0.000,0.032 0.500x0.968 hidden
+    window 1 0.000,0.032 0.500x0.968 hidden
+  window 3 0.500,0.000 0.500x1.000
+
+$ floating toggle
+workspace splith focus=3
+  tabbed 0.000,0.000 1.000x1.000
+    splitv 0.000,0.064 1.000x0.936
+      window 4 0.000,0.032 1.000x0.968
+    window 2 0.000,0.032 1.000x0.968 hidden
+    window 1 0.000,0.032 1.000x0.968 hidden
+  window 3 0.344,0.292 0.312x0.417 floating
+
+$ split v
+workspace splith focus=3
+  tabbed 0.000,0.000 1.000x1.000
+    splitv 0.000,0.064 1.000x0.936
+      window 4 0.000,0.032 1.000x0.968
+    window 2 0.000,0.032 1.000x0.968 hidden
+    window 1 0.000,0.032 1.000x0.968 hidden
+  splitv 0.344,0.292 0.312x0.417
+    window 3 0.344,0.292 0.312x0.417 floating
+
+$ focus parent
+workspace splith focus=@1
+  tabbed 0.000,0.000 1.000x1.000
+    splitv 0.000,0.064 1.000x0.936
+      window 4 0.000,0.032 1.000x0.968
+    window 2 0.000,0.032 1.000x0.968 hidden
+    window 1 0.000,0.032 1.000x0.968 hidden
+  splitv 0.344,0.292 0.312x0.417
+    window 3 0.344,0.292 0.312x0.417 floating
+
+$ close
+workspace splith focus=4
+  tabbed 0.000,0.000 1.000x1.000
+    splitv 0.000,0.064 1.000x0.936
+      window 4 0.000,0.032 1.000x0.968
+    window 2 0.000,0.032 1.000x0.968 hidden
+    window 1 0.000,0.032 1.000x0.968 hidden
+
+$ open
+workspace splith focus=5
+  tabbed 0.000,0.000 1.000x1.000
+    splitv 0.000,0.064 1.000x0.936
+      window 4 0.000,0.032 1.000x0.485
+      window 5 0.000,0.517 1.000x0.483
+    window 2 0.000,0.032 1.000x0.968 hidden
+    window 1 0.000,0.032 1.000x0.968 hidden
