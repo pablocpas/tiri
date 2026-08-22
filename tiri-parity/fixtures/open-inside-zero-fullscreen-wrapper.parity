@@ -1,5 +1,5 @@
 # A mapped view arranges its real parent container, even when fullscreen left it at zero size.
-# recorded from sway version 1.12-dev
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

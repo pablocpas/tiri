@@ -1,6 +1,6 @@
 # A vertical split does not promote the full focused ancestry through an outer stack.
-# recorded from sway version 1.12-dev
-# client 400x285
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
+# client 400x300
 
 $ open
 workspace splith focus=1

@@ -1,5 +1,5 @@
 # `focus prev` moves through top-level floating roots without conflating focus with IPC order.
-# recorded from sway version 1.12-dev
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

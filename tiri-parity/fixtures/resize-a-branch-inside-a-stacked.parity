@@ -1,12 +1,12 @@
 # `resize set height` on a container nested inside a stacked one. Found by the tree-only
 # fuzz, eleven commands deep — the first thing it finds with floating and fullscreen both
 # out of the vocabulary.
-#
+# 
 # sway's answer is three boxes that do not fit inside each other: the stacked keeps the
 # height it had, its splitv child takes the new one, and the windows keep a third. Recorded
 # three times to the same numbers before being written down.
-# recorded from sway version 1.12-8886939 (Aug  5 2026, branch 'HEAD')
-# client 400x285
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
+# client 400x300
 
 $ open
 workspace splith focus=1

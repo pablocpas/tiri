@@ -1,6 +1,6 @@
 # A directional move translates only a selected top-level floating root. A selected child
 # moves structurally and stops at that root.
-# recorded from sway version 1.12-dev
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

@@ -1,6 +1,6 @@
 # A mapped view joins a split created around one floating view, but not a complete tiled
 # container that was moved to the floating list.
-# recorded from sway version 1.12-dev
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

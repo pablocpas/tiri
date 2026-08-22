@@ -1,5 +1,5 @@
 # An unsupported layout command on a floating parent must not fall back to the workspace.
-# recorded from sway version 1.12-dev
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

@@ -1,5 +1,5 @@
 # the focus stays on the workspace the window left (cmd_move_container restores it), and the window is found on the destination
-# recorded from sway version 1.11
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

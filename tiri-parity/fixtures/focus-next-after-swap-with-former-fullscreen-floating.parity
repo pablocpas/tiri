@@ -1,6 +1,6 @@
 # `focus next` follows Sway's focus order after a fullscreen view is floated and a container is
 # swapped across the tiled branch.
-# recorded from sway version 1.12-dev
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

@@ -2,8 +2,8 @@
 # Found by the fuzz in eleven scripts, the leaf side of the rule the three container
 # fixtures pinned down: sway's arrange gives the fullscreen node the output and returns,
 # and `container_create` leaves everything it did not visit at zero.
-# recorded from sway version 1.12-8886939 (Aug  5 2026, branch 'HEAD')
-# client 400x285
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
+# client 400x300
 
 $ open
 workspace splith focus=1

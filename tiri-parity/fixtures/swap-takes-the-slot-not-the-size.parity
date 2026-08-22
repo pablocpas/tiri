@@ -1,5 +1,5 @@
 # cmd_swap copies each container's fraction onto the other, so a window takes the size of the slot it lands in, not the one it left
-# recorded from sway version 1.11
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

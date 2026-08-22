@@ -1,5 +1,5 @@
 # A client commit must not replace an explicit floating container's outer size with its content size.
-# recorded from sway version 1.12-dev
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

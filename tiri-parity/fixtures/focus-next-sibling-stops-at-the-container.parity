@@ -1,6 +1,6 @@
 # focus next sibling lands on the container instead of descending into it
-# recorded from sway version 1.12-8886939 (Aug  5 2026, branch 'HEAD')
-# client 400x285
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
+# client 400x300
 
 $ open
 workspace splith focus=1

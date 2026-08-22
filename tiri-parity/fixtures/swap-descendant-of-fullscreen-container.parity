@@ -1,6 +1,6 @@
 # `swap` arranges the exchanged nodes' parents rather than the whole workspace. Below a
 # fullscreen ancestor, those parents therefore retain the zero pending boxes sway gave them.
-# recorded from sway version 1.12-dev
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

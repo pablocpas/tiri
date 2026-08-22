@@ -1,6 +1,6 @@
 # Floating the selected one-window container keeps its explicit root and selection, even with
 # another floating root already present.
-# recorded from sway version 1.12-dev
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

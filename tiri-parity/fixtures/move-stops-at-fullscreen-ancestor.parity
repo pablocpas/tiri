@@ -1,6 +1,6 @@
 # A child cannot move out through the container that owns workspace fullscreen.
-# recorded from sway version 1.12-dev
-# client 400x285
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
+# client 400x300
 
 $ open
 workspace splith focus=1

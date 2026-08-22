@@ -1,5 +1,5 @@
 # moving the only window away leaves the workspace empty rather than destroying it under the focus
-# recorded from sway version 1.11
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

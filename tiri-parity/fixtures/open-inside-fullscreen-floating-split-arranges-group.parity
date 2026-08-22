@@ -1,6 +1,6 @@
 # Opening inside a floating split with fullscreen arranges that group directly instead of
 # stopping at the workspace-fullscreen branch.
-# recorded from sway version 1.12-dev
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

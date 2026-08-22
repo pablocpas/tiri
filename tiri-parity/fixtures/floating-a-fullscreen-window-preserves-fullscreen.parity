@@ -1,5 +1,5 @@
 # Moving a fullscreen tiled view to floating preserves the same fullscreen authority.
-# recorded from sway version 1.12-dev
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

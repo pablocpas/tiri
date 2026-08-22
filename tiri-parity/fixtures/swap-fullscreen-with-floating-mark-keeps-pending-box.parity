@@ -1,6 +1,6 @@
 # A swap across the tiling/floating boundary exchanges pending node boxes even while fullscreen
 # prevents the arriving floating branch from being arranged.
-# recorded from sway version 1.12-dev
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

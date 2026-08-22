@@ -1,7 +1,7 @@
 # The other half: `container_reap_empty` removing a container that was selected, rather
 # than a squash splicing it away. Same blind spot, other function.
-# recorded from sway version 1.12-dev
-# client 400x285
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
+# client 400x300
 
 $ open
 workspace splith focus=1

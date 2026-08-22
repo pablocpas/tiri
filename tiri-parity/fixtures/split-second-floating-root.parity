@@ -1,6 +1,6 @@
 # IPC order and root provenance are independent: splitting the top group must not annotate the
 # older group merely because IPC publishes the stack in reverse.
-# recorded from sway version 1.12-dev
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

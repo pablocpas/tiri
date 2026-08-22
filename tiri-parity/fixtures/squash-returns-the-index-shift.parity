@@ -1,8 +1,8 @@
 # `container_squash` returns how many children it added where one used to be, and
 # `container_squash_children` steps its loop by that. Get the count wrong and the walk skips
 # a sibling — invisible unless a later command lands on the one it skipped.
-# recorded from sway version 1.12-dev
-# client 400x285
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
+# client 400x300
 
 $ open
 workspace splith focus=1

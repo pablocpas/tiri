@@ -1,5 +1,5 @@
 # cmd_swap operates on handler_context.container, so after focus parent the whole subtree trades places
-# recorded from sway version 1.11
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

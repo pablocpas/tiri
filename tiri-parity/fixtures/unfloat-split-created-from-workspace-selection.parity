@@ -1,6 +1,6 @@
 # A split explicitly created while the workspace is selected remains a real container after
 # floating it and returning it to tiling.
-# recorded from sway version 1.12-dev
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

@@ -1,5 +1,5 @@
 # Directional moves can reorder siblings and cross nested containers inside one floating root.
-# recorded from sway version 1.12-dev
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

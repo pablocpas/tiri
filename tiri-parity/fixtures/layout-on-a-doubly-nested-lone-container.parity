@@ -2,8 +2,8 @@
 # 
 # sway 1.12-dev flattens exactly one level here ("flatten once, like i3", cmd_layout), while
 # 1.11 retyped the inner container and left both levels. This recording pins the 1.12 rule.
-# recorded from sway version 1.12-8886939 (Aug  5 2026, branch 'HEAD')
-# client 400x285
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
+# client 400x300
 
 $ open
 workspace splith focus=1

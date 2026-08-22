@@ -1,6 +1,6 @@
 # Closing the selected container's active child leaves focus on the surviving view after the
 # layout command has flattened one wrapper.
-# recorded from sway version 1.12-dev
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

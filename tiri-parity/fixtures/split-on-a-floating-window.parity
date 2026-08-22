@@ -1,6 +1,6 @@
 # An explicit split turns the synthetic root around a lone floating view into a real container.
-# recorded from sway version 1.12-dev
-# client 400x285
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
+# client 400x300
 
 $ open
 workspace splith focus=1
@@ -27,11 +27,11 @@ $ floating toggle
 workspace splith focus=1
   window 2 0.000,0.000 0.500x1.000
   window 3 0.500,0.000 0.500x1.000
-  window 1 0.344,0.301 0.312x0.396 floating
+  window 1 0.344,0.292 0.312x0.417 floating
 
 $ split v
 workspace splith focus=1
   window 2 0.000,0.000 0.500x1.000
   window 3 0.500,0.000 0.500x1.000
-  splitv 0.344,0.301 0.312x0.396
-    window 1 0.344,0.301 0.312x0.396 floating
+  splitv 0.344,0.292 0.312x0.417
+    window 1 0.344,0.292 0.312x0.417 floating

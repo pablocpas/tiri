@@ -1,6 +1,6 @@
 # `resize set height` also processes the omitted current width first. Its zero horizontal
 # delta still arranges the zero-sized wrapper created under fullscreen.
-# recorded from sway version 1.12-dev
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

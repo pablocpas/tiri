@@ -1,5 +1,5 @@
 # Swapping after changing layout around a fullscreen view preserves sway's exact focus target.
-# recorded from sway version 1.12-dev
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

@@ -1,7 +1,7 @@
 # Sway 1.12 promotion keeps the moved child's fractions and invalidates the ancestor it
 # escaped, so arrange fills both unset top-level branches from the remaining one.
-# recorded from sway version 1.12-8886939 (Aug  5 2026, branch 'HEAD')
-# client 400x285
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
+# client 400x300
 
 $ open
 workspace splith focus=1

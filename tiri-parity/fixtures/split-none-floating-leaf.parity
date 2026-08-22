@@ -1,5 +1,5 @@
 # split none turns an explicit one-window floating split back into a plain floating view.
-# recorded from sway version 1.12-dev
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

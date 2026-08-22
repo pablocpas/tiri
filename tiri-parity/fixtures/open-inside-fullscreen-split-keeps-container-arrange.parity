@@ -1,5 +1,5 @@
 # A view mapped into a real split uses that container's box, not workspace fullscreen geometry.
-# recorded from sway version 1.12-dev
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

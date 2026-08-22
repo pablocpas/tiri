@@ -1,6 +1,6 @@
 # A container entering floating receives its default root box immediately even when another
 # fullscreen branch prevents its children from being arranged.
-# recorded from sway version 1.12-dev
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

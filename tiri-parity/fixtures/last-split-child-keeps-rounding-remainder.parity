@@ -1,6 +1,6 @@
 # sway rounds split children in list order and gives the remaining pixels to the last child.
-# recorded from sway version 1.12-dev
-# client 400x285
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
+# client 400x300
 
 $ open
 workspace splith focus=1

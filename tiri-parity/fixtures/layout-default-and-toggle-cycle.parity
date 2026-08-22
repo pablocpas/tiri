@@ -1,5 +1,5 @@
 # Bare toggle, default, and an explicit layout cycle use the same remembered layout state.
-# recorded from sway version 1.12-dev
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open

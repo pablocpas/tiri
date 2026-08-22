@@ -1,5 +1,5 @@
 # Sway's standalone aliases and the short toggle spelling are real split commands.
-# recorded from sway version 1.12-dev
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
 # client 400x300
 
 $ open
