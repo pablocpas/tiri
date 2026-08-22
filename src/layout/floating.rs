@@ -2159,10 +2159,33 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return self.focus_root_at(containers, idx, false);
         }
 
-        // Starting below a floating root follows the ordinary tiling walk. At the root level,
-        // sway treats `workspace->floating` as its sibling list, whose order is bottom-to-top;
-        // Tiri's render stack is the reverse. A direct `sibling` landing keeps the root
-        // selected, while the wrap fallback always descends.
+        // Starting below a floating root follows the ordinary tiling walk, which climbs out
+        // of the branch into the list of floating roots.
+        self.step_root_sibling(containers, active_idx, direction, descend, true)
+    }
+
+    /// sway's sibling step at the floating root level.
+    ///
+    /// A top-level floating container has no parent, so `container_get_siblings` hands it
+    /// `workspace->floating` and `container_parent_layout` hands it the workspace's own
+    /// layout: climbing out of a floating branch lands in the list of floating roots, laid
+    /// out the way the workspace is. That list runs bottom-to-top and Tiri's render stack is
+    /// the reverse, which is what the leading/trailing flip below is about.
+    ///
+    /// A direct landing may keep the root selected — that is `focus next sibling` — while a
+    /// wrap always descends, because sway resolves its wrap candidate through
+    /// `seat_get_focus_inactive_view`.
+    fn step_root_sibling(
+        &mut self,
+        containers: &mut ContainerTree<W>,
+        active_idx: usize,
+        direction: Direction,
+        descend: bool,
+        allow_wrap: bool,
+    ) -> bool {
+        if Self::root_count(containers) <= 1 {
+            return false;
+        }
         if !containers
             .arena()
             .workspace_layout()
@@ -2179,6 +2202,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         };
         let (target_idx, wrapped) = match direct {
             Some(idx) => (idx, false),
+            None if !allow_wrap => return false,
             None if direction.is_leading() => (0, true),
             None => (Self::root_count(containers) - 1, true),
         };
@@ -2194,24 +2218,26 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let Some(idx) = self.active_container_idx(containers) else {
             return false;
         };
-        let allow_wrap = allow_wrap && !self.selected_is_container_in(containers, idx);
         let branch_root = Self::root(containers, idx);
-        // Workspace fullscreen is a focus scope. A fullscreen container may still contain a
-        // real split whose descendants can be navigated, but focus must not reach a sibling
-        // elsewhere in the same floating group.
-        let root = containers
-            .arena()
-            .fullscreen_key()
-            .filter(|scope| containers.arena().is_descendant(*scope, branch_root))
-            .unwrap_or(branch_root);
-        let moved = containers
+        if containers
             .arena_mut()
-            .focus_in_direction_in_branch(root, direction, allow_wrap);
-        if moved {
+            .focus_in_direction_in_branch(branch_root, direction, allow_wrap)
+        {
             return true;
         }
 
-        false
+        // The walk ran out of branch without finding anything. sway does not stop there:
+        // `node_get_in_direction_tiling` climbs to the floating root through
+        // `pending.parent` and takes one more step along `workspace->floating`. Only from
+        // below, though — a command aimed at the root itself is the one case sway sends to
+        // the geometric floating search instead, and that is the caller's fallback.
+        if containers.arena().branch_position(branch_root) == Some(branch_root) {
+            return false;
+        }
+        if containers.arena().fullscreen_key().is_some() {
+            return false;
+        }
+        self.step_root_sibling(containers, idx, direction, true, allow_wrap)
     }
 
     fn focus_in_stack_order(&mut self, containers: &mut ContainerTree<W>, delta: isize) -> bool {

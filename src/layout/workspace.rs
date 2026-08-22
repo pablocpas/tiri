@@ -848,16 +848,38 @@ impl<W: LayoutElement> Workspace<W> {
         floating: impl FnOnce(&mut FloatingSpace<W>, &mut ContainerTree<W>) -> bool,
         tiled: impl FnOnce(&mut ContainerTree<W>) -> bool,
     ) -> bool {
+        self.dispatch_focus_from_workspace(|_| false, floating, tiled)
+    }
+
+    /// The same, for the commands sway also answers from the workspace node itself.
+    ///
+    /// Three arms because sway's `cmd_focus` has three cases: the workspace, a node in
+    /// `ws->floating`, and everything else. Routing them in one place is not tidiness — it
+    /// is what makes the epilogue unforgettable. Landing in the tiled tree has to leave two
+    /// things true, that the active layer names the tiled side and that no workspace
+    /// selection outlives the descent, and a method that settled one of them and not the
+    /// other is how `focus child` from a floating window ended up focusing nothing.
+    fn dispatch_focus_from_workspace(
+        &mut self,
+        workspace: impl FnOnce(&mut ContainerTree<W>) -> bool,
+        floating: impl FnOnce(&mut FloatingSpace<W>, &mut ContainerTree<W>) -> bool,
+        tiled: impl FnOnce(&mut ContainerTree<W>) -> bool,
+    ) -> bool {
         let target = self.command_target_key();
-        if target == self.containers.arena().workspace_root() {
-            false
+        // The workspace's own arm descends into `ws->tiling`, the same side `tiled` acts on,
+        // so both take the tiled epilogue. Only the floating arm leaves the layer alone.
+        let (moved, landed_in_tiling) = if target == self.containers.arena().workspace_root() {
+            (workspace(&mut self.containers), true)
         } else if self.containers.arena().is_in_floating_branch(target) {
-            floating(&mut self.floating, &mut self.containers)
+            (floating(&mut self.floating, &mut self.containers), false)
         } else {
-            let moved = tiled(&mut self.containers);
+            (tiled(&mut self.containers), true)
+        };
+        if landed_in_tiling && moved {
+            self.sync_active_layer_to_command_target();
             self.activate_tiling_content();
-            moved
         }
+        moved
     }
 
     /// Route a directional move to the active layer.
@@ -2286,20 +2308,15 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn focus_child(&mut self) {
-        let target = self.command_target_key();
-        if target == self.containers.arena().workspace_root() {
-            // sway descends through the workspace's active tiling child. Floating roots
-            // live in another list and are not candidates from workspace focus.
-            if !self.containers.is_empty() {
-                let _ = self.containers.focus_child();
-                self.activate_tiling_content();
-            }
-        } else if self.containers.arena().is_in_floating_branch(target) {
-            self.floating.focus_child(&mut self.containers);
-        } else {
-            self.containers.focus_child();
-            self.activate_tiling_content();
-        }
+        let _ = self.dispatch_focus_from_workspace(
+            // sway descends through the workspace's active tiling child
+            // (`seat_get_active_tiling_child`). Floating roots live in `ws->floating` and
+            // are not candidates from workspace focus, which is why this lands in the tiled
+            // side and takes the tiled epilogue with it.
+            |tree| !tree.is_empty() && tree.focus_child(),
+            |floating, tree| floating.focus_child(tree),
+            |tree| tree.focus_child(),
+        );
     }
 
     /// Route a split/layout command: workspace-level targets apply to the workspace layout,

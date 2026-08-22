@@ -311,13 +311,21 @@ impl<W: LayoutElement> ContainerArena<W> {
         // step at every level whose layout runs along `direction`. A branch operation stops
         // before considering the branch root's parent; crossing it would leave the branch.
         let mut current = selected_key;
-        while boundary != Some(current) {
+        loop {
             // Sway tests fullscreen on the node currently being climbed, not as a global
             // scope chosen before the walk. Descendants may therefore move among themselves,
             // and an exterior sibling may enter a fullscreen container directly; only trying
             // to climb through the fullscreen owner stops the search (and suppresses wrap).
+            //
+            // The branch root is climbed *to* before the walk stops there, so it is tested
+            // like any other node: `node_get_in_direction_tiling` reaches a fullscreen
+            // floating root through `pending.parent` and leaves for the next output from
+            // there, discarding the wrap candidate a child had recorded on the way up.
             if self.fullscreen_key == Some(current) {
                 return false;
+            }
+            if boundary == Some(current) {
+                break;
             }
             let Some(parent_key) = self.parent_of(current) else {
                 break;

@@ -1795,6 +1795,16 @@ fn i3_135_deep_floating_roundtrip_from_other_workspace_preserves_focus_chain() {
     );
 }
 #[test]
+/// The one place this file's reference and the corpus's disagree.
+///
+/// i3's `focus child` is `level_down()`, which takes the head of the workspace's own focus
+/// list, and a floating window is in it — so i3 comes back to the float. sway's is
+/// `seat_get_active_tiling_child`, which skips anything that is not in `ws->tiling`, so it
+/// comes back to the tiled window instead. Both were measured, not read:
+/// `tiri-parity/fixtures/focus-child-after-floating-a-window.parity` records sway, and the
+/// same script run against i3 answers the float.
+///
+/// docs/design/parity.md names sway as the behavioural reference, so this follows sway.
 fn i3_135_focus_parent_then_focus_child_roundtrips_from_floating_window() {
     let mut floating = TestWindowParams::new(2);
     floating.is_floating = true;
@@ -1819,8 +1829,8 @@ fn i3_135_focus_parent_then_focus_child_roundtrips_from_floating_window() {
     check_ops_on_layout(&mut layout, [Op::FocusChild]);
     assert_eq!(
         layout.focus().map(|win| *win.id()),
-        Some(2),
-        "focus child from workspace context should return to the floating window",
+        Some(1),
+        "focus child from workspace context descends into the tiling child",
     );
 }
 #[test]
