@@ -26,7 +26,53 @@ pub(super) struct Divergence {
 /// compared, and other fixtures are untouched. Without this the choice would be between a
 /// red suite and deleting the fixture that found the problem, and both of those end with
 /// nobody recording anything.
-pub(super) const KNOWN: &[Divergence] = &[];
+pub(super) const KNOWN: &[Divergence] = &[
+    Divergence {
+        fixture: "open-after-swapping-into-a-tabbed.parity",
+        step: 13,
+        reason: "\
+            A new view maps beside `seat_get_focus_inactive_view` of the workspace's most \
+            recent tiling child (sway/tree/view.c:802-824), and after two swaps the two \
+            compositors disagree about which view that is: sway answers the tab, tiri the \
+            window inside the tab's sibling split. The map target is read the same way on \
+            both sides, so what differs is the seat order a swap leaves behind, not the \
+            insertion rule.",
+    },
+    Divergence {
+        fixture: "swap-two-floating-roots.parity",
+        step: 8,
+        reason: "\
+            Swapping a node with a top-level floating one: sway leaves `ws->floating` in the \
+            order it found it, tiri raises the node that arrived. The stack order is what \
+            the two disagree about, not the tree.",
+    },
+    Divergence {
+        fixture: "swap-a-tab-with-a-window-behind-a-fullscreen.parity",
+        step: 8,
+        reason: "\
+            The skipped-arrange family again, reached through a swap: sway leaves the node \
+            the fullscreen arrange never visited with the box it had, tiri gives it 0x0.",
+    },
+    Divergence {
+        fixture: "move-left-under-a-fullscreen-sibling.parity",
+        step: 8,
+        reason: "\
+            sway's `arrange_workspace` hands the fullscreen node the output and returns, so \
+            the branches it skipped keep whatever pending box they last had — 0x0 for one \
+            built while something else was fullscreen. Tiri arranges them. Several fixtures \
+            already pin the shapes where tiri reproduces this; this is one it does not.",
+    },
+    Divergence {
+        fixture: "layout-splith-under-a-fullscreen-window.parity",
+        step: 8,
+        reason: "\
+            The same skipped arrange, and here sway's leftover box is `0.000,0.096 \
+            0.000x-0.096`: a negative height, from a subtraction of a title bar from a \
+            height that was never computed. Reproducing that number is not a behaviour worth \
+            having; the honest fix is a normalizer that says a zero-area box has no position, \
+            which is a decision about the model rather than about the layout.",
+    },
+];
 
 /// What makes two divergences "the same one".
 ///

@@ -1,0 +1,49 @@
+# what a branch keeps for a box when the fullscreen arrange skipped it.
+# recorded from sway version 1.12-8886939 (Aug 21 2026, branch 'HEAD')
+# client 400x300
+
+$ open
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000
+
+$ layout stacking
+workspace splith focus=1
+  stacked 0.000,0.000 1.000x1.000
+    window 1 0.000,0.032 1.000x0.968
+
+$ fullscreen toggle
+workspace splith focus=1
+  stacked 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+
+$ layout stacking
+workspace splith focus=1
+  stacked 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+
+$ open
+workspace splith focus=1
+  stacked 0.000,0.000 1.000x1.000
+    window 1 0.000,0.000 1.000x1.000
+    window 2 0.000,0.064 1.000x0.936 hidden
+
+$ split h
+workspace splith focus=1
+  stacked 0.000,0.000 1.000x1.000
+    splith 0.000,0.000 1.000x1.000
+      window 1 0.000,0.000 1.000x1.000
+    window 2 0.000,0.064 1.000x0.936 hidden
+
+$ swap container with 2
+workspace splith focus=1
+  stacked 0.000,0.000 1.000x1.000
+    splith 0.000,0.064 1.000x0.936
+      window 2 0.000,0.064 1.000x0.936 hidden
+    window 1 0.000,0.064 1.000x0.936 hidden
+
+$ move left
+workspace splith focus=1
+  window 1 0.000,0.000 1.000x1.000 hidden
+  stacked 0.000,0.000 0.000x0.000
+    splith 0.000,0.000 1.000x1.000
+      window 2 0.000,0.000 1.000x1.000
