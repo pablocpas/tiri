@@ -529,10 +529,20 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     /// The child a group container holds when the container is only tiri's way of addressing
     /// one window, rather than an arrangement the user asked for.
+    ///
+    /// Which of the two it is was decided when the root was registered, and that record is
+    /// the answer. Re-deriving it from the shape — one child, a split layout, no user flag —
+    /// gets a container the user did ask for wrong whenever it happens to hold a single
+    /// window, which is every container `layout` builds around a lone view. Unwrapping one
+    /// of those on the way back loses a level sway keeps
+    /// (`tiri-parity/fixtures/unfloat-a-selected-container.parity`).
     fn implicit_group_child(&self, group: NodeKey) -> Option<NodeKey> {
+        let index = self.floating_root_index(group)?;
+        if self.floating_root_kind_at(index)? != FloatingRootKind::ImplicitWindowGroup {
+            return None;
+        }
         let container = self.get_real_container(group)?;
         if container.child_count() != 1
-            || container.is_user_container()
             || !matches!(container.layout(), Layout::SplitH | Layout::SplitV)
         {
             return None;
