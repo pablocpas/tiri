@@ -23,6 +23,11 @@ SECONDS_PER_SEED="${2:-150}"
 JOBS="${3:-$(( $(nproc) / 2 ))}"
 JOBS=$(( JOBS < 1 ? 1 : JOBS ))
 
+# The reference is the newest sway *release*, built from its tag by `tiri-parity/oracle.sh`,
+# not whatever the distribution happens to ship. Fedora is a release behind, and the two do
+# not agree: 1.11 spreads a tiled resize over one sibling where 1.12 spreads it over all of
+# them, and keeps a container level 1.12 flattens. Measuring against the older one would
+# report an upstream fix as a divergence.
 : "${TIRI_PARITY_SWAY:=$HOME/.cache/tiri-parity/sway-build/sway/sway}"
 : "${TIRI_PARITY_SWAYMSG:=$HOME/.cache/tiri-parity/sway-build/swaymsg/swaymsg}"
 export TIRI_PARITY_SWAY TIRI_PARITY_SWAYMSG

@@ -66,8 +66,22 @@ The recorder needs sway, `swaymsg` and a Wayland test client. Override their pat
 only when intentionally changing the reference sway build; review the resulting fixture diff
 before accepting it.
 
-`tiri-parity/oracle.sh` can build the pinned local sway oracle. It writes outside the repository,
-under `~/.cache/tiri-parity` by default. It is a developer convenience, not part of CI.
+## Which sway
+
+The newest release, built from its tag by `tiri-parity/oracle.sh` under `~/.cache/tiri-parity`.
+Not a development tree, because a difference from unreleased code is not yet a difference from
+sway; and not whatever the distribution ships, because that is a version behind and the two do
+not agree. Between 1.11 and 1.12, sway changed how a tiled resize spreads across siblings and
+how many container levels a `layout` command flattens — measuring against 1.11 would report
+both of those upstream changes as divergences in tiri.
+
+Every fixture stamps the version that answered it, so changing the reference is a reviewable
+diff rather than a silent one. Build a different one with `TIRI_PARITY_SWAY_REF=<tag>` and point
+the recorder or a campaign at it with `TIRI_PARITY_SWAY`: that is how to ask whether a
+divergence is already fixed upstream, or which release changed a behaviour.
+
+A tree without git history stamps itself `-dev` whatever it contains, which once made a release
+build look like an unreleased one. `oracle.sh` clones the tag for exactly that reason.
 
 ## Differential fuzzing
 

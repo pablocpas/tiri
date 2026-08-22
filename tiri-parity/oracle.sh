@@ -1,19 +1,27 @@
 #!/usr/bin/env bash
-# Build the sway the fixtures were recorded against, somewhere it survives a reboot.
+# Build the sway the corpus is recorded against, somewhere it survives a reboot.
 #
-# The corpus is only comparable against one build: every fixture header names it, and the
-# recorder refuses a session it cannot identify. The first oracle lived in /tmp, which
-# emptied on the next boot and took the source with it — and because a fuzz campaign that
-# cannot start sway looks exactly like one that found nothing, that loss was reported as
-# agreement for a while before anyone noticed. Hence this file, and hence ~/.cache.
+# The reference is a *release*, named by tag, and built here rather than taken from the
+# distribution: what a distribution ships is whatever it happened to package, which on this
+# machine is a version behind. A difference from an unreleased tree is not yet a difference
+# from sway, and a difference from a superseded release is a bug someone already fixed —
+# neither is parity. So the oracle is the newest tag, and `TIRI_PARITY_SWAY_REF` names
+# another when the question is which release changed a behaviour.
 #
-# Fedora ships wlroots 0.19; sway 1.12-dev wants 0.20, so it is vendored as a subproject
-# rather than taken from the system.
+# It lives in ~/.cache rather than /tmp because the first one did not, and emptied on the next
+# boot — and because a fuzz campaign that cannot start sway looks exactly like one that found
+# nothing, that loss was reported as agreement for a while before anyone noticed.
+#
+# Fedora ships wlroots 0.19; sway 1.12 wants 0.20, so it is vendored as a subproject rather
+# than taken from the system.
 set -euo pipefail
 
 ROOT="${TIRI_PARITY_ORACLE_ROOT:-$HOME/.cache/tiri-parity}"
-SWAY_SRC="${TIRI_PARITY_SWAY_SRC:-$HOME/Documentos/sway-master}"
+SWAY_REF="${TIRI_PARITY_SWAY_REF:-1.12}"
+SWAY_REPO="${TIRI_PARITY_SWAY_REPO:-https://github.com/swaywm/sway.git}"
 WLROOTS_TAG="${TIRI_PARITY_WLROOTS_TAG:-0.20.0}"
+# A local tree instead of a tag, for testing a patch that is not upstream yet.
+SWAY_SRC="${TIRI_PARITY_SWAY_SRC:-}"
 
 mkdir -p "$ROOT"
 
@@ -23,9 +31,17 @@ if [ ! -d "$ROOT/wlroots-$WLROOTS_TAG" ]; then
 fi
 
 rm -rf "$ROOT/src"
-mkdir -p "$ROOT/src"
-cp -a "$SWAY_SRC/." "$ROOT/src/"
+if [ -n "$SWAY_SRC" ]; then
+    mkdir -p "$ROOT/src"
+    cp -a "$SWAY_SRC/." "$ROOT/src/"
+else
+    # Cloned rather than copied, and shallow at one tag: the build stamps its version from
+    # git, so a tree without history calls itself `-dev` and every fixture it records lies
+    # about which sway answered.
+    git clone --depth 1 --branch "$SWAY_REF" "$SWAY_REPO" "$ROOT/src"
+fi
 mkdir -p "$ROOT/src/subprojects"
+rm -rf "$ROOT/src/subprojects/wlroots"
 cp -a "$ROOT/wlroots-$WLROOTS_TAG" "$ROOT/src/subprojects/wlroots"
 
 rm -rf "$ROOT/sway-build"
