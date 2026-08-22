@@ -47,7 +47,16 @@ impl<W: LayoutElement> ContainerArena<W> {
         } else if focused == b && parent_is_switcher(self, a) {
             self.focus_swap_node(a);
         }
-        self.focus_swap_node(focused);
+
+        // `seat_set_focus` returns early when the node it is given is already the focused
+        // one, so the ordinary swap — the one that did not just focus the other node —
+        // reaches the seat not at all. Nothing is raised, and every container goes on
+        // listing its children in the order the swap found them: what a switcher shows is
+        // decided by where the nodes *were*, so the branch that held the focused window is
+        // still the one on top, now holding whatever the swap put into it.
+        if self.seat.node() != Some(focused) {
+            self.focus_swap_node(focused);
+        }
     }
 
     fn swap_node_fractions(&mut self, a: NodeKey, b: NodeKey) {
