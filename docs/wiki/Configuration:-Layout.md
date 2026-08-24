@@ -162,6 +162,43 @@ layout {
 ```
 
 
+### `autotile`
+
+Split every new window against the shape of the node it lands beside, the way Hyprland's dwindle layout does.
+A node that is wider than tall is split sideways, a taller one downwards, so the tree walks down a diagonal without you pressing `split` at all.
+
+This is the same thing sway's `autotiling` script does by issuing a `split h` or `split v` before each window maps, except that it happens inside the compositor, so the split and the placement cannot be separated by another command.
+
+The mode decides only what you did not.
+It splits wherever the tree grows on its own — a window mapping, a directional move landing beside something — and stands down wherever a command placed the window: `focus parent`, a tabbed or stacked container, an explicit `split`.
+So opening, closing and moving windows never leaves a split container holding three children, while `split` and `layout tabbed` still give you exactly the arrangement you asked for.
+
+Off by default. Bind [`toggle-autotile`](./Configuration:-Key-Bindings.md) to turn it on and off without editing the config; note that reloading the config puts the value below back.
+
+```kdl
+layout {
+    autotile
+}
+```
+
+### `autotile-ratio`
+
+How much wider than tall a node has to be before [`autotile`](#autotile) splits it sideways.
+
+The default of `1.0` is the plain "wider than tall" rule.
+Raise it to prefer stacking windows above each other, lower it to prefer columns side by side.
+On a 16:9 output, for example, `autotile-ratio 1.8` makes the second window open below the first rather than beside it.
+
+Has no effect unless `autotile` is set.
+
+```kdl
+layout {
+    autotile
+    autotile-ratio 1.0
+}
+```
+
+
 ### `preset-column-widths`
 
 Set the widths that the `switch-preset-column-width` action (Mod+R) toggles between.

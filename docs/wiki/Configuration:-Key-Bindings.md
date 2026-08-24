@@ -195,6 +195,7 @@ These actions are especially relevant in tiri because the internal layout is a c
 - `set-layout-stacked`: convert the selected container to stacked layout.
 - `toggle-window-floating`: toggle the focused window between floating and tiling.
 - `switch-focus-between-floating-and-tiling`: switch focus between the floating layer and the tiling tree.
+- `toggle-autotile`: turn [`autotile`](./Configuration:-Layout.md#autotile) on or off, so new windows split what they land beside instead of joining a row.
 
 Example:
 
@@ -206,6 +207,7 @@ binds {
     Mod+W { set-layout-tabbed; }
     Mod+S { set-layout-stacked; }
     Mod+E { toggle-split-layout; }
+    Mod+Shift+A { toggle-autotile; }
     Mod+Shift+Space { toggle-window-floating; }
     Mod+Space { switch-focus-between-floating-and-tiling; }
 }
