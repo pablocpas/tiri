@@ -314,6 +314,7 @@ fn action_refresh_impact(action: &Action) -> ActionRefreshImpact {
         | Action::SplitVertical
         | Action::SplitToggle
         | Action::SplitNone
+        | Action::ToggleAutotile
         | Action::SetLayoutSplitH
         | Action::SetLayoutSplitV
         | Action::ToggleSplitLayout
@@ -2517,6 +2518,9 @@ impl State {
             }
             Action::SplitNone => {
                 self.niri.layout.split_none();
+            }
+            Action::ToggleAutotile => {
+                self.niri.layout.toggle_autotile();
             }
             Action::SetLayoutSplitH => {
                 self.niri.layout.set_layout_mode(ContainerLayout::SplitH);

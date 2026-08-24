@@ -29,6 +29,16 @@ pub struct Layout {
     pub gaps: f64,
     pub struts: Struts,
     pub background_color: Color,
+    /// Split every new window against the shape of the node it lands beside.
+    ///
+    /// The dwindle mode of Hyprland, and what the `autotiling` script gives sway by issuing a
+    /// `split h` or `split v` before each window maps.
+    pub autotile: bool,
+    /// How much wider than tall a node must be before [`Self::autotile`] splits it sideways.
+    ///
+    /// 1.0 is the plain "wider than tall" rule. Above it the mode prefers stacking, below it
+    /// the mode prefers columns.
+    pub autotile_ratio: f64,
 }
 
 impl Default for Layout {
@@ -58,6 +68,8 @@ impl Default for Layout {
                 PresetSize::Proportion(2. / 3.),
             ],
             background_color: DEFAULT_BACKGROUND_COLOR,
+            autotile: false,
+            autotile_ratio: 1.,
         }
     }
 }
@@ -74,6 +86,8 @@ impl MergeWith<LayoutPart> for Layout {
             insert_hint,
             empty_workspace_above_first,
             gaps,
+            autotile,
+            autotile_ratio,
         );
 
         merge_clone!(
@@ -139,6 +153,10 @@ pub struct LayoutPart {
     pub struts: Option<Struts>,
     #[knuffel(child)]
     pub background_color: Option<Color>,
+    #[knuffel(child)]
+    pub autotile: Option<Flag>,
+    #[knuffel(child, unwrap(argument))]
+    pub autotile_ratio: Option<FloatOrInt<0, 65535>>,
 }
 
 #[derive(knuffel::Decode, Debug, Clone, Copy, PartialEq)]

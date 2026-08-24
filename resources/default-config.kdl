@@ -120,6 +120,23 @@ layout {
     // by the focus state instead of empty.
     gaps 8
 
+    // Autotiling: split every new window against the shape of the node it lands beside,
+    // the way Hyprland's dwindle does. A wide node is split sideways, a tall one downwards,
+    // so the tree walks down a diagonal without you pressing "split" at all.
+    //
+    // Off by default; Mod+Shift+A toggles it at runtime. Note that reloading this file puts
+    // the value below back, so uncomment it if you want the mode on from the start.
+    //
+    // The mode only chooses an orientation as each window arrives. Moving a window out of a
+    // container, or closing one, leaves the tree however i3's own flattening leaves it, so a
+    // node with three children or more is normal and is not the mode misbehaving.
+    // autotile
+
+    // How much wider than tall a node has to be before autotiling splits it sideways.
+    // 1.0 is the plain "wider than tall" rule. Raise it to prefer stacking windows,
+    // lower it to prefer columns.
+    // autotile-ratio 1.0
+
     // You can customize the widths that "switch-preset-column-width" (Mod+R) toggles between.
     preset-column-widths {
         // Proportion sets the width as a fraction of the output width, taking gaps into account.
@@ -646,6 +663,8 @@ binds {
     Mod+S { set-layout-stacked; }
     Mod+W { set-layout-tabbed; }
     Mod+E { toggle-split-layout; }
+    // Turn autotiling (dwindle) on or off. See `autotile` in the layout section.
+    Mod+Shift+A { toggle-autotile; }
     Mod+Shift+Space { toggle-window-floating; }
     Mod+Space       { switch-focus-between-floating-and-tiling; }
 

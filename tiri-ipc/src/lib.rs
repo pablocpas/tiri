@@ -611,6 +611,8 @@ pub enum Action {
     SplitToggle {},
     /// Flatten the focused node's single-child parent, like sway's `split none`.
     SplitNone {},
+    /// Toggle autotiling: split each new window against the shape of what it lands beside.
+    ToggleAutotile {},
     /// Set focused container layout to split horizontal.
     SetLayoutSplitH {},
     /// Set focused container layout to split vertical.

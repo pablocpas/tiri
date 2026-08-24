@@ -15,6 +15,7 @@ use super::container::Layout as ContainerLayout;
 use super::*;
 
 mod animations;
+mod autotile;
 mod config;
 mod container_tree;
 mod floating;
@@ -864,6 +865,7 @@ enum Op {
     SplitVertical,
     SplitToggle,
     SplitNone,
+    ToggleAutotile,
     SetLayoutSplitH,
     SetLayoutSplitV,
     SetLayoutTabbed,
@@ -1807,6 +1809,7 @@ impl Op {
             Op::SplitVertical => layout.split_vertical(),
             Op::SplitToggle => layout.split_toggle(),
             Op::SplitNone => layout.split_none(),
+            Op::ToggleAutotile => layout.toggle_autotile(),
             Op::SetLayoutSplitH => layout.set_layout_mode(ContainerLayout::SplitH),
             Op::SetLayoutSplitV => layout.set_layout_mode(ContainerLayout::SplitV),
             Op::SetLayoutTabbed => layout.set_layout_mode(ContainerLayout::Tabbed),
@@ -3274,11 +3277,13 @@ prop_compose! {
         shadow in prop::option::of(arbitrary_shadow()),
         tab_indicator in prop::option::of(arbitrary_tab_indicator()),
         empty_workspace_above_first in prop::option::of(any::<bool>().prop_map(Flag)),
+        autotile in prop::option::of(any::<bool>().prop_map(Flag)),
     ) -> tiri_config::LayoutPart {
         tiri_config::LayoutPart {
             gaps,
             struts,
             empty_workspace_above_first,
+            autotile,
             focus_ring,
             border,
             shadow,

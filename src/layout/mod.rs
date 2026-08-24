@@ -4292,6 +4292,24 @@ impl<W: LayoutElement> Layout<W> {
         }
     }
 
+    /// Turn autotiling on or off for every workspace at once.
+    ///
+    /// The mode lives in [`Options`] rather than in a field of its own so that the tree reads
+    /// it where it already reads gaps, and so that a workspace which overrides its layout
+    /// config keeps overriding this too. The cost is that it travels the same path a config
+    /// reload does, which also means a reload puts the config's value back — the file stays
+    /// the authority on what the mode is when the session is told to re-read it.
+    pub fn toggle_autotile(&mut self) {
+        let mut options = Options::clone(&self.options);
+        options.layout.autotile = !options.layout.autotile;
+        self.update_options(options);
+    }
+
+    /// Whether autotiling is currently on.
+    pub fn is_autotile(&self) -> bool {
+        self.options.layout.autotile
+    }
+
     pub fn set_layout_mode(&mut self, layout: ContainerLayout) {
         if let Some(workspace) = self.active_workspace_mut() {
             workspace.set_layout_mode(layout);

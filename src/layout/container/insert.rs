@@ -33,8 +33,79 @@ impl<W: LayoutElement> ContainerArena<W> {
     ) {
         self.clear_focus_history();
 
+        // Before the tile exists, so the split never has to reason about an arena node that
+        // is not attached to anything yet.
+        self.autotile_presplit(branch_root);
+
         let tile_key = self.insert_node(NodeData::Container(ContainerData::new_view(tile)));
         self.insert_key_as_focus_sibling(branch_root, tile_key, focus);
+    }
+
+    /// Autotiling: split the node a new window is about to land beside, against its shape.
+    ///
+    /// This is the `autotiling` script's whole trick, moved inside the compositor. The script
+    /// watches for a window about to map and issues `split h` or `split v` on the focused
+    /// container first, so the wrapper sway then builds runs along the node's long axis. Doing
+    /// it here rather than over IPC means the split and the insertion cannot be separated by
+    /// another command, and that the window never maps into the pre-split shape and resizes.
+    ///
+    /// The split is the same [`Self::split_target`] the keybinding calls, so a wrapper it
+    /// builds is a user container exactly as the script's would be: the mode chooses the
+    /// orientation, it does not invent a different kind of container.
+    ///
+    /// Which is also why the mode makes no promise about the shape of the tree as a whole.
+    /// Hyprland's dwindle owns its tree and can keep every node binary; this one only chooses
+    /// an orientation at the moment a window arrives. Moving a window out of a container, or
+    /// closing one, leaves whatever i3's own reaping and flattening leave behind, and that is
+    /// routinely a node with three children or more. Re-splitting the survivors to restore a
+    /// binary shape would move windows the user did not ask to move, so the tree is allowed
+    /// to stay n-ary and the next window to arrive dwindles from wherever it lands.
+    fn autotile_presplit(&mut self, branch_root: NodeKey) {
+        if !self.options.layout.autotile {
+            return;
+        }
+
+        // Floating groups have no row to dwindle into; their nodes carry their own boxes.
+        if branch_root != self.root {
+            return;
+        }
+
+        let Some(target) = self
+            .view_map_target()
+            .filter(|key| self.branch_root(*key) == branch_root)
+        else {
+            // An empty workspace: the first window is a plain child of the workspace, and the
+            // orientation only becomes a question once there is something to sit beside.
+            return;
+        };
+
+        // `focus parent` aims the insertion at a container's siblings rather than at a window.
+        // Splitting there would state an orientation for a subtree the user selected on
+        // purpose, so the mode stands down and the plain sway placement applies.
+        if !self.get_node(target).is_some_and(|node| node.is_view()) {
+            return;
+        }
+
+        // Under tabs or stacks, "beside" already means another tab. Splitting would break the
+        // window out of the switcher the user put it in.
+        if self.parent_is_switcher(target) {
+            return;
+        }
+
+        let Some(rect) = self.node_geometry(target) else {
+            return;
+        };
+        if rect.size.w <= 0. || rect.size.h <= 0. {
+            return;
+        }
+
+        let ratio = self.options.layout.autotile_ratio;
+        let layout = if rect.size.w >= rect.size.h * ratio {
+            Layout::SplitH
+        } else {
+            Layout::SplitV
+        };
+        self.split_target(layout, target);
     }
 
     /// Insert a detached subtree into the tree, optionally focusing it afterwards.

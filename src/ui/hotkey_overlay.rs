@@ -502,6 +502,7 @@ fn action_name(action: &Action) -> String {
         Action::SplitVertical => String::from("Split Vertically"),
         Action::SplitToggle => String::from("Toggle Split Direction"),
         Action::SplitNone => String::from("Remove Single-Child Split"),
+        Action::ToggleAutotile => String::from("Toggle Autotiling"),
         Action::ToggleSplitLayout => String::from("Toggle Split Layout"),
         Action::SetLayoutDefault => String::from("Restore Default Layout"),
         Action::ToggleLayout(_) => String::from("Cycle Layout"),
