@@ -12,3 +12,10 @@ mutants.out.old/
 # Python profiling helpers.
 __pycache__/
 *.py[cod]
+
+# CodeGraph's local symbol index.
+/.codegraph/
+
+# Release tarballs built by the packaging scripts.
+/tiri-*.tar.gz
+/tiri-*.tar.xz
