@@ -74,6 +74,16 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// window and it stays, a `close` down to one child keeps both levels, and the same
     /// shape reached by a `move` collapses.
     pub(super) fn squash_branch(&mut self, branch_root: NodeKey) {
+        // Autotiling wants the opposite of what this does. The squash exists to keep i3's
+        // rows flat: it dissolves a redundant level by splicing its children into the
+        // grandparent, which turns a pair into a trio whenever the level held more than one
+        // child. The mode dissolves the same levels — see `autotile_squash_lone_children` —
+        // but in place, replacing the level with its child and leaving every arity alone.
+        // Two names for one job, so only one of them runs.
+        if self.options.layout.autotile && self.branch_root(branch_root) == self.root {
+            return;
+        }
+
         self.squash_children(branch_root);
     }
 

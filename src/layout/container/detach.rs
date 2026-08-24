@@ -45,6 +45,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         if let Some(cleanup_key) = cleanup_key {
             self.reap_empty(cleanup_key);
+            self.autotile_squash_lone_children();
         }
         // A fullscreen container can outlive its last child until its owning floating list
         // drops the now-empty root. The workspace pointer must stop naming it before this
@@ -135,6 +136,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         let subtree = self.extract_subtree(node_key);
         self.reap_empty(parent_key);
+        self.autotile_squash_lone_children();
         self.prune_leaf_layouts();
 
         self.prune_selected_key();

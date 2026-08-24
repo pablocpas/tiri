@@ -74,6 +74,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         if let Some(old_parent_key) = old_parent_key {
             self.reap_empty(old_parent_key);
         }
+        self.autotile_squash_lone_children();
         if let Some(leaf_key) = leaf_key {
             // Not `focus_node_key`: that raises the leaf's branch in every ancestor switcher
             // on the way to the root, which is the one thing `cmd_move` is careful not to do.
@@ -204,14 +205,22 @@ impl<W: LayoutElement> ContainerArena<W> {
         let Some(ancestor_parent_key) = self.parent_of(ancestor_key) else {
             return false;
         };
-        let insert_at = if direction.is_leading() {
-            ancestor_idx
-        } else {
-            ancestor_idx + 1
-        };
+        // Coming out of a container puts the node on the far side of it unless the move
+        // leads, and autotiling pairs it with that container rather than adding a third
+        // sibling above. The node is still inside `ancestor_key` while it is split, and the
+        // reparent below takes it out into the wrapper the split just built.
+        let after = !direction.is_leading();
+        let (parent_key, insert_at) = self.autotile_pair_slot(ancestor_key, after).unwrap_or((
+            ancestor_parent_key,
+            if after {
+                ancestor_idx + 1
+            } else {
+                ancestor_idx
+            },
+        ));
         self.reparent(
             node_key,
-            ancestor_parent_key,
+            parent_key,
             insert_at,
             ReparentFractions::PreserveAndUnset(ancestor_key),
         );
@@ -255,14 +264,13 @@ impl<W: LayoutElement> ContainerArena<W> {
 
             // A cousin's neighbour. The node arrives from the far side, so moving left lands
             // it to the cousin's right and moving right to its left.
-            let insert_at = destination_idx + usize::from(direction.is_leading());
+            let after = direction.is_leading();
             let branch_root = self.branch_root(destination_parent_key);
-            self.reparent(
-                node_key,
-                destination_parent_key,
-                insert_at,
-                ReparentFractions::Unset,
-            );
+            // Autotiling pairs the arrival with the cousin instead of making its list a trio.
+            let (parent_key, insert_at) = self
+                .autotile_pair_slot(destination_key, after)
+                .unwrap_or((destination_parent_key, destination_idx + usize::from(after)));
+            self.reparent(node_key, parent_key, insert_at, ReparentFractions::Unset);
             self.squash_branch(branch_root);
             return;
         }
@@ -275,18 +283,20 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         if destination_layout.is_parallel_to(direction) {
             // Entering along the container's own axis, at the edge the move came from.
-            let insert_at = if direction.is_leading() {
-                child_count
-            } else {
-                0
-            };
+            let after = direction.is_leading();
             let branch_root = self.branch_root(destination_key);
-            self.reparent(
-                node_key,
-                destination_key,
-                insert_at,
-                ReparentFractions::Unset,
-            );
+            // The node the arrival comes to rest against is the child already on that edge.
+            let edge_idx = if after {
+                child_count.checked_sub(1)
+            } else {
+                Some(0)
+            };
+            let edge_child =
+                edge_idx.and_then(|idx| self.get_container(destination_key)?.child_key(idx));
+            let (parent_key, insert_at) = edge_child
+                .and_then(|edge| self.autotile_pair_slot(edge, after))
+                .unwrap_or((destination_key, if after { child_count } else { 0 }));
+            self.reparent(node_key, parent_key, insert_at, ReparentFractions::Unset);
             self.squash_branch(branch_root);
             return;
         }

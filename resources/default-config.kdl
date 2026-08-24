@@ -127,9 +127,10 @@ layout {
     // Off by default; Mod+Shift+A toggles it at runtime. Note that reloading this file puts
     // the value below back, so uncomment it if you want the mode on from the start.
     //
-    // The mode only chooses an orientation as each window arrives. Moving a window out of a
-    // container, or closing one, leaves the tree however i3's own flattening leaves it, so a
-    // node with three children or more is normal and is not the mode misbehaving.
+    // The mode decides only what you did not: it splits wherever the tree grows on its own,
+    // and stands down wherever a command placed the window. So opening, closing and moving
+    // windows never leaves a split holding three -- but ask for a five-way row with "split"
+    // or a five-tab switcher and you get one.
     // autotile
 
     // How much wider than tall a node has to be before autotiling splits it sideways.

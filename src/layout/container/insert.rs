@@ -53,18 +53,14 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// builds is a user container exactly as the script's would be: the mode chooses the
     /// orientation, it does not invent a different kind of container.
     ///
-    /// Which is also why the mode makes no promise about the shape of the tree as a whole.
-    /// Hyprland's dwindle owns its tree and can keep every node binary; this one only chooses
-    /// an orientation at the moment a window arrives. Moving a window out of a container, or
-    /// closing one, leaves whatever i3's own reaping and flattening leave behind, and that is
-    /// routinely a node with three children or more. Re-splitting the survivors to restore a
-    /// binary shape would move windows the user did not ask to move, so the tree is allowed
-    /// to stay n-ary and the next window to arrive dwindles from wherever it lands.
+    /// The rule the whole mode follows is that it decides only what nobody decided. It splits
+    /// wherever the tree grows on its own — a window mapping, a directional move landing
+    /// beside something — and stands down wherever a command placed the node: `focus parent`,
+    /// a switcher, an explicit `split`. Which is why the promise it makes is not "the tree is
+    /// binary". It is narrower and it is testable: open, close and move windows all you like
+    /// and no split container below the workspace ever holds three. Ask for a five-way row
+    /// and you get a five-way row.
     fn autotile_presplit(&mut self, branch_root: NodeKey) {
-        if !self.options.layout.autotile {
-            return;
-        }
-
         // Floating groups have no row to dwindle into; their nodes carry their own boxes.
         if branch_root != self.root {
             return;
@@ -86,26 +82,139 @@ impl<W: LayoutElement> ContainerArena<W> {
             return;
         }
 
-        // Under tabs or stacks, "beside" already means another tab. Splitting would break the
-        // window out of the switcher the user put it in.
-        if self.parent_is_switcher(target) {
-            return;
-        }
-
-        let Some(rect) = self.node_geometry(target) else {
+        let Some(layout) = self.autotile_layout_for(target) else {
             return;
         };
+        self.split_target(layout, target);
+    }
+
+    /// The orientation autotiling gives a node, read off the box that node is holding.
+    ///
+    /// `None` whenever the mode has nothing to say: it is off, the node is not on the tiled
+    /// side, its parent is a switcher — where "beside" already means another tab — or it has
+    /// no box to measure yet.
+    pub(super) fn autotile_layout_for(&self, key: NodeKey) -> Option<Layout> {
+        if !self.options.layout.autotile {
+            return None;
+        }
+        if self.branch_root(key) != self.root {
+            return None;
+        }
+        if self.parent_is_switcher(key) {
+            return None;
+        }
+
+        let rect = self.node_geometry(key)?;
         if rect.size.w <= 0. || rect.size.h <= 0. {
-            return;
+            return None;
         }
 
         let ratio = self.options.layout.autotile_ratio;
-        let layout = if rect.size.w >= rect.size.h * ratio {
+        Some(if rect.size.w >= rect.size.h * ratio {
             Layout::SplitH
         } else {
             Layout::SplitV
-        };
-        self.split_target(layout, target);
+        })
+    }
+
+    /// Autotiling for an arriving node that is not a new window: where a *move* should put it.
+    ///
+    /// A directional move reparents into an existing list, so a node landing beside a pair
+    /// makes it a trio — the arity nobody asked for. The mode answers the same way it answers
+    /// at map time: split the node being landed beside, and let the arrival pair with it
+    /// inside the wrapper that produces. Returns the parent and index the caller should
+    /// reparent into, or `None` to leave sway's own placement alone.
+    ///
+    /// `after` is whether the arriving node belongs on the far side of `neighbour`.
+    pub(super) fn autotile_pair_slot(
+        &mut self,
+        neighbour: NodeKey,
+        after: bool,
+    ) -> Option<(NodeKey, usize)> {
+        let parent_key = self.parent_of(neighbour)?;
+
+        // A list that is about to reach two is exactly what the mode wants; there is nothing
+        // to correct, and wrapping here would only add a level sway would not have.
+        if self.get_container(parent_key)?.child_count() < 2 {
+            return None;
+        }
+
+        let layout = self.autotile_layout_for(neighbour)?;
+        // `split` keeps the command context on what it split, which during a move would leave
+        // the selection on a container the user never selected. The move settles focus itself
+        // afterwards; the selection has to come back here.
+        let selected_before = self.selected_key();
+        if !self.split_target(layout, neighbour) {
+            return None;
+        }
+        if self.selected_key() != selected_before {
+            self.seat.redirect_selection(selected_before);
+        }
+
+        // The split builds a wrapper only when it has something to separate the node from.
+        // Where it settled for restating an orientation instead, there is no new slot.
+        let wrapper_key = self.parent_of(neighbour)?;
+        if wrapper_key == parent_key {
+            return None;
+        }
+        Some((wrapper_key, usize::from(after)))
+    }
+
+    /// Autotiling hygiene: dissolve the containers a departure left holding a single child.
+    ///
+    /// sway leaves them standing — `container_reap_empty` destroys a container with *no*
+    /// children, and the squash that would flatten this one runs only after a directional
+    /// move and only where two levels say the same thing. So a close inside a pair leaves
+    /// `SplitV[B]` wrapping one window forever, and a dwindle layout accumulates those levels
+    /// until nothing lines up with anything. Under the mode the level goes, which is
+    /// `split none` on what is left.
+    ///
+    /// This sweeps the branch rather than one key on purpose. A move can reparent the node,
+    /// reorient the workspace and leave a wrapper behind in one command, so the container
+    /// that ends up holding a single child is not always the one the caller was holding a key
+    /// to when it started.
+    pub(super) fn autotile_squash_lone_children(&mut self) {
+        if !self.options.layout.autotile {
+            return;
+        }
+
+        // `split none` climbs through single-child ancestors, so each pass can dissolve a
+        // whole chain. The bound is the node count: no pass that finds work leaves the tree
+        // with more nodes than it started with.
+        for _ in 0..self.nodes.len() {
+            let Some(child_key) = self.lone_split_child(self.root) else {
+                return;
+            };
+            if self.unsplit_target(child_key).is_none() {
+                return;
+            }
+        }
+    }
+
+    /// The child of the first container below the workspace that is holding it alone.
+    fn lone_split_child(&self, key: NodeKey) -> Option<NodeKey> {
+        let container = self.get_container(key)?;
+        let children = container.children.clone();
+        // A view holds a tile, not an arrangement; only a real container can be a level.
+        let is_real_container = self.get_real_container(key).is_some();
+
+        // The workspace holding a single container is the ordinary shape of a split tree, and
+        // `split none` is defined never to climb through it. A one-tab switcher is a switcher
+        // the user asked for.
+        if key != self.root
+            && is_real_container
+            && children.len() == 1
+            && matches!(
+                self.get_container(key)?.layout(),
+                Layout::SplitH | Layout::SplitV
+            )
+        {
+            return Some(children[0]);
+        }
+
+        children
+            .into_iter()
+            .find_map(|child_key| self.lone_split_child(child_key))
     }
 
     /// Insert a detached subtree into the tree, optionally focusing it afterwards.
