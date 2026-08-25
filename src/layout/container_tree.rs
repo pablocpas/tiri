@@ -3584,16 +3584,20 @@ impl<W: LayoutElement> ContainerTree<W> {
         true
     }
 
-    fn sync_fullscreen_window(&mut self) {
+    pub(super) fn sync_fullscreen_window(&mut self) {
         // A detached subtree carries client sizing state, but the destination workspace keeps
         // its own fullscreen pointer. Adopt the arriving fullscreen only when the destination
         // has none; otherwise revoke the stale request. This makes the single pointer true at
         // the protocol boundary too, rather than leaving two clients pending fullscreen.
-        let tiled_root = self.arena.workspace_root();
-        let pending_keys: Vec<_> = self
-            .arena
-            .tiles_in_branch(tiled_root)
-            .into_iter()
+        //
+        // Both sides, because the workspace's fullscreen pointer is one for the whole
+        // workspace and a floating window can hold it. A floating root is not in the tiled
+        // root's child array, so sweeping that branch alone left two floating clients pending
+        // fullscreen whenever a move brought one in beside another.
+        let branches = std::iter::once(self.arena.workspace_root())
+            .chain(self.arena.floating_roots().collect::<Vec<_>>());
+        let pending_keys: Vec<_> = branches
+            .flat_map(|branch| self.arena.tiles_in_branch(branch))
             .filter(|tile| tile.window().pending_sizing_mode().is_fullscreen())
             .map(Tile::node_key)
             .collect();

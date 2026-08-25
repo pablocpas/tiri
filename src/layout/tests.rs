@@ -3804,3 +3804,50 @@ fn a_config_reload_reaches_the_tiles_on_the_tiled_side() {
         "the tile must draw the border the reloaded config asked for",
     );
 }
+
+/// Found by the campaign: two floating clients left pending fullscreen in one workspace.
+#[test]
+fn a_fullscreen_window_arriving_beside_another_takes_the_workspace_pointer() {
+    let mut w5 = TestWindowParams::new(5);
+    w5.is_floating = true;
+    let mut w3 = TestWindowParams::new(3);
+    w3.is_floating = true;
+
+    check_ops([
+        Op::AddWindow { params: w5 },
+        Op::AddOutput(3),
+        Op::AddNamedWorkspace {
+            ws_name: 1,
+            output_name: Some(4),
+            layout_config: None,
+        },
+        Op::FullscreenWindow(5),
+        Op::FocusWindowOrWorkspaceDown,
+        Op::AddWindow { params: w3 },
+        Op::ToggleWindowedFullscreen(3),
+        Op::UpdateConfig {
+            layout_config: Box::new(tiri_config::LayoutPart {
+                focus_ring: Some(tiri_config::BorderRule {
+                    off: false,
+                    on: true,
+                    width: Some(FloatOrInt(0.0)),
+                    ..Default::default()
+                }),
+                border: Some(tiri_config::BorderRule {
+                    off: true,
+                    on: false,
+                    ..Default::default()
+                }),
+                empty_workspace_above_first: Some(Flag(true)),
+                gaps: Some(FloatOrInt(0.0)),
+                autotile: Some(Flag(true)),
+                ..Default::default()
+            }),
+        },
+        Op::MoveWindowToWorkspace {
+            window_id: Some(4),
+            workspace_idx: 2,
+            focus: true,
+        },
+    ]);
+}

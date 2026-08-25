@@ -1291,6 +1291,13 @@ impl<W: LayoutElement> Workspace<W> {
                 }
             }
         }
+
+        // The workspace's fullscreen pointer is one for the whole workspace, so an arriving
+        // window that still requests fullscreen has to be reconciled against whatever is
+        // already holding it. The tiled inserts do this inside the tree; the floating ones
+        // never did, which let two floating clients sit pending fullscreen side by side. sway
+        // resolves the same collision in `container_handle_fullscreen_reparent`.
+        self.containers.sync_fullscreen_window();
     }
 
     /// Place a new floating tile centred over the tiled window it belongs to.
