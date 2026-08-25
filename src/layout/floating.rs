@@ -3320,6 +3320,23 @@ impl<W: LayoutElement> FloatingSpace<W> {
         true
     }
 
+    /// Drop a resize whose window has left the floating side.
+    ///
+    /// Every route that takes a window off this side already cancels its resize — unfloating,
+    /// removing it, emptying its group. A swap across the floating boundary is the one that
+    /// does not, because it happens down in the arena and never reaches this struct. It also
+    /// moves two nodes at once and either could be the one being resized, so this asks whether
+    /// the resize still has a tile rather than taking a key from the caller.
+    pub(super) fn forget_resize_that_left(&mut self, containers: &ContainerTree<W>) {
+        if self
+            .interactive_resize
+            .as_ref()
+            .is_some_and(|resize| !self.contains(containers, &resize.window))
+        {
+            self.interactive_resize = None;
+        }
+    }
+
     pub fn interactive_resize_end(&mut self, window: Option<&W::Id>) {
         let Some(resize) = &self.interactive_resize else {
             return;

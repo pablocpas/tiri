@@ -819,6 +819,7 @@ impl<W: LayoutElement> Workspace<W> {
         {
             return false;
         }
+        self.floating.forget_resize_that_left(&self.containers);
         self.sync_active_layer_to_command_target();
         true
     }
@@ -2167,6 +2168,7 @@ impl<W: LayoutElement> Workspace<W> {
         {
             return false;
         }
+        self.floating.forget_resize_that_left(&self.containers);
         self.sync_active_layer_to_command_target();
         true
     }

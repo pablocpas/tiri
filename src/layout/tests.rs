@@ -3851,3 +3851,31 @@ fn a_fullscreen_window_arriving_beside_another_takes_the_workspace_pointer() {
         },
     ]);
 }
+
+/// Found by the campaign: a swap across the floating boundary left the resize behind.
+#[test]
+fn swapping_a_resized_window_out_of_floating_forgets_its_resize() {
+    let mut w1 = TestWindowParams::new(1);
+    w1.is_floating = true;
+
+    check_ops([
+        Op::AddWindow { params: w1 },
+        Op::SetFullscreenWindow {
+            window: 1,
+            is_fullscreen: true,
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(5),
+        },
+        Op::InteractiveResizeBegin {
+            window: 1,
+            edges: ResizeEdge::BOTTOM_RIGHT,
+        },
+        Op::AddScaledOutput {
+            id: 3,
+            scale: 1.5,
+            layout_config: None,
+        },
+        Op::SwapWithWindow(5),
+    ]);
+}
