@@ -16,6 +16,7 @@ use super::*;
 
 mod animations;
 mod autotile;
+mod campaign;
 mod config;
 mod container_tree;
 mod floating;
