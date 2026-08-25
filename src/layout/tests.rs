@@ -3739,3 +3739,67 @@ fn a_fullscreen_branch_does_not_freeze_the_addresses_of_the_others() {
         },
     ]);
 }
+
+#[test]
+fn swapping_a_tiled_window_into_floating_keeps_the_workspace_options() {
+    // A tile carries its own handle on the options. Adding the output reconfigures the
+    // workspace, so a tile that kept the handle it was born with is on a stale one — which
+    // only shows once a swap moves it to the floating side, where the workspace checks it.
+    let mut floating = TestWindowParams::new(1);
+    floating.is_floating = true;
+
+    let options = Options {
+        layout: tiri_config::Layout {
+            empty_workspace_above_first: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow {
+                params: TestWindowParams::new(4),
+            },
+            Op::AddWindow { params: floating },
+            Op::SwapWithWindow(4),
+        ],
+    );
+}
+
+#[test]
+fn a_config_reload_reaches_the_tiles_on_the_tiled_side() {
+    // The arena takes the new options, but the tiles hold their own handle on them. A tiled
+    // window has to draw the wider border just like a floating one does.
+    let mut config = Config::default();
+    config.layout.border.off = false;
+    config.layout.border.width = 2.;
+
+    let mut layout = Layout::new(Clock::default(), &config);
+    check_ops_on_layout(
+        &mut layout,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow {
+                params: TestWindowParams {
+                    bbox: Rectangle::from_size(Size::from((100, 200))),
+                    ..TestWindowParams::new(1)
+                },
+            },
+        ],
+    );
+
+    assert_eq!(tile_rect(&layout, 1).size, Size::from((104., 204.)));
+
+    config.layout.border.width = 10.;
+    layout.update_config(&config);
+    layout.verify_invariants();
+
+    assert_eq!(
+        tile_rect(&layout, 1).size,
+        Size::from((120., 220.)),
+        "the tile must draw the border the reloaded config asked for",
+    );
+}

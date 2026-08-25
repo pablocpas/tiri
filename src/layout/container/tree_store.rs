@@ -339,7 +339,19 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     /// Put an existing node back into this workspace without changing its identity.
-    pub(super) fn insert_node_with_key(&mut self, key: NodeKey, node: NodeData<W>) {
+    ///
+    /// A tile arrives holding the options of wherever it was built or last lived — `Monitor`
+    /// builds one from `workspaces[0]` for whichever workspace is the target, and a subtree
+    /// crossing to another workspace or another output brings its own along. Every workspace
+    /// has its own handle on the options, and a named workspace's `layout_config` makes them
+    /// differ in value too, so adoption belongs at the one place a node enters an arena
+    /// rather than at each of the routes that lead here.
+    pub(super) fn insert_node_with_key(&mut self, key: NodeKey, mut node: NodeData<W>) {
+        if let NodeData::Container(container) = &mut node {
+            if let Some(tile) = container.tile_mut() {
+                tile.update_config(self.view_size, self.scale, self.options.clone());
+            }
+        }
         self.nodes.insert(key, node);
         self.parents.insert(key, None);
         self.seat.register(key);

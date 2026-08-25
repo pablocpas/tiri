@@ -1076,6 +1076,17 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     pub fn verify_invariants(&self) {
         self.arena.verify_invariants();
+
+        // The same check the floating side makes on its own tiles. A tiled tile on a foreign
+        // options handle is invisible until something floats it, so the two sides ask it.
+        for tile in self.tiles() {
+            assert!(
+                Rc::ptr_eq(self.options(), &tile.options),
+                "a tiled tile must be on its workspace's options",
+            );
+            assert_eq!(self.view_size(), tile.view_size());
+            assert_eq!(self.scale(), tile.scale());
+        }
     }
 
     /// Whether any container in this space uses `layout`.
@@ -1435,7 +1446,14 @@ impl<W: LayoutElement> ContainerTree<W> {
             .overview_background
             .update(view_size, options.layout.background_color);
         self.arena
-            .update_config(view_size, working_area, scale, options);
+            .update_config(view_size, working_area, scale, options.clone());
+        // The arena takes the new options, but each tile holds its own handle on them: the
+        // floating side already refreshes its tiles here and the tiled side has to as well.
+        // A tile left behind keeps the old border widths and the old scale, and trips the
+        // workspace's options check the moment a swap floats it.
+        for tile in self.tiles_mut() {
+            tile.update_config(view_size, scale, options.clone());
+        }
         self.arena.layout();
     }
 
