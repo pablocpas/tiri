@@ -2072,7 +2072,6 @@ fn floating_tab_bar_hit_does_not_report_resize_edges() {
         TestWindow::new(TestWindowParams::new(1)),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::Yes,
     );
@@ -2081,7 +2080,6 @@ fn floating_tab_bar_hit_does_not_report_resize_edges() {
     layout.add_window(
         TestWindow::new(TestWindowParams::new(2)),
         AddWindowTarget::NextTo(&1),
-        None,
         None,
         false,
         ActivateWindow::Yes,
@@ -2159,14 +2157,12 @@ fn floating_tab_bar_hit_does_not_fall_through_to_tiling_window() {
         TestWindow::new(TestWindowParams::new(1)),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::Yes,
     );
     layout.add_window(
         TestWindow::new(TestWindowParams::new(2)),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::Yes,
@@ -2176,7 +2172,6 @@ fn floating_tab_bar_hit_does_not_fall_through_to_tiling_window() {
     layout.add_window(
         TestWindow::new(TestWindowParams::new(3)),
         AddWindowTarget::NextTo(&2),
-        None,
         None,
         false,
         ActivateWindow::Yes,

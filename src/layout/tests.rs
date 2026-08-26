@@ -345,8 +345,6 @@ impl LayoutElement for TestWindow {
 
     fn set_interactive_resize(&mut self, _data: Option<InteractiveResizeData>) {}
 
-    fn cancel_interactive_resize(&mut self) {}
-
     fn on_commit(&mut self, _serial: Serial) {}
 
     fn interactive_resize_data(&self) -> Option<InteractiveResizeData> {
@@ -1062,7 +1060,6 @@ impl Op {
                     win,
                     AddWindowTarget::Auto,
                     None,
-                    None,
                     is_floating,
                     ActivateWindow::default(),
                 );
@@ -1125,7 +1122,6 @@ impl Op {
                     win,
                     AddWindowTarget::NextTo(&next_to_id),
                     None,
-                    None,
                     is_floating,
                     ActivateWindow::default(),
                 );
@@ -1185,7 +1181,6 @@ impl Op {
                 layout.add_window(
                     win,
                     AddWindowTarget::Workspace(ws_id),
-                    None,
                     None,
                     is_floating,
                     ActivateWindow::default(),
@@ -2956,14 +2951,12 @@ fn interactive_resize_nested_split_targets_parent() {
         TestWindow::new(TestWindowParams::new(1)),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::Yes,
     );
     layout.add_window(
         TestWindow::new(TestWindowParams::new(2)),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::Yes,
@@ -2974,7 +2967,6 @@ fn interactive_resize_nested_split_targets_parent() {
     layout.add_window(
         TestWindow::new(TestWindowParams::new(3)),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::Yes,
@@ -3408,7 +3400,6 @@ fn insert_position_with_window_on_top_edge() {
         TestWindow::new(params),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::Yes,
     );
@@ -3445,7 +3436,6 @@ fn insert_position_with_window_on_bottom_edge() {
         TestWindow::new(params),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::Yes,
     );
@@ -3481,7 +3471,6 @@ fn insert_position_center_of_window() {
     layout.add_window(
         TestWindow::new(params),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::Yes,

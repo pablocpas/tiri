@@ -14,7 +14,6 @@ fn marks_replace_add_toggle() {
         TestWindow::new(params1),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::Yes,
     );
@@ -24,7 +23,6 @@ fn marks_replace_add_toggle() {
     layout.add_window(
         TestWindow::new(params2),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::Yes,
@@ -60,7 +58,6 @@ fn marks_multiple_on_same_window() {
         TestWindow::new(params1),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::Yes,
     );
@@ -91,7 +88,6 @@ fn marks_unique_across_windows() {
         TestWindow::new(params1),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::Yes,
     );
@@ -101,7 +97,6 @@ fn marks_unique_across_windows() {
     layout.add_window(
         TestWindow::new(params2),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::Yes,
@@ -158,7 +153,6 @@ fn unmark_takes_a_named_mark_off_its_holder_and_bare_unmark_clears_every_window(
         TestWindow::new(params1),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::Yes,
     );
@@ -168,7 +162,6 @@ fn unmark_takes_a_named_mark_off_its_holder_and_bare_unmark_clears_every_window(
     layout.add_window(
         TestWindow::new(params2),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::Yes,

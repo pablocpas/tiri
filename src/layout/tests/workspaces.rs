@@ -387,7 +387,6 @@ fn empty_workspace_layout_commands_do_not_wrap_next_open() {
         TestWindow::new(TestWindowParams::new(2)),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::default(),
     );
@@ -425,14 +424,12 @@ fn empty_workspace_uses_workspace_command_context_like_sway() {
         TestWindow::new(TestWindowParams::new(1)),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::default(),
     );
     layout.add_window(
         TestWindow::new(TestWindowParams::new(2)),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::default(),
@@ -457,7 +454,6 @@ fn top_level_leaf_layout_noops_when_matching_workspace_layout_like_sway() {
     layout.add_window(
         TestWindow::new(TestWindowParams::new(1)),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::default(),
@@ -500,7 +496,6 @@ fn top_level_leaf_toggle_split_uses_workspace_layout_state_like_sway() {
     layout.add_window(
         TestWindow::new(TestWindowParams::new(1)),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::default(),
@@ -545,14 +540,12 @@ fn workspace_toggle_split_uses_prev_split_layout_like_sway() {
         TestWindow::new(TestWindowParams::new(1)),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::default(),
     );
     layout.add_window(
         TestWindow::new(TestWindowParams::new(2)),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::default(),
@@ -1788,7 +1781,6 @@ fn numeric_workspace_one_is_reused_after_switching_to_two() {
         TestWindow::new(TestWindowParams::new(1)),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::default(),
     );
@@ -1854,7 +1846,6 @@ fn add_window_to_numeric_workspace(
     layout.add_window(
         TestWindow::new(TestWindowParams::new(window_id)),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::default(),
@@ -2008,7 +1999,6 @@ fn empty_inactive_numeric_workspace_is_destroyed_without_renumbering() {
     layout.add_window(
         TestWindow::new(TestWindowParams::new(3)),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::default(),

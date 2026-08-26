@@ -969,10 +969,6 @@ impl<W: LayoutElement> Tile<W> {
         self.animate_move_y_from_with_config(from.y, config);
     }
 
-    pub fn animate_move_x_from(&mut self, from: f64) {
-        self.animate_move_x_from_with_config(from, self.options.animations.window_movement.0);
-    }
-
     pub fn animate_move_x_from_with_config(&mut self, from: f64, config: tiri_config::Animation) {
         let current_offset = self.render_offset().x;
 
@@ -993,10 +989,6 @@ impl<W: LayoutElement> Tile<W> {
         });
     }
 
-    pub fn animate_move_y_from(&mut self, from: f64) {
-        self.animate_move_y_from_with_config(from, self.options.animations.window_movement.0);
-    }
-
     pub fn animate_move_y_from_with_config(&mut self, from: f64, config: tiri_config::Animation) {
         let current_offset = self.render_offset().y;
 
@@ -1015,17 +1007,6 @@ impl<W: LayoutElement> Tile<W> {
             from: from + current_offset,
             is_between_workspaces: current_between,
         });
-    }
-
-    pub fn offset_move_y_anim_current(&mut self, offset: f64) {
-        if let Some(move_) = self.move_y_animation.as_mut() {
-            // If the anim is almost done, there's little point trying to offset it; we can let
-            // things jump. If it turns out like a bad idea, we could restart the anim instead.
-            let value = move_.anim.value();
-            if value > 0.001 {
-                move_.from += offset / value;
-            }
-        }
     }
 
     pub fn stop_move_animations(&mut self) {
@@ -1054,16 +1035,6 @@ impl<W: LayoutElement> Tile<W> {
             hold_after_done: false,
             offscreen,
         });
-    }
-
-    pub fn ensure_alpha_animates_to_1(&mut self) {
-        if let Some(alpha) = &self.alpha_animation {
-            if alpha.anim.to() != 1. {
-                // Cancel animation instead of starting a new one because the user likely wants to
-                // see the tile right away.
-                self.alpha_animation = None;
-            }
-        }
     }
 
     pub fn hold_alpha_animation_after_done(&mut self) {
@@ -1100,11 +1071,6 @@ impl<W: LayoutElement> Tile<W> {
 
     pub(super) fn set_sticky(&mut self, sticky: bool) {
         self.is_sticky = sticky;
-    }
-
-    #[allow(dead_code)]
-    pub(super) fn marks(&self) -> &[String] {
-        &self.marks
     }
 
     pub(super) fn has_mark(&self, mark: &str) -> bool {
@@ -1461,23 +1427,6 @@ impl<W: LayoutElement> Tile<W> {
         size + self.tab_bar_offset
     }
 
-    pub fn window_width_for_tile_width(&self, size: f64) -> f64 {
-        if self.border.is_off() {
-            size
-        } else {
-            size - self.border.width() * 2.
-        }
-    }
-
-    pub fn window_height_for_tile_height(&self, size: f64) -> f64 {
-        let size = size - self.tab_bar_offset;
-        if self.border.is_off() {
-            size
-        } else {
-            size - self.border.width() * 2.
-        }
-    }
-
     pub fn request_fullscreen(&mut self, animate: bool, transaction: Option<Transaction>) {
         self.record_pending_resize(transaction.as_ref());
         self.window.request_size(
@@ -1496,47 +1445,6 @@ impl<W: LayoutElement> Tile<W> {
             animate,
             transaction,
         );
-    }
-
-    pub fn min_size_nonfullscreen(&self) -> Size<f64, Logical> {
-        let mut size = self.window.min_size().to_f64();
-
-        // Can't go through effective_border_width() because we might be fullscreen.
-        if !self.border.is_off() {
-            let width = self.border.width();
-
-            size.w = f64::max(1., size.w);
-            size.h = f64::max(1., size.h);
-
-            size.w += width * 2.;
-            size.h += width * 2.;
-        }
-        if self.tab_bar_offset > 0.0 {
-            size.h += self.tab_bar_offset;
-        }
-
-        size
-    }
-
-    pub fn max_size_nonfullscreen(&self) -> Size<f64, Logical> {
-        let mut size = self.window.max_size().to_f64();
-
-        // Can't go through effective_border_width() because we might be fullscreen.
-        if !self.border.is_off() {
-            let width = self.border.width();
-
-            if size.w > 0. {
-                size.w += width * 2.;
-            }
-            if size.h > 0. {
-                size.h += width * 2.;
-            }
-        }
-        if self.tab_bar_offset > 0.0 && size.h > 0.0 {
-            size.h += self.tab_bar_offset;
-        }
-
-        size
     }
 
     pub fn bob_offset(&self) -> Point<f64, Logical> {

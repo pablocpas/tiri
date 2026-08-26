@@ -21,7 +21,6 @@ use super::container_tree::{ContainerTree, ContainerTreeRenderElement, RootTilin
 use super::floating::{
     compute_toplevel_bounds, FloatingResizeResult, FloatingSpace, FloatingSpaceRenderElement,
 };
-use super::legacy_column::{Column, ColumnWidth};
 use super::shadow::Shadow;
 use super::tile::{Tile, TileRenderSnapshot};
 use super::tiling_space::TilingSpace;
@@ -1144,7 +1143,6 @@ impl<W: LayoutElement> Workspace<W> {
         mut tile: Tile<W>,
         target: WorkspaceAddWindowTarget<W>,
         activate: ActivateWindow,
-        width: ColumnWidth,
         is_floating: bool,
         // Unused here. This is upstream's channel for the scrolling layout to animate the tile
         // as it inserts it; `Monitor::move_to_workspace` animates from the render positions it
@@ -1211,7 +1209,7 @@ impl<W: LayoutElement> Workspace<W> {
                     }
                 } else {
                     let tiling_was_empty = self.containers.is_empty();
-                    self.containers.add_tile(None, tile, activate, width, None);
+                    self.containers.add_tile(None, tile, activate);
 
                     if activate
                         || (floating_active
@@ -1225,8 +1223,7 @@ impl<W: LayoutElement> Workspace<W> {
             }
             WorkspaceAddWindowTarget::NewColumnAt(col_idx) => {
                 let activate = activate.map_smart(|| false);
-                self.containers
-                    .add_tile(Some(col_idx), tile, activate, width, None);
+                self.containers.add_tile(Some(col_idx), tile, activate);
 
                 if activate {
                     self.activate_tiling_for_new_content();
@@ -1263,7 +1260,7 @@ impl<W: LayoutElement> Workspace<W> {
                         self.activate_floating_for_new_content();
                     }
                 } else if floating_has_window {
-                    self.containers.add_tile(None, tile, activate, width, None);
+                    self.containers.add_tile(None, tile, activate);
 
                     if activate {
                         self.activate_tiling_for_new_content();
@@ -1274,11 +1271,10 @@ impl<W: LayoutElement> Workspace<W> {
                         .tiles()
                         .any(|tile| tile.window().id() == next_to)
                     {
-                        self.containers
-                            .add_tile_right_of(next_to, tile, activate, width);
+                        self.containers.add_tile_right_of(next_to, tile, activate);
                     } else {
                         error!("next_to target disappeared while placing a new tiled window");
-                        self.containers.add_tile(None, tile, activate, width, None);
+                        self.containers.add_tile(None, tile, activate);
                     }
 
                     if activate {
@@ -1343,16 +1339,6 @@ impl<W: LayoutElement> Workspace<W> {
             self.floating_is_active = FloatingActive::No;
             self.activate_tiling_content();
         }
-    }
-
-    pub fn add_tile_to_column(
-        &mut self,
-        col_idx: usize,
-        tile_idx: Option<usize>,
-        tile: Tile<W>,
-        activate: bool,
-    ) {
-        self.add_tile_to_root_container(col_idx, tile_idx, tile, activate);
     }
 
     pub(super) fn tiling_insert_parent_info(&self, window: &W::Id) -> Option<InsertParentInfo> {
@@ -1505,16 +1491,12 @@ impl<W: LayoutElement> Workspace<W> {
         }
 
         self.containers
-            .add_root_tiling_subtree(None, subtree, activate, None);
+            .add_root_tiling_subtree(None, subtree, activate);
 
         if activate {
             self.floating_is_active = FloatingActive::No;
             self.activate_tiling_content();
         }
-    }
-
-    pub fn add_column(&mut self, column: Column<W>, activate: bool) {
-        self.add_root_tiling_subtree(column.into(), activate);
     }
 
     fn update_focus_floating_tiling_after_removing(&mut self, removed_from_floating: bool) {
@@ -1608,10 +1590,6 @@ impl<W: LayoutElement> Workspace<W> {
         self.update_focus_floating_tiling_after_removing(from_floating);
 
         Some(subtree)
-    }
-
-    pub fn remove_active_column(&mut self) -> Option<Column<W>> {
-        self.remove_active_root_tiling_subtree().map(Into::into)
     }
 
     pub fn resolve_default_width(
@@ -1715,29 +1693,6 @@ impl<W: LayoutElement> Workspace<W> {
                 state.bounds = Some(self.containers.new_window_toplevel_bounds(rules));
             }
         });
-    }
-
-    pub(super) fn resolve_tiling_width(
-        &self,
-        window: &W,
-        width: Option<PresetSize>,
-    ) -> ColumnWidth {
-        let width = width.unwrap_or_else(|| PresetSize::Fixed(window.size().w));
-        match width {
-            PresetSize::Fixed(fixed) => {
-                let mut fixed = f64::from(fixed);
-
-                // Add border width since ColumnWidth includes borders.
-                let rules = window.rules();
-                let border = self.options.layout.border.merged_with(&rules.border);
-                if !border.off {
-                    fixed += border.width * 2.;
-                }
-
-                ColumnWidth::Fixed(fixed as i32)
-            }
-            PresetSize::Proportion(prop) => ColumnWidth::Proportion(prop),
-        }
     }
 
     pub fn focus_left(&mut self) -> bool {
@@ -2066,16 +2021,8 @@ impl<W: LayoutElement> Workspace<W> {
         self.move_left()
     }
 
-    pub fn move_column_left(&mut self) -> bool {
-        self.move_container_left()
-    }
-
     pub fn move_container_right(&mut self) -> bool {
         self.move_right()
-    }
-
-    pub fn move_column_right(&mut self) -> bool {
-        self.move_container_right()
     }
 
     pub fn move_container_to_first(&mut self) {

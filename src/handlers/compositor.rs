@@ -90,10 +90,10 @@ impl CompositorHandler for State {
 
                     let toplevel = window.toplevel().expect("no X11 support");
 
-                    let (rules, width, height, output, workspace_id) =
+                    let (rules, height, output, workspace_id) =
                         if let InitialConfigureState::Configured {
                             rules,
-                            width,
+                            width: _,
                             height,
                             floating_width: _,
                             floating_height: _,
@@ -111,12 +111,12 @@ impl CompositorHandler for State {
                                 .and_then(|n| self.niri.layout.find_workspace_by_name(n))
                                 .map(|(_, ws)| ws.id());
 
-                            (rules, width, height, output, workspace_id)
+                            (rules, height, output, workspace_id)
                         } else {
                             // Can happen when a surface unmaps by attaching a null buffer while
                             // there are in-flight pending configures.
                             debug!("window mapped without proper initial configure");
-                            (ResolvedWindowRules::default(), None, None, None, None)
+                            (ResolvedWindowRules::default(), None, None, None)
                         };
 
                     // The GTK about dialog sets min/max size after the initial configure but
@@ -185,14 +185,10 @@ impl CompositorHandler for State {
                     } else {
                         AddWindowTarget::Auto
                     };
-                    let output = self.niri.layout.add_window(
-                        mapped,
-                        target,
-                        width,
-                        height,
-                        is_floating,
-                        activate,
-                    );
+                    let output =
+                        self.niri
+                            .layout
+                            .add_window(mapped, target, height, is_floating, activate);
 
                     if let Some(output) = output {
                         self.niri.layout.start_open_animation_for_window(&window);

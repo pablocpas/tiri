@@ -139,16 +139,6 @@ pub fn version() -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
-pub fn i3_version() -> Result<String, String> {
-    let out = Command::new(i3_binary())
-        .arg("-v")
-        // i3 initializes its IPC path before handling some command-line options.
-        .env("XDG_RUNTIME_DIR", std::env::temp_dir())
-        .output()
-        .map_err(|err| format!("cannot run i3: {err}"))?;
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
-}
-
 /// A directory that cleans itself up, so a failed recording leaves nothing behind.
 struct TempDir(PathBuf);
 

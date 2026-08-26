@@ -19,7 +19,6 @@ use super::container::{
 };
 use super::container_tree::{percent_from_size_change, ContainerTree, LeafFrameInfo, TileConfig};
 use super::focus_ring::{render_container_selection, FocusRingEdges, FocusRingRenderElement};
-use super::legacy_column::ColumnWidth;
 use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
 use super::workspace::{InteractiveResize, ResolvedSize};
 use super::{
@@ -1479,10 +1478,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
         tile.floating_pos = Some(container_pos);
         tile.floating_reinsert_hint = Some((container_id, insert_hint));
 
-        let width = ColumnWidth::Fixed(tile.tile_expected_or_current_size().w as i32);
         RemovedTile {
             tile,
-            width,
             is_floating: true,
         }
     }

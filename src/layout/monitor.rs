@@ -14,7 +14,6 @@ use super::container::{Direction, NodeKey};
 use super::container_tree::{ContainerTree, RootTilingSubtree};
 use super::floating::{FloatingResizeResult, FloatingSpace};
 use super::insert_hint_element::{InsertHintElement, InsertHintRenderElement};
-use super::legacy_column::{Column, ColumnWidth};
 use super::tile::Tile;
 use super::workspace::{
     compute_working_area, OutputId, Workspace, WorkspaceAddWindowTarget, WorkspaceId,
@@ -716,7 +715,6 @@ impl<W: LayoutElement> Monitor<W> {
             },
             activate,
             true,
-            removed.width,
             true,
             None,
         );
@@ -855,10 +853,6 @@ impl<W: LayoutElement> Monitor<W> {
             .map(|tile| tile.window_mut())
     }
 
-    pub fn sticky_tiles(&self) -> impl Iterator<Item = &Tile<W>> {
-        self.sticky_floating.tiles(&self.sticky_containers)
-    }
-
     pub fn sticky_tiles_mut(&mut self) -> impl Iterator<Item = &mut Tile<W>> {
         self.sticky_floating.tiles_mut(&mut self.sticky_containers)
     }
@@ -875,13 +869,6 @@ impl<W: LayoutElement> Monitor<W> {
             .tiles(&self.sticky_containers)
             .find(|tile| tile.window().is_wl_surface(wl_surface))
             .map(|tile| tile.window())
-    }
-
-    pub fn find_sticky_wl_surface_mut(&mut self, wl_surface: &WlSurface) -> Option<&mut W> {
-        self.sticky_floating
-            .tiles_mut(&mut self.sticky_containers)
-            .find(|tile| tile.window().is_wl_surface(wl_surface))
-            .map(|tile| tile.window_mut())
     }
 
     pub fn sticky_tile_with_render_position(
@@ -1096,14 +1083,13 @@ impl<W: LayoutElement> Monitor<W> {
         window: W,
         target: MonitorAddWindowTarget<W>,
         activate: ActivateWindow,
-        width: ColumnWidth,
         is_floating: bool,
     ) {
         // Currently, everything a workspace sets on a Tile is the same across all workspaces of a
         // monitor. So we can use any workspace, not necessarily the exact target workspace.
         let tile = self.workspaces[0].make_tile(window);
 
-        self.add_tile(tile, target, activate, true, width, is_floating, None);
+        self.add_tile(tile, target, activate, true, is_floating, None);
     }
 
     pub fn add_root_tiling_subtree(
@@ -1134,10 +1120,6 @@ impl<W: LayoutElement> Monitor<W> {
         }
     }
 
-    pub fn add_column(&mut self, workspace_idx: usize, column: Column<W>, activate: bool) {
-        self.add_root_tiling_subtree(workspace_idx, column.into(), activate);
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub fn add_tile(
         &mut self,
@@ -1146,7 +1128,6 @@ impl<W: LayoutElement> Monitor<W> {
         activate: ActivateWindow,
         // FIXME: Refactor ActivateWindow enum to make this better.
         allow_to_activate_workspace: bool,
-        width: ColumnWidth,
         is_floating: bool,
         anim: Option<tiri_config::Animation>,
     ) {
@@ -1154,7 +1135,7 @@ impl<W: LayoutElement> Monitor<W> {
 
         let workspace = &mut self.workspaces[workspace_idx];
 
-        workspace.add_tile(tile, target, activate, width, is_floating, anim);
+        workspace.add_tile(tile, target, activate, is_floating, anim);
 
         // After adding a new window, workspace becomes this output's own.
         if !workspace.has_persistent_identity() {
@@ -1286,25 +1267,6 @@ impl<W: LayoutElement> Monitor<W> {
         if allow_to_activate_workspace && activate {
             self.activate_workspace(workspace_idx);
         }
-    }
-
-    pub fn add_tile_to_column(
-        &mut self,
-        workspace_idx: usize,
-        column_idx: usize,
-        tile_idx: Option<usize>,
-        tile: Tile<W>,
-        activate: bool,
-        allow_to_activate_workspace: bool,
-    ) {
-        self.add_tile_to_root_container(
-            workspace_idx,
-            column_idx,
-            tile_idx,
-            tile,
-            activate,
-            allow_to_activate_workspace,
-        );
     }
 
     pub fn clean_up_workspaces(&mut self) {
@@ -1528,7 +1490,6 @@ impl<W: LayoutElement> Monitor<W> {
                     },
                     activate,
                     true,
-                    removed.width,
                     true,
                     None,
                 );
@@ -1604,7 +1565,6 @@ impl<W: LayoutElement> Monitor<W> {
                 ActivateWindow::No
             },
             true,
-            removed.width,
             removed.is_floating,
             Some(config),
         );

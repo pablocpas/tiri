@@ -28,14 +28,12 @@ fn fullscreen_disables_resize_hits() {
         TestWindow::new(TestWindowParams::new(1)),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::Yes,
     );
     layout.add_window(
         TestWindow::new(TestWindowParams::new(2)),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::Yes,
@@ -65,14 +63,12 @@ fn fullscreen_visuals_wait_for_commit() {
         TestWindow::new(TestWindowParams::new(1)),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::Yes,
     );
     layout.add_window(
         TestWindow::new(TestWindowParams::new(2)),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::Yes,
@@ -1367,7 +1363,6 @@ fn fullscreen_open_window_does_not_steal_focus_like_sway() {
         TestWindow::new(TestWindowParams::new(4)),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::Yes,
     );
@@ -1406,7 +1401,6 @@ fn fullscreen_open_then_focus_right_stays_locked_like_sway() {
     layout.add_window(
         TestWindow::new(TestWindowParams::new(4)),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::Yes,
@@ -1449,7 +1443,6 @@ fn fullscreen_focus_down_can_move_within_fullscreen_subtree_like_sway() {
         TestWindow::new(TestWindowParams::new(4)),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::Yes,
     );
@@ -1480,7 +1473,6 @@ fn fullscreen_focus_down_can_move_within_fullscreen_subtree_like_sway() {
     layout.add_window(
         TestWindow::new(TestWindowParams::new(5)),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::Yes,

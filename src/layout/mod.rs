@@ -37,7 +37,6 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use container_tree::RootTilingSubtree;
-use legacy_column::{Column, ColumnWidth};
 use monitor::{InsertHint, InsertPosition, InsertWorkspace, MonitorAddWindowTarget};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::utils::RescaleRenderElement;
@@ -94,13 +93,11 @@ pub mod container_tree;
 pub mod floating;
 pub mod focus_ring;
 pub mod insert_hint_element;
-pub mod legacy_column;
 pub mod monitor;
 pub mod opening_window;
 mod seat_focus;
 pub mod shadow;
 pub mod tab_bar;
-pub mod tab_indicator;
 pub mod tile;
 pub mod tiling_space;
 mod viewport;
@@ -442,7 +439,6 @@ pub trait LayoutElement {
     fn take_animation_snapshot(&mut self) -> Option<LayoutElementRenderSnapshot>;
 
     fn set_interactive_resize(&mut self, data: Option<InteractiveResizeData>);
-    fn cancel_interactive_resize(&mut self);
     fn interactive_resize_data(&self) -> Option<InteractiveResizeData>;
 
     fn on_commit(&mut self, serial: Serial);
@@ -593,8 +589,6 @@ struct InteractiveMoveData<W: LayoutElement> {
     pub(self) output: Output,
     /// Current pointer position within output.
     pub(self) pointer_pos_within_output: Point<f64, Logical>,
-    /// Width of the root tiling subtree the window came from.
-    pub(self) width: ColumnWidth,
     /// Whether the window targets the floating layout.
     pub(self) is_floating: bool,
     /// Whether the window was sticky before the move started.
@@ -692,8 +686,6 @@ pub enum MarkMode {
 /// Tile that was just removed from the layout.
 pub struct RemovedTile<W: LayoutElement> {
     tile: Tile<W>,
-    /// Width of the root tiling subtree the tile was in.
-    width: ColumnWidth,
     /// Whether the tile was floating.
     is_floating: bool,
 }
@@ -1190,16 +1182,6 @@ impl<W: LayoutElement> Layout<W> {
         }
     }
 
-    pub fn add_column_by_idx(
-        &mut self,
-        monitor_idx: usize,
-        workspace_idx: usize,
-        column: Column<W>,
-        activate: bool,
-    ) {
-        self.add_root_tiling_subtree_by_idx(monitor_idx, workspace_idx, column.into(), activate);
-    }
-
     /// Adds a new window to the layout.
     ///
     /// Returns an output that the window was added to, if there were any outputs.
@@ -1208,7 +1190,6 @@ impl<W: LayoutElement> Layout<W> {
         &mut self,
         window: W,
         target: AddWindowTarget<W>,
-        width: Option<PresetSize>,
         height: Option<PresetSize>,
         is_floating: bool,
         activate: ActivateWindow,
@@ -1277,11 +1258,7 @@ impl<W: LayoutElement> Layout<W> {
                 };
                 let mon = &mut monitors[mon_idx];
 
-                let (ws_idx, _) = mon.resolve_add_window_target(target);
-                let ws = &mon.workspaces[ws_idx];
-                let tiling_width = ws.resolve_tiling_width(&window, width);
-
-                mon.add_window(window, target, activate, tiling_width, is_floating);
+                mon.add_window(window, target, activate, is_floating);
 
                 if activate.map_smart(|| false) {
                     *active_monitor_idx = mon_idx;
@@ -1355,10 +1332,8 @@ impl<W: LayoutElement> Layout<W> {
                 };
                 let ws = &mut workspaces[ws_idx];
 
-                let tiling_width = ws.resolve_tiling_width(&window, width);
-
                 let tile = ws.make_tile(window);
-                ws.add_tile(tile, target, activate, tiling_width, is_floating, None);
+                ws.add_tile(tile, target, activate, is_floating, None);
 
                 // Set the default height for tiling windows.
                 if !is_floating {
@@ -1412,7 +1387,6 @@ impl<W: LayoutElement> Layout<W> {
 
                         return Some(RemovedTile {
                             tile: move_.tile,
-                            width: move_.width,
                             is_floating: false,
                         });
                     }
@@ -1431,7 +1405,6 @@ impl<W: LayoutElement> Layout<W> {
                 .take_tile_for_scratchpad(window)
                 .expect("the scratchpad said it had this window");
             return Some(RemovedTile {
-                width: ColumnWidth::Fixed(tile.tile_expected_or_current_size().w as i32),
                 tile,
                 is_floating: true,
             });
@@ -1738,13 +1711,6 @@ impl<W: LayoutElement> Layout<W> {
         workspace_name: &str,
     ) -> Option<(Option<Output>, usize)> {
         self.ensure_workspace_by_name_impl(workspace_name, false)
-    }
-
-    pub fn ensure_workspace_by_name_transient(
-        &mut self,
-        workspace_name: &str,
-    ) -> Option<(Option<Output>, usize)> {
-        self.ensure_workspace_by_name_impl(workspace_name, true)
     }
 
     pub fn find_workspace_by_ref(
@@ -2698,19 +2664,11 @@ impl<W: LayoutElement> Layout<W> {
         workspace.move_container_left();
     }
 
-    pub fn move_column_left(&mut self) {
-        self.move_container_left();
-    }
-
     pub fn move_container_right(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
         workspace.move_container_right();
-    }
-
-    pub fn move_column_right(&mut self) {
-        self.move_container_right();
     }
 
     pub fn move_root_container_to_first(&mut self) {
@@ -2962,14 +2920,6 @@ impl<W: LayoutElement> Layout<W> {
         self.focus_output_in_direction_internal(output, Direction::Right);
         self.seat_focus_record_active_chain();
         true
-    }
-
-    pub fn focus_column_left_or_output(&mut self, output: &Output) -> bool {
-        self.focus_container_left_or_output(output)
-    }
-
-    pub fn focus_column_right_or_output(&mut self, output: &Output) -> bool {
-        self.focus_container_right_or_output(output)
     }
 
     pub fn focus_window_in_column(&mut self, index: u8) {
@@ -5120,7 +5070,6 @@ impl<W: LayoutElement> Layout<W> {
                 },
                 activate,
                 true,
-                removed.width,
                 removed.is_floating,
                 None,
             );
@@ -5210,14 +5159,6 @@ impl<W: LayoutElement> Layout<W> {
 
         let idx = monitors[*active_monitor_idx].active_workspace_idx;
         self.move_workspace_to_output_by_index(idx, None, output)
-    }
-
-    pub fn move_workspace_to_output_by_id(
-        &mut self,
-        workspace_id: WorkspaceId,
-        new_output: &Output,
-    ) -> bool {
-        self.move_workspace_to_output_by_workspace_id(workspace_id, new_output)
     }
 
     pub fn move_workspace_to_output_by_workspace_id(
@@ -5950,7 +5891,6 @@ impl<W: LayoutElement> Layout<W> {
                 };
                 let RemovedTile {
                     mut tile,
-                    width,
                     is_floating,
                 } = self.remove_window(window, Transaction::new()).unwrap();
 
@@ -5991,7 +5931,6 @@ impl<W: LayoutElement> Layout<W> {
                     tile,
                     output,
                     pointer_pos_within_output,
-                    width,
                     is_floating,
                     was_sticky,
                     pointer_ratio_within_window,
@@ -6341,7 +6280,6 @@ impl<W: LayoutElement> Layout<W> {
                             },
                             ActivateWindow::Yes,
                             allow_to_activate_workspace,
-                            move_.width,
                             false,
                             None,
                         );
@@ -6439,7 +6377,6 @@ impl<W: LayoutElement> Layout<W> {
                             },
                             ActivateWindow::Yes,
                             allow_to_activate_workspace,
-                            move_.width,
                             true,
                             None,
                         );
@@ -6473,7 +6410,6 @@ impl<W: LayoutElement> Layout<W> {
                     move_.tile,
                     WorkspaceAddWindowTarget::Auto,
                     ActivateWindow::Yes,
-                    move_.width,
                     move_.is_floating,
                     None,
                 );

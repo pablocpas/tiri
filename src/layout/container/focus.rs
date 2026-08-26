@@ -7,12 +7,6 @@ use super::NodeData;
 use super::NodeKey;
 
 impl<W: LayoutElement> ContainerArena<W> {
-    pub(in crate::layout) fn focused_leaf_targets_workspace_layout(&self) -> bool {
-        self.effective_focused_key()
-            .and_then(|key| self.parent_of(key))
-            .is_none_or(|parent| parent == self.root)
-    }
-
     /// The leaf that is effectively focused.
     ///
     /// Falls back to the first leaf when nothing is focused or the focused key went stale,

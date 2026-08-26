@@ -1357,11 +1357,6 @@ impl LayoutElement for Mapped {
         }
     }
 
-    fn cancel_interactive_resize(&mut self) {
-        self.set_interactive_resize(None);
-        self.interactive_resize = None;
-    }
-
     fn interactive_resize_data(&self) -> Option<InteractiveResizeData> {
         Some(self.interactive_resize.as_ref()?.data())
     }

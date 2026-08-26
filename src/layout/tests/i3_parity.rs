@@ -14,14 +14,12 @@ fn i3_167_workspace_layout_tabbed_groups_second_open() {
         TestWindow::new(TestWindowParams::new(1)),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::default(),
     );
     layout.add_window(
         TestWindow::new(TestWindowParams::new(2)),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::default(),
@@ -48,14 +46,12 @@ fn i3_167_workspace_layout_stacked_groups_second_open() {
         TestWindow::new(TestWindowParams::new(1)),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::default(),
     );
     layout.add_window(
         TestWindow::new(TestWindowParams::new(2)),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::default(),
@@ -80,7 +76,6 @@ fn i3_167_workspace_layout_stacked_reinserts_after_floating_roundtrip() {
         TestWindow::new(TestWindowParams::new(1)),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::default(),
     );
@@ -89,7 +84,6 @@ fn i3_167_workspace_layout_stacked_reinserts_after_floating_roundtrip() {
     layout.add_window(
         TestWindow::new(TestWindowParams::new(2)),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::default(),
@@ -113,14 +107,12 @@ fn i3_167_empty_workspace_layout_can_switch_back_to_splith() {
         TestWindow::new(TestWindowParams::new(1)),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::default(),
     );
     layout.add_window(
         TestWindow::new(TestWindowParams::new(2)),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::default(),
@@ -133,14 +125,12 @@ fn i3_167_empty_workspace_layout_can_switch_back_to_splith() {
         TestWindow::new(TestWindowParams::new(3)),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::default(),
     );
     layout.add_window(
         TestWindow::new(TestWindowParams::new(4)),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::default(),
@@ -163,14 +153,12 @@ fn i3_167_empty_workspace_layout_can_switch_back_to_splitv() {
         TestWindow::new(TestWindowParams::new(1)),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::default(),
     );
     layout.add_window(
         TestWindow::new(TestWindowParams::new(2)),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::default(),
@@ -183,14 +171,12 @@ fn i3_167_empty_workspace_layout_can_switch_back_to_splitv() {
         TestWindow::new(TestWindowParams::new(3)),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::default(),
     );
     layout.add_window(
         TestWindow::new(TestWindowParams::new(4)),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::default(),

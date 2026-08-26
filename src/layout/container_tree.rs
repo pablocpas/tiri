@@ -32,7 +32,6 @@ use super::container::{
 use super::focus_ring::{
     render_container_selection, FocusRingEdges, FocusRingIndicatorEdge, FocusRingRenderElement,
 };
-use super::legacy_column::{Column, ColumnWidth};
 use super::monitor::{InsertPosition, SplitIndicator};
 use super::tile::{Tile, TileRenderElement};
 use super::tiling_space::{InteractiveResizeState, TilingSpace};
@@ -234,14 +233,6 @@ niri_render_elements! {
 pub struct RootTilingSubtree<W: LayoutElement> {
     /// Detached subtree that preserves container structure.
     subtree: DetachedNode<W>,
-}
-
-/// Window height specification for tiling layout
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
-pub enum WindowHeight {
-    #[default]
-    Auto,
-    Fixed(i32),
 }
 
 // ============================================================================
@@ -1013,10 +1004,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.arena.all_tiles().into_iter()
     }
 
-    pub fn active_tile(&self) -> Option<&Tile<W>> {
-        self.focused_tile()
-    }
-
     pub fn active_window_mut(&mut self) -> Option<&mut W> {
         let key = self
             .arena
@@ -1170,7 +1157,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         // Create RemovedTile
         Some(RemovedTile {
             tile,
-            width: ColumnWidth::default(),
             is_floating: false,
         })
     }
@@ -1753,16 +1739,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         tiling.interactive_resize = None;
     }
 
-    pub fn cancel_resize_for_window(&mut self, tiling: &mut TilingSpace<W>, window: &W) {
-        if tiling
-            .interactive_resize
-            .as_ref()
-            .is_some_and(|resize| &resize.window == window.id())
-        {
-            tiling.interactive_resize = None;
-        }
-    }
-
     pub fn resize_edges_under(&mut self, pos: Point<f64, Logical>) -> Option<ResizeEdge> {
         self.resize_hit_under(pos).map(|hit| hit.edges)
     }
@@ -1953,22 +1929,6 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     pub fn focus_child(&mut self) -> bool {
         self.arena.select_child()
-    }
-
-    pub fn focus_parent_targets_workspace(&self) -> bool {
-        if self.has_fullscreen_window() {
-            return false;
-        }
-
-        if self.selected_is_container() {
-            return false;
-        }
-
-        if self.arena.selected_layout_parent_key() == Some(self.arena.workspace_root()) {
-            return true;
-        }
-
-        self.arena.focused_leaf_targets_workspace_layout()
     }
 
     pub fn clear_selection_context(&mut self) {
@@ -2805,14 +2765,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.arena.is_empty()
     }
 
-    pub fn add_tile(
-        &mut self,
-        col_idx: Option<usize>,
-        tile: Tile<W>,
-        activate: bool,
-        _width: ColumnWidth,
-        _height: Option<WindowHeight>,
-    ) {
+    pub fn add_tile(&mut self, col_idx: Option<usize>, tile: Tile<W>, activate: bool) {
         let id = tile.window().id().clone();
         if let Some(index) = col_idx {
             self.arena.insert_leaf_at(index, tile, activate);
@@ -2823,13 +2776,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.layout_after_tiled_insert(&id);
     }
 
-    pub fn add_tile_right_of(
-        &mut self,
-        next_to: &W::Id,
-        tile: Tile<W>,
-        activate: bool,
-        _width: ColumnWidth,
-    ) {
+    pub fn add_tile_right_of(&mut self, next_to: &W::Id, tile: Tile<W>, activate: bool) {
         let id = tile.window().id().clone();
         self.arena.insert_leaf_after(next_to, tile, activate);
         self.sync_fullscreen_window();
@@ -2853,16 +2800,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    pub fn add_tile_to_column(
-        &mut self,
-        col_idx: usize,
-        tile_idx: Option<usize>,
-        tile: Tile<W>,
-        activate: bool,
-    ) {
-        self.add_tile_to_root_container(col_idx, tile_idx, tile, activate);
-    }
-
     pub fn insert_subtree_at_root(&mut self, index: usize, subtree: DetachedNode<W>, focus: bool) {
         self.mutate_tree(|tree| tree.insert_subtree_at_root(index, subtree, focus));
     }
@@ -2871,33 +2808,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.arena.insert_subtree_with_focus(subtree, focus);
         self.sync_fullscreen_window();
         self.arena.layout();
-    }
-
-    pub fn add_subtree_as_workspace_tiling_fallback(
-        &mut self,
-        subtree: DetachedNode<W>,
-        focus: bool,
-    ) {
-        if self.arena.is_empty() {
-            self.arena.insert_subtree_with_focus(subtree, focus);
-        } else {
-            let index = self.arena.root_children_len();
-            self.arena.insert_subtree_at_root(index, subtree, focus);
-        }
-        self.sync_fullscreen_window();
-        self.arena.layout();
-    }
-
-    pub fn add_tile_as_workspace_tiling_fallback(&mut self, tile: Tile<W>, activate: bool) {
-        let id = tile.window().id().clone();
-        if self.arena.is_empty() {
-            self.arena.insert_window_with_focus(tile, activate);
-        } else {
-            let index = self.arena.root_children_len();
-            self.arena.insert_leaf_at(index, tile, activate);
-        }
-        self.sync_fullscreen_window();
-        self.layout_after_tiled_insert(&id);
     }
 
     pub(super) fn insert_parent_info_for_window(
@@ -3002,7 +2912,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         root_idx: Option<usize>,
         subtree: RootTilingSubtree<W>,
         activate: bool,
-        _height: Option<WindowHeight>,
     ) {
         let idx = root_idx.unwrap_or_else(|| self.arena.root_children_len());
         self.arena
@@ -3011,15 +2920,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.arena.layout();
     }
 
-    pub fn add_column(
-        &mut self,
-        col_idx: Option<usize>,
-        column: Column<W>,
-        activate: bool,
-        height: Option<WindowHeight>,
-    ) {
-        self.add_root_tiling_subtree(col_idx, column.into(), activate, height);
-    }
     pub fn remove_tile(&mut self, window: &W::Id, transaction: Transaction) -> RemovedTile<W> {
         self.arena.set_pending_transaction(transaction.clone());
         let tile = self
@@ -3029,7 +2929,6 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         RemovedTile {
             tile,
-            width: ColumnWidth::default(),
             is_floating: false,
         }
     }
@@ -3053,10 +2952,6 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         self.arena.layout();
         Some(subtree)
-    }
-
-    pub fn remove_active_column(&mut self) -> Option<Column<W>> {
-        self.remove_active_root_tiling_subtree().map(Into::into)
     }
 
     pub fn new_window_size(
@@ -3195,29 +3090,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    pub fn move_root_container_left(&mut self) -> bool {
-        let Some(idx) = self.arena.focused_root_index() else {
-            return false;
-        };
-        if idx == 0 {
-            return false;
-        }
-
-        self.move_root_child_with_layout(idx, idx - 1)
-    }
-
-    pub fn move_root_container_right(&mut self) -> bool {
-        let Some(idx) = self.arena.focused_root_index() else {
-            return false;
-        };
-        let len = self.arena.root_children_len();
-        if idx + 1 >= len {
-            return false;
-        }
-
-        self.move_root_child_with_layout(idx, idx + 1)
-    }
-
     pub fn move_root_container_to_index(&mut self, idx: usize) {
         if idx == 0 {
             return;
@@ -3237,14 +3109,6 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     pub fn move_column_to_last(&mut self) {
         self.move_root_container_to_last();
-    }
-
-    pub fn move_column_left(&mut self) -> bool {
-        self.move_root_container_left()
-    }
-
-    pub fn move_column_right(&mut self) -> bool {
-        self.move_root_container_right()
     }
 
     pub fn move_column_to_index(&mut self, idx: usize) {
@@ -4013,29 +3877,8 @@ impl<W: LayoutElement> RootTilingSubtree<W> {
         self.subtree.unset_root_fractions();
     }
 
-    pub fn new(tile: Tile<W>) -> Self {
-        Self {
-            subtree: DetachedNode::new_view(tile),
-        }
-    }
-
-    pub fn from_tiles(tiles: Vec<Tile<W>>) -> Self {
-        if tiles.len() == 1 {
-            return Self::new(tiles.into_iter().next().unwrap());
-        }
-
-        let children = tiles.into_iter().map(DetachedNode::new_view).collect();
-        Self {
-            subtree: DetachedNode::new_container(Layout::SplitV, children),
-        }
-    }
-
     pub fn tiles(&self) -> Vec<&Tile<W>> {
         self.subtree.tiles()
-    }
-
-    pub fn contains(&self, window: &W) -> bool {
-        self.subtree.contains_window(window.id())
     }
 
     pub fn from_subtree(subtree: DetachedNode<W>) -> Self {
@@ -4044,10 +3887,6 @@ impl<W: LayoutElement> RootTilingSubtree<W> {
 
     pub fn into_subtree(self) -> DetachedNode<W> {
         self.subtree
-    }
-
-    pub fn into_tiles(self) -> Vec<Tile<W>> {
-        self.subtree.into_tiles()
     }
 }
 

@@ -14,7 +14,6 @@ fn scratchpad_show_hides_focused_window() {
         TestWindow::new(params1),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::Yes,
     );
@@ -24,7 +23,6 @@ fn scratchpad_show_hides_focused_window() {
     layout.add_window(
         TestWindow::new(params2),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::Yes,
@@ -64,7 +62,6 @@ fn scratchpad_show_moves_visible_between_outputs() {
         TestWindow::new(params1),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::Yes,
     );
@@ -98,7 +95,6 @@ fn scratchpad_multiple_windows_round_robin() {
         TestWindow::new(params1),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::Yes,
     );
@@ -109,7 +105,6 @@ fn scratchpad_multiple_windows_round_robin() {
         TestWindow::new(params2),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::Yes,
     );
@@ -119,7 +114,6 @@ fn scratchpad_multiple_windows_round_robin() {
     layout.add_window(
         TestWindow::new(params3),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::Yes,
@@ -165,7 +159,6 @@ fn scratchpad_from_floating_preserves_floating() {
         TestWindow::new(params),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::Yes,
     );
@@ -203,7 +196,6 @@ fn scratchpad_from_tiling_becomes_floating() {
     layout.add_window(
         TestWindow::new(params),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::Yes,
@@ -392,7 +384,6 @@ fn sticky_toggle_requires_floating() {
         TestWindow::new(params),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::Yes,
     );
@@ -416,7 +407,6 @@ fn sticky_moves_across_workspaces_on_output() {
     layout.add_window(
         TestWindow::new(params),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::Yes,
@@ -463,7 +453,6 @@ fn scratchpad_show_hides_visible_then_shows_next() {
         TestWindow::new(params1),
         AddWindowTarget::Auto,
         None,
-        None,
         false,
         ActivateWindow::Yes,
     );
@@ -473,7 +462,6 @@ fn scratchpad_show_hides_visible_then_shows_next() {
     layout.add_window(
         TestWindow::new(params2),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::Yes,
@@ -514,7 +502,6 @@ fn scratchpad_fullscreen_to_scratchpad() {
     layout.add_window(
         TestWindow::new(params),
         AddWindowTarget::Auto,
-        None,
         None,
         false,
         ActivateWindow::Yes,

@@ -813,37 +813,6 @@ impl<W: LayoutElement> DerefMut for ContainerData<W> {
 // ============================================================================
 
 impl<W: LayoutElement> DetachedNode<W> {
-    /// The node a window is, keeping the key it already had.
-    pub(super) fn new_view(mut tile: Tile<W>) -> Self {
-        let marks = tile.take_marks();
-        Self {
-            key: tile.node_key(),
-            sizing: NodeSizing::default(),
-            layout: Layout::SplitH,
-            marks,
-            tile: Some(tile),
-            children: Vec::new(),
-            focus_stack: Vec::new(),
-            user_created: false,
-            prev_split_layout: None,
-        }
-    }
-
-    pub(super) fn new_container(layout: Layout, children: Vec<DetachedNode<W>>) -> Self {
-        let focus_stack = children.iter().map(|child| child.key).collect();
-        Self {
-            key: NodeKey::next(),
-            sizing: NodeSizing::default(),
-            layout,
-            marks: Vec::new(),
-            tile: None,
-            children,
-            focus_stack,
-            user_created: false,
-            prev_split_layout: None,
-        }
-    }
-
     /// Where this node's fractions live: on the tile when it is a view, as in the arena.
     pub(super) fn unset_root_fractions(&mut self) {
         match &mut self.tile {
@@ -864,36 +833,6 @@ impl<W: LayoutElement> DetachedNode<W> {
             None => {
                 for child in &self.children {
                     child.collect_tiles(tiles);
-                }
-            }
-        }
-    }
-
-    pub(super) fn contains_window(&self, window_id: &W::Id) -> bool {
-        match &self.tile {
-            Some(tile) => tile.window().id() == window_id,
-            None => self
-                .children
-                .iter()
-                .any(|child| child.contains_window(window_id)),
-        }
-    }
-
-    pub(super) fn into_tiles(self) -> Vec<Tile<W>> {
-        let mut tiles = Vec::new();
-        self.collect_tiles_owned(&mut tiles);
-        tiles
-    }
-
-    fn collect_tiles_owned(self, tiles: &mut Vec<Tile<W>>) {
-        match self.tile {
-            Some(mut tile) => {
-                tile.replace_marks(self.marks);
-                tiles.push(tile);
-            }
-            None => {
-                for child in self.children {
-                    child.collect_tiles_owned(tiles);
                 }
             }
         }
