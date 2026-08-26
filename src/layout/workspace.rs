@@ -2759,6 +2759,37 @@ impl<W: LayoutElement> Workspace<W> {
             .map(|tile| tile.window().id().clone())
     }
 
+    /// Take a window out of the workspace to put it *away* in the scratchpad.
+    ///
+    /// Both of sway's hiding paths clear fullscreen before the container leaves the
+    /// workspace: `root_scratchpad_add_container` for a window sent there for the first time,
+    /// `root_scratchpad_hide` for a visible one going back. A hidden window that kept the
+    /// state would come back out asking for fullscreen on a workspace that has since given
+    /// its one pointer to somebody else.
+    ///
+    /// sway/tree/root.c:108-112, sway/tree/root.c:212-233
+    pub fn take_tile_for_hiding_in_scratchpad(&mut self, id: &W::Id) -> Option<Tile<W>> {
+        self.set_fullscreen(id, false);
+        self.take_tile_for_scratchpad(id)
+    }
+
+    /// `container_fullscreen_disable` on whatever this workspace's one fullscreen pointer
+    /// names, leaf or container.
+    pub fn clear_fullscreen(&mut self) {
+        let Some(scope) = self.containers.arena().fullscreen_key() else {
+            return;
+        };
+
+        if self.containers.arena().is_leaf(scope) {
+            if let Some(id) = self.containers.arena().fullscreen_leaf_window_id().cloned() {
+                self.set_fullscreen(&id, false);
+            }
+            return;
+        }
+
+        self.containers.toggle_fullscreen_container(scope);
+    }
+
     pub fn take_tile_for_scratchpad(&mut self, id: &W::Id) -> Option<Tile<W>> {
         let removed = self.remove_tile(id, Transaction::new());
         let mut tile = removed.tile;

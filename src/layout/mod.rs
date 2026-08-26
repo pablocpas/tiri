@@ -4674,7 +4674,7 @@ impl<W: LayoutElement> Layout<W> {
                     .workspaces
                     .iter_mut()
                     .find(|ws| ws.has_window(&target))
-                    .and_then(|ws| ws.take_tile_for_scratchpad(&target));
+                    .and_then(|ws| ws.take_tile_for_hiding_in_scratchpad(&target));
 
                 let Some(tile) = tile else {
                     return;
@@ -4689,7 +4689,7 @@ impl<W: LayoutElement> Layout<W> {
                 let tile = workspaces
                     .iter_mut()
                     .find(|ws| ws.has_window(&target))
-                    .and_then(|ws| ws.take_tile_for_scratchpad(&target));
+                    .and_then(|ws| ws.take_tile_for_hiding_in_scratchpad(&target));
 
                 let Some(tile) = tile else {
                     return;
@@ -4728,9 +4728,9 @@ impl<W: LayoutElement> Layout<W> {
         // moves between workspaces, which is all sway's scratchpad ever does.
         if let Some((ws_id, visible_id)) = visible_elsewhere {
             if ws_id == active_ws_id {
-                let tile = self
-                    .active_workspace_mut()
-                    .and_then(|workspace| workspace.take_tile_for_scratchpad(&visible_id));
+                let tile = self.active_workspace_mut().and_then(|workspace| {
+                    workspace.take_tile_for_hiding_in_scratchpad(&visible_id)
+                });
                 if let Some(tile) = tile {
                     self.scratchpad.hide_in_scratchpad(tile);
                     self.seat_focus_after_mutation();

@@ -823,3 +823,107 @@ fn hiding_a_floating_window_leaves_its_size_alone() {
         "an already-floating window is put away as it is"
     );
 }
+
+/// Fullscreen does not go into the scratchpad with the window.
+///
+/// `root_scratchpad_add_container` disables it on the way in, and `root_scratchpad_hide` does
+/// the same for a visible one going back. A hidden window that kept the state would come out
+/// asking a workspace for fullscreen it has already promised to somebody else.
+///
+/// sway/tree/root.c:108-112, sway/tree/root.c:212-233
+#[test]
+fn hiding_a_window_takes_it_out_of_fullscreen() {
+    let mut floating = TestWindowParams::new(2);
+    floating.is_floating = true;
+
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow { params: floating },
+        Op::ToggleFullscreenFocused,
+        Op::MoveWindowToScratchpad { id: Some(2) },
+    ]);
+
+    let scratchpad = layout.scratchpad_for_test();
+    let hidden = scratchpad
+        .tiles()
+        .find(|tile| tile.window().id() == &2)
+        .expect("the hidden window");
+    assert!(
+        !hidden.window().pending_sizing_mode().is_fullscreen(),
+        "a window put away stops asking for fullscreen"
+    );
+    assert!(
+        scratchpad.fullscreen_window_ids().is_empty(),
+        "and it takes the fullscreen pointer with it"
+    );
+}
+
+/// The same rule on the way back in: `scratchpad show` on a visible scratchpad window is
+/// `root_scratchpad_hide`, which disables fullscreen before the window leaves.
+///
+/// sway/tree/root.c:212-233
+#[test]
+fn hiding_a_visible_scratchpad_window_again_takes_it_out_of_fullscreen() {
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::MoveWindowToScratchpad { id: Some(2) },
+        Op::ScratchpadShow,
+        Op::ToggleFullscreenFocused,
+        Op::ScratchpadShow,
+    ]);
+
+    let workspace = layout.active_workspace().expect("active workspace");
+    assert!(
+        !workspace.has_window(&2),
+        "the window went back into hiding"
+    );
+    assert!(
+        workspace.fullscreen_window_ids().is_empty(),
+        "and it left the workspace's fullscreen pointer behind"
+    );
+
+    let hidden = layout
+        .scratchpad_for_test()
+        .tiles()
+        .find(|tile| tile.window().id() == &2)
+        .expect("the hidden window");
+    assert!(
+        !hidden.window().pending_sizing_mode().is_fullscreen(),
+        "it stops asking for fullscreen on the way in"
+    );
+}
+
+/// `scratchpad show` unfullscreens whatever the workspace was showing.
+///
+/// sway/tree/root.c:166-170
+#[test]
+fn showing_a_scratchpad_window_takes_the_workspace_out_of_fullscreen() {
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::MoveWindowToScratchpad { id: Some(2) },
+        Op::ToggleFullscreenFocused,
+        Op::ScratchpadShow,
+    ]);
+
+    let workspace = layout.active_workspace().expect("active workspace");
+    assert!(workspace.has_window(&2), "the scratchpad window came out");
+    assert!(
+        workspace.fullscreen_window_ids().is_empty(),
+        "and window 1 is no longer fullscreen"
+    );
+}

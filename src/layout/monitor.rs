@@ -653,6 +653,13 @@ impl<W: LayoutElement> Monitor<W> {
 
         {
             let workspace = &mut self.workspaces[workspace_idx];
+
+            // `root_scratchpad_show`: a scratchpad window comes out over whatever the target
+            // workspace was showing fullscreen, and that one is taken out of fullscreen first.
+            //
+            // sway/tree/root.c:166-170
+            workspace.clear_fullscreen();
+
             workspace.add_scratchpad_tile(tile, activate);
 
             // After adding a new window, workspace becomes this output's own.
