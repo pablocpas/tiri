@@ -2744,3 +2744,52 @@ fn the_two_sides_of_a_workspace_do_not_overwrite_each_other_s_focus() {
         "and the tiled side must not"
     );
 }
+
+/// A workspace has one fullscreen pointer, and the floating list is on the same side of it.
+///
+/// A floating window carries its client fullscreen state across a workspace move. When the
+/// destination already has a fullscreen window, the arriving request is revoked instead of
+/// leaving two clients pending fullscreen — the same answer `sync_fullscreen_window` gives on
+/// the tiled list.
+#[test]
+fn a_floating_window_arriving_fullscreen_yields_to_the_one_already_there() {
+    let mut floating_1 = TestWindowParams::new(1);
+    floating_1.is_floating = true;
+    let mut floating_2 = TestWindowParams::new(2);
+    floating_2.is_floating = true;
+
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: floating_1 },
+        Op::FocusWorkspaceDown,
+        Op::AddWindow { params: floating_2 },
+        Op::ToggleFullscreenFocused,
+        Op::FocusWorkspaceUp,
+        Op::ToggleFullscreenFocused,
+        Op::MoveWindowToWorkspace {
+            window_id: Some(1),
+            workspace_idx: 1,
+            focus: true,
+        },
+    ]);
+
+    let (_, _, workspace) = layout
+        .workspaces()
+        .find(|(_, _, ws)| ws.has_window(&2))
+        .expect("the destination workspace");
+    assert!(workspace.has_window(&1), "window 1 moved here");
+    assert_eq!(
+        workspace.fullscreen_window_ids(),
+        vec![2],
+        "window 2 keeps the workspace's one fullscreen pointer"
+    );
+    assert!(
+        !workspace
+            .windows()
+            .find(|win| win.id() == &1)
+            .expect("window 1")
+            .pending_sizing_mode()
+            .is_fullscreen(),
+        "and window 1's stale fullscreen request is revoked"
+    );
+}
