@@ -1,5 +1,4 @@
 use insta::assert_snapshot;
-use proptest::prelude::*;
 
 use super::super::container::{
     ContainerArena, ContainerData, Direction, FloatingRootKind, Layout as ContainerLayout,

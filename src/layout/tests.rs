@@ -4,7 +4,7 @@ use proptest::prelude::*;
 use proptest_derive::Arbitrary;
 use smithay::output::{Mode, PhysicalProperties, Subpixel};
 use smithay::utils::{Logical, Point, Rectangle, Size};
-use tiri_config::utils::{Flag, MergeWith as _};
+use tiri_config::utils::Flag;
 use tiri_config::workspace::WorkspaceName;
 use tiri_config::{
     Config, FloatOrInt, OutputName, Struts, TabIndicatorLength, TabIndicatorPosition,

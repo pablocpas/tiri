@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Mutex;
 
-use proptest::strategy::{Strategy as _, ValueTree as _};
+use proptest::strategy::ValueTree as _;
 use proptest::test_runner::{Config as ProptestConfig, RngAlgorithm, TestRng, TestRunner};
 
 use super::*;
@@ -246,10 +246,7 @@ fn shrink(
     let mut layout_config = layout_config.clone();
 
     let reaches = |ops: &[Op], layout_config: &tiri_config::LayoutPart| {
-        run_case(ops, layout_config)
-            .map(|(site, _)| site)
-            .as_ref()
-            == Some(site)
+        run_case(ops, layout_config).map(|(site, _)| site).as_ref() == Some(site)
     };
 
     // The case's own layout config first: it applies to every op, so losing it is the single
@@ -390,10 +387,7 @@ fn collect_every_panic_the_random_ops_reach() {
 
     eprintln!();
     eprintln!("campaign: {generated} cases generated, seed {seed:#x}");
-    eprintln!(
-        "{} distinct site(s), {red} red case(s)",
-        findings.len()
-    );
+    eprintln!("{} distinct site(s), {red} red case(s)", findings.len());
     eprintln!();
 
     for (idx, finding) in findings.iter().enumerate() {

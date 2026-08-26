@@ -12,7 +12,6 @@ mod imp {
 
     use anyhow::{ensure, Context};
     use gtk::gdk;
-    use gtk::prelude::*;
     use smithay::backend::egl::ffi::egl;
     use smithay::backend::egl::EGLContext;
     use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
