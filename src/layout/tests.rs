@@ -1071,14 +1071,17 @@ impl Op {
                 mut params,
                 next_to_id,
             } => {
+                // One id is one window. A walk over the workspaces misses the ones held in
+                // the scratchpad and in the sticky lists, and a second window drawn with an
+                // id that is already alive is not input the compositor can ever receive.
+                if layout.has_window(&params.id) {
+                    return;
+                }
+
                 let mut found_next_to = false;
 
                 if let Some(InteractiveMoveState::Moving(move_)) = &layout.interactive_move {
-                    let win_id = move_.tile.window().0.id;
-                    if win_id == params.id {
-                        return;
-                    }
-                    if win_id == next_to_id {
+                    if move_.tile.window().0.id == next_to_id {
                         found_next_to = true;
                     }
                 }
@@ -1088,10 +1091,6 @@ impl Op {
                         for mon in monitors {
                             for ws in &mut mon.workspaces {
                                 for win in ws.windows() {
-                                    if win.0.id == params.id {
-                                        return;
-                                    }
-
                                     if win.0.id == next_to_id {
                                         found_next_to = true;
                                     }
@@ -1102,10 +1101,6 @@ impl Op {
                     MonitorSet::NoOutputs { workspaces, .. } => {
                         for ws in workspaces {
                             for win in ws.windows() {
-                                if win.0.id == params.id {
-                                    return;
-                                }
-
                                 if win.0.id == next_to_id {
                                     found_next_to = true;
                                 }
@@ -1140,24 +1135,20 @@ impl Op {
                 ws_name,
             } => {
                 let ws_name = format!("ws{ws_name}");
-                let mut ws_id = None;
 
-                if let Some(InteractiveMoveState::Moving(move_)) = &layout.interactive_move {
-                    if move_.tile.window().0.id == params.id {
-                        return;
-                    }
+                // See `AddWindowNextTo`: the scratchpad and the sticky lists hold windows no
+                // workspace walk reaches, and an id that is already alive must not be drawn
+                // a second time.
+                if layout.has_window(&params.id) {
+                    return;
                 }
+
+                let mut ws_id = None;
 
                 match &mut layout.monitor_set {
                     MonitorSet::Normal { monitors, .. } => {
                         for mon in monitors {
                             for ws in &mut mon.workspaces {
-                                for win in ws.windows() {
-                                    if win.0.id == params.id {
-                                        return;
-                                    }
-                                }
-
                                 if ws
                                     .name()
                                     .is_some_and(|name| name.eq_ignore_ascii_case(&ws_name))
@@ -1169,12 +1160,6 @@ impl Op {
                     }
                     MonitorSet::NoOutputs { workspaces, .. } => {
                         for ws in workspaces {
-                            for win in ws.windows() {
-                                if win.0.id == params.id {
-                                    return;
-                                }
-                            }
-
                             if ws
                                 .name()
                                 .is_some_and(|name| name.eq_ignore_ascii_case(&ws_name))
