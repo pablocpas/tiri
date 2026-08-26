@@ -83,28 +83,51 @@ pub struct TabletData {
     pub aspect_ratio: f64,
 }
 
-fn resize_request_for_action(action: &Action) -> Option<ResizeRequest> {
-    let axis = |axis, amount| ResizeRequest::Axis {
-        axis,
-        change: SizeChange::AdjustFixed(amount),
-    };
-    let edge = |direction, amount| ResizeRequest::Edge { direction, amount };
+/// A keyboard resize bind, narrowed to the actions that have a resize request.
+///
+/// [`Action`] is too wide to map without a fallback, and a fallback is what lets the bind arm and
+/// the request drift apart. Naming the twelve separately keeps [`Self::request`] total: a new
+/// resize action cannot reach the layout until every step below has been written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResizeAction {
+    GrowWidth,
+    ShrinkWidth,
+    GrowHeight,
+    ShrinkHeight,
+    GrowLeft,
+    ShrinkLeft,
+    GrowRight,
+    ShrinkRight,
+    GrowUp,
+    ShrinkUp,
+    GrowDown,
+    ShrinkDown,
+}
 
-    Some(match action {
-        Action::ResizeGrowWidth => axis(ResizeAxis::Horizontal, RESIZE_STEP),
-        Action::ResizeShrinkWidth => axis(ResizeAxis::Horizontal, -RESIZE_STEP),
-        Action::ResizeGrowHeight => axis(ResizeAxis::Vertical, RESIZE_STEP),
-        Action::ResizeShrinkHeight => axis(ResizeAxis::Vertical, -RESIZE_STEP),
-        Action::ResizeGrowLeft => edge(Direction::Left, RESIZE_STEP),
-        Action::ResizeShrinkLeft => edge(Direction::Left, -RESIZE_STEP),
-        Action::ResizeGrowRight => edge(Direction::Right, RESIZE_STEP),
-        Action::ResizeShrinkRight => edge(Direction::Right, -RESIZE_STEP),
-        Action::ResizeGrowUp => edge(Direction::Up, RESIZE_STEP),
-        Action::ResizeShrinkUp => edge(Direction::Up, -RESIZE_STEP),
-        Action::ResizeGrowDown => edge(Direction::Down, RESIZE_STEP),
-        Action::ResizeShrinkDown => edge(Direction::Down, -RESIZE_STEP),
-        _ => return None,
-    })
+impl ResizeAction {
+    /// Keep this match exhaustive: it is what makes the conversion infallible.
+    fn request(self) -> ResizeRequest {
+        let axis = |axis, amount| ResizeRequest::Axis {
+            axis,
+            change: SizeChange::AdjustFixed(amount),
+        };
+        let edge = |direction, amount| ResizeRequest::Edge { direction, amount };
+
+        match self {
+            ResizeAction::GrowWidth => axis(ResizeAxis::Horizontal, RESIZE_STEP),
+            ResizeAction::ShrinkWidth => axis(ResizeAxis::Horizontal, -RESIZE_STEP),
+            ResizeAction::GrowHeight => axis(ResizeAxis::Vertical, RESIZE_STEP),
+            ResizeAction::ShrinkHeight => axis(ResizeAxis::Vertical, -RESIZE_STEP),
+            ResizeAction::GrowLeft => edge(Direction::Left, RESIZE_STEP),
+            ResizeAction::ShrinkLeft => edge(Direction::Left, -RESIZE_STEP),
+            ResizeAction::GrowRight => edge(Direction::Right, RESIZE_STEP),
+            ResizeAction::ShrinkRight => edge(Direction::Right, -RESIZE_STEP),
+            ResizeAction::GrowUp => edge(Direction::Up, RESIZE_STEP),
+            ResizeAction::ShrinkUp => edge(Direction::Up, -RESIZE_STEP),
+            ResizeAction::GrowDown => edge(Direction::Down, RESIZE_STEP),
+            ResizeAction::ShrinkDown => edge(Direction::Down, -RESIZE_STEP),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2466,35 +2489,18 @@ impl State {
                     }
                 }
             }
-            action @ (Action::ResizeGrowWidth
-            | Action::ResizeShrinkWidth
-            | Action::ResizeGrowHeight
-            | Action::ResizeShrinkHeight
-            | Action::ResizeGrowLeft
-            | Action::ResizeShrinkLeft
-            | Action::ResizeGrowRight
-            | Action::ResizeShrinkRight
-            | Action::ResizeGrowUp
-            | Action::ResizeShrinkUp
-            | Action::ResizeGrowDown
-            | Action::ResizeShrinkDown) => {
-                let request = resize_request_for_action(&action)
-                    .expect("all keyboard resize actions must have a request");
-                if self.niri.screenshot_ui.is_open() {
-                    let change = match request {
-                        ResizeRequest::Axis { change, .. } => change,
-                        ResizeRequest::Edge { amount, .. } => SizeChange::AdjustFixed(amount),
-                    };
-                    match request.axis() {
-                        ResizeAxis::Horizontal => self.niri.screenshot_ui.set_width(change),
-                        ResizeAxis::Vertical => self.niri.screenshot_ui.set_height(change),
-                    }
-                    // The screenshot UI dims and annotates the complete output topology.
-                    self.niri.queue_redraw_all();
-                } else {
-                    self.niri.layout.resize_window(None, request);
-                }
-            }
+            Action::ResizeGrowWidth => self.do_resize(ResizeAction::GrowWidth),
+            Action::ResizeShrinkWidth => self.do_resize(ResizeAction::ShrinkWidth),
+            Action::ResizeGrowHeight => self.do_resize(ResizeAction::GrowHeight),
+            Action::ResizeShrinkHeight => self.do_resize(ResizeAction::ShrinkHeight),
+            Action::ResizeGrowLeft => self.do_resize(ResizeAction::GrowLeft),
+            Action::ResizeShrinkLeft => self.do_resize(ResizeAction::ShrinkLeft),
+            Action::ResizeGrowRight => self.do_resize(ResizeAction::GrowRight),
+            Action::ResizeShrinkRight => self.do_resize(ResizeAction::ShrinkRight),
+            Action::ResizeGrowUp => self.do_resize(ResizeAction::GrowUp),
+            Action::ResizeShrinkUp => self.do_resize(ResizeAction::ShrinkUp),
+            Action::ResizeGrowDown => self.do_resize(ResizeAction::GrowDown),
+            Action::ResizeShrinkDown => self.do_resize(ResizeAction::ShrinkDown),
             Action::FocusParent => {
                 self.niri.layout.focus_parent();
                 self.maybe_warp_cursor_to_focus();
@@ -3029,6 +3035,29 @@ impl State {
                     self.niri.queue_redraw_mru_output();
                 }
             }
+        }
+    }
+
+    /// Apply a keyboard resize bind to whatever currently owns sizing.
+    ///
+    /// The screenshot UI sizes its selection while it is open; otherwise the request goes to the
+    /// focused window.
+    fn do_resize(&mut self, action: ResizeAction) {
+        let request = action.request();
+
+        if self.niri.screenshot_ui.is_open() {
+            let change = match request {
+                ResizeRequest::Axis { change, .. } => change,
+                ResizeRequest::Edge { amount, .. } => SizeChange::AdjustFixed(amount),
+            };
+            match request.axis() {
+                ResizeAxis::Horizontal => self.niri.screenshot_ui.set_width(change),
+                ResizeAxis::Vertical => self.niri.screenshot_ui.set_height(change),
+            }
+            // The screenshot UI dims and annotates the complete output topology.
+            self.niri.queue_redraw_all();
+        } else {
+            self.niri.layout.resize_window(None, request);
         }
     }
 
@@ -6083,32 +6112,32 @@ mod tests {
     #[test]
     fn keyboard_resize_actions_keep_axis_and_edge_semantics_distinct() {
         assert_eq!(
-            resize_request_for_action(&Action::ResizeGrowWidth),
-            Some(ResizeRequest::Axis {
+            ResizeAction::GrowWidth.request(),
+            ResizeRequest::Axis {
                 axis: ResizeAxis::Horizontal,
                 change: SizeChange::AdjustFixed(RESIZE_STEP),
-            })
+            }
         );
         assert_eq!(
-            resize_request_for_action(&Action::ResizeShrinkHeight),
-            Some(ResizeRequest::Axis {
+            ResizeAction::ShrinkHeight.request(),
+            ResizeRequest::Axis {
                 axis: ResizeAxis::Vertical,
                 change: SizeChange::AdjustFixed(-RESIZE_STEP),
-            })
+            }
         );
         assert_eq!(
-            resize_request_for_action(&Action::ResizeGrowLeft),
-            Some(ResizeRequest::Edge {
+            ResizeAction::GrowLeft.request(),
+            ResizeRequest::Edge {
                 direction: Direction::Left,
                 amount: RESIZE_STEP,
-            })
+            }
         );
         assert_eq!(
-            resize_request_for_action(&Action::ResizeShrinkDown),
-            Some(ResizeRequest::Edge {
+            ResizeAction::ShrinkDown.request(),
+            ResizeRequest::Edge {
                 direction: Direction::Down,
                 amount: -RESIZE_STEP,
-            })
+            }
         );
     }
 
