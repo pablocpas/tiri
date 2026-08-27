@@ -348,7 +348,8 @@ input {
 > [!NOTE]
 > Upstream niri's `max-scroll-amount` property is still accepted, so existing configs load, but
 > it has no effect in tiri. It bounds how far a scrolling viewport would travel to bring a window
-> into view, and a tiling tree never has to scroll to one.
+> into view, and a tiling tree never has to scroll to one. Tiri logs a warning at startup when it
+> is set.
 
 #### `workspace-auto-back-and-forth`
 

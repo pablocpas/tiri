@@ -102,7 +102,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Sub::Validate { config } => {
                 tracy_client::Client::start();
 
-                config_path(config).load().config?;
+                let config = config_path(config).load().config?;
+                warn_about_ignored_options(&config);
                 info!("config is valid");
                 return Ok(());
             }
@@ -155,6 +156,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Config::load_default()
     });
     let config_includes = config_load_result.includes;
+
+    warn_about_ignored_options(&config);
 
     let spawn_at_startup = mem::take(&mut config.spawn_at_startup);
     let spawn_sh_at_startup = mem::take(&mut config.spawn_sh_at_startup);
@@ -361,6 +364,20 @@ fn default_config_path() -> Option<PathBuf> {
 
 fn system_config_path() -> PathBuf {
     PathBuf::from("/etc/tiri/config.kdl")
+}
+
+/// Tell the user about options that were set and are not acted on.
+///
+/// Silence would be a lie and refusing to load would break configs that work today, so the
+/// config keeps parsing and says what it is not doing with it. Only options actually set are
+/// named: a warning about a line nobody wrote teaches people to skip warnings.
+fn warn_about_ignored_options(config: &Config) {
+    for ignored in config.ignored_options() {
+        warn!(
+            "`{}` is accepted and ignored: {}",
+            ignored.path, ignored.reason
+        );
+    }
 }
 
 fn config_path(cli_path: Option<PathBuf>) -> ConfigPath {

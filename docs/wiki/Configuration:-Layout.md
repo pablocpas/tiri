@@ -550,6 +550,13 @@ prefer-no-csd
 
 <sup>Upstream niri: 25.02</sup>
 
+> [!WARNING]
+> **Accepted and ignored in tiri.** This configures niri's indicator strip drawn beside a
+> scrolling column. Tiri draws i3-style tab bars instead — see [`tab-bar`](#tab-bar), which is
+> what you want. The block still parses so that configs carried over from niri keep loading,
+> and tiri logs a warning at startup when it is set. The rest of this section describes what it
+> does in niri.
+
 Controls the appearance of the tab indicator that appears next to columns in tabbed display mode.
 
 Set `off` to hide the tab indicator.

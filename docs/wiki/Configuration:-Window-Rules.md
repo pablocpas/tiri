@@ -781,6 +781,11 @@ window-rule {
 
 <sup>Upstream niri: 25.02</sup>
 
+> [!WARNING]
+> **Accepted and ignored in tiri**, like the [layout option it
+> overrides](./Configuration:-Layout.md#tab-indicator). Tiri's [`tab-bar`](./Configuration:-Layout.md#tab-bar)
+> is not overridable per window.
+
 Override the tab indicator options for the window.
 
 Options in this rule match the same options as the normal [`tab-indicator` config in the layout section](./Configuration:-Layout.md#tab-indicator), so check the documentation there.

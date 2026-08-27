@@ -219,6 +219,10 @@ debug {
 
 <sup>Upstream niri: 0.1.9</sup>
 
+> [!WARNING]
+> **Accepted and ignored in tiri.** Nothing reads the flag; transactions cannot be turned off.
+> Tiri logs a warning at startup when it is set.
+
 Disable transactions (resize and close).
 
 By default, windows which must resize together, do resize together.
