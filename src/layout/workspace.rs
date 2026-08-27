@@ -767,10 +767,17 @@ impl<W: LayoutElement> Workspace<W> {
         self.tiles_mut().map(Tile::window_mut)
     }
 
+    /// Every tile in this workspace, tiled and floating, in the arena's leaf order.
+    ///
+    /// One walk, the same one `tiles_mut` takes. Chaining a tiled iterator with a floating one
+    /// reaches the same tiles and used to, but then the two answers to "every tile here" were
+    /// two routes that had to be kept agreeing by hand — and reasoning about which of them a
+    /// given method took has already cost more than the walk does.
     pub fn tiles(&self) -> impl Iterator<Item = &Tile<W>> + '_ {
-        let tiled = self.containers.tiles();
-        let floating = self.floating.tiles(&self.containers);
-        tiled.chain(floating)
+        let tree = self.containers.arena();
+        tree.dfs_leaf_keys()
+            .into_iter()
+            .filter_map(|key| tree.get_tile(key))
     }
 
     pub fn tiles_mut(&mut self) -> impl Iterator<Item = &mut Tile<W>> + '_ {

@@ -413,3 +413,46 @@ fn the_column_spelling_of_a_bind_is_an_alias_and_not_a_second_behaviour() {
 
     assert_eq!(checked, 10);
 }
+
+#[test]
+fn the_two_answers_to_every_tile_in_a_workspace_agree() {
+    let ops = [
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::ConsumeOrExpelWindowLeft { id: None },
+        Op::AddWindow {
+            params: TestWindowParams {
+                is_floating: true,
+                ..TestWindowParams::new(3)
+            },
+        },
+        Op::AddWindow {
+            params: TestWindowParams {
+                is_floating: true,
+                ..TestWindowParams::new(4)
+            },
+        },
+    ];
+
+    let mut layout = check_ops(ops);
+    let ws = layout.active_workspace_mut().unwrap();
+
+    // Same tiles and same order, both sides of the workspace included. They are one walk now,
+    // and the point of the test is to notice if they stop being one.
+    let read: Vec<_> = ws
+        .tiles()
+        .map(|tile| *tile.window().id())
+        .collect();
+    let written: Vec<_> = ws
+        .tiles_mut()
+        .map(|tile| *tile.window().id())
+        .collect();
+
+    assert_eq!(read, written);
+    assert_eq!(read.len(), 4, "two tiled and two floating");
+}
