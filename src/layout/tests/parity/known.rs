@@ -5,13 +5,17 @@
 //! difference it has already been told about, in a script nobody wrote down. Keeping the
 //! table in one place is what stops those two from drifting into separate lists.
 //!
-//! Adding an entry is a claim that the difference is understood. Removing one is the point.
+//! Adding an entry is a claim that the difference is understood. What to do about it then is
+//! a second claim, and the two are not the same: an [`Open`] entry is debt and removing it is
+//! the point, while a [`Deliberate`] one records a place where tiri answers differently on
+//! purpose and is expected to keep doing so.
 //!
-//! One left this table by a change to the model rather than to the layout: a box with no area
-//! is now compared by its emptiness, because neither compositor draws anything in one and the
-//! numbers left in it are whatever the last pass wrote. That only settles the cases where both
-//! sides agree there is nothing; the two below where one arranged a branch and the other did
-//! not are a question about the arrange.
+//! Reaching for `Deliberate` because a difference is inconvenient is how a parity suite stops
+//! meaning anything. It is for a difference that was traced to sway doing something tiri
+//! declines to reproduce, with the reason written down.
+//!
+//! [`Open`]: Verdict::Open
+//! [`Deliberate`]: Verdict::Deliberate
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -24,7 +28,19 @@ pub(super) struct Divergence {
     pub fixture: &'static str,
     /// 1-based, counting the commands in the fixture.
     pub step: usize,
+    pub verdict: Verdict,
     pub reason: &'static str,
+}
+
+/// What the project intends to do about a divergence it understands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Verdict {
+    /// Tiri should match sway here and does not yet. Removing the entry is the goal.
+    Open,
+    /// Tiri answers differently on purpose. The entry is not going away, and the day it
+    /// stops diverging is a day to check that tiri did not drift rather than a day to
+    /// delete a line.
+    Deliberate,
 }
 
 /// An entry silences one fixture from the step it names onwards — everything after a
@@ -35,6 +51,7 @@ pub(super) struct Divergence {
 pub(super) const KNOWN: &[Divergence] = &[
     Divergence {
         fixture: "open-after-swapping-into-a-tabbed.parity",
+        verdict: Verdict::Open,
         step: 13,
         reason: "\
             A new view maps beside `seat_get_focus_inactive_view` of the workspace's most \
@@ -46,6 +63,7 @@ pub(super) const KNOWN: &[Divergence] = &[
     },
     Divergence {
         fixture: "swap-two-floating-roots.parity",
+        verdict: Verdict::Open,
         step: 8,
         reason: "\
             Swapping a node with a top-level floating one: sway leaves `ws->floating` in the \
@@ -54,24 +72,29 @@ pub(super) const KNOWN: &[Divergence] = &[
     },
     Divergence {
         fixture: "swap-a-tab-with-a-window-behind-a-fullscreen.parity",
+        verdict: Verdict::Deliberate,
         step: 8,
         reason: "\
             Reached through a swap: sway leaves the node the fullscreen arrange never visited \
-            with the box it had, `0.334,0.000 0.334x1.000`, and tiri gives it 0x0. The two \
-            disagree about which of them holds an area, so the empty-box rule does not reach \
-            it — what is left is the arrange itself, not how a box with no area compares.",
+            with the box it had, `0.334,0.000 0.334x1.000`, and tiri gives it 0x0. Only one \
+            of the two boxes is empty, so the empty-box rule does not reach it; what is left \
+            is the arrange itself. Tiri keeps arranging — see the entry below for why.",
     },
     Divergence {
         fixture: "move-left-under-a-fullscreen-sibling.parity",
+        verdict: Verdict::Deliberate,
         step: 8,
         reason: "\
             sway's `arrange_workspace` hands the fullscreen node the output and returns, so \
             the branches it skipped keep whatever pending box they last had — 0x0 for one \
             built while something else was fullscreen. Tiri arranges them, to `1.000x1.000`. \
-            The same disagreement as the swap above with the sides exchanged, and the same \
-            reason the empty-box rule cannot answer it: only one of the two boxes is empty. \
-            Several fixtures already pin the shapes where tiri reproduces this; this is one \
-            it does not.",
+            \
+            Not reproduced, on purpose. Nothing is drawn in either box: every node involved \
+            is behind a fullscreen. What differs is a number an IPC client reads for a node \
+            it cannot see, and matching it would mean carrying stale boxes through the tree \
+            so that a query about something invisible returns sway's arithmetic. The three \
+            differences the suite reports here are one: `erase_decoration` reseats a stacked \
+            container's children onto its box, so the parent's 0x0 reaches both of them.",
     },
 ];
 
@@ -150,9 +173,15 @@ pub(super) fn signatures() -> Vec<Signature> {
         let signature = Signature::of(&recorded_step.command, &expected, &actual);
         assert!(
             !signature.places.is_empty(),
-            "{} step {} no longer diverges; delete the entry",
+            "{} step {} no longer diverges: {}",
             entry.fixture,
-            entry.step
+            entry.step,
+            match entry.verdict {
+                Verdict::Open => "delete the entry",
+                Verdict::Deliberate =>
+                    "tiri now matches sway where it had decided not to, which is a \
+                     regression unless the decision changed",
+            }
         );
         out.push(signature);
     }

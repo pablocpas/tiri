@@ -11,7 +11,7 @@
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-use super::known::{self, Divergence, KNOWN};
+use super::known::{self, Divergence, Verdict, KNOWN};
 use super::replay;
 
 fn fixtures() -> Vec<PathBuf> {
@@ -66,9 +66,13 @@ fn tiri_matches_every_recorded_sway_session() {
                 .iter()
                 .find(|entry| entry.fixture == name && entry.step == step + 1)
             {
+                let label = match known.verdict {
+                    Verdict::Open => "known, still open",
+                    Verdict::Deliberate => "known, deliberate",
+                };
                 let _ = writeln!(
                     known_report,
-                    "\n{name}, step {} — after `{}`: known.\n  {}",
+                    "\n{name}, step {} — after `{}`: {label}.\n  {}",
                     step + 1,
                     recorded.command,
                     known.reason
@@ -104,7 +108,7 @@ fn tiri_matches_every_recorded_sway_session() {
     }
 
     if !known_report.is_empty() {
-        eprintln!("known divergences, still open:{known_report}");
+        eprintln!("known divergences:{known_report}");
     }
 
     assert!(
@@ -122,10 +126,26 @@ fn tiri_matches_every_recorded_sway_session() {
                 .any(|(f, s)| f == entry.fixture && *s == entry.step)
         })
         .collect();
+
+    // A deliberate entry that stopped diverging is not progress: tiri drifted towards a
+    // behaviour it had decided against, and nobody chose that. Say which kind before saying
+    // what to do about it.
+    let (settled, drifted): (Vec<&Divergence>, Vec<&Divergence>) = stale
+        .into_iter()
+        .partition(|entry| entry.verdict == Verdict::Open);
     assert!(
-        stale.is_empty(),
+        drifted.is_empty(),
+        "these entries in KNOWN are deliberate but no longer diverge — tiri now matches sway \
+         where it had decided not to, which is a regression unless the decision changed: {:?}",
+        drifted
+            .iter()
+            .map(|entry| (entry.fixture, entry.step))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        settled.is_empty(),
         "these entries in KNOWN no longer diverge and should be deleted: {:?}",
-        stale
+        settled
             .iter()
             .map(|entry| (entry.fixture, entry.step))
             .collect::<Vec<_>>()

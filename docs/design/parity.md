@@ -50,6 +50,22 @@ Note what this means for anything that changes the working area itself, such as 
 adapters normalize geometry as `(rect - area) / area`, so a change to that area cancels on both
 sides and cannot be seen here at all. Those belong in the layout unit tests, not in a fixture.
 
+## When a difference is not debt
+
+`src/layout/tests/parity/known.rs` records every difference that is understood but not gone.
+Each entry carries a verdict, because "we understand this" and "we intend to fix this" are two
+different claims:
+
+- `Open` — Tiri should match sway here and does not yet. Deleting the entry is the goal, and
+  the suite says so the moment it stops diverging.
+- `Deliberate` — Tiri answers differently on purpose. The suite still checks it keeps
+  diverging; the day it stops is a day to ask whether Tiri drifted, not a line to delete.
+
+Reaching for `Deliberate` because a difference is inconvenient is how a parity suite stops
+meaning anything. It is for a difference traced to something sway does that Tiri declines to
+reproduce, with the reason written down — today, the boxes sway leaves on branches its arrange
+returned early on, which describe nodes behind a fullscreen that neither compositor draws.
+
 ## Running parity tests
 
 Run the fixture replay and harness tests with:
