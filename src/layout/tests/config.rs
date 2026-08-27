@@ -375,3 +375,41 @@ fn struts_survive_a_workspace_being_parked_without_outputs() {
     assert_eq!(layout.active_workspace().unwrap().working_area(), attached);
     layout.verify_invariants();
 }
+
+#[test]
+fn the_column_spelling_of_a_bind_is_an_alias_and_not_a_second_behaviour() {
+    // Whenever both spellings exist they must run the same arm. A new one added on only one
+    // side is the drift this pins: two names for one thing is a compatibility alias, two
+    // names doing two things is a trap.
+    let source = include_str!("../../input/mod.rs");
+    let mut checked = 0;
+
+    for (column, container) in [
+        ("FocusColumnLeft", "FocusContainerLeft"),
+        ("FocusColumnRight", "FocusContainerRight"),
+        ("MoveColumnLeft", "MoveContainerLeft"),
+        ("MoveColumnRight", "MoveContainerRight"),
+        ("MoveColumnToFirst", "MoveContainerToFirst"),
+        ("MoveColumnToLast", "MoveContainerToLast"),
+        ("MoveColumnToIndex", "MoveContainerToIndex"),
+        ("ConsumeWindowIntoColumn", "ConsumeWindowIntoContainer"),
+        ("ExpelWindowFromColumn", "ExpelWindowFromContainer"),
+        (
+            "MoveColumnLeftOrToMonitorLeft",
+            "MoveContainerLeftOrToMonitorLeft",
+        ),
+    ] {
+        let arm = source
+            .split("=> {")
+            .find(|chunk| chunk.contains(&format!("Action::{column}")))
+            .unwrap_or_else(|| panic!("no match arm handles Action::{column}"));
+        assert!(
+            arm.contains(&format!("Action::{container}")),
+            "Action::{column} and Action::{container} must share one arm; \
+             the column spelling is an alias, not a second behaviour"
+        );
+        checked += 1;
+    }
+
+    assert_eq!(checked, 10);
+}

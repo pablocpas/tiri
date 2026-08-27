@@ -10,6 +10,6 @@ To change a window between floating and tiling, you can use the `toggle-window-f
 You can also use the `open-floating true/false` window rule to either force a window to open as floating, or to disable the automatic floating logic.
 
 Use `switch-focus-between-floating-and-tiling` to switch the focus between the two layouts.
-When focused on the floating layout, binds (like `focus-column-right`) will operate on the floating window.
+When focused on the floating layout, binds (like `focus-container-right`) will operate on the floating window.
 
 You can precisely position a floating window with a command like `tiri msg action move-floating-window -x 100 -y 200`.

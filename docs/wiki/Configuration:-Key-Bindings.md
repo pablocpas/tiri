@@ -10,10 +10,17 @@ For example:
 
 ```kdl
 binds {
-    Mod+Left { focus-column-left; }
+    Mod+Left { focus-container-left; }
     Super+Alt+L { spawn "swaylock"; }
 }
 ```
+
+> [!NOTE]
+> Some actions have two spellings, one naming a *column* and one naming a *container*. Tiri has
+> no columns — it tiles into a tree — so the `container` spelling is the documented one, and the
+> `column` one is kept as an alias so that configs carried over from niri keep working. Where
+> both exist they are the same action; there is no reason to prefer the older name in a new
+> config.
 
 > [!NOTE]
 > Many action names still use `column` for compatibility with niri and the IPC surface.
@@ -96,8 +103,8 @@ These binds will change direction based on the `natural-scroll` setting.
 binds {
     Mod+WheelScrollDown cooldown-ms=150 { focus-workspace-down; }
     Mod+WheelScrollUp   cooldown-ms=150 { focus-workspace-up; }
-    Mod+WheelScrollRight                { focus-column-right; }
-    Mod+WheelScrollLeft                 { focus-column-left; }
+    Mod+WheelScrollRight                { focus-container-right; }
+    Mod+WheelScrollLeft                 { focus-container-left; }
 }
 ```
 
