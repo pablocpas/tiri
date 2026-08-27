@@ -1219,7 +1219,7 @@ impl<W: LayoutElement> Layout<W> {
                             mon_idx,
                             MonitorAddWindowTarget::Workspace {
                                 id: ws_id,
-                                column_idx: None,
+                                root_index: None,
                             },
                         )
                     }
@@ -3993,7 +3993,7 @@ impl<W: LayoutElement> Layout<W> {
                     let position = if move_.is_floating {
                         InsertPosition::Floating
                     } else {
-                        InsertPosition::NewColumn(0)
+                        InsertPosition::RootStart
                     };
                     mon.insert_hint = Some(InsertHint {
                         workspace: insert_ws,
@@ -5020,7 +5020,7 @@ impl<W: LayoutElement> Layout<W> {
                 removed.tile,
                 MonitorAddWindowTarget::Workspace {
                     id: ws_id,
-                    column_idx: None,
+                    root_index: None,
                 },
                 activate,
                 true,
@@ -6080,7 +6080,7 @@ impl<W: LayoutElement> Layout<W> {
                                 let position = if move_.is_floating {
                                     InsertPosition::Floating
                                 } else {
-                                    InsertPosition::NewColumn(0)
+                                    InsertPosition::RootStart
                                 };
 
                                 (position, None)
@@ -6150,13 +6150,13 @@ impl<W: LayoutElement> Layout<W> {
                 };
 
                 match position {
-                    InsertPosition::NewColumn(column_idx) => {
+                    InsertPosition::RootStart => {
                         let ws_id = mon.workspaces[ws_idx].id();
                         mon.add_tile(
                             move_.tile,
                             MonitorAddWindowTarget::Workspace {
                                 id: ws_id,
-                                column_idx: Some(column_idx),
+                                root_index: Some(0),
                             },
                             ActivateWindow::Yes,
                             allow_to_activate_workspace,
@@ -6253,7 +6253,7 @@ impl<W: LayoutElement> Layout<W> {
                             tile,
                             MonitorAddWindowTarget::Workspace {
                                 id: ws_id,
-                                column_idx: None,
+                                root_index: None,
                             },
                             ActivateWindow::Yes,
                             allow_to_activate_workspace,

@@ -1925,8 +1925,8 @@ fn expel_pending_left_from_fullscreen_tabbed_column() {
         //
         // Now, get it back out while keeping it focused.
         //
-        // Importantly, we expel it *left*, which results in adding a new column with the exact
-        // same active_column_idx.
+        // Importantly, we expel it *left*, which lands it at the same index among the tiling
+        // root's children that the focus was already on.
         Op::FocusWindow(2),
         Op::ConsumeOrExpelWindowLeft { id: None },
     ];

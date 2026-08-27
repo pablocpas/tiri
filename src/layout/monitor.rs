@@ -148,7 +148,8 @@ pub(super) enum SplitIndicator {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum InsertPosition {
-    NewColumn(usize),
+    /// Before every existing child of the workspace's tiling root.
+    RootStart,
     Swap {
         target: NodeKey,
         direction: Direction,
@@ -229,8 +230,8 @@ pub enum MonitorAddWindowTarget<'a, W: LayoutElement> {
     Workspace {
         /// Id of the target workspace.
         id: WorkspaceId,
-        /// Override where the window will open as a new column.
-        column_idx: Option<usize>,
+        /// Override the index the window takes among the tiling root's children.
+        root_index: Option<usize>,
     },
     /// Next to this existing window.
     NextTo(&'a W::Id),
@@ -711,7 +712,7 @@ impl<W: LayoutElement> Monitor<W> {
             removed.tile,
             MonitorAddWindowTarget::Workspace {
                 id: ws_id,
-                column_idx: None,
+                root_index: None,
             },
             activate,
             true,
@@ -1058,10 +1059,10 @@ impl<W: LayoutElement> Monitor<W> {
             MonitorAddWindowTarget::Auto => {
                 (self.active_workspace_idx, WorkspaceAddWindowTarget::Auto)
             }
-            MonitorAddWindowTarget::Workspace { id, column_idx } => {
+            MonitorAddWindowTarget::Workspace { id, root_index } => {
                 let idx = self.idx_of_ws(id).unwrap();
-                let target = if let Some(column_idx) = column_idx {
-                    WorkspaceAddWindowTarget::NewColumnAt(column_idx)
+                let target = if let Some(root_index) = root_index {
+                    WorkspaceAddWindowTarget::AtRootIndex(root_index)
                 } else {
                     WorkspaceAddWindowTarget::Auto
                 };
@@ -1486,7 +1487,7 @@ impl<W: LayoutElement> Monitor<W> {
                     removed.tile,
                     MonitorAddWindowTarget::Workspace {
                         id: new_id,
-                        column_idx: None,
+                        root_index: None,
                     },
                     activate,
                     true,
@@ -1557,7 +1558,7 @@ impl<W: LayoutElement> Monitor<W> {
             removed.tile,
             MonitorAddWindowTarget::Workspace {
                 id: new_id,
-                column_idx: None,
+                root_index: None,
             },
             if activate {
                 ActivateWindow::Yes
@@ -1843,7 +1844,7 @@ impl<W: LayoutElement> Monitor<W> {
                             let view_size = ws.view_size();
 
                             // Make sure the hint is at least partially visible.
-                            if matches!(&hint.position, InsertPosition::NewColumn(_)) {
+                            if matches!(&hint.position, InsertPosition::RootStart) {
                                 let zoom = self.overview_zoom();
                                 let geo = insert_hint_ws_geo.unwrap();
                                 let geo = geo.downscale(zoom);

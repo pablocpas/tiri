@@ -1149,7 +1149,7 @@ fn open_right_of_on_different_workspace() {
         "the second workspace must remain active"
     );
     assert_eq!(
-        mon.workspaces[0].container_tree().active_column_idx(),
+        mon.workspaces[0].container_tree().active_root_index(),
         1,
         "the new window must become active"
     );
@@ -1190,7 +1190,7 @@ fn open_right_of_on_different_workspace_ewaf() {
         "the second workspace must remain active"
     );
     assert_eq!(
-        mon.workspaces[1].container_tree().active_column_idx(),
+        mon.workspaces[1].container_tree().active_root_index(),
         1,
         "the new window must become active"
     );
@@ -2516,11 +2516,11 @@ fn insert_position_empty_workspace_returns_new_column() {
     // Get the workspace without any windows
     let workspace = layout.active_workspace().expect("active workspace");
 
-    // For an empty workspace, insert position should be NewColumn(0)
+    // An empty workspace has nothing to insert relative to.
     let pos = Point::from((100.0, 100.0));
     let insert_pos = workspace.tiling_insert_position(pos);
 
-    assert!(matches!(insert_pos, InsertPosition::NewColumn(0)));
+    assert!(matches!(insert_pos, InsertPosition::RootStart));
 }
 
 /// A workspace whose last tiled window leaves still has to have a focused leaf if a floating

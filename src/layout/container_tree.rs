@@ -2231,7 +2231,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     #[cfg(test)]
-    pub fn active_column_idx(&self) -> usize {
+    pub fn active_root_index(&self) -> usize {
         self.arena.focused_root_index().unwrap_or(0)
     }
 
@@ -2387,7 +2387,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Determine insert position from pointer location
     pub(super) fn insert_position(&self, pos: Point<f64, Logical>) -> InsertPosition {
         if self.arena.is_empty() {
-            return InsertPosition::NewColumn(0);
+            return InsertPosition::RootStart;
         }
 
         let layout_area = self.layout_area();
@@ -2405,7 +2405,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         let Some((leaf_key, rect)) = self.closest_leaf_rect(pos) else {
-            return InsertPosition::NewColumn(0);
+            return InsertPosition::RootStart;
         };
 
         let parent_layout = self.arena.parent_layout(leaf_key).unwrap_or(Layout::SplitH);
@@ -2464,7 +2464,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         position: &InsertPosition,
     ) -> Option<Rectangle<f64, Logical>> {
         match position {
-            InsertPosition::NewColumn(_) => Some(self.layout_area()),
+            InsertPosition::RootStart => Some(self.layout_area()),
             InsertPosition::Swap { target, .. } => {
                 let rect = self.leaf_rect_for_key(*target)?;
                 let thickness = f64::min(rect.size.w, rect.size.h) * Self::DROP_CENTER_RATIO;
@@ -2765,9 +2765,9 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.arena.is_empty()
     }
 
-    pub fn add_tile(&mut self, col_idx: Option<usize>, tile: Tile<W>, activate: bool) {
+    pub fn add_tile(&mut self, root_index: Option<usize>, tile: Tile<W>, activate: bool) {
         let id = tile.window().id().clone();
-        if let Some(index) = col_idx {
+        if let Some(index) = root_index {
             self.arena.insert_leaf_at(index, tile, activate);
         } else {
             self.arena.insert_window_with_focus(tile, activate);

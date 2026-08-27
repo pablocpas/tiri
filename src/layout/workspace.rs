@@ -314,8 +314,8 @@ pub enum WorkspaceAddWindowTarget<'a, W: LayoutElement> {
     /// No particular preference.
     #[default]
     Auto,
-    /// As a new column at this index.
-    NewColumnAt(usize),
+    /// At this index among the tiling root's children.
+    AtRootIndex(usize),
     /// Next to this existing window.
     NextTo(&'a W::Id),
 }
@@ -1220,9 +1220,9 @@ impl<W: LayoutElement> Workspace<W> {
                     }
                 }
             }
-            WorkspaceAddWindowTarget::NewColumnAt(col_idx) => {
+            WorkspaceAddWindowTarget::AtRootIndex(root_index) => {
                 let activate = activate.map_smart(|| false);
-                self.containers.add_tile(Some(col_idx), tile, activate);
+                self.containers.add_tile(Some(root_index), tile, activate);
 
                 if activate {
                     self.activate_tiling_for_new_content();
