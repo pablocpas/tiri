@@ -3637,8 +3637,6 @@ impl<W: LayoutElement> Layout<W> {
         assert!(primary_idx < monitors.len());
         assert!(active_monitor_idx < monitors.len());
 
-        let mut saw_horizontal_view_gesture = false;
-
         for (idx, monitor) in monitors.iter().enumerate() {
             assert_eq!(self.clock, monitor.clock);
             assert_eq!(
@@ -3699,28 +3697,6 @@ impl<W: LayoutElement> Layout<W> {
                 }
 
                 workspace.verify_invariants(move_win_id.as_ref());
-
-                let has_horizontal_view_gesture = false;
-                if self.dnd.is_some() || self.interactive_move.is_some() {
-                    // We'd like to check that all workspaces have the gesture here, furthermore we
-                    // want to check that they have the gesture only if the interactive move
-                    // targets the tiling layout. However, we cannot do that because we start
-                    // and stop the gesture lazily. Otherwise the gesture code would pollute a lot
-                    // of places like adding new workspaces, implicitly moving windows between
-                    // floating and tiling on fullscreen, etc.
-                    //
-                    // assert!(
-                    //     has_horizontal_view_gesture,
-                    //     "during an interactive move in the tiling layout, \
-                    //      all workspaces should be in a horizontal view gesture"
-                    // );
-                } else if saw_horizontal_view_gesture {
-                    assert!(
-                        !has_horizontal_view_gesture,
-                        "only one workspace can have an ongoing horizontal view gesture"
-                    );
-                }
-                saw_horizontal_view_gesture = has_horizontal_view_gesture;
             }
         }
     }
