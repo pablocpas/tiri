@@ -55,6 +55,30 @@ pub const DIRECTIONAL_MOVE_PX: f64 = 10.;
 /// inside the workspace's container tree. This side owns only transient interaction/render
 /// state. A container crossing between lists is a move, not a reconstruction, so its key and
 /// its place in the seat's order survive the crossing the way they do in sway.
+///
+/// # Why almost every method here takes `containers`
+///
+/// Because this type is not where floating windows are kept — the arena is — the parameter
+/// looks like something to remove, and it is not. Three quarters of the names here already
+/// exist on [`ContainerTree`]: `focus_left`, `move_up`, `set_fullscreen`, `refresh`,
+/// `render_elements` and some seventy more. They are not the same operation reached by a
+/// different route. `move_up` on the tiled side restructures the tree; here it moves a window
+/// ten pixels. `focus_left` there walks the tree; here it compares x coordinates and stacking
+/// order, because a floating window's neighbour is a matter of where it is, not of where it
+/// sits in a parent.
+///
+/// So the two sides need two namespaces, and a type is what Rust has for that. Folding these
+/// methods into `ContainerTree` would mean renaming every colliding one to `floating_*`, which
+/// moves the disambiguation from the type into the name and reads worse. Parameterizing them
+/// by which side to act on gives, for the positional half, a function whose whole body is a
+/// branch to the two bodies that already exist.
+///
+/// `containers` is the price of the namespace, and the namespace is the point. What does keep
+/// the two sides honest is naming the scope of a query rather than leaving it to be inferred:
+/// `ContainerArena::dfs_leaf_keys` says it covers both sides, `all_tiles` says it does not.
+/// Every bug this seam has produced was a query whose scope was assumed instead of read.
+///
+/// [`ContainerTree`]: super::container_tree::ContainerTree
 #[derive(Debug)]
 pub struct FloatingSpace<W: LayoutElement> {
     /// Ongoing interactive resize.

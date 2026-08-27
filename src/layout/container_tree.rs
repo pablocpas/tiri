@@ -72,8 +72,11 @@ const SWAY_MIN_TILED_HEIGHT: f64 = 60.0;
 ///
 /// This is deliberately not the tiled side: both sides store their nodes in `arena`, which also
 /// owns the single floating-root stack and its geometry. They share tab-bar/render projections
-/// and keep stable node identity while crossing sides. Tiled-only interaction state lives in
-/// [`TilingSpace`].
+/// and keep stable node identity while crossing sides. Tiled-only interaction state — an
+/// ongoing resize, the windows closing — belongs to the [`Workspace`] and is handed to the
+/// methods that need it.
+///
+/// [`Workspace`]: super::workspace::Workspace
 #[derive(Debug)]
 pub struct ContainerTree<W: LayoutElement> {
     /// Stable arena shared by the tiled and floating branches.
