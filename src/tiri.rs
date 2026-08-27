@@ -7077,7 +7077,7 @@ impl Niri {
     }
 
     pub fn handle_focus_follows_mouse(&mut self, new_focus: &PointContents) {
-        let Some(ffm) = self.config.borrow().input.focus_follows_mouse else {
+        let Some(_ffm) = self.config.borrow().input.focus_follows_mouse else {
             return;
         };
 
@@ -7120,11 +7120,8 @@ impl Niri {
                     return;
                 }
 
-                if let Some(threshold) = ffm.max_scroll_amount {
-                    if self.layout.activation_view_distance(window) > threshold.0 {
-                        return;
-                    }
-                }
+                // `max-scroll-amount` is not honoured: it bounds how far niri's viewport would
+                // scroll to reach the window, and a tiling tree never has to scroll to one.
 
                 self.layout.activate_window_without_raising(window);
                 self.layer_shell_on_demand_focus = None;

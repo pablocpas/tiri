@@ -100,7 +100,6 @@ pub mod shadow;
 pub mod tab_bar;
 pub mod tile;
 pub mod tiling_space;
-mod viewport;
 pub mod workspace;
 
 #[cfg(test)]
@@ -1957,27 +1956,6 @@ impl<W: LayoutElement> Layout<W> {
         };
 
         mon.update_output_size();
-    }
-
-    pub fn activation_view_distance(&self, window: &W::Id) -> f64 {
-        if self
-            .interactive_move
-            .as_ref()
-            .and_then(InteractiveMoveState::moving_window_id)
-            .is_some_and(|id| id == window)
-        {
-            return 0.;
-        }
-
-        for mon in self.monitors() {
-            for ws in &mon.workspaces {
-                if ws.has_window(window) {
-                    return ws.activation_view_distance(window);
-                }
-            }
-        }
-
-        0.
     }
 
     pub fn should_trigger_focus_follows_mouse_on(&self, window: &W::Id) -> bool {
@@ -5389,80 +5367,6 @@ impl<W: LayoutElement> Layout<W> {
         None
     }
 
-    pub fn horizontal_view_gesture_begin(
-        &mut self,
-        output: &Output,
-        workspace_idx: Option<usize>,
-        is_touchpad: bool,
-    ) {
-        let monitors = match &mut self.monitor_set {
-            MonitorSet::Normal { monitors, .. } => monitors,
-            MonitorSet::NoOutputs { .. } => unreachable!(),
-        };
-
-        for monitor in monitors {
-            for (idx, ws) in monitor.workspaces.iter_mut().enumerate() {
-                // Cancel the gesture on other workspaces.
-                if &monitor.output != output
-                    || idx != workspace_idx.unwrap_or(monitor.active_workspace_idx)
-                {
-                    ws.horizontal_view_gesture_end(None);
-                    continue;
-                }
-
-                ws.horizontal_view_gesture_begin(is_touchpad);
-            }
-        }
-    }
-
-    pub fn horizontal_view_gesture_update(
-        &mut self,
-        delta_x: f64,
-        timestamp: Duration,
-        is_touchpad: bool,
-    ) -> Option<Option<Output>> {
-        let zoom = self.overview_zoom();
-        let delta_x = delta_x / zoom;
-
-        let monitors = match &mut self.monitor_set {
-            MonitorSet::Normal { monitors, .. } => monitors,
-            MonitorSet::NoOutputs { .. } => return None,
-        };
-
-        for monitor in monitors {
-            for ws in &mut monitor.workspaces {
-                if let Some(refresh) =
-                    ws.horizontal_view_gesture_update(delta_x, timestamp, is_touchpad)
-                {
-                    if refresh {
-                        return Some(Some(monitor.output.clone()));
-                    } else {
-                        return Some(None);
-                    }
-                }
-            }
-        }
-
-        None
-    }
-
-    pub fn horizontal_view_gesture_end(&mut self, is_touchpad: Option<bool>) -> Option<Output> {
-        let monitors = match &mut self.monitor_set {
-            MonitorSet::Normal { monitors, .. } => monitors,
-            MonitorSet::NoOutputs { .. } => return None,
-        };
-
-        for monitor in monitors {
-            for ws in &mut monitor.workspaces {
-                if ws.horizontal_view_gesture_end(is_touchpad) {
-                    return Some(monitor.output.clone());
-                }
-            }
-        }
-
-        None
-    }
-
     pub fn overview_gesture_begin(&mut self) {
         self.overview_open = true;
 
@@ -7052,13 +6956,6 @@ impl<W: LayoutElement> Layout<W> {
                     for (ws_idx, ws) in mon.workspaces.iter_mut().enumerate() {
                         let is_focused = is_active && ws_idx == mon.active_workspace_idx;
                         ws.refresh(is_active, is_focused);
-
-                        if ongoing_scrolling_dnd.is_none() {
-                            // Cancel the horizontal view gesture after workspace switches, moves, etc.
-                            if !self.overview_open && ws_idx != mon.active_workspace_idx {
-                                ws.horizontal_view_gesture_end(None);
-                            }
-                        }
                     }
 
                     let sticky_active = is_active && mon.sticky_is_active();
@@ -7068,7 +6965,6 @@ impl<W: LayoutElement> Layout<W> {
             MonitorSet::NoOutputs { workspaces, .. } => {
                 for ws in workspaces {
                     ws.refresh(false, false);
-                    ws.horizontal_view_gesture_end(None);
                 }
             }
         }

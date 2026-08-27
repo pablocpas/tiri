@@ -1,6 +1,5 @@
 use std::cmp::max;
 use std::rc::Rc;
-use std::time::Duration;
 
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::gles::GlesRenderer;
@@ -3281,14 +3280,6 @@ impl<W: LayoutElement> Workspace<W> {
         );
     }
 
-    pub fn activation_view_distance(&self, window: &W::Id) -> f64 {
-        if self.floating.has_window(&self.containers, window) {
-            return 0.;
-        }
-
-        self.tiling.activation_view_distance()
-    }
-
     pub fn is_urgent(&self) -> bool {
         self.windows().any(|win| win.is_urgent())
     }
@@ -3335,24 +3326,6 @@ impl<W: LayoutElement> Workspace<W> {
         position: &InsertPosition,
     ) -> Option<Rectangle<f64, Logical>> {
         self.containers.insert_hint_area(position)
-    }
-
-    pub fn horizontal_view_gesture_begin(&mut self, is_touchpad: bool) {
-        self.tiling.horizontal_view_gesture_begin(is_touchpad);
-    }
-
-    pub fn horizontal_view_gesture_update(
-        &mut self,
-        delta_x: f64,
-        timestamp: Duration,
-        is_touchpad: bool,
-    ) -> Option<bool> {
-        self.tiling
-            .horizontal_view_gesture_update(delta_x, timestamp, is_touchpad)
-    }
-
-    pub fn horizontal_view_gesture_end(&mut self, is_touchpad: Option<bool>) -> bool {
-        self.tiling.horizontal_view_gesture_end(is_touchpad)
     }
 
     pub fn interactive_resize_begin(&mut self, window: W::Id, edges: ResizeEdge) -> bool {
@@ -3449,11 +3422,6 @@ impl<W: LayoutElement> Workspace<W> {
     #[cfg(test)]
     pub fn container_tree(&self) -> &ContainerTree<W> {
         &self.containers
-    }
-
-    #[cfg(test)]
-    pub fn tiling_space(&self) -> &TilingSpace<W> {
-        &self.tiling
     }
 
     #[cfg(test)]

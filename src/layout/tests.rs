@@ -438,10 +438,6 @@ prop_compose! {
     }
 }
 
-fn arbitrary_horizontal_view_gesture_delta() -> impl Strategy<Value = f64> {
-    prop_oneof![(-10f64..10f64), (-50000f64..50000f64),]
-}
-
 fn arbitrary_resize_edge() -> impl Strategy<Value = ResizeEdge> {
     prop_oneof![
         Just(ResizeEdge::RIGHT),
@@ -760,22 +756,6 @@ enum Op {
     },
     CompleteAnimations,
     MoveWorkspaceToOutput(#[proptest(strategy = "1..=5usize")] usize),
-    HorizontalViewGestureBegin {
-        #[proptest(strategy = "1..=5usize")]
-        output_idx: usize,
-        #[proptest(strategy = "proptest::option::of(0..=4usize)")]
-        workspace_idx: Option<usize>,
-        is_touchpad: bool,
-    },
-    HorizontalViewGestureUpdate {
-        #[proptest(strategy = "arbitrary_horizontal_view_gesture_delta()")]
-        delta: f64,
-        timestamp: Duration,
-        is_touchpad: bool,
-    },
-    HorizontalViewGestureEnd {
-        is_touchpad: Option<bool>,
-    },
     WorkspaceSwitchGestureBegin {
         #[proptest(strategy = "1..=5usize")]
         output_idx: usize,
@@ -1663,28 +1643,6 @@ impl Op {
                 };
 
                 layout.move_workspace_to_output(&output);
-            }
-            Op::HorizontalViewGestureBegin {
-                output_idx: id,
-                workspace_idx,
-                is_touchpad: normalize,
-            } => {
-                let name = format!("output{id}");
-                let Some(output) = layout.outputs().find(|o| o.name() == name).cloned() else {
-                    return;
-                };
-
-                layout.horizontal_view_gesture_begin(&output, workspace_idx, normalize);
-            }
-            Op::HorizontalViewGestureUpdate {
-                delta,
-                timestamp,
-                is_touchpad,
-            } => {
-                layout.horizontal_view_gesture_update(delta, timestamp, is_touchpad);
-            }
-            Op::HorizontalViewGestureEnd { is_touchpad } => {
-                layout.horizontal_view_gesture_end(is_touchpad);
             }
             Op::WorkspaceSwitchGestureBegin {
                 output_idx: id,

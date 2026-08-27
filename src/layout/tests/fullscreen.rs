@@ -1,5 +1,4 @@
 use approx::assert_abs_diff_eq;
-use insta::assert_snapshot;
 
 use super::*;
 
@@ -130,7 +129,7 @@ fn unfullscreen_window_in_column() {
 }
 
 #[test]
-fn unfullscreen_horizontal_view_not_reset_on_removal() {
+fn fullscreen_then_expelling_a_new_window_keeps_the_tree_consistent() {
     let ops = [
         Op::AddOutput(1),
         Op::AddWindow {
@@ -147,7 +146,7 @@ fn unfullscreen_horizontal_view_not_reset_on_removal() {
 }
 
 #[test]
-fn unfullscreen_horizontal_view_not_reset_on_consume() {
+fn fullscreen_then_consuming_a_new_window_keeps_the_tree_consistent() {
     let ops = [
         Op::AddOutput(1),
         Op::AddWindow {
@@ -164,7 +163,7 @@ fn unfullscreen_horizontal_view_not_reset_on_consume() {
 }
 
 #[test]
-fn unfullscreen_horizontal_view_not_reset_on_quick_double_toggle() {
+fn fullscreen_toggled_twice_in_a_row_keeps_the_tree_consistent() {
     let ops = [
         Op::AddOutput(1),
         Op::AddWindow {
@@ -178,7 +177,7 @@ fn unfullscreen_horizontal_view_not_reset_on_quick_double_toggle() {
 }
 
 #[test]
-fn unfullscreen_horizontal_view_set_on_fullscreening_inactive_tile_in_column() {
+fn fullscreen_of_an_inactive_tile_in_a_column_keeps_the_tree_consistent() {
     let ops = [
         Op::AddOutput(1),
         Op::AddWindow {
@@ -189,30 +188,6 @@ fn unfullscreen_horizontal_view_set_on_fullscreening_inactive_tile_in_column() {
         },
         Op::ConsumeOrExpelWindowLeft { id: None },
         Op::FullscreenWindow(0),
-    ];
-
-    check_ops(ops);
-}
-
-#[test]
-fn unfullscreen_horizontal_view_not_reset_on_gesture() {
-    let ops = [
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(0),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::FullscreenWindow(1),
-        Op::HorizontalViewGestureBegin {
-            output_idx: 1,
-            workspace_idx: None,
-            is_touchpad: true,
-        },
-        Op::HorizontalViewGestureEnd {
-            is_touchpad: Some(true),
-        },
     ];
 
     check_ops(ops);
@@ -340,7 +315,6 @@ fn move_pending_unfullscreen_window_out_of_active_column() {
         },
         Op::ConsumeWindowIntoColumn,
         // Window 1 is now pending unfullscreen.
-        // Moving it out should reset horizontal_view_before_fullscreen.
         Op::MoveWindowToWorkspaceDown(true),
     ];
 
@@ -361,7 +335,6 @@ fn move_unfocused_pending_unfullscreen_window_out_of_active_column() {
         },
         Op::ConsumeWindowIntoColumn,
         // Window 1 is now pending unfullscreen.
-        // Moving it out should reset horizontal_view_before_fullscreen.
         Op::FocusWindowDown,
         Op::MoveWindowToWorkspace {
             window_id: Some(1),
@@ -434,7 +407,7 @@ fn interactive_move_unfullscreen_to_floating_stops_dnd_scroll() {
 }
 
 #[test]
-fn interactive_move_restore_to_floating_animates_horizontal_view() {
+fn interactive_move_of_a_fullscreen_window_restores_it_to_floating() {
     let ops = [
         Op::AddOutput(1),
         Op::AddWindow {
@@ -492,7 +465,7 @@ fn interactive_move_restore_to_floating_animates_horizontal_view() {
 }
 
 #[test]
-fn unfullscreen_horizontal_view_not_reset_during_dnd_gesture() {
+fn fullscreen_during_a_dnd_gesture_keeps_the_tree_consistent() {
     let ops = [
         Op::AddOutput(1),
         Op::AddWindow {
@@ -513,49 +486,7 @@ fn unfullscreen_horizontal_view_not_reset_during_dnd_gesture() {
 }
 
 #[test]
-fn unfullscreen_horizontal_view_not_reset_during_gesture() {
-    let ops = [
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(3),
-        },
-        Op::FullscreenWindow(3),
-        Op::Communicate(3),
-        Op::HorizontalViewGestureBegin {
-            output_idx: 1,
-            workspace_idx: None,
-            is_touchpad: false,
-        },
-        Op::FullscreenWindow(3),
-        Op::Communicate(3),
-    ];
-
-    check_ops(ops);
-}
-
-#[test]
-fn unfullscreen_horizontal_view_not_reset_during_ongoing_gesture() {
-    let ops = [
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(3),
-        },
-        Op::HorizontalViewGestureBegin {
-            output_idx: 1,
-            workspace_idx: None,
-            is_touchpad: false,
-        },
-        Op::FullscreenWindow(3),
-        Op::Communicate(3),
-        Op::FullscreenWindow(3),
-        Op::Communicate(3),
-    ];
-
-    check_ops(ops);
-}
-
-#[test]
-fn unfullscreen_preserves_view_pos() {
+fn unfullscreen_of_a_plain_window_keeps_the_tree_consistent() {
     let ops = [
         Op::AddOutput(1),
         Op::AddWindow {
@@ -568,9 +499,6 @@ fn unfullscreen_preserves_view_pos() {
 
     let mut layout = check_ops(ops);
 
-    // View pos is looking at the first window.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
-
     let ops = [
         Op::FullscreenWindow(2),
         Op::Communicate(2),
@@ -578,22 +506,16 @@ fn unfullscreen_preserves_view_pos() {
     ];
     check_ops_on_layout(&mut layout, ops);
 
-    // View pos = width of first window + gap.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
-
     let ops = [
         Op::FullscreenWindow(2),
         Op::Communicate(2),
         Op::CompleteAnimations,
     ];
     check_ops_on_layout(&mut layout, ops);
-
-    // View pos is back to showing the first window.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 }
 
 #[test]
-fn unfullscreen_of_tabbed_preserves_view_pos() {
+fn unfullscreen_of_a_tabbed_window_keeps_the_tree_consistent() {
     let ops = [
         Op::AddOutput(1),
         Op::AddWindow {
@@ -607,15 +529,11 @@ fn unfullscreen_of_tabbed_preserves_view_pos() {
         },
         Op::ConsumeOrExpelWindowLeft { id: None },
         Op::SetColumnDisplay(ColumnDisplay::Tabbed),
-        // Get view pos back on the first window.
         Op::FocusColumnLeft,
         Op::FocusColumnRight,
     ];
 
     let mut layout = check_ops(ops);
-
-    // View pos is looking at the first window.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 
     let ops = [
         Op::FullscreenWindow(2),
@@ -625,28 +543,19 @@ fn unfullscreen_of_tabbed_preserves_view_pos() {
     ];
     check_ops_on_layout(&mut layout, ops);
 
-    // View pos = width of first window + gap.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
-
     let ops = [
         Op::FullscreenWindow(3),
         Op::Communicate(3),
         Op::CompleteAnimations,
     ];
     check_ops_on_layout(&mut layout, ops);
-
-    // View pos is still on the second column because the second tile hasn't unfullscreened yet.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 
     let ops = [Op::Communicate(2), Op::CompleteAnimations];
     check_ops_on_layout(&mut layout, ops);
-
-    // View pos is back to showing the first window.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 }
 
 #[test]
-fn unfullscreen_of_tabbed_via_change_to_normal_preserves_view_pos() {
+fn leaving_tabbed_while_fullscreen_keeps_the_tree_consistent() {
     let ops = [
         Op::AddOutput(1),
         Op::AddWindow {
@@ -660,15 +569,11 @@ fn unfullscreen_of_tabbed_via_change_to_normal_preserves_view_pos() {
         },
         Op::ConsumeOrExpelWindowLeft { id: None },
         Op::SetColumnDisplay(ColumnDisplay::Tabbed),
-        // Get view pos back on the first window.
         Op::FocusColumnLeft,
         Op::FocusColumnRight,
     ];
 
     let mut layout = check_ops(ops);
-
-    // View pos is looking at the first window.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 
     let ops = [
         Op::FullscreenWindow(2),
@@ -677,9 +582,6 @@ fn unfullscreen_of_tabbed_via_change_to_normal_preserves_view_pos() {
         Op::CompleteAnimations,
     ];
     check_ops_on_layout(&mut layout, ops);
-
-    // View pos = width of first window + gap.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 
     let ops = [
         Op::SetColumnDisplay(ColumnDisplay::Normal),
@@ -688,18 +590,12 @@ fn unfullscreen_of_tabbed_via_change_to_normal_preserves_view_pos() {
     ];
     check_ops_on_layout(&mut layout, ops);
 
-    // View pos is still on the second column because the second tile hasn't unfullscreened yet.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
-
     let ops = [Op::Communicate(2), Op::CompleteAnimations];
     check_ops_on_layout(&mut layout, ops);
-
-    // View pos is back to showing the first window.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 }
 
 #[test]
-fn removing_only_fullscreen_tile_updates_horizontal_view() {
+fn removing_the_only_fullscreen_tile_of_a_tabbed_column() {
     let ops = [
         Op::AddOutput(1),
         Op::AddWindow {
@@ -714,9 +610,6 @@ fn removing_only_fullscreen_tile_updates_horizontal_view() {
     ];
 
     let mut layout = check_ops(ops);
-
-    // View pos with gap.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 
     let ops = [
         Op::FullscreenWindow(2),
@@ -726,9 +619,6 @@ fn removing_only_fullscreen_tile_updates_horizontal_view() {
     ];
     check_ops_on_layout(&mut layout, ops);
 
-    // View pos without gap because we went fullscreen.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
-
     let ops = [
         Op::FullscreenWindow(2),
         // The active window responds, the other tabbed window doesn't yet.
@@ -737,19 +627,12 @@ fn removing_only_fullscreen_tile_updates_horizontal_view() {
     ];
     check_ops_on_layout(&mut layout, ops);
 
-    // View pos without gap because other tile is still fullscreen.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
-
     let ops = [
         // Expel the fullscreen window from the column, changing the column to non-fullscreen.
         Op::ConsumeOrExpelWindowRight { id: Some(1) },
         Op::CompleteAnimations,
     ];
     check_ops_on_layout(&mut layout, ops);
-
-    // View pos should include gap now that the column is no longer fullscreen.
-    // FIXME: currently, removing a tile doesn't cause the horizontal view to update.
-    assert_snapshot!(layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 }
 
 #[test]
@@ -2032,7 +1915,7 @@ fn expel_pending_left_from_fullscreen_tabbed_column() {
         },
         Op::FullscreenWindow(1),
         Op::Communicate(1),
-        // 1 is now fullscreen, horizontal_view_to_restore is set.
+        // 1 is now fullscreen.
         Op::ToggleColumnTabbedDisplay,
         Op::AddWindow {
             params: TestWindowParams::new(2),

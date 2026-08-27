@@ -295,7 +295,7 @@ fn client_fullscreen_request_reconfigures_while_wm_fullscreen_is_active() {
 }
 
 #[test]
-fn unfullscreen_before_fullscreen_ack_doesnt_prevent_view_offset_save_restore() {
+fn unfullscreen_before_the_fullscreen_ack_sends_no_configures() {
     let (mut f, id, _surface) = set_up();
 
     let window2 = f.client(id).create_window();
@@ -314,9 +314,6 @@ fn unfullscreen_before_fullscreen_ack_doesnt_prevent_view_offset_save_restore() 
     let niri = f.niri();
     let mapped2 = niri.layout.windows().last().unwrap().1;
     let window2_id = mapped2.window.clone();
-
-    // The view position is at the first window.
-    assert_snapshot!(niri.layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 
     // Fullscreen window2 and send the configure so we can clear pending.
     niri.layout.set_fullscreen(&window2_id, true);
@@ -340,9 +337,6 @@ fn unfullscreen_before_fullscreen_ack_doesnt_prevent_view_offset_save_restore() 
         f.niri_complete_animations();
     }
 
-    // The view position is now at the fullscreen-sized window2.
-    assert_snapshot!(f.niri().layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
-
     // Handle unfullscreen configure if it arrives.
     let unfullscreen_configures = {
         let window2 = f.client(id).window(&surface2);
@@ -357,8 +351,6 @@ fn unfullscreen_before_fullscreen_ack_doesnt_prevent_view_offset_save_restore() 
         f.niri_complete_animations();
     }
 
-    // The view position should restore to the first window.
-    assert_snapshot!(f.niri().layout.active_workspace().unwrap().tiling_space().view_pos(), @"0");
 }
 
 #[test]
