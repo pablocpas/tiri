@@ -65,8 +65,9 @@ input {
     // warp-mouse-to-focus
 
     // Focus windows and outputs automatically when moving the mouse into them.
-    // Setting max-scroll-amount="0%" makes it work only on windows already fully on screen.
-    // focus-follows-mouse max-scroll-amount="0%"
+    // max-scroll-amount is accepted and ignored: it bounds how far a scrolling viewport
+    // would travel to reach a window, and a tiling tree never scrolls to one.
+    // focus-follows-mouse
 }
 
 // You can configure outputs by their name, which you can find

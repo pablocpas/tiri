@@ -103,7 +103,7 @@ input {
 
     // disable-power-key-handling
     // warp-mouse-to-focus
-    // focus-follows-mouse max-scroll-amount="0%"
+    // focus-follows-mouse
     // workspace-auto-back-and-forth
 
     // mod-key "Super"
@@ -344,6 +344,11 @@ input {
     focus-follows-mouse
 }
 ```
+
+> [!NOTE]
+> Upstream niri's `max-scroll-amount` property is still accepted, so existing configs load, but
+> it has no effect in tiri. It bounds how far a scrolling viewport would travel to bring a window
+> into view, and a tiling tree never has to scroll to one.
 
 #### `workspace-auto-back-and-forth`
 
