@@ -733,3 +733,40 @@ fn a_split_inside_a_tab_keeps_its_proportions() {
         "a 90/10 split inside a tab must not compare equal to 50/50"
     );
 }
+
+#[test]
+fn a_box_with_no_area_is_compared_by_its_emptiness_and_not_by_its_numbers() {
+    use crate::model::FracRect;
+
+    let zero = FracRect {
+        x: 0.,
+        y: 0.,
+        w: 0.,
+        h: 0.,
+    };
+    // What sway leaves behind for a branch its arrange returned early on: a stale position
+    // and a height that went negative when a title bar was taken off one never computed.
+    let leftover = FracRect {
+        x: 0.,
+        y: 0.096,
+        w: 0.,
+        h: -0.096,
+    };
+
+    assert!(zero.is_empty());
+    assert!(leftover.is_empty());
+    assert!(zero.approx_eq(leftover));
+    assert!(leftover.approx_eq(zero));
+
+    // Only when both agree there is nothing. One side arranging a branch and the other
+    // skipping it is a real difference, and stays reported.
+    let arranged = FracRect {
+        x: 0.,
+        y: 0.,
+        w: 1.,
+        h: 1.,
+    };
+    assert!(!arranged.is_empty());
+    assert!(!zero.approx_eq(arranged));
+    assert!(!arranged.approx_eq(zero));
+}

@@ -6,6 +6,12 @@
 //! table in one place is what stops those two from drifting into separate lists.
 //!
 //! Adding an entry is a claim that the difference is understood. Removing one is the point.
+//!
+//! One left this table by a change to the model rather than to the layout: a box with no area
+//! is now compared by its emptiness, because neither compositor draws anything in one and the
+//! numbers left in it are whatever the last pass wrote. That only settles the cases where both
+//! sides agree there is nothing; the two below where one arranged a branch and the other did
+//! not are a question about the arrange.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -50,8 +56,10 @@ pub(super) const KNOWN: &[Divergence] = &[
         fixture: "swap-a-tab-with-a-window-behind-a-fullscreen.parity",
         step: 8,
         reason: "\
-            The skipped-arrange family again, reached through a swap: sway leaves the node \
-            the fullscreen arrange never visited with the box it had, tiri gives it 0x0.",
+            Reached through a swap: sway leaves the node the fullscreen arrange never visited \
+            with the box it had, `0.334,0.000 0.334x1.000`, and tiri gives it 0x0. The two \
+            disagree about which of them holds an area, so the empty-box rule does not reach \
+            it — what is left is the arrange itself, not how a box with no area compares.",
     },
     Divergence {
         fixture: "move-left-under-a-fullscreen-sibling.parity",
@@ -59,18 +67,11 @@ pub(super) const KNOWN: &[Divergence] = &[
         reason: "\
             sway's `arrange_workspace` hands the fullscreen node the output and returns, so \
             the branches it skipped keep whatever pending box they last had — 0x0 for one \
-            built while something else was fullscreen. Tiri arranges them. Several fixtures \
-            already pin the shapes where tiri reproduces this; this is one it does not.",
-    },
-    Divergence {
-        fixture: "layout-splith-under-a-fullscreen-window.parity",
-        step: 8,
-        reason: "\
-            The same skipped arrange, and here sway's leftover box is `0.000,0.096 \
-            0.000x-0.096`: a negative height, from a subtraction of a title bar from a \
-            height that was never computed. Reproducing that number is not a behaviour worth \
-            having; the honest fix is a normalizer that says a zero-area box has no position, \
-            which is a decision about the model rather than about the layout.",
+            built while something else was fullscreen. Tiri arranges them, to `1.000x1.000`. \
+            The same disagreement as the swap above with the sides exchanged, and the same \
+            reason the empty-box rule cannot answer it: only one of the two boxes is empty. \
+            Several fixtures already pin the shapes where tiri reproduces this; this is one \
+            it does not.",
     },
 ];
 

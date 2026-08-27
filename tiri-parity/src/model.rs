@@ -62,7 +62,25 @@ pub struct FracRect {
 const EPS: f64 = 2e-3;
 
 impl FracRect {
+    /// Whether the box encloses nothing.
+    ///
+    /// Not just zero: sway can leave a negative height behind, from subtracting a title bar
+    /// from a height that was never computed.
+    pub fn is_empty(self) -> bool {
+        !(self.w > EPS && self.h > EPS)
+    }
+
     pub fn approx_eq(self, other: Self) -> bool {
+        // Neither compositor draws anything inside a box with no area, so the numbers in one
+        // are whatever the last pass happened to leave: an arrange that returned early at a
+        // fullscreen node leaves the branches it skipped holding a stale box, or a negative
+        // one. Where nothing is, is not a behaviour to reproduce — but only when both sides
+        // agree there is nothing. One side having an area and the other not is a real
+        // difference and still reported.
+        if self.is_empty() && other.is_empty() {
+            return true;
+        }
+
         (self.x - other.x).abs() < EPS
             && (self.y - other.y).abs() < EPS
             && (self.w - other.w).abs() < EPS

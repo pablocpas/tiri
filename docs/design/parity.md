@@ -40,6 +40,16 @@ different title-bar heights, which is not a layout-semantic difference. The subt
 order, active child and container bounds remain compared. Normalization rules belong in
 `tiri-parity`; compositor-specific behavior belongs in the replay adapter, not in fixtures.
 
+A box with no area is compared by its emptiness alone. Neither compositor draws anything inside
+one, and the numbers left in it are whatever the last pass wrote: an arrange that returns early
+at a fullscreen node leaves the branches it skipped holding a stale box, or a negative one. Only
+when both sides agree there is nothing — one having an area and the other not is a real
+difference and is still reported.
+
+Note what this means for anything that changes the working area itself, such as `struts`: both
+adapters normalize geometry as `(rect - area) / area`, so a change to that area cancels on both
+sides and cannot be seen here at all. Those belong in the layout unit tests, not in a fixture.
+
 ## Running parity tests
 
 Run the fixture replay and harness tests with:
