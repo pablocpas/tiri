@@ -10,7 +10,6 @@ use smithay::input::SeatHandler;
 use smithay::output::Output;
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
-use crate::layout::workspace::WorkspaceId;
 use crate::tiri::State;
 use crate::utils::get_monotonic_time;
 
@@ -18,7 +17,6 @@ pub struct SpatialMovementGrab {
     start_data: PointerGrabStartData<State>,
     last_location: Point<f64, Logical>,
     output: Output,
-    workspace_id: WorkspaceId,
     gesture: GestureState,
     cumulative_delta: Point<f64, Logical>,
 
@@ -31,7 +29,6 @@ pub struct SpatialMovementGrab {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GestureState {
     Recognizing,
-    HorizontalView,
     WorkspaceSwitch,
 }
 
@@ -39,31 +36,19 @@ impl SpatialMovementGrab {
     pub fn new(
         start_data: PointerGrabStartData<State>,
         output: Output,
-        workspace_id: WorkspaceId,
-        is_horizontal_view: bool,
     ) -> Self {
         let location = start_data.location;
-        let gesture = if is_horizontal_view {
-            GestureState::HorizontalView
-        } else {
-            GestureState::Recognizing
-        };
 
         Self {
             last_location: location,
             start_data,
             output,
-            workspace_id,
-            gesture,
+            gesture: GestureState::Recognizing,
             cumulative_delta: Point::from((0., 0.)),
             new_location: location,
             event_timestamp: None,
             relative_delta: None,
         }
-    }
-
-    pub fn horizontal_view_output(&self) -> Option<&Output> {
-        (self.gesture == GestureState::HorizontalView).then_some(&self.output)
     }
 
     pub fn workspace_switch_output(&self) -> Option<&Output> {
@@ -89,46 +74,15 @@ impl SpatialMovementGrab {
 
                 // Check if the gesture moved far enough to decide. Threshold copied from GTK 4.
                 if c.x * c.x + c.y * c.y >= 8. * 8. {
-                    if c.x.abs() > c.y.abs() {
-                        self.gesture = GestureState::HorizontalView;
-                        let horizontal_view_res = if let Some((ws_idx, ws)) =
-                            layout.find_workspace_by_id(self.workspace_id)
-                        {
-                            if ws.current_output() == Some(&self.output) {
-                                layout.horizontal_view_gesture_begin(
-                                    &self.output,
-                                    Some(ws_idx),
-                                    false,
-                                );
-                                layout.horizontal_view_gesture_update(-c.x, timestamp, false)
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
-
-                        // i3/sway-style tiling does not support horizontal view. If that path is
-                        // unavailable, fall back to vertical workspace switching instead of
-                        // immediately cancelling the grab.
-                        if let Some(res) = horizontal_view_res {
-                            Some(res)
-                        } else {
-                            self.gesture = GestureState::WorkspaceSwitch;
-                            layout.workspace_switch_gesture_begin(&self.output, false);
-                            layout.workspace_switch_gesture_update(-c.y, timestamp, false)
-                        }
-                    } else {
-                        self.gesture = GestureState::WorkspaceSwitch;
-                        layout.workspace_switch_gesture_begin(&self.output, false);
-                        layout.workspace_switch_gesture_update(-c.y, timestamp, false)
-                    }
+                    // The workspace strip is the only axis this grab can travel. i3/sway-style
+                    // tiling has no horizontal view to pan, so both directions resolve to a
+                    // vertical workspace switch rather than to a gesture that goes nowhere.
+                    self.gesture = GestureState::WorkspaceSwitch;
+                    layout.workspace_switch_gesture_begin(&self.output, false);
+                    layout.workspace_switch_gesture_update(-c.y, timestamp, false)
                 } else {
                     Some(None)
                 }
-            }
-            GestureState::HorizontalView => {
-                layout.horizontal_view_gesture_update(-delta.x, timestamp, false)
             }
             GestureState::WorkspaceSwitch => {
                 layout.workspace_switch_gesture_update(-delta.y, timestamp, false)
@@ -150,7 +104,6 @@ impl SpatialMovementGrab {
         let layout = &mut state.niri.layout;
         let res = match self.gesture {
             GestureState::Recognizing => None,
-            GestureState::HorizontalView => layout.horizontal_view_gesture_end(Some(false)),
             GestureState::WorkspaceSwitch => layout.workspace_switch_gesture_end(Some(false)),
         };
 

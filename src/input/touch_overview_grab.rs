@@ -40,7 +40,6 @@ pub struct TouchOverviewGrab {
 #[derive(Debug, Clone, Copy)]
 enum GestureState {
     Recognizing,
-    HorizontalView,
     WorkspaceSwitch,
     InteractiveMove,
 }
@@ -108,32 +107,16 @@ impl TouchOverviewGrab {
 
             // Check if the gesture moved far enough to decide. Threshold copied from libadwaita.
             if c.x * c.x + c.y * c.y >= 16. * 16. {
-                if let Some(ws_id) = self.workspace_id.filter(|_| c.x.abs() > c.y.abs()) {
-                    if let Some((ws_idx, ws)) = layout.find_workspace_by_id(ws_id) {
-                        if ws.current_output() == Some(&self.output) {
-                            layout.horizontal_view_gesture_begin(&self.output, Some(ws_idx), false);
-                            self.gesture = GestureState::HorizontalView;
+                // The workspace strip is the only axis the overview can be dragged along, in
+                // either direction: tiling has no horizontal view to pan.
+                layout.workspace_switch_gesture_begin(&self.output, false);
+                self.gesture = GestureState::WorkspaceSwitch;
 
-                            if !self.start_data.is_touch() {
-                                data.niri.cursor_manager.set_override_cursor(
-                                    crate::cursor::CursorOverride::PointerGrab,
-                                    CursorImageStatus::Named(CursorIcon::AllScroll),
-                                );
-                            }
-                        }
-                    }
-                }
-
-                if matches!(self.gesture, GestureState::Recognizing) {
-                    layout.workspace_switch_gesture_begin(&self.output, false);
-                    self.gesture = GestureState::WorkspaceSwitch;
-
-                    if !self.start_data.is_touch() {
-                        data.niri.cursor_manager.set_override_cursor(
-                            crate::cursor::CursorOverride::PointerGrab,
-                            CursorImageStatus::Named(CursorIcon::AllScroll),
-                        );
-                    }
+                if !self.start_data.is_touch() {
+                    data.niri.cursor_manager.set_override_cursor(
+                        crate::cursor::CursorOverride::PointerGrab,
+                        CursorImageStatus::Named(CursorIcon::AllScroll),
+                    );
                 }
             }
         }
@@ -148,9 +131,6 @@ impl TouchOverviewGrab {
 
         let ongoing = match self.gesture {
             GestureState::Recognizing => unreachable!(),
-            GestureState::HorizontalView => layout
-                .horizontal_view_gesture_update(-delta.x, timestamp, false)
-                .is_some(),
             GestureState::WorkspaceSwitch => layout
                 .workspace_switch_gesture_update(-delta.y, timestamp, false)
                 .is_some(),
@@ -217,9 +197,6 @@ impl TouchOverviewGrab {
                 if let Some(window) = self.window.as_ref() {
                     layout.activate_window(window);
                 }
-            }
-            GestureState::HorizontalView => {
-                layout.horizontal_view_gesture_end(Some(false));
             }
             GestureState::WorkspaceSwitch => {
                 layout.workspace_switch_gesture_end(Some(false));

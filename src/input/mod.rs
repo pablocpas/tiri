@@ -3140,30 +3140,16 @@ impl State {
 
         // Warp pointer across the screen during the spatial movement grabs.
         let spatial_grab = pointer.with_grab(|_, grab| {
-            let grab = grab.as_any();
-            if let Some(grab) = grab.downcast_ref::<SpatialMovementGrab>() {
-                if let Some(output) = grab.horizontal_view_output() {
-                    return Some((output.clone(), true));
-                } else if let Some(output) = grab.workspace_switch_output() {
-                    return Some((output.clone(), false));
-                }
-            } else if let Some(grab) = grab.downcast_ref::<MoveGrab>() {
-                if let Some(output) = grab.horizontal_view_output() {
-                    return Some((output.clone(), true));
-                }
-            }
-            None
+            let grab = grab.as_any().downcast_ref::<SpatialMovementGrab>()?;
+            grab.workspace_switch_output().cloned()
         });
-        if let Some((output, horizontal)) = spatial_grab.flatten() {
+        if let Some(output) = spatial_grab.flatten() {
             if let Some(geo) = self.niri.global_space.output_geometry(&output) {
+                // The workspace strip is vertical, so the pointer wraps on y and stays clamped
+                // on x.
                 let geo = geo.to_f64();
-                if horizontal {
-                    new_pos.x = (new_pos.x - geo.loc.x).rem_euclid(geo.size.w) + geo.loc.x;
-                    new_pos.y = new_pos.y.clamp(geo.loc.y, geo.loc.y + geo.size.h - 1.);
-                } else {
-                    new_pos.x = new_pos.x.clamp(geo.loc.x, geo.loc.x + geo.size.w - 1.);
-                    new_pos.y = (new_pos.y - geo.loc.y).rem_euclid(geo.size.h) + geo.loc.y;
-                }
+                new_pos.x = new_pos.x.clamp(geo.loc.x, geo.loc.x + geo.size.w - 1.);
+                new_pos.y = (new_pos.y - geo.loc.y).rem_euclid(geo.size.h) + geo.loc.y;
             }
         }
 
@@ -3541,9 +3527,7 @@ impl State {
             };
 
             if is_overview_open && !pointer.is_grabbed() && button == Some(MouseButton::Right) {
-                if let Some((output, ws)) = self.niri.workspace_under_cursor(true) {
-                    let ws_id = ws.id();
-
+                if let Some((output, _ws)) = self.niri.workspace_under_cursor(true) {
                     self.niri.layout.focus_output(&output);
                     self.niri.invalidate_layout();
 
@@ -3553,7 +3537,7 @@ impl State {
                         button: button_code,
                         location,
                     };
-                    let grab = SpatialMovementGrab::new(start_data, output.clone(), ws_id, false);
+                    let grab = SpatialMovementGrab::new(start_data, output.clone());
                     pointer.set_grab(self, grab, serial, Focus::Clear);
                     self.niri.cursor_manager.set_override_cursor(
                         CursorOverride::PointerGrab,
@@ -3577,9 +3561,7 @@ impl State {
                     })
                 };
 
-                if let Some((output, ws)) = output_ws {
-                    let ws_id = ws.id();
-
+                if let Some((output, _ws)) = output_ws {
                     self.niri.layout.focus_output(&output);
                     self.niri.invalidate_layout();
 
@@ -3589,7 +3571,7 @@ impl State {
                         button: button_code,
                         location,
                     };
-                    let grab = SpatialMovementGrab::new(start_data, output.clone(), ws_id, false);
+                    let grab = SpatialMovementGrab::new(start_data, output.clone());
                     pointer.set_grab(self, grab, serial, Focus::Clear);
                     self.niri.cursor_manager.set_override_cursor(
                         CursorOverride::PointerGrab,
@@ -3744,7 +3726,7 @@ impl State {
                         let start_data = AnyStartData::Pointer(start_data);
                         let icon = CursorIcon::Grabbing;
                         if let Some(grab) =
-                            MoveGrab::new(self, start_data, window.clone(), false, Some(icon))
+                            MoveGrab::new(self, start_data, window.clone(), Some(icon))
                         {
                             pointer.set_grab(self, grab, serial, Focus::Clear);
 
@@ -4090,25 +4072,17 @@ impl State {
                     .niri
                     .overview_scroll_swipe_gesture
                     .update(horizontal, vertical);
-                let is_vertical = self.niri.overview_scroll_swipe_gesture.is_vertical();
 
-                if action.end() {
-                    if is_vertical {
+                // Only the vertical axis navigates: the overview scrolls through the workspace
+                // strip, and tiling has no horizontal view to pan.
+                if self.niri.overview_scroll_swipe_gesture.is_vertical() {
+                    if action.end() {
                         redraw |= self
                             .niri
                             .layout
                             .workspace_switch_gesture_end(Some(true))
                             .is_some();
                     } else {
-                        redraw |= self
-                            .niri
-                            .layout
-                            .horizontal_view_gesture_end(Some(true))
-                            .is_some();
-                    }
-                } else {
-                    // Maybe begin, then update.
-                    if is_vertical {
                         if action.begin() {
                             if let Some(output) = self.niri.output_under_cursor() {
                                 self.niri
@@ -4125,29 +4099,6 @@ impl State {
                         if let Some(Some(_)) = res {
                             redraw = true;
                         }
-                    } else {
-                        if action.begin() {
-                            if let Some((output, ws)) = self.niri.workspace_under_cursor(true) {
-                                let ws_id = ws.id();
-                                let ws_idx =
-                                    self.niri.layout.find_workspace_by_id(ws_id).unwrap().0;
-
-                                self.niri.layout.horizontal_view_gesture_begin(
-                                    &output,
-                                    Some(ws_idx),
-                                    true,
-                                );
-                                redraw = true;
-                            }
-                        }
-
-                        let res = self
-                            .niri
-                            .layout
-                            .horizontal_view_gesture_update(horizontal, timestamp, true);
-                        if let Some(Some(_)) = res {
-                            redraw = true;
-                        }
                     }
                 }
 
@@ -4159,20 +4110,14 @@ impl State {
                 return;
             } else {
                 let mut redraw = false;
-                if self.niri.overview_scroll_swipe_gesture.reset() {
-                    if self.niri.overview_scroll_swipe_gesture.is_vertical() {
-                        redraw |= self
-                            .niri
-                            .layout
-                            .workspace_switch_gesture_end(Some(true))
-                            .is_some();
-                    } else {
-                        redraw |= self
-                            .niri
-                            .layout
-                            .horizontal_view_gesture_end(Some(true))
-                            .is_some();
-                    }
+                if self.niri.overview_scroll_swipe_gesture.reset()
+                    && self.niri.overview_scroll_swipe_gesture.is_vertical()
+                {
+                    redraw |= self
+                        .niri
+                        .layout
+                        .workspace_switch_gesture_end(Some(true))
+                        .is_some();
                 }
                 if redraw {
                     self.niri.invalidate_layout();
@@ -4513,13 +4458,9 @@ impl State {
                                 };
                                 let start_data = AnyStartData::TabletTool(start_data);
                                 let icon = CursorIcon::Grabbing;
-                                if let Some(grab) = MoveGrab::new(
-                                    self,
-                                    start_data,
-                                    window.clone(),
-                                    true,
-                                    Some(icon),
-                                ) {
+                                if let Some(grab) =
+                                    MoveGrab::new(self, start_data, window.clone(), Some(icon))
+                                {
                                     tool.set_grab(self, grab, time, serial, Focus::Clear);
                                 }
                             }
@@ -4759,8 +4700,6 @@ impl State {
             }
         }
 
-        let is_overview_open = self.niri.layout.is_overview_open();
-
         if let Some((cx, cy)) = &mut self.niri.gesture_swipe_3f_cumulative {
             *cx += delta_x;
             *cy += delta_y;
@@ -4770,28 +4709,10 @@ impl State {
             if cx * cx + cy * cy >= 16. * 16. {
                 self.niri.gesture_swipe_3f_cumulative = None;
 
-                if let Some(output) = self.niri.output_under_cursor() {
-                    if cx.abs() > cy.abs() {
-                        let output_ws = if is_overview_open {
-                            self.niri.workspace_under_cursor(true)
-                        } else {
-                            // We don't want to accidentally "catch" the wrong workspace during
-                            // animations.
-                            self.niri.output_under_cursor().and_then(|output| {
-                                let mon = self.niri.layout.monitor_for_output(&output)?;
-                                Some((output, mon.active_workspace_ref()))
-                            })
-                        };
-
-                        if let Some((output, ws)) = output_ws {
-                            let ws_idx = self.niri.layout.find_workspace_by_id(ws.id()).unwrap().0;
-                            self.niri.layout.horizontal_view_gesture_begin(
-                                &output,
-                                Some(ws_idx),
-                                true,
-                            );
-                        }
-                    } else {
+                // A mostly-horizontal swipe has nothing to drive: the workspace strip is
+                // vertical and tiling has no horizontal view to pan.
+                if cx.abs() <= cy.abs() {
+                    if let Some(output) = self.niri.output_under_cursor() {
                         self.niri
                             .layout
                             .workspace_switch_gesture_begin(&output, true);
@@ -4807,17 +4728,6 @@ impl State {
             .niri
             .layout
             .workspace_switch_gesture_update(delta_y, timestamp, true);
-        if let Some(output) = res {
-            if let Some(output) = output {
-                self.niri.queue_redraw(&output);
-            }
-            handled = true;
-        }
-
-        let res = self
-            .niri
-            .layout
-            .horizontal_view_gesture_update(delta_x, timestamp, true);
         if let Some(output) = res {
             if let Some(output) = output {
                 self.niri.queue_redraw(&output);
@@ -4862,12 +4772,6 @@ impl State {
 
         let mut handled = false;
         let res = self.niri.layout.workspace_switch_gesture_end(Some(true));
-        if let Some(output) = res {
-            self.niri.queue_redraw(&output);
-            handled = true;
-        }
-
-        let res = self.niri.layout.horizontal_view_gesture_end(Some(true));
         if let Some(output) = res {
             self.niri.queue_redraw(&output);
             handled = true;
@@ -5121,7 +5025,7 @@ impl State {
                         location: pos,
                     };
                     let start_data = AnyStartData::Touch(start_data);
-                    if let Some(grab) = MoveGrab::new(self, start_data, window.clone(), true, None)
+                    if let Some(grab) = MoveGrab::new(self, start_data, window.clone(), None)
                     {
                         handle.set_grab(self, grab, serial);
                     }

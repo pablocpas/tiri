@@ -1,4 +1,3 @@
-use std::time::Duration;
 
 use smithay::backend::input::ButtonState;
 use smithay::desktop::Window;
@@ -30,20 +29,18 @@ pub struct MoveGrab {
     last_location: Point<f64, Logical>,
     window: Window,
     gesture: GestureState,
-    enable_horizontal_view: bool,
     move_icon: CursorIcon,
 
     // Accumulated and applied in frame().
     new_location: Point<f64, Logical>,
-    event_timestamp: Option<Duration>,
-    relative_delta: Option<Point<f64, Logical>>,
+    /// Whether motion arrived since the last frame.
+    motion_pending: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GestureState {
     Recognizing,
     Move,
-    HorizontalView,
 }
 
 impl MoveGrab {
@@ -51,7 +48,6 @@ impl MoveGrab {
         state: &mut State,
         start_data: AnyStartData<State>,
         window: Window,
-        enable_horizontal_view: bool,
         move_icon: Option<CursorIcon>,
     ) -> Option<Self> {
         let location = start_data.location();
@@ -65,21 +61,15 @@ impl MoveGrab {
             start_pos_within_output: pos_within_output,
             window,
             gesture: GestureState::Recognizing,
-            enable_horizontal_view,
             // Moving windows by their titlebars uses the default cursor by default.
             move_icon: move_icon.unwrap_or(CursorIcon::Default),
             new_location: location,
-            event_timestamp: None,
-            relative_delta: None,
+            motion_pending: false,
         })
     }
 
     pub fn is_move(&self) -> bool {
         self.gesture == GestureState::Move
-    }
-
-    pub fn horizontal_view_output(&self) -> Option<&Output> {
-        (self.gesture == GestureState::HorizontalView).then_some(&self.start_output)
     }
 
     fn on_ungrab(&mut self, data: &mut State) {
@@ -104,9 +94,6 @@ impl MoveGrab {
                 layout.activate_window(&self.window);
             }
             GestureState::Move => layout.interactive_move_end(&self.window),
-            GestureState::HorizontalView => {
-                layout.horizontal_view_gesture_end(Some(false));
-            }
         }
         data.niri.invalidate_layout();
 
@@ -149,48 +136,12 @@ impl MoveGrab {
         true
     }
 
-    fn begin_horizontal_view(&mut self, data: &mut State) -> bool {
-        let layout = &mut data.niri.layout;
-        let Some(ws_idx) = layout.workspaces().find_map(|(mon, ws_idx, ws)| {
-            let ws_idx = ws
-                .windows()
-                .any(|w| w.window == self.window)
-                .then_some(ws_idx)?;
-            let output = mon?.output();
-
-            // If the window moved to a different output, don't start the gesture.
-            if *output != self.start_output {
-                return None;
-            }
-
-            Some(ws_idx)
-        }) else {
-            // Can no longer start the gesture.
-            return false;
-        };
-
-        layout.horizontal_view_gesture_begin(&self.start_output, Some(ws_idx), false);
-
-        self.gesture = GestureState::HorizontalView;
-        data.niri.invalidate_layout();
-
-        if !self.start_data.is_touch() {
-            data.niri.cursor_manager.set_override_cursor(
-                crate::cursor::CursorOverride::PointerGrab,
-                CursorImageStatus::Named(CursorIcon::AllScroll),
-            );
+    fn on_frame(&mut self, data: &mut State) -> bool {
+        if !std::mem::take(&mut self.motion_pending) {
+            return true;
         }
 
-        true
-    }
-
-    fn on_frame(&mut self, data: &mut State) -> bool {
-        let Some(timestamp) = self.event_timestamp.take() else {
-            return true;
-        };
-
         let mut delta = self.new_location - self.last_location;
-        let mut relative_delta = self.relative_delta.take().unwrap_or(delta);
         self.last_location = self.new_location;
 
         // Try to recognize the gesture.
@@ -203,32 +154,12 @@ impl MoveGrab {
             // Check if the gesture moved far enough to decide.
             let c = self.new_location - self.start_data.location();
             if c.x * c.x + c.y * c.y >= 8. * 8. {
-                let is_floating = data
-                    .niri
-                    .layout
-                    .workspaces()
-                    .find_map(|(_, _, ws)| {
-                        ws.windows()
-                            .any(|w| w.window == self.window)
-                            .then(|| ws.is_floating(&self.window))
-                    })
-                    .unwrap_or(false);
-
-                let is_horizontal_view =
-                    self.enable_horizontal_view && !is_floating && c.x.abs() > c.y.abs();
-
-                let started = if is_horizontal_view {
-                    self.begin_horizontal_view(data)
-                } else {
-                    self.begin_move(data)
-                };
-                if !started {
+                if !self.begin_move(data) {
                     return false;
                 }
 
                 // Apply the whole delta that accumulated during recognizing.
                 delta = c;
-                relative_delta = c;
             }
         }
 
@@ -257,30 +188,12 @@ impl MoveGrab {
                     return true;
                 }
             }
-            GestureState::HorizontalView => {
-                let res = data.niri.layout.horizontal_view_gesture_update(
-                    -relative_delta.x,
-                    timestamp,
-                    false,
-                );
-                if let Some(output) = res {
-                    data.niri.invalidate_layout();
-                    if let Some(output) = output {
-                        data.niri.queue_redraw(&output);
-                    }
-                    return true;
-                }
-            }
         }
 
         false
     }
 
     fn on_toggle_floating(&mut self, data: &mut State) -> bool {
-        if self.gesture == GestureState::HorizontalView {
-            return true;
-        }
-
         // Start move if still recognizing.
         if self.gesture == GestureState::Recognizing {
             let Some((output, pos_within_output)) = data.niri.output_under(self.last_location)
@@ -326,11 +239,7 @@ impl PointerGrab<State> for MoveGrab {
         handle.motion(data, None, event);
 
         self.new_location = event.location;
-
-        // Relative motion takes precedence over normal motion.
-        if self.relative_delta.is_none() {
-            self.event_timestamp = Some(Duration::from_millis(u64::from(event.time)));
-        }
+        self.motion_pending = true;
     }
 
     fn relative_motion(
@@ -342,9 +251,6 @@ impl PointerGrab<State> for MoveGrab {
     ) {
         // While the grab is active, no client has pointer focus.
         handle.relative_motion(data, None, event);
-
-        *self.relative_delta.get_or_insert_default() += event.delta;
-        self.event_timestamp = Some(Duration::from_micros(event.utime));
     }
 
     fn button(
@@ -529,7 +435,7 @@ impl TouchGrab<State> for MoveGrab {
         }
 
         self.new_location = event.location;
-        self.event_timestamp = Some(Duration::from_millis(u64::from(event.time)));
+        self.motion_pending = true;
     }
 
     fn frame(&mut self, data: &mut State, handle: &mut TouchInnerHandle<'_, State>) {
@@ -598,7 +504,7 @@ impl TabletToolGrab<State> for MoveGrab {
         handle.motion(data, None, event);
 
         self.new_location = event.location;
-        self.event_timestamp = Some(Duration::from_millis(u64::from(event.time)));
+        self.motion_pending = true;
     }
 
     fn down(
