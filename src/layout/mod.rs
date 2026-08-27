@@ -99,7 +99,6 @@ mod seat_focus;
 pub mod shadow;
 pub mod tab_bar;
 pub mod tile;
-pub mod tiling_space;
 pub mod workspace;
 
 #[cfg(test)]

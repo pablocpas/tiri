@@ -6,6 +6,7 @@ use super::ContainerArena;
 use super::Layout;
 use super::LayoutElement;
 use super::NodeKey;
+use crate::layout::InteractiveResizeData;
 use crate::utils::ResizeEdge;
 
 /// A pair of adjacent children inside a split container: dragging the boundary between
@@ -338,4 +339,17 @@ impl<W: LayoutElement> ContainerArena<W> {
             None
         }
     }
+}
+
+/// An interactive resize in progress on the tiled side of a workspace.
+///
+/// A drag can move two boundaries at once — a corner grab resizes one pair of siblings
+/// horizontally and another vertically — so each axis keeps its own target, and either may be
+/// absent when the window has no sibling to give width or height to.
+#[derive(Debug, Clone)]
+pub(in crate::layout) struct InteractiveResizeState<W: LayoutElement> {
+    pub window: W::Id,
+    pub data: InteractiveResizeData,
+    pub horizontal: Option<ResizeTarget>,
+    pub vertical: Option<ResizeTarget>,
 }

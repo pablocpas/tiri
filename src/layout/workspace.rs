@@ -15,14 +15,16 @@ use tiri_config::utils::MergeWith as _;
 use tiri_config::{CornerRadius, OutputName, PresetSize, Workspace as WorkspaceConfig};
 use tiri_ipc::{ColumnDisplay, LayoutTreeNode, PositionChange, SizeChange, WindowLayout};
 
-use super::container::{Direction, InactiveTilingReference, InsertParentInfo, Layout, NodeKey};
+use super::container::{
+    Direction, InactiveTilingReference, InsertParentInfo, InteractiveResizeState, Layout, NodeKey,
+};
 use super::container_tree::{ContainerTree, ContainerTreeRenderElement, RootTilingSubtree};
 use super::floating::{
     compute_toplevel_bounds, FloatingResizeResult, FloatingSpace, FloatingSpaceRenderElement,
 };
 use super::shadow::Shadow;
 use super::tile::{Tile, TileRenderSnapshot};
-use super::tiling_space::TilingSpace;
+use super::closing_window::ClosingWindow;
 use super::{
     ActivateWindow, HitType, InsertPosition, InteractiveResizeData, LayoutCycleEntry,
     LayoutElement, Options, RemovedTile, ResizeHit, ResizeRequest, SizeFrac,
@@ -53,8 +55,16 @@ pub struct Workspace<W: LayoutElement> {
     /// keeping one — not because either side owns it, but because this is the workspace.
     containers: ContainerTree<W>,
 
-    /// Interaction and presentation state belonging only to the tiled side.
-    tiling: TilingSpace<W>,
+    /// Ongoing interactive resize on the tiled side.
+    ///
+    /// The floating side runs its own; a window is only ever resized on the side it is on.
+    tiling_resize: Option<InteractiveResizeState<W>>,
+
+    /// Tiled windows in their closing animation.
+    ///
+    /// The floating side keeps its own list because the two are drawn in separate passes, and
+    /// that pass order is what puts a closing floating window above a closing tiled one.
+    tiling_closing: Vec<ClosingWindow>,
 
     /// Transient interaction and render state belonging only to the floating side.
     ///
@@ -433,7 +443,8 @@ impl<W: LayoutElement> Workspace<W> {
 
         Self {
             containers,
-            tiling: TilingSpace::new(),
+            tiling_resize: None,
+            tiling_closing: Vec::new(),
             floating,
             floating_is_active: FloatingActive::No,
             original_output,
@@ -505,7 +516,8 @@ impl<W: LayoutElement> Workspace<W> {
 
         Self {
             containers,
-            tiling: TilingSpace::new(),
+            tiling_resize: None,
+            tiling_closing: Vec::new(),
             floating,
             floating_is_active: FloatingActive::No,
             output: None,
@@ -643,26 +655,29 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn advance_animations(&mut self) {
         self.containers.advance_animations();
-        self.tiling.advance_animations();
+        self.tiling_closing.retain_mut(|closing| {
+            closing.advance_animations();
+            closing.are_animations_ongoing()
+        });
         self.floating.advance_animations(&mut self.containers);
     }
 
     pub fn are_animations_ongoing(&self) -> bool {
         self.containers.are_animations_ongoing()
-            || self.tiling.are_animations_ongoing()
+            || !self.tiling_closing.is_empty()
             || self.floating.are_animations_ongoing(&self.containers)
     }
 
     pub fn are_transitions_ongoing(&self) -> bool {
         self.containers.are_transitions_ongoing()
-            || self.tiling.are_transitions_ongoing()
+            || !self.tiling_closing.is_empty()
             || self.floating.are_transitions_ongoing(&self.containers)
     }
 
     pub fn update_render_elements(&mut self, is_active: bool, layer: RenderLayer) {
         self.containers
             .set_active(is_active, self.floating_is_active.get());
-        self.containers.update_render_elements(&self.tiling);
+        self.containers.update_render_elements(&self.tiling_resize);
 
         let view_rect = Rectangle::from_size(self.view_size);
         self.floating
@@ -3026,7 +3041,7 @@ impl<W: LayoutElement> Workspace<W> {
         }
         let tiling_focus_ring = focus_ring && !self.floating_is_active();
         self.containers.render(
-            &self.tiling,
+            &self.tiling_closing,
             ctx,
             xray_pos,
             tiling_focus_ring,
@@ -3048,7 +3063,7 @@ impl<W: LayoutElement> Workspace<W> {
         let tiling_focus_ring = focus_ring && !self.floating_is_active();
         if let Some(elem) =
             self.containers
-                .render_as_offscreen(&self.tiling, renderer, target, tiling_focus_ring)
+                .render_as_offscreen(&self.tiling_closing, renderer, target, tiling_focus_ring)
         {
             push(elem.into());
         }
@@ -3177,7 +3192,7 @@ impl<W: LayoutElement> Workspace<W> {
             );
         } else {
             self.containers.start_close_animation_for_window(
-                &mut self.tiling,
+                &mut self.tiling_closing,
                 renderer,
                 window,
                 blocker,
@@ -3269,7 +3284,7 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn refresh(&mut self, is_active: bool, is_focused: bool) {
         let _span = tracy_client::span!("Workspace::refresh");
         self.containers.refresh(
-            &self.tiling,
+            &self.tiling_resize,
             is_active && !self.floating_is_active.get(),
             is_focused,
         );
@@ -3334,7 +3349,7 @@ impl<W: LayoutElement> Workspace<W> {
                 .interactive_resize_begin(&self.containers, window, edges)
         } else {
             self.containers
-                .interactive_resize_begin(&mut self.tiling, window, edges)
+                .interactive_resize_begin(&mut self.tiling_resize, window, edges)
         }
     }
 
@@ -3349,7 +3364,7 @@ impl<W: LayoutElement> Workspace<W> {
                 .interactive_resize_begin(&self.containers, window, edges)
         } else {
             self.containers
-                .interactive_resize_begin_at(&mut self.tiling, window, edges, pos)
+                .interactive_resize_begin_at(&mut self.tiling_resize, window, edges, pos)
         }
     }
 
@@ -3363,7 +3378,7 @@ impl<W: LayoutElement> Workspace<W> {
                 .interactive_resize_update(&mut self.containers, window, delta)
         } else {
             self.containers
-                .interactive_resize_update(&self.tiling, window, delta)
+                .interactive_resize_update(&self.tiling_resize, window, delta)
         }
     }
 
@@ -3373,12 +3388,12 @@ impl<W: LayoutElement> Workspace<W> {
                 self.floating.interactive_resize_end(Some(window));
             } else {
                 self.containers
-                    .interactive_resize_end(&mut self.tiling, Some(window));
+                    .interactive_resize_end(&mut self.tiling_resize, Some(window));
             }
         } else {
             self.floating.interactive_resize_end(None);
             self.containers
-                .interactive_resize_end(&mut self.tiling, None);
+                .interactive_resize_end(&mut self.tiling_resize, None);
         }
     }
 

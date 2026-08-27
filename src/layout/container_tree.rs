@@ -10,8 +10,9 @@
 //! output.
 //!
 //! Render caches derived from the tree live beside it because both branches consume the same
-//! projections. Tiled interaction state and floating placement/stacking live in
-//! [`super::tiling_space`] and [`super::floating`] respectively.
+//! projections. Transient interaction state does not: a tiled resize and its closing windows
+//! belong to the [`super::workspace::Workspace`] and are handed to the methods that need them,
+//! and the floating side's equivalents live in [`super::floating`].
 
 use std::cell::{RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
@@ -26,15 +27,14 @@ use tiri_ipc::{ColumnDisplay, LayoutTreeNode, LayoutTreeRect, SizeChange};
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::container::{
-    ContainerArena, ContainerMetrics, DetachedNode, Direction, Layout, LeafLayoutInfo, NodeKey,
-    ResizeDelta, ResizeReach, ResizeSpace, ResizeTarget,
+    ContainerArena, ContainerMetrics, DetachedNode, Direction, InteractiveResizeState, Layout,
+    LeafLayoutInfo, NodeKey, ResizeDelta, ResizeReach, ResizeSpace, ResizeTarget,
 };
 use super::focus_ring::{
     render_container_selection, FocusRingEdges, FocusRingIndicatorEdge, FocusRingRenderElement,
 };
 use super::monitor::{InsertPosition, SplitIndicator};
 use super::tile::{Tile, TileRenderElement};
-use super::tiling_space::{InteractiveResizeState, TilingSpace};
 use super::{
     ConfigureIntent, InteractiveResizeData, LayoutCycleEntry, LayoutElement, Options, RemovedTile,
     ResizeAxis, ResizeHit, ResizeRequest,
@@ -926,10 +926,10 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Computed up front so the caller can hold mutable tile borrows while iterating.
     fn interactive_resize_data_by_leaf(
         &self,
-        tiling: &TilingSpace<W>,
+        resize: &Option<InteractiveResizeState<W>>,
         layouts: &[LeafFrameInfo],
     ) -> HashMap<NodeKey, InteractiveResizeData> {
-        let Some(resize) = tiling.interactive_resize.as_ref() else {
+        let Some(resize) = resize.as_ref() else {
             return HashMap::new();
         };
 
@@ -1179,7 +1179,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     pub fn render_elements<R: NiriRenderer>(
         &self,
-        tiling: &TilingSpace<W>,
+        closing: &[ClosingWindow],
         mut ctx: RenderCtx<R>,
         xray_pos: XrayPos,
         tiling_focus_ring: bool,
@@ -1187,7 +1187,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     ) -> Vec<ContainerTreeRenderElement<R>> {
         // Pre-allocate: ~4 elements per tile + closing windows + tab bars
         let tile_count = self.arena.window_count();
-        let estimated_capacity = tile_count * 4 + tiling.closing_windows.len() + tile_count / 2;
+        let estimated_capacity = tile_count * 4 + closing.len() + tile_count / 2;
         let mut elements = Vec::with_capacity(estimated_capacity);
         let mut active_elements = Vec::with_capacity(8);
         let scale = Scale::from(self.scale());
@@ -1197,12 +1197,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let fullscreen = self.fullscreen_render_state();
         let view_rect = Rectangle::from_size(self.view_size());
 
-        for closing in tiling
-            .closing_windows
-            .iter()
-            .rev()
-            .filter(|_| layer.is_normal())
-        {
+        for closing in closing.iter().rev().filter(|_| layer.is_normal()) {
             let elem = closing.render(ctx.as_gles(), view_rect, scale);
             elements.push(ContainerTreeRenderElement::ClosingWindow(elem));
         }
@@ -1359,21 +1354,21 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     pub fn render<R: NiriRenderer>(
         &self,
-        tiling: &TilingSpace<W>,
+        closing: &[ClosingWindow],
         ctx: RenderCtx<R>,
         xray_pos: XrayPos,
         tiling_focus_ring: bool,
         layer: RenderLayer,
         push: &mut dyn FnMut(ContainerTreeRenderElement<R>),
     ) {
-        for elem in self.render_elements(tiling, ctx, xray_pos, tiling_focus_ring, layer) {
+        for elem in self.render_elements(closing, ctx, xray_pos, tiling_focus_ring, layer) {
             push(elem);
         }
     }
 
     pub fn render_as_offscreen(
         &self,
-        tiling: &TilingSpace<W>,
+        closing: &[ClosingWindow],
         renderer: &mut GlesRenderer,
         target: RenderTarget,
         tiling_focus_ring: bool,
@@ -1388,7 +1383,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             xray: None,
         };
         let mut elements = self.render_elements(
-            tiling,
+            closing,
             ctx,
             XrayPos::default(),
             tiling_focus_ring,
@@ -1481,7 +1476,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.render.tab_bar_cache.borrow_mut()
     }
 
-    pub fn update_render_elements(&mut self, tiling: &TilingSpace<W>) {
+    pub(super) fn update_render_elements(&mut self, resize: &Option<InteractiveResizeState<W>>) {
         let _span = tracy_client::span!("ContainerTree::update_render_elements");
         let is_active = self.side_is_active(false);
         // Once a frame, and for both sides: a container that has left the tree will not be
@@ -1572,7 +1567,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         // from it would flush configures carrying its obsolete bounds. The deferred
         // relayout will run this pass again once the transaction resolves.
         let skip_state_pass = self.arena.pending_layout_is_stale();
-        let resize_data = self.interactive_resize_data_by_leaf(tiling, &state_layouts);
+        let resize_data = self.interactive_resize_data_by_leaf(resize, &state_layouts);
         for info in &state_layouts {
             if skip_state_pass {
                 break;
@@ -1636,33 +1631,33 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.render.render_edges_scratch = render_edges;
     }
 
-    pub fn interactive_resize_begin(
+    pub(super) fn interactive_resize_begin(
         &mut self,
-        tiling: &mut TilingSpace<W>,
+        resize: &mut Option<InteractiveResizeState<W>>,
         window: W::Id,
         edges: ResizeEdge,
     ) -> bool {
-        self.interactive_resize_begin_internal(tiling, window, edges, None)
+        self.interactive_resize_begin_internal(resize, window, edges, None)
     }
 
-    pub fn interactive_resize_begin_at(
+    pub(super) fn interactive_resize_begin_at(
         &mut self,
-        tiling: &mut TilingSpace<W>,
+        resize: &mut Option<InteractiveResizeState<W>>,
         window: W::Id,
         edges: ResizeEdge,
         pos: Point<f64, Logical>,
     ) -> bool {
-        self.interactive_resize_begin_internal(tiling, window, edges, Some(pos))
+        self.interactive_resize_begin_internal(resize, window, edges, Some(pos))
     }
 
     fn interactive_resize_begin_internal(
         &mut self,
-        tiling: &mut TilingSpace<W>,
+        resize: &mut Option<InteractiveResizeState<W>>,
         window: W::Id,
         edges: ResizeEdge,
         pos: Option<Point<f64, Logical>>,
     ) -> bool {
-        if tiling.interactive_resize.is_some() {
+        if resize.is_some() {
             return false;
         }
 
@@ -1672,7 +1667,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         };
 
-        tiling.interactive_resize = Some(InteractiveResizeState {
+        *resize = Some(InteractiveResizeState {
             window,
             data: InteractiveResizeData { edges },
             horizontal,
@@ -1682,13 +1677,13 @@ impl<W: LayoutElement> ContainerTree<W> {
         true
     }
 
-    pub fn interactive_resize_update(
+    pub(super) fn interactive_resize_update(
         &mut self,
-        tiling: &TilingSpace<W>,
+        resize: &Option<InteractiveResizeState<W>>,
         window: &W::Id,
         delta: Point<f64, Logical>,
     ) -> bool {
-        let Some(resize) = &tiling.interactive_resize else {
+        let Some(resize) = &resize else {
             return false;
         };
 
@@ -1725,18 +1720,22 @@ impl<W: LayoutElement> ContainerTree<W> {
         true
     }
 
-    pub fn interactive_resize_end(&mut self, tiling: &mut TilingSpace<W>, window: Option<&W::Id>) {
-        let Some(resize) = &tiling.interactive_resize else {
+    pub(super) fn interactive_resize_end(
+        &mut self,
+        resize: &mut Option<InteractiveResizeState<W>>,
+        window: Option<&W::Id>,
+    ) {
+        let Some(ongoing) = resize.as_ref() else {
             return;
         };
 
         if let Some(window) = window {
-            if window != &resize.window {
+            if window != &ongoing.window {
                 return;
             }
         }
 
-        tiling.interactive_resize = None;
+        *resize = None;
     }
 
     pub fn resize_edges_under(&mut self, pos: Point<f64, Logical>) -> Option<ResizeEdge> {
@@ -3526,7 +3525,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
     pub fn start_close_animation_for_window<R: NiriRenderer>(
         &mut self,
-        tiling: &mut TilingSpace<W>,
+        closing: &mut Vec<ClosingWindow>,
         renderer: &mut R,
         window: &W::Id,
         blocker: crate::utils::transaction::TransactionBlocker,
@@ -3583,8 +3582,8 @@ impl<W: LayoutElement> ContainerTree<W> {
             anim,
         );
         match res {
-            Ok(closing) => {
-                tiling.closing_windows.push(closing);
+            Ok(window) => {
+                closing.push(window);
             }
             Err(err) => {
                 warn!("error creating a closing window animation: {err:?}");
@@ -3592,7 +3591,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    pub fn refresh(&mut self, tiling: &TilingSpace<W>, is_active: bool, is_focused: bool) {
+    pub(super) fn refresh(&mut self, resize: &Option<InteractiveResizeState<W>>, is_active: bool, is_focused: bool) {
         let _span = tracy_client::span!("ContainerTree::refresh");
         let applied = self.arena.apply_pending_layouts_if_ready();
         if applied && self.arena.take_pending_relayout() {
@@ -3643,7 +3642,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         };
         // See the other state pass: never drive window state from a stale snapshot.
         let skip_state_pass = self.arena.pending_layout_is_stale();
-        let resize_data = self.interactive_resize_data_by_leaf(tiling, &layouts);
+        let resize_data = self.interactive_resize_data_by_leaf(resize, &layouts);
         for info in &layouts {
             if skip_state_pass {
                 break;

@@ -57,7 +57,7 @@ mod tree_store;
 
 pub(super) use floating_region::{floating_position_from_logical, scale_floating_position};
 use geometry::PendingLayout;
-pub(super) use resize::ResizeTarget;
+pub(super) use resize::{InteractiveResizeState, ResizeTarget};
 
 // ============================================================================
 // Node identity
