@@ -259,3 +259,119 @@ fn tabs_with_different_border() {
     };
     check_ops_with_options(options, ops);
 }
+
+#[test]
+fn struts_reserve_space_at_the_edges_of_the_working_area() {
+    let ops = [
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+    ];
+
+    let options = Options {
+        layout: tiri_config::Layout {
+            struts: Struts {
+                left: FloatOrInt(10.),
+                right: FloatOrInt(20.),
+                top: FloatOrInt(30.),
+                bottom: FloatOrInt(40.),
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let layout = check_ops_with_options(options, ops);
+    let area = layout.active_workspace().unwrap().working_area();
+
+    // The 1280x720 test output, minus each edge's strut.
+    assert_eq!(area.loc.x, 10.);
+    assert_eq!(area.loc.y, 30.);
+    assert_eq!(area.size.w, 1280. - 10. - 20.);
+    assert_eq!(area.size.h, 720. - 30. - 40.);
+}
+
+#[test]
+fn struts_larger_than_the_output_leave_no_working_area() {
+    let ops = [
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+    ];
+
+    let options = Options {
+        layout: tiri_config::Layout {
+            struts: Struts {
+                left: FloatOrInt(0.),
+                right: FloatOrInt(0.),
+                top: FloatOrInt(20000.),
+                bottom: FloatOrInt(0.),
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let layout = check_ops_with_options(options, ops);
+    let area = layout.active_workspace().unwrap().working_area();
+
+    // Clamped rather than negative: a window still has to be given some rectangle.
+    assert_eq!(area.size.h, 0.);
+    assert_eq!(area.size.w, 1280.);
+}
+
+#[test]
+fn a_config_reload_re_derives_the_working_area_from_the_new_struts() {
+    let mut config = Config::default();
+
+    let mut layout = Layout::new(Clock::default(), &config);
+    Op::AddOutput(1).apply(&mut layout);
+    Op::AddWindow {
+        params: TestWindowParams::new(1),
+    }
+    .apply(&mut layout);
+
+    assert_eq!(
+        layout.active_workspace().unwrap().working_area().size.h,
+        720.
+    );
+
+    // Struts are the one layout option that changes the box everything is laid out in, so a
+    // reload has to re-derive it instead of keeping the box it was handed before.
+    config.layout.struts.top = FloatOrInt(100.);
+    layout.update_config(&config);
+
+    assert_eq!(
+        layout.active_workspace().unwrap().working_area().size.h,
+        620.
+    );
+    assert_eq!(layout.active_workspace().unwrap().working_area().loc.y, 100.);
+
+    layout.verify_invariants();
+}
+
+#[test]
+fn struts_survive_a_workspace_being_parked_without_outputs() {
+    let mut config = Config::default();
+    config.layout.struts.top = FloatOrInt(50.);
+
+    let mut layout = Layout::new(Clock::default(), &config);
+    Op::AddOutput(1).apply(&mut layout);
+    Op::AddWindow {
+        params: TestWindowParams::new(1),
+    }
+    .apply(&mut layout);
+
+    let attached = layout.active_workspace().unwrap().working_area();
+
+    // Park the workspace by taking its output away, then give it one back. The area it comes
+    // back with has to be the one it would have had all along, not one derived from the
+    // placeholder size it was holding while parked.
+    Op::RemoveOutput(1).apply(&mut layout);
+    Op::AddOutput(1).apply(&mut layout);
+
+    assert_eq!(layout.active_workspace().unwrap().working_area(), attached);
+    layout.verify_invariants();
+}

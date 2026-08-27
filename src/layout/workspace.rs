@@ -12,7 +12,7 @@ use smithay::utils::{Logical, Point, Rectangle, Serial, Size, Transform};
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::xdg::SurfaceCachedState;
 use tiri_config::utils::MergeWith as _;
-use tiri_config::{CornerRadius, OutputName, PresetSize, Workspace as WorkspaceConfig};
+use tiri_config::{CornerRadius, OutputName, PresetSize, Struts, Workspace as WorkspaceConfig};
 use tiri_ipc::{ColumnDisplay, LayoutTreeNode, PositionChange, SizeChange, WindowLayout};
 
 use super::container::{
@@ -426,7 +426,8 @@ impl<W: LayoutElement> Workspace<W> {
         );
 
         let view_size = output_size(&output);
-        let working_area = compute_working_area(&output);
+        let working_area =
+            compute_working_area(&output, options.layout.struts, scale.fractional_scale());
 
         let containers = ContainerTree::new(
             view_size,
@@ -499,7 +500,11 @@ impl<W: LayoutElement> Workspace<W> {
         );
 
         let view_size = Size::from((1280., 720.));
-        let working_area = Rectangle::from_size(Size::from((1280., 720.)));
+        let working_area = inset_by_struts(
+            Rectangle::from_size(view_size),
+            options.layout.struts,
+            scale.fractional_scale(),
+        );
 
         let containers = ContainerTree::new(
             view_size,
@@ -701,6 +706,17 @@ impl<W: LayoutElement> Workspace<W> {
                 .with_merged_layout(self.layout_config.as_ref())
                 .adjusted_for_scale(scale),
         );
+
+        // Struts are the one layout option that changes the box everything is laid out in, so a
+        // reload has to re-derive it rather than pass the box it was given on the last one.
+        if options.layout.struts != self.options.layout.struts {
+            if let Some(output) = self.output.as_ref() {
+                self.working_area = compute_working_area(output, options.layout.struts, scale);
+            } else {
+                let area = Rectangle::from_size(self.view_size);
+                self.working_area = inset_by_struts(area, options.layout.struts, scale);
+            }
+        }
 
         self.containers.update_config(
             self.view_size,
@@ -1079,7 +1095,8 @@ impl<W: LayoutElement> Workspace<W> {
         let scale = output.current_scale();
         let transform = output.current_transform();
         let view_size = output_size(output);
-        let working_area = compute_working_area(output);
+        let working_area =
+            compute_working_area(output, self.options.layout.struts, scale.fractional_scale());
         self.set_view_size(scale, transform, view_size, working_area);
     }
 
@@ -1135,6 +1152,11 @@ impl<W: LayoutElement> Workspace<W> {
                 window.set_preferred_scale_transform(self.scale, self.transform);
             }
         }
+    }
+
+    /// The struts this workspace reserves, which a named workspace may override.
+    pub(super) fn struts(&self) -> Struts {
+        self.options.layout.struts
     }
 
     pub fn view_size(&self) -> Size<f64, Logical> {
@@ -3607,8 +3629,47 @@ impl<W: LayoutElement> Workspace<W> {
     }
 }
 
-pub(super) fn compute_working_area(output: &Output) -> Rectangle<f64, Logical> {
-    layer_map_for_output(output).non_exclusive_zone().to_f64()
+pub(super) fn compute_working_area(
+    output: &Output,
+    struts: Struts,
+    scale: f64,
+) -> Rectangle<f64, Logical> {
+    inset_by_struts(
+        layer_map_for_output(output).non_exclusive_zone().to_f64(),
+        struts,
+        scale,
+    )
+}
+
+/// Reserve the configured struts at the edges of an area.
+///
+/// Layer-shell exclusive zones are already out of `area`; struts are what the user reserves on
+/// top of that. They may be negative, which is how one asks for windows to extend under a bar
+/// that reserved more room than it draws in.
+pub(super) fn inset_by_struts(
+    area: Rectangle<f64, Logical>,
+    struts: Struts,
+    scale: f64,
+) -> Rectangle<f64, Logical> {
+    let mut area = area;
+
+    area.size.w = f64::max(0., area.size.w - struts.left.0 - struts.right.0);
+    area.loc.x += struts.left.0;
+
+    area.size.h = f64::max(0., area.size.h - struts.top.0 - struts.bottom.0);
+    area.loc.y += struts.top.0;
+
+    // A strut can be fractional, so round the origin back onto a physical pixel and take the
+    // rounding out of the size rather than letting the layout start half inside one.
+    let loc = area.loc.to_physical_precise_ceil(scale).to_logical(scale);
+    let mut diff = (loc - area.loc).to_size();
+    diff.w = f64::min(area.size.w, diff.w);
+    diff.h = f64::min(area.size.h, diff.h);
+
+    area.size -= diff;
+    area.loc = loc;
+
+    area
 }
 
 fn compute_workspace_shadow_config(

@@ -364,7 +364,8 @@ impl<W: LayoutElement> Monitor<W> {
 
         let scale = output.current_scale();
         let view_size = output_size(&output);
-        let working_area = compute_working_area(&output);
+        let working_area =
+            compute_working_area(&output, options.layout.struts, scale.fractional_scale());
         let sticky_containers = ContainerTree::new(
             view_size,
             working_area,
@@ -1934,6 +1935,14 @@ impl<W: LayoutElement> Monitor<W> {
             }
         }
 
+        if options.layout.struts != self.options.layout.struts {
+            self.working_area = compute_working_area(
+                &self.output,
+                options.layout.struts,
+                self.scale.fractional_scale(),
+            );
+        }
+
         for ws in &mut self.workspaces {
             ws.update_config(options.clone());
         }
@@ -1984,7 +1993,11 @@ impl<W: LayoutElement> Monitor<W> {
     pub fn update_output_size(&mut self) {
         self.scale = self.output.current_scale();
         self.view_size = output_size(&self.output);
-        self.working_area = compute_working_area(&self.output);
+        self.working_area = compute_working_area(
+            &self.output,
+            self.options.layout.struts,
+            self.scale.fractional_scale(),
+        );
 
         for ws in &mut self.workspaces {
             ws.update_output_size();
@@ -3139,7 +3152,19 @@ impl<W: LayoutElement> Monitor<W> {
                 workspace.scale().fractional_scale()
             );
             assert_eq!(self.view_size, workspace.view_size());
-            assert_eq!(self.working_area, workspace.working_area());
+
+            // Not the monitor's own working area: a named workspace can carry its own struts,
+            // and then it reserves a different part of the same output. What must hold is that
+            // it reserved it from that output, with the struts it actually has.
+            assert_eq!(
+                workspace.working_area(),
+                compute_working_area(
+                    &self.output,
+                    workspace.struts(),
+                    self.scale().fractional_scale()
+                ),
+                "a workspace's working area must be the output's, inset by its own struts"
+            );
 
             assert_eq!(
                 workspace.base_options, self.options,

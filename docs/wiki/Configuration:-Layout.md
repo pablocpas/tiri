@@ -625,8 +625,13 @@ Struts shrink the area occupied by windows, similarly to layer-shell panels.
 You can think of them as a kind of outer gaps.
 They are set in logical pixels.
 
-Left and right struts will cause the next window to the side to always peek out slightly.
-Top and bottom struts will simply add outer gaps in addition to the area occupied by layer-shell panels and regular gaps.
+All four edges simply add outer gaps, on top of the area already occupied by layer-shell panels
+and the regular `gaps`.
+
+> [!NOTE]
+> Upstream niri's left and right struts make the next column peek out from the side of the
+> screen, because its viewport scrolls horizontally. Tiri has no such viewport: every edge just
+> reserves space, and no window is left peeking.
 
 <sup>Upstream niri: 0.1.7</sup> You can use fractional values.
 The value will be rounded to physical pixels according to the scale factor of every output.
