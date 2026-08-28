@@ -3865,8 +3865,6 @@ impl<W: LayoutElement> ContainerTree<W> {
             }
             _ => {}
         }
-
-        window.refresh();
     }
 }
 

@@ -467,6 +467,8 @@ pub struct Niri {
 
     pub satellite: Option<Satellite>,
 
+    pub surface_committed: bool,
+
     #[cfg(feature = "xdp-gnome-screencast")]
     pub casting: Screencasting,
 }
@@ -3092,6 +3094,7 @@ impl Niri {
             pending_refresh: RefreshFlags::all(),
 
             satellite: None,
+            surface_committed: false,
 
             #[cfg(feature = "xdp-gnome-screencast")]
             casting: screencasting,
@@ -4858,6 +4861,11 @@ impl Niri {
         };
 
         self.layout.refresh(layout_is_active);
+
+        if self.surface_committed {
+            self.surface_committed = false;
+            self.layout.refresh_windows();
+        }
     }
 
     pub fn refresh_idle_inhibit(&mut self) {

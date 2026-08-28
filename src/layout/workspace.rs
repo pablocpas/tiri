@@ -2816,7 +2816,6 @@ impl<W: LayoutElement> Workspace<W> {
             let win = tile.window_mut();
             win.set_bounds(bounds);
             win.send_pending_configure();
-            win.refresh();
         }
 
         Some(tile)

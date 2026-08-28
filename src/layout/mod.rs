@@ -6918,7 +6918,6 @@ impl<W: LayoutElement> Layout<W> {
             win.set_bounds(output_size(&move_.output).to_i32_round());
 
             win.send_pending_configure();
-            win.refresh();
 
             ongoing_scrolling_dnd.get_or_insert(!move_.is_floating);
         } else if let Some(InteractiveMoveState::Starting { window_id, .. }) =
@@ -6972,6 +6971,12 @@ impl<W: LayoutElement> Layout<W> {
         // hidden window in step with its client: its configures go out and are acked while it
         // is away, so bringing it back is a move rather than a negotiation.
         self.scratchpad.refresh(false, false);
+    }
+
+    pub fn refresh_windows(&mut self) {
+        self.with_windows_mut(|window, _| {
+            window.refresh();
+        });
     }
 
     pub fn are_window_resize_animations_enabled(&self) -> bool {
