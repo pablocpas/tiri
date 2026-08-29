@@ -8,6 +8,11 @@ use super::{ContainerArena, Layout, LayoutElement, NodeData, NodeKey, ResizeReac
 use crate::layout::tile::Tile;
 
 impl<W: LayoutElement> ContainerArena<W> {
+    #[cfg(test)]
+    pub(in crate::layout) fn workspace_count(&self) -> usize {
+        self.workspaces.len()
+    }
+
     /// The windows of one branch — the tiled side, or one floating group.
     ///
     /// The unqualified `all_windows` means the tiled side, because that is what every caller

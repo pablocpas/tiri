@@ -289,6 +289,27 @@ fn one_arena_holds_two_workspaces_without_them_seeing_each_other() {
 }
 
 #[test]
+fn inactive_workspace_focus_queries_stay_inside_their_root() {
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+    let first = harness.ws();
+    let second = harness.add_workspace();
+    harness.add_window_to(second, 2);
+    assert!(harness.tree.focus_window_by_id(second, &2));
+
+    let first_key = harness.tree.window_key(&1).expect("first workspace leaf");
+    assert_eq!(harness.tree.focus_inactive_anywhere(first), Some(first_key));
+    assert_eq!(harness.tree.focused_root_index(first), Some(0));
+    assert_eq!(
+        harness
+            .tree
+            .focused_tile(first)
+            .map(|tile| *tile.window().id()),
+        Some(1)
+    );
+}
+
+#[test]
 fn removing_a_workspace_takes_its_windows_and_leaves_the_rest() {
     let mut harness = TreeHarness::new();
     harness.add_window(1);
@@ -499,41 +520,38 @@ fn moving_a_leaf_between_workspace_stores_carries_its_size_state() {
 }
 
 #[test]
-fn moving_a_subtree_between_workspace_stores_keeps_every_identity() {
-    let mut source = TreeHarness::new();
-    let mut target = TreeHarness::new();
-    source.add_window(1);
+fn moving_a_subtree_between_workspaces_keeps_every_identity() {
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+    let source = harness.ws();
+    let target = harness.add_workspace();
     // The destination holds something, so the container arriving stays a container. An
     // empty one absorbs it instead — see
     // `moving_a_container_to_an_empty_workspace_unwraps_it`.
-    target.add_window(2);
+    harness.add_window_to(target, 2);
 
-    let first = source.tree.window_key(&1).expect("first leaf");
-    let container = source
+    let first = harness.tree.window_key(&1).expect("first leaf");
+    let container = harness
         .tree
         .wrap_child_in_new_container(
-            source.ws(),
-            source.ws(),
+            source,
+            source,
             first,
             ContainerData::new(ContainerLayout::SplitV),
         )
         .expect("moved container");
 
-    let idx = source
+    let idx = harness.tree.focused_root_index(source).expect("root child");
+    let subtree = harness
         .tree
-        .focused_root_index(source.ws())
-        .expect("root child");
-    let source_workspace = source.ws();
-    let subtree = source
+        .take_root_child_subtree(source, idx)
+        .expect("parked subtree");
+    harness
         .tree
-        .take_root_child_subtree(source_workspace, idx)
-        .expect("detached subtree");
-    target
-        .tree
-        .insert_subtree_at_root(target.ws(), 0, subtree, true);
+        .insert_subtree_at_root(target, 0, subtree, true);
 
-    assert_eq!(target.tree.window_key(&1), Some(first));
-    assert_eq!(target.tree.parent_of(first), Some(container));
+    assert_eq!(harness.tree.window_key(&1), Some(first));
+    assert_eq!(harness.tree.parent_of(first), Some(container));
 }
 
 /// sway's `container_move_to_workspace`: a container landing on an empty workspace is
@@ -544,55 +562,52 @@ fn moving_a_subtree_between_workspace_stores_keeps_every_identity() {
 /// workspace holding a `splitv`.
 #[test]
 fn moving_a_container_to_an_empty_workspace_unwraps_it() {
-    let mut source = TreeHarness::new();
-    let mut target = TreeHarness::new();
-    source.add_window(1);
-    source.append_window(2);
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+    harness.append_window(2);
+    let source = harness.ws();
+    let target = harness.add_workspace();
 
-    let first = source.tree.window_key(&1).expect("first leaf");
-    let second = source.tree.window_key(&2).expect("second leaf");
-    let container = source
+    let first = harness.tree.window_key(&1).expect("first leaf");
+    let second = harness.tree.window_key(&2).expect("second leaf");
+    let container = harness
         .tree
         .wrap_child_in_new_container(
-            source.ws(),
-            source.ws(),
+            source,
+            source,
             first,
             ContainerData::new(ContainerLayout::SplitV),
         )
         .expect("container");
-    assert_eq!(source.tree.parent_of(first), Some(container));
+    assert_eq!(harness.tree.parent_of(first), Some(container));
 
-    assert!(source.tree.focus_window_by_id(source.ws(), &1));
-    let idx = source
+    assert!(harness.tree.focus_window_by_id(source, &1));
+    let idx = harness.tree.focused_root_index(source).expect("root child");
+    let subtree = harness
         .tree
-        .focused_root_index(source.ws())
-        .expect("root child");
-    let source_workspace = source.ws();
-    let subtree = source
+        .take_root_child_subtree(source, idx)
+        .expect("parked subtree");
+    harness
         .tree
-        .take_root_child_subtree(source_workspace, idx)
-        .expect("detached subtree");
-    target
-        .tree
-        .insert_subtree_at_root(target.ws(), 0, subtree, true);
+        .insert_subtree_at_root(target, 0, subtree, true);
 
-    let root = target.ws();
+    let root = target;
     assert_eq!(
-        target.tree.window_key(&1),
+        harness.tree.window_key(&1),
         Some(first),
-        "the leaf keeps its identity across the stores"
+        "the leaf keeps its identity across workspaces"
     );
     assert_eq!(
-        target.tree.parent_of(first),
+        harness.tree.parent_of(first),
         Some(root),
         "the wrapper is gone and its child hangs off the workspace"
     );
     assert!(
-        !target.tree.holds_node(container),
+        !harness.tree.holds_node(container),
         "the emptied container is reaped, not left in the arena"
     );
     assert_eq!(
-        target.tree.workspace_layout(target.ws()),
+        harness.tree.workspace_layout(target),
         ContainerLayout::SplitV
     );
     let _ = second;

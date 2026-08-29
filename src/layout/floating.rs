@@ -805,7 +805,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     ) -> Option<&'a mut Tile<W>> {
         let tree = containers.arena_mut();
         let key = tree.window_key(id)?;
-        tree.is_in_floating_branch(key)
+        (tree.workspace_of(key) == Some(self.workspace) && tree.is_in_floating_branch(key))
             .then(|| tree.get_tile_mut(key))
             .flatten()
     }
@@ -814,7 +814,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let tree = containers.arena();
         let id = self.active_window_id(containers)?;
         let key = tree.window_key(&id)?;
-        tree.is_in_floating_branch(key)
+        (tree.workspace_of(key) == Some(self.workspace) && tree.is_in_floating_branch(key))
             .then(|| tree.get_tile(key).map(Tile::window))
             .flatten()
     }
@@ -823,15 +823,13 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let id = self.active_window_id(containers)?;
         let tree = containers.arena_mut();
         let key = tree.window_key(&id)?;
-        tree.is_in_floating_branch(key)
+        (tree.workspace_of(key) == Some(self.workspace) && tree.is_in_floating_branch(key))
             .then(|| tree.get_tile_mut(key).map(Tile::window_mut))
             .flatten()
     }
 
     pub fn has_window(&self, containers: &ContainerTree<W>, id: &W::Id) -> bool {
-        let tree = containers.arena();
-        tree.window_key(id)
-            .is_some_and(|key| tree.is_in_floating_branch(key))
+        self.idx_of(containers, id).is_some()
     }
 
     pub fn is_empty(&self, containers: &ContainerTree<W>) -> bool {
@@ -855,11 +853,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 }
             }
 
-            let Some(key) = containers
-                .arena()
-                .window_key(window)
-                .filter(|key| containers.arena().is_in_floating_branch(*key))
-            else {
+            let Some(key) = containers.arena().window_key(window).filter(|key| {
+                let tree = containers.arena();
+                tree.workspace_of(*key) == Some(self.workspace) && tree.is_in_floating_branch(*key)
+            }) else {
                 return;
             };
 
@@ -1261,7 +1258,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
         id: &W::Id,
     ) -> bool {
         let tree = containers.arena();
-        let Some(key) = tree.window_key(id) else {
+        let Some(key) = tree
+            .window_key(id)
+            .filter(|key| tree.workspace_of(*key) == Some(self.workspace))
+        else {
             return false;
         };
         tree.container_of_allows_splits(key)

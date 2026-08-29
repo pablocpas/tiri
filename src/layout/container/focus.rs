@@ -117,7 +117,10 @@ impl<W: LayoutElement> ContainerArena<W> {
         let chain = self.focus_chain(key);
         let leaf = if self.is_workspace(key) {
             self.focused_key()
-                .filter(|focused| self.get_node(*focused).is_some_and(|node| node.is_view()))
+                .filter(|focused| {
+                    self.workspace_of(*focused) == Some(workspace)
+                        && self.get_node(*focused).is_some_and(|node| node.is_view())
+                })
                 .or_else(|| self.focus_inactive_anywhere(workspace))
         } else {
             self.leaf_under_key(key)
@@ -155,9 +158,11 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     pub(in crate::layout) fn select_parent(&mut self, workspace: NodeKey) -> bool {
+        let in_workspace = |key| self.workspace_of(key) == Some(workspace);
         let base_key = self
             .selected_key()
-            .or(self.focused_key())
+            .filter(|key| in_workspace(*key))
+            .or_else(|| self.focused_key().filter(|key| in_workspace(*key)))
             .or_else(|| self.first_leaf_key(workspace));
         let Some(base_key) = base_key else {
             return false;
@@ -213,7 +218,10 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     pub(in crate::layout) fn select_child(&mut self, workspace: NodeKey) -> bool {
-        let Some(selected_key) = self.selected_key() else {
+        let Some(selected_key) = self
+            .selected_key()
+            .filter(|key| self.workspace_of(*key) == Some(workspace))
+        else {
             return false;
         };
         if self.get_container(selected_key).is_none() {
@@ -692,7 +700,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             .copied()
             .find(|candidate| {
                 self.get_node(*candidate).is_some_and(|node| node.is_view())
-                    && self.nodes.contains_key(*candidate)
+                    && self.workspace_of(*candidate) == Some(workspace)
             })
             .or_else(|| self.focus_inactive_view(workspace))
             // The seat's order is emptied by an insert before the new window is placed, so

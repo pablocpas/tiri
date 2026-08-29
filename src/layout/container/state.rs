@@ -189,11 +189,21 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
     }
 
+    /// Forget presentation state for a subtree that is parked outside every layout branch.
+    pub(super) fn drop_subtree_layouts(&mut self, root: NodeKey) {
+        let leaves: HashSet<_> = self.leaf_keys_under(root).into_iter().collect();
+        self.leaf_layouts.retain(|key, _| !leaves.contains(key));
+        for pending in &mut self.pending_layouts {
+            pending
+                .data
+                .leaf_layouts
+                .retain(|key, _| !leaves.contains(key));
+        }
+    }
+
     /// Focused tile (if any).
     pub(in crate::layout) fn focused_tile(&self, workspace: NodeKey) -> Option<&Tile<W>> {
-        let key = self
-            .focused_key()
-            .or_else(|| self.first_leaf_key(workspace))?;
+        let key = self.effective_focused_key(workspace)?;
         self.get_tile(key)
     }
 

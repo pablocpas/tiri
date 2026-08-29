@@ -7,33 +7,13 @@
 //! fractions, floating geometry — which is what lets a window float, be split, or cross a
 //! workspace without anything having to wrap it first.
 //!
-//! Nodes use process-wide keys so moving a node between workspace stores does not change its
-//! identity. Each workspace still owns its topology and geometry caches. This is the Rust
-//! ownership form of sway moving the same `sway_container` through `container_detach` and
-//! `workspace_add_tiling`/`workspace_add_floating`.
+//! One arena owns every workspace root, floating branch and temporarily parked node in a
+//! `Layout`. A container crossing a workspace or branch is reparented in place, preserving its
+//! key, marks, sizing and seat order just as sway's `container_detach` does.
 //!
-//! # Every operation names its workspace
-//!
-//! An arena holds one workspace today, and its root is that workspace's node. That is not
-//! written into the operations: anything that acts on a workspace takes it as a `workspace:
-//! NodeKey` first argument rather than reading a field, and `ContainerTree` — the per-workspace
-//! handle — is what supplies it.
-//!
-//! The point is not ceremony. `self.root` is a correct answer to "which workspace?" only
-//! because there is exactly one, and an assumption that is right by arithmetic reads exactly
-//! like one that is right by design. Naming the workspace makes the two distinguishable, and
-//! leaves the arena free to hold several — which is what a single tree, with the workspaces as
-//! its roots, needs.
-//!
-//! So the arena keeps a list of workspaces rather than a root, and the walks that mean *every*
-//! node it holds — `all_windows`, `all_tiles`, `dfs_leaf_keys`, `window_count`, `is_empty` —
-//! iterate it. A walk that starts from one root would be silently incomplete the moment a
-//! second workspace arrived, and that is the failure that does not announce itself: a window
-//! that exists and is not found.
-//!
-//! One thing still assumes the single workspace, and deliberately says so in one place:
-//! [`ContainerArena::workspace_root`]. Every caller of it is a place that has not yet been
-//! told which workspace it means.
+//! Operations scoped to one workspace take its `NodeKey`; arena-wide walks say so in their
+//! names. This keeps a local command from silently reading another root while still giving
+//! transactions and lookup one authoritative store.
 //!
 //! sway/tree/workspace.c:797-852
 
@@ -88,7 +68,7 @@ pub(super) use resize::{InteractiveResizeState, ResizeTarget};
 
 static NODE_ID_COUNTER: IdCounter = IdCounter::new();
 
-/// Stable identity of a node, including while it moves between workspace stores.
+/// Stable identity of a node, including while it moves between roots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeKey(NonZeroU64);
 
@@ -292,41 +272,18 @@ impl<W: LayoutElement> NodeData<W> {
     }
 }
 
-/// A view node while no workspace arena owns it.
+/// A view node at the map/unmap boundary or during a synchronous leaf handoff.
 ///
-/// `Tile` is only the visual/protocol object. Identity, marks and sizing belong to the sway
-/// container node and therefore stay beside it while the view crosses workspaces, sits in the
-/// scratchpad or follows an interactive move outside every tree.
+/// Existing subtrees remain in the arena as parked roots and move by `NodeKey`. A lone view can
+/// still cross the arena boundary when it is first mapped, finally unmapped, or synchronously
+/// handed between leaf-only APIs. `Tile` is only the visual/protocol object; identity, marks and
+/// sizing belong to the sway container node and therefore stay beside it across that boundary.
 #[derive(Debug)]
 pub struct DetachedView<W: LayoutElement> {
     key: NodeKey,
     sizing: NodeSizing,
     marks: Vec<String>,
     tile: Tile<W>,
-}
-
-/// A split node while no workspace arena owns it.
-#[derive(Debug)]
-pub struct DetachedSplit<W: LayoutElement> {
-    key: NodeKey,
-    sizing: NodeSizing,
-    layout: Layout,
-    marks: Vec<String>,
-    children: Vec<DetachedNode<W>>,
-    focus_stack: Vec<NodeKey>,
-    user_created: bool,
-    prev_split_layout: Option<Layout>,
-}
-
-/// Detached subtree used to move container structures across trees.
-///
-/// The enum encodes the same invariant as sway's `sway_container`: a node is a view or it is a
-/// split. A detached leaf is the exact same [`DetachedView`] used by single-window moves, so
-/// removing one window can no longer degrade the node into a bare tile.
-#[derive(Debug)]
-pub enum DetachedNode<W: LayoutElement> {
-    View(Box<DetachedView<W>>),
-    Split(DetachedSplit<W>),
 }
 
 /// Fields shared by the workspace and real containers because both lay out child nodes.
@@ -564,11 +521,11 @@ impl ParentStore {
 /// Stable node arena and topology backing a workspace's shared container tree.
 #[derive(Debug)]
 pub(super) struct ContainerArena<W: LayoutElement> {
-    /// Nodes currently belonging to this workspace.
+    /// Every materialized node in the layout.
     nodes: NodeStore<W>,
     /// Parent pointer for each node (None for root)
     parents: ParentStore,
-    /// The workspaces this arena holds, in creation order. Never empty.
+    /// The workspaces this arena holds, in creation order.
     ///
     /// A list rather than one key because the walks that mean *every* node this arena holds
     /// have to iterate something. A walk that starts from a single root is silently incomplete
@@ -590,6 +547,12 @@ pub(super) struct ContainerArena<W: LayoutElement> {
     /// This is the only floating-root collection and the only owner of their geometry and
     /// semantic metadata. `FloatingSpace` owns only transient interaction/render state.
     floating_roots: Vec<FloatingRoot>,
+    /// Roots temporarily owned by the layout but attached to no workspace.
+    ///
+    /// Interactive moves live here between pointer events. They stay in the one node store,
+    /// so identity, marks and window lookup do not acquire a second authority while the view
+    /// is being dragged.
+    parked_roots: HashSet<NodeKey>,
     next_floating_root_id: u64,
     /// The seat's focus: what holds it, and the order everything was last in.
     ///
@@ -877,36 +840,6 @@ impl<W: LayoutElement> DerefMut for ContainerData<W> {
     }
 }
 
-// ============================================================================
-// Detached subtree helpers
-// ============================================================================
-
-impl<W: LayoutElement> DetachedNode<W> {
-    pub(super) fn unset_root_fractions(&mut self) {
-        match self {
-            DetachedNode::View(view) => view.sizing.unset_fractions(),
-            DetachedNode::Split(split) => split.sizing.unset_fractions(),
-        }
-    }
-
-    pub(super) fn tiles(&self) -> Vec<&Tile<W>> {
-        let mut tiles = Vec::new();
-        self.collect_tiles(&mut tiles);
-        tiles
-    }
-
-    fn collect_tiles<'a>(&'a self, tiles: &mut Vec<&'a Tile<W>>) {
-        match self {
-            DetachedNode::View(view) => tiles.push(&view.tile),
-            DetachedNode::Split(split) => {
-                for child in &split.children {
-                    child.collect_tiles(tiles);
-                }
-            }
-        }
-    }
-}
-
 impl<W: LayoutElement> DetachedView<W> {
     pub(super) fn new(tile: Tile<W>) -> Self {
         Self {
@@ -952,18 +885,6 @@ impl<W: LayoutElement> DetachedView<W> {
     pub(super) fn unset_fractions(&mut self) {
         self.sizing.unset_fractions();
     }
-
-    pub(super) fn clear_marks(&mut self) {
-        self.marks.clear();
-    }
-
-    pub(super) fn has_mark(&self, mark: &str) -> bool {
-        self.marks.iter().any(|candidate| candidate == mark)
-    }
-
-    pub(super) fn remove_mark(&mut self, mark: &str) {
-        self.marks.retain(|candidate| candidate != mark);
-    }
 }
 
 // ============================================================================
@@ -986,6 +907,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             parents,
             workspaces: Vec::new(),
             floating_roots: Vec::new(),
+            parked_roots: HashSet::new(),
             next_floating_root_id: 1,
             seat,
             fullscreen_keys: HashMap::new(),

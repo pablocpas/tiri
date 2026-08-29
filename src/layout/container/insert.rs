@@ -1,7 +1,7 @@
 //! Window and subtree insertion at focus, path or split targets.
 
 use super::{
-    ContainerArena, ContainerData, DetachedNode, DetachedView, Direction, InsertParentInfo, Layout,
+    ContainerArena, ContainerData, DetachedView, Direction, InsertParentInfo, Layout,
     LayoutElement, NodeData, NodeKey,
 };
 
@@ -218,16 +218,17 @@ impl<W: LayoutElement> ContainerArena<W> {
             .find_map(|child_key| self.lone_split_child(child_key))
     }
 
-    /// Insert a detached subtree into the tree, optionally focusing it afterwards.
+    /// Insert a parked subtree into the tree, optionally focusing it afterwards.
     pub(in crate::layout) fn insert_subtree_with_focus(
         &mut self,
         workspace: NodeKey,
-        subtree: DetachedNode<W>,
+        subtree: NodeKey,
         focus: bool,
     ) {
         self.clear_focus_history();
 
-        let node_key = self.insert_subtree(workspace, subtree);
+        assert!(self.adopt_parked_subtree(workspace, subtree));
+        let node_key = subtree;
         self.insert_key_as_focus_sibling(workspace, workspace, node_key, focus);
     }
 
@@ -523,10 +524,11 @@ impl<W: LayoutElement> ContainerArena<W> {
         &mut self,
         workspace: NodeKey,
         info: &InsertParentInfo,
-        subtree: DetachedNode<W>,
+        subtree: NodeKey,
         focus: bool,
     ) -> bool {
-        let node_key = self.insert_subtree(workspace, subtree);
+        assert!(self.adopt_parked_subtree(workspace, subtree));
+        let node_key = subtree;
         self.insert_key_with_parent_info(workspace, workspace, info, node_key, focus)
     }
 
@@ -662,7 +664,9 @@ impl<W: LayoutElement> ContainerArena<W> {
         // The workspace has to face the direction for an edge to mean anything. When it does
         // not, its children move under one container and it turns — the same surgery a move
         // across the workspace does, and the reason it is one call rather than a rule here.
-        if self.root_container_layout(workspace) != direction.split_layout() && !self.workspace_is_empty(workspace) {
+        if self.root_container_layout(workspace) != direction.split_layout()
+            && !self.workspace_is_empty(workspace)
+        {
             let previous = self.root_container_layout(workspace);
             self.wrap_workspace_children(workspace, previous, direction.split_layout());
         }

@@ -36,9 +36,8 @@ use tiri_ipc::{ColumnDisplay, LayoutTreeNode, LayoutTreeRect, SizeChange};
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::container::{
-    ContainerArena, ContainerMetrics, DetachedNode, DetachedView, Direction,
-    InteractiveResizeState, Layout, LeafLayoutInfo, NodeKey, ResizeDelta, ResizeReach, ResizeSpace,
-    ResizeTarget,
+    ContainerArena, ContainerMetrics, DetachedView, Direction, InteractiveResizeState, Layout,
+    LeafLayoutInfo, NodeKey, ResizeDelta, ResizeReach, ResizeSpace, ResizeTarget,
 };
 use super::focus_ring::{
     render_container_selection, FocusRingEdges, FocusRingIndicatorEdge, FocusRingRenderElement,
@@ -259,13 +258,14 @@ niri_render_elements! {
     }
 }
 
-/// Detached top-level tiling subtree.
+/// Parked top-level tiling subtree.
 ///
 /// This is the internal unit moved across workspaces and monitors in the i3-style tree.
 #[derive(Debug)]
-pub struct RootTilingSubtree<W: LayoutElement> {
-    /// Detached subtree that preserves container structure.
-    subtree: DetachedNode<W>,
+#[must_use = "a parked subtree must be reattached to the layout tree"]
+pub struct RootTilingSubtree {
+    /// Parked root that preserves the materialized container structure in the shared arena.
+    subtree: NodeKey,
 }
 
 // ============================================================================
@@ -359,8 +359,20 @@ impl<W: LayoutElement> ContainerTree<W> {
         &mut self.arena
     }
 
-    pub(super) fn holds_node(&self, key: NodeKey) -> bool {
-        self.arena.holds_node(key)
+    pub(super) fn park_view(&mut self, view: DetachedView<W>) -> NodeKey {
+        self.arena.park_view(view)
+    }
+
+    pub(super) fn take_parked_view(&mut self, key: NodeKey) -> Option<DetachedView<W>> {
+        self.arena.take_parked_view(key)
+    }
+
+    pub(super) fn parked_tile(&self, key: NodeKey) -> Option<&Tile<W>> {
+        self.arena.parked_tile(key)
+    }
+
+    pub(super) fn parked_tile_mut(&mut self, key: NodeKey) -> Option<&mut Tile<W>> {
+        self.arena.parked_tile_mut(key)
     }
 
     pub(super) fn node_has_mark(&self, key: NodeKey, mark: &str) -> bool {
@@ -1112,14 +1124,22 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// One pass over the arena rather than one borrow per workspace: the workspaces share a
     /// tree now, so they cannot each be handed a mutable borrow of it in turn.
     pub fn windows_mut_in_workspaces(&mut self, workspaces: &[NodeKey]) -> Vec<&mut W> {
+        self.tiles_mut_in_workspaces(workspaces)
+            .into_iter()
+            .map(Tile::window_mut)
+            .collect()
+    }
+
+    /// Every tile under the given workspace roots, both sides, in their order.
+    pub fn tiles_mut_in_workspaces(&mut self, workspaces: &[NodeKey]) -> Vec<&mut Tile<W>> {
         let keys: Vec<NodeKey> = workspaces
             .iter()
-            .flat_map(|workspace| self.arena.leaf_keys_in_branch(*workspace))
+            .flat_map(|workspace| self.arena.leaf_keys_in_workspace(*workspace))
             .collect();
         self.arena
             .tiles_mut_for_keys(&keys)
             .into_iter()
-            .map(|(_, tile)| tile.window_mut())
+            .map(|(_, tile)| tile)
             .collect()
     }
 
@@ -2145,7 +2165,8 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     pub(super) fn clear_workspace_selection(&mut self, workspace: NodeKey) {
-        if self.arena.workspace_is_selected(workspace) && !self.arena.workspace_is_empty(workspace) {
+        if self.arena.workspace_is_selected(workspace) && !self.arena.workspace_is_empty(workspace)
+        {
             self.arena.clear_selection();
         }
     }
@@ -3074,7 +3095,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         &mut self,
         workspace: NodeKey,
         index: usize,
-        subtree: DetachedNode<W>,
+        subtree: NodeKey,
         focus: bool,
     ) {
         self.mutate_tree(workspace, |tree| {
@@ -3082,12 +3103,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         });
     }
 
-    pub fn insert_subtree_with_focus(
-        &mut self,
-        workspace: NodeKey,
-        subtree: DetachedNode<W>,
-        focus: bool,
-    ) {
+    pub fn insert_subtree_with_focus(&mut self, workspace: NodeKey, subtree: NodeKey, focus: bool) {
         self.arena
             .insert_subtree_with_focus(workspace, subtree, focus);
         self.sync_fullscreen_window(workspace);
@@ -3207,7 +3223,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         &mut self,
         workspace: NodeKey,
         root_idx: Option<usize>,
-        subtree: RootTilingSubtree<W>,
+        subtree: RootTilingSubtree,
         activate: bool,
     ) {
         let idx = root_idx.unwrap_or_else(|| self.arena.root_children_len(workspace));
@@ -3245,7 +3261,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub fn remove_active_root_tiling_subtree(
         &mut self,
         workspace: NodeKey,
-    ) -> Option<RootTilingSubtree<W>> {
+    ) -> Option<RootTilingSubtree> {
         let idx = self.arena.focused_root_index(workspace)?;
         let subtree = self.arena.take_root_child_subtree(workspace, idx)?;
         let subtree = RootTilingSubtree::from_subtree(subtree);
@@ -3258,7 +3274,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub fn remove_active_tiling_subtree(
         &mut self,
         workspace: NodeKey,
-    ) -> Option<RootTilingSubtree<W>> {
+    ) -> Option<RootTilingSubtree> {
         let subtree = self.arena.take_command_target_subtree(workspace)?;
         let subtree = RootTilingSubtree::from_subtree(subtree);
 
@@ -3836,7 +3852,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     pub(super) fn sync_fullscreen_window(&mut self, workspace: NodeKey) {
-        // A detached subtree carries client sizing state, but the destination workspace keeps
+        // A parked subtree carries client sizing state, but the destination workspace keeps
         // its own fullscreen pointer. Adopt the arriving fullscreen only when the destination
         // has none; otherwise revoke the stale request. This makes the single pointer true at
         // the protocol boundary too, rather than leaving two clients pending fullscreen.
@@ -4275,24 +4291,30 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 }
 
-impl<W: LayoutElement> RootTilingSubtree<W> {
+impl RootTilingSubtree {
     /// A tiled container moved to another workspace gets a new share there while every sizing
     /// value below it remains attached to its descendant node.
     ///
     /// sway/commands/move.c:198-239
-    pub(super) fn prepare_for_workspace_move(&mut self) {
-        self.subtree.unset_root_fractions();
+    pub(super) fn prepare_for_workspace_move<W: LayoutElement>(
+        &mut self,
+        containers: &mut ContainerTree<W>,
+    ) {
+        containers.arena_mut().unset_node_fractions(self.subtree);
     }
 
-    pub fn tiles(&self) -> Vec<&Tile<W>> {
-        self.subtree.tiles()
+    pub fn tiles<'a, W: LayoutElement>(
+        &self,
+        containers: &'a ContainerTree<W>,
+    ) -> Vec<&'a Tile<W>> {
+        containers.arena().tiles_in_branch(self.subtree)
     }
 
-    pub fn from_subtree(subtree: DetachedNode<W>) -> Self {
+    pub fn from_subtree(subtree: NodeKey) -> Self {
         Self { subtree }
     }
 
-    pub fn into_subtree(self) -> DetachedNode<W> {
+    pub fn into_subtree(self) -> NodeKey {
         self.subtree
     }
 }

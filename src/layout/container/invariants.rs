@@ -215,10 +215,14 @@ impl<W: LayoutElement> ContainerArena<W> {
                 self.verify_node(floating_root, Some(workspace), &mut visited, &mut leaves);
             }
         }
+        let mut parked_leaves = HashSet::new();
+        for parked in &self.parked_roots {
+            self.verify_node(*parked, None, &mut visited, &mut parked_leaves);
+        }
         assert_eq!(
             visited.len(),
             self.nodes.len(),
-            "every node must be reachable from a workspace root or from a floating root"
+            "every node must be reachable from a workspace, floating, or parked root"
         );
         for key in self.nodes.keys() {
             assert!(

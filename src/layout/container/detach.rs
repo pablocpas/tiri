@@ -1,11 +1,8 @@
-//! Detaching and reattaching subtrees (window removal, float/unfloat surgery).
+//! Removing views and parking tiled subtrees for synchronous reparenting.
 
 #[cfg(test)]
 use super::InsertParentInfo;
-use super::{
-    ContainerArena, ContainerData, DetachedNode, DetachedSplit, DetachedView, LayoutElement,
-    NodeData, NodeKey,
-};
+use super::{ContainerArena, DetachedView, LayoutElement, NodeData, NodeKey};
 
 impl<W: LayoutElement> ContainerArena<W> {
     /// Remove a view node by window ID without discarding its semantic state.
@@ -41,7 +38,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
         self.set_parent(node_key, None);
 
-        // Now remove from this workspace store (only the leaf, not recursive).
+        // Now remove from the arena (only the leaf, not recursive).
         let node_data = self.remove_node_from_store(node_key)?;
         let NodeData::Container(container) = node_data else {
             unreachable!("a window key must name a container node")
@@ -78,14 +75,14 @@ impl<W: LayoutElement> ContainerArena<W> {
         Some(view)
     }
 
-    /// Detach the subtree rooted at `node_key`, returning it along with enough information
+    /// Park the subtree rooted at `node_key`, returning it along with enough information
     /// to put it back where it was.
     #[cfg(test)]
     pub(in crate::layout) fn take_subtree_at(
         &mut self,
         workspace: NodeKey,
         node_key: NodeKey,
-    ) -> Option<(DetachedNode<W>, Option<InsertParentInfo>)> {
+    ) -> Option<(NodeKey, Option<InsertParentInfo>)> {
         self.get_node(node_key)?;
         let branch_root = self.branch_root(node_key);
         let insert_info = self
@@ -96,7 +93,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         Some((subtree, insert_info))
     }
 
-    /// Detach the command target for `move container`, preserving the addressed subtree.
+    /// Park the command target for `move container`, preserving the addressed subtree.
     ///
     /// With no selected parent this is the focused leaf, including under tabbed/stacked. A
     /// parent selected through `focus parent` is intentionally moved as a group. The workspace
@@ -104,7 +101,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     pub(in crate::layout) fn take_command_target_subtree(
         &mut self,
         workspace: NodeKey,
-    ) -> Option<DetachedNode<W>> {
+    ) -> Option<NodeKey> {
         let key = self.command_target_in(workspace);
         if self.is_workspace(key) {
             return None;
@@ -112,11 +109,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.take_tiling_subtree(workspace, key)
     }
 
-    fn take_tiling_subtree(
-        &mut self,
-        workspace: NodeKey,
-        node_key: NodeKey,
-    ) -> Option<DetachedNode<W>> {
+    fn take_tiling_subtree(&mut self, workspace: NodeKey, node_key: NodeKey) -> Option<NodeKey> {
         self.get_node(node_key)?;
         if self.is_workspace(node_key) || !self.is_in_tiled_branch(node_key) {
             return None;
@@ -148,7 +141,14 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
         self.set_parent(node_key, None);
 
-        let subtree = self.extract_subtree(node_key);
+        if self
+            .fullscreen_key(workspace)
+            .is_some_and(|fullscreen| self.is_descendant_of(fullscreen, node_key))
+        {
+            self.fullscreen_keys.remove(&workspace);
+        }
+        assert!(self.park_subtree(node_key));
+        self.drop_subtree_layouts(node_key);
         self.reap_empty(workspace, parent_key);
         self.autotile_squash_lone_children(workspace);
         self.prune_leaf_layouts(workspace);
@@ -158,182 +158,16 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         self.layout(workspace);
 
-        Some(subtree)
+        Some(node_key)
     }
 
-    /// Extract a subtree rooted at the given key into a detached representation.
-    pub(super) fn extract_subtree(&mut self, key: NodeKey) -> DetachedNode<W> {
-        // A view has no children to walk and no focus stack to carry; everything else on the
-        // node travels the same way either way, which is the point of it being one type.
-        let child_keys = self
-            .get_container(key)
-            .map(|container| container.children.clone())
-            .unwrap_or_default();
-
-        // Which child a switcher shows is behaviour, so the subtree carries those stable
-        // identities into the receiving workspace instead of rebuilding them from child
-        // positions. Read before anything leaves the arena: leaving is what retires a key from
-        // the seat, so afterwards there is no order left to read and every arriving subtree
-        // would land in child order, showing whichever window happens to be first.
-        let mut focus_stack: Vec<NodeKey> = self
-            .seat
-            .order()
-            .iter()
-            .copied()
-            .filter(|key| child_keys.contains(key))
-            .collect();
-        for key in child_keys.iter().copied() {
-            if !focus_stack.contains(&key) {
-                focus_stack.push(key);
-            }
-        }
-
-        let node_data = self
-            .remove_node_from_store(key)
-            .expect("node key must exist when extracting subtree");
-
-        let NodeData::Container(container) = node_data else {
-            unreachable!("the workspace cannot be detached")
-        };
-
-        let mut children = Vec::new();
-        for child_key in child_keys {
-            children.push(self.extract_subtree(child_key));
-        }
-
-        if container.is_view() {
-            debug_assert!(children.is_empty());
-            return DetachedNode::View(Box::new(
-                container
-                    .into_view(key)
-                    .expect("a view container must hold its tile"),
-            ));
-        }
-
-        let layout = container.common.layout;
-        let prev_split_layout = container.common.prev_split_layout;
-        DetachedNode::Split(DetachedSplit {
-            key,
-            sizing: container.sizing,
-            layout,
-            marks: container.marks,
-            user_created: container.user_created,
-            prev_split_layout,
-            children,
-            focus_stack,
-        })
-    }
-
-    /// Insert a detached subtree into a workspace of this arena, returning the new root key.
-    pub(super) fn insert_subtree(
-        &mut self,
-        workspace: NodeKey,
-        subtree: DetachedNode<W>,
-    ) -> NodeKey {
-        let split = match subtree {
-            DetachedNode::View(view) => return self.insert_view(workspace, *view),
-            DetachedNode::Split(split) => split,
-        };
-        let DetachedSplit {
-            key: container_key,
-            sizing,
-            layout,
-            marks,
-            children,
-            focus_stack,
-            user_created,
-            prev_split_layout,
-        } = split;
-
-        let mut node = ContainerData::new(layout);
-        node.marks = marks;
-        self.insert_node_with_key(workspace, container_key, NodeData::Container(node));
-
-        let mut child_keys = Vec::new();
-        for child in children {
-            let child_key = self.insert_subtree(workspace, child);
-            self.set_parent(child_key, Some(container_key));
-            child_keys.push(child_key);
-        }
-
-        if let Some(node) = self.get_real_container_mut(container_key) {
-            node.children = child_keys;
-            node.sizing = sizing;
-            node.user_created = user_created;
-            node.prev_split_layout = prev_split_layout;
-        }
-
-        // Back into the seat's order, keeping the sequence the subtree carried.
-        // Appended rather than promoted: arriving is not being focused, and whatever
-        // focuses next will raise its own chain.
-        let restored: Vec<NodeKey> = focus_stack
-            .iter()
-            .filter_map(|key| {
-                self.get_container(container_key)?
-                    .children()
-                    .contains(key)
-                    .then_some(*key)
-            })
-            .collect();
-        // Appended, not placed: the receiving workspace has its own inactive order.
-        // Layout's seat history decides whether the arriving view should be focused;
-        // the order inside this subtree only decides which child a descent reaches.
-        self.seat.restore_at(usize::MAX, restored);
-
-        container_key
-    }
-
-    /// Remove and return the root-level child at the given index as a detached subtree.
+    /// Park and return the root-level child at the given index.
     pub(in crate::layout) fn take_root_child_subtree(
         &mut self,
         workspace: NodeKey,
         idx: usize,
-    ) -> Option<DetachedNode<W>> {
-        match self.get_node(workspace) {
-            Some(node) if node.is_view() => None,
-            Some(NodeData::Workspace(_)) => {
-                let child_key = {
-                    let container = self.get_container(workspace)?;
-                    if idx >= container.children.len() {
-                        return None;
-                    }
-                    container.child_key(idx)?
-                };
-
-                if let Some(container) = self.get_container_mut(workspace) {
-                    container.remove_child(idx);
-                }
-                self.set_parent(child_key, None);
-
-                let remaining = self.get_container(workspace)?.children.len();
-
-                self.prune_leaf_layouts(workspace);
-
-                match self.get_node(workspace) {
-                    Some(NodeData::Workspace(root_container)) => {
-                        if remaining > 0 {
-                            let new_idx = idx.min(root_container.children.len().saturating_sub(1));
-                            let child_key = root_container.child_key(new_idx);
-                            if let Some(child_key) = child_key {
-                                self.focus_node_key(child_key);
-                            } else {
-                                self.focus_first_leaf(workspace);
-                            }
-                        } else {
-                            self.focus_first_leaf(workspace);
-                        }
-                    }
-                    Some(node) if node.is_split() => {
-                        unreachable!("root must be a workspace")
-                    }
-                    _ => self.focus_first_leaf(workspace),
-                }
-
-                let subtree = self.extract_subtree(child_key);
-                self.prune_selected_key();
-                Some(subtree)
-            }
-            Some(NodeData::Container(_)) | None => None,
-        }
+    ) -> Option<NodeKey> {
+        let child = self.get_container(workspace)?.child_key(idx)?;
+        self.take_tiling_subtree(workspace, child)
     }
 }

@@ -1,8 +1,6 @@
 //! Root-child ("column") compatibility layer over the tree root.
 
-use super::{
-    ContainerArena, DetachedNode, DetachedView, LayoutElement, NodeData, NodeKey, WorkspaceData,
-};
+use super::{ContainerArena, DetachedView, LayoutElement, NodeData, NodeKey, WorkspaceData};
 
 impl<W: LayoutElement> ContainerArena<W> {
     /// Number of root-level children (columns).
@@ -21,7 +19,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     /// Index of currently focused root child, if any.
     pub(in crate::layout) fn focused_root_index(&self, workspace: NodeKey) -> Option<usize> {
-        if let Some(key) = self.focused_key() {
+        if let Some(key) = self.effective_focused_key(workspace) {
             if key == workspace {
                 return Some(0);
             }
@@ -121,19 +119,20 @@ impl<W: LayoutElement> ContainerArena<W> {
         true
     }
 
-    /// Insert a detached subtree at root level.
+    /// Insert a parked subtree at root level.
     pub(in crate::layout) fn insert_subtree_at_root(
         &mut self,
         workspace: NodeKey,
         index: usize,
-        subtree: DetachedNode<W>,
+        subtree: NodeKey,
         focus: bool,
     ) {
         // A pending arrange of the destination predates this entire branch. Waiting for it
         // would leave the transferred container (including its tab bar) absent until another
         // commit or command invalidated the layout.
         self.discard_layout_superseded_by_transfer(workspace);
-        let node_key = self.insert_subtree(workspace, subtree);
+        assert!(self.adopt_parked_subtree(workspace, subtree));
+        let node_key = subtree;
         if self.unwrap_into_empty_workspace(workspace, node_key, focus) {
             return;
         }

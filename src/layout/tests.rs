@@ -1056,7 +1056,7 @@ impl Op {
                 let mut found_next_to = false;
 
                 if let Some(InteractiveMoveState::Moving(move_)) = &layout.interactive_move {
-                    if move_.view.window().0.id == next_to_id {
+                    if move_.window_id == next_to_id {
                         found_next_to = true;
                     }
                 }
@@ -1518,8 +1518,15 @@ impl Op {
                 let mut update = false;
 
                 if let Some(InteractiveMoveState::Moving(move_)) = &layout.interactive_move {
-                    if move_.view.window().0.id == id {
-                        move_.view.window().0.parent_id.set(new_parent_id);
+                    if move_.window_id == id {
+                        layout
+                            .containers
+                            .parked_tile(move_.node)
+                            .expect("moving view must remain parked")
+                            .window()
+                            .0
+                            .parent_id
+                            .set(new_parent_id);
                         update = true;
                     }
                 }
@@ -1569,8 +1576,14 @@ impl Op {
                 let mut update = false;
 
                 if let Some(InteractiveMoveState::Moving(move_)) = &layout.interactive_move {
-                    if move_.view.window().0.id == id {
-                        if move_.view.window().communicate() {
+                    if move_.window_id == id {
+                        if layout
+                            .containers
+                            .parked_tile(move_.node)
+                            .expect("moving view must remain parked")
+                            .window()
+                            .communicate()
+                        {
                             update = true;
                         }
 
@@ -3828,3 +3841,4 @@ fn swapping_a_resized_window_out_of_floating_forgets_its_resize() {
         Op::SwapWithWindow(5),
     ]);
 }
+

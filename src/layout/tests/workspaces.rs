@@ -361,7 +361,7 @@ fn an_interactive_move_between_outputs_keeps_node_identity_while_detached() {
     else {
         panic!("window should have crossed the interactive-move threshold");
     };
-    assert_eq!(move_.view.key(), key);
+    assert_eq!(move_.node, key);
 
     check_ops_on_layout(&mut layout, [Op::InteractiveMoveEnd { window: 1 }]);
     assert_eq!(workspace_node_key(&layout, 1), key);
@@ -382,9 +382,15 @@ fn sticky_and_scratchpad_roundtrips_keep_node_identity() {
 
     layout.toggle_window_sticky(Some(&1));
     let sticky_key = layout
-        .monitors()
-        .find_map(|monitor| monitor.sticky_containers.arena().window_key(&1))
+        .containers
+        .arena()
+        .window_key(&1)
         .expect("sticky node");
+    let sticky_workspace = layout.monitors().next().expect("monitor").sticky_workspace;
+    assert_eq!(
+        layout.containers.arena().workspace_of(sticky_key),
+        Some(sticky_workspace)
+    );
     assert_eq!(sticky_key, key);
 
     layout.toggle_window_sticky(Some(&1));
@@ -401,6 +407,24 @@ fn sticky_and_scratchpad_roundtrips_keep_node_identity() {
     );
     layout.scratchpad_show();
     assert_eq!(workspace_node_key(&layout, 1), key);
+}
+
+#[test]
+fn discarded_workspace_handles_remove_their_roots_from_the_shared_tree() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+    ]);
+
+    assert_eq!(layout.containers.arena().workspace_count(), 4);
+
+    check_ops_on_layout(&mut layout, [Op::RemoveOutput(1)]);
+    assert_eq!(layout.containers.arena().workspace_count(), 2);
+
+    check_ops_on_layout(&mut layout, [Op::CloseWindow(1)]);
+    assert_eq!(layout.containers.arena().workspace_count(), 1);
 }
 
 #[test]

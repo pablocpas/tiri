@@ -1,4 +1,4 @@
-//! Workspace-local node storage primitives: raw node access and parent links.
+//! Arena node storage primitives: raw node access and parent links.
 
 use smithay::utils::{Logical, Point, Rectangle};
 
@@ -317,6 +317,67 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
     }
 
+    /// Put a detached view under the layout's temporary parked-root ownership.
+    pub(in crate::layout) fn park_view(&mut self, view: DetachedView<W>) -> NodeKey {
+        let (key, container) = ContainerData::new_view(view);
+        self.nodes.insert(key, NodeData::Container(container));
+        self.parents.insert(key, None);
+        self.seat.register(key);
+        assert!(self.parked_roots.insert(key));
+        key
+    }
+
+    /// Take a parked view out for an immediate insertion or final removal.
+    pub(in crate::layout) fn take_parked_view(&mut self, key: NodeKey) -> Option<DetachedView<W>> {
+        if !self.parked_roots.remove(&key) {
+            return None;
+        }
+        let node = self.remove_node_from_store(key)?;
+        let NodeData::Container(container) = node else {
+            unreachable!("a parked view key must name a container node")
+        };
+        container.into_view(key)
+    }
+
+    pub(in crate::layout) fn parked_tile(&self, key: NodeKey) -> Option<&Tile<W>> {
+        self.parked_roots
+            .contains(&key)
+            .then(|| self.get_tile(key))
+            .flatten()
+    }
+
+    pub(in crate::layout) fn parked_tile_mut(&mut self, key: NodeKey) -> Option<&mut Tile<W>> {
+        if !self.parked_roots.contains(&key) {
+            return None;
+        }
+        self.get_tile_mut(key)
+    }
+
+    /// Register an already-materialized, parentless subtree as temporarily parked.
+    pub(super) fn park_subtree(&mut self, key: NodeKey) -> bool {
+        if !self.nodes.contains_key(key) || self.parent_of(key).is_some() {
+            return false;
+        }
+        self.parked_roots.insert(key)
+    }
+
+    /// Hand a parked subtree to a workspace and adopt that workspace's tile configuration.
+    pub(super) fn adopt_parked_subtree(&mut self, workspace: NodeKey, key: NodeKey) -> bool {
+        if !self.parked_roots.remove(&key) {
+            return false;
+        }
+
+        let view_size = self.view_size(workspace);
+        let scale = self.scale(workspace);
+        let options = self.options(workspace).clone();
+        for leaf in self.leaf_keys_under(key) {
+            if let Some(tile) = self.get_tile_mut(leaf) {
+                tile.update_config(view_size, scale, options.clone());
+            }
+        }
+        true
+    }
+
     /// Insert a node that has not belonged to a tree before.
     pub(super) fn insert_node(&mut self, workspace: NodeKey, node: NodeData<W>) -> NodeKey {
         assert!(
@@ -376,6 +437,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     pub(super) fn remove_node_from_store(&mut self, key: NodeKey) -> Option<NodeData<W>> {
         let node = self.nodes.remove(key)?;
         self.parents.remove(key);
+        self.parked_roots.remove(&key);
         self.seat.unregister(key);
         // By value, not by asking the node which workspace it is on: a node on its way out of
         // the arena has usually been unparented already, and would answer with itself.
@@ -384,7 +446,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         Some(node)
     }
 
-    /// Remove a node from this workspace store (and recursively all its children).
+    /// Remove a node from the arena (and recursively all its children).
     pub(super) fn remove_node_recursive(&mut self, key: NodeKey) -> Option<NodeData<W>> {
         // Read the children before the node leaves: a workspace lays out children exactly as a
         // split container does, and matching on `NodeData::Container` alone walked past that —

@@ -57,7 +57,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     /// Wipe both shares on the node itself.
-    pub(super) fn unset_node_fractions(&mut self, key: NodeKey) -> bool {
+    pub(in crate::layout) fn unset_node_fractions(&mut self, key: NodeKey) -> bool {
         let Some(sizing) = self.node_sizing_mut(key) else {
             return false;
         };

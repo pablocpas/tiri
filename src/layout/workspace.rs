@@ -471,6 +471,15 @@ fn external_resize_cursor_icon(edges: ResizeEdge) -> CursorIcon {
 }
 
 impl<W: LayoutElement> Workspace<W> {
+    /// Discard this workspace together with its root in the layout-wide tree.
+    ///
+    /// Dropping the Rust handle alone is not enough now that the tree outlives every
+    /// workspace. Keeping the two actions together makes deletion sites explicit and avoids
+    /// leaving an unreachable root (and its windows) in the shared arena.
+    pub(super) fn remove_from_tree(self, containers: &mut ContainerTree<W>) {
+        assert!(containers.remove_workspace(self.workspace));
+    }
+
     fn numeric_identity_from_name(name: &str) -> Option<u32> {
         let (number, rest) = match name.split_once(':') {
             Some((number, rest)) if !rest.is_empty() => (number, Some(rest)),
@@ -973,61 +982,6 @@ impl<W: LayoutElement> Workspace<W> {
     pub(super) fn mark_target_key(&self, containers: &ContainerTree<W>) -> Option<NodeKey> {
         let key = self.command_target_key(containers);
         (key != self.workspace).then_some(key)
-    }
-
-    pub(super) fn holds_node(&self, containers: &ContainerTree<W>, key: NodeKey) -> bool {
-        containers.holds_node(key)
-    }
-
-    pub(super) fn node_has_mark(
-        &self,
-        containers: &ContainerTree<W>,
-        key: NodeKey,
-        mark: &str,
-    ) -> bool {
-        containers.node_has_mark(key, mark)
-    }
-
-    pub(super) fn add_mark_to_node(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        key: NodeKey,
-        mark: String,
-    ) -> bool {
-        containers.add_mark_to_node(key, mark)
-    }
-
-    pub(super) fn remove_mark_from_node(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        key: NodeKey,
-        mark: &str,
-    ) -> bool {
-        containers.remove_mark_from_node(key, mark)
-    }
-
-    pub(super) fn clear_marks_on_node(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        key: NodeKey,
-    ) -> bool {
-        containers.clear_marks_on_node(key)
-    }
-
-    pub(super) fn remove_mark_everywhere(&mut self, containers: &mut ContainerTree<W>, mark: &str) {
-        containers.remove_mark_everywhere(mark);
-    }
-
-    pub(super) fn clear_marks_everywhere(&mut self, containers: &mut ContainerTree<W>) {
-        containers.clear_marks_everywhere();
-    }
-
-    pub(super) fn window_id_with_mark(
-        &self,
-        containers: &ContainerTree<W>,
-        mark: &str,
-    ) -> Option<W::Id> {
-        containers.window_id_with_mark(mark)
     }
 
     pub(super) fn swap_selected_with_mark(
@@ -1754,10 +1708,10 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn add_root_tiling_subtree(
         &mut self,
         containers: &mut ContainerTree<W>,
-        subtree: RootTilingSubtree<W>,
+        subtree: RootTilingSubtree,
         activate: bool,
     ) {
-        for tile in subtree.tiles() {
+        for tile in subtree.tiles(containers) {
             self.enter_output_for_window(tile.window());
         }
 
@@ -1840,7 +1794,7 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn remove_active_root_tiling_subtree(
         &mut self,
         containers: &mut ContainerTree<W>,
-    ) -> Option<RootTilingSubtree<W>> {
+    ) -> Option<RootTilingSubtree> {
         let from_floating = self.floating_is_active.get();
         if from_floating {
             return None;
@@ -1849,7 +1803,7 @@ impl<W: LayoutElement> Workspace<W> {
         let subtree = containers.remove_active_root_tiling_subtree(self.workspace)?;
 
         if let Some(output) = &self.output {
-            for tile in subtree.tiles() {
+            for tile in subtree.tiles(containers) {
                 tile.window().output_leave(output);
             }
         }
@@ -1862,7 +1816,7 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn remove_active_tiling_subtree(
         &mut self,
         containers: &mut ContainerTree<W>,
-    ) -> Option<RootTilingSubtree<W>> {
+    ) -> Option<RootTilingSubtree> {
         let from_floating = self.floating_is_active.get();
         if from_floating {
             return None;
@@ -1871,7 +1825,7 @@ impl<W: LayoutElement> Workspace<W> {
         let subtree = containers.remove_active_tiling_subtree(self.workspace)?;
 
         if let Some(output) = &self.output {
-            for tile in subtree.tiles() {
+            for tile in subtree.tiles(containers) {
                 tile.window().output_leave(output);
             }
         }
