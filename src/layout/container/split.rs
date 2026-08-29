@@ -46,10 +46,13 @@ impl<W: LayoutElement> ContainerArena<W> {
                 let root_idx = self.floating_root_index(container_key)?;
                 let working_area = self.floating_roots[root_idx].geometry.working_area;
                 let child_area = self.node_geometry(child_key)?;
+                // The surviving child takes over the root's slot, so it hangs off the same
+                // workspace — read before the swap, while `container_key` still names it.
+                let workspace = self.workspace_of(container_key);
                 self.floating_roots[root_idx].key = child_key;
                 self.floating_roots[root_idx].geometry =
                     FloatingGeometry::new(working_area, child_area);
-                self.set_parent(child_key, Some(self.root));
+                self.set_parent(child_key, workspace);
                 self.transfer_fullscreen_to_replacement(container_key, child_key);
                 if self.selected_key() == Some(container_key) {
                     self.seat.keep_selected(child_key);
@@ -584,7 +587,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// there is no orientation to express that is not already expressed.
     fn set_layout_of_parent_of(&mut self, key: NodeKey, layout: Layout) -> bool {
         let parent_key = self.parent_of(key);
-        let lands_on_workspace = parent_key == Some(self.root);
+        let lands_on_workspace = parent_key.is_some_and(|parent| self.is_workspace(parent));
 
         if lands_on_workspace && !self.branch_is_addressable(key) {
             let root_layout = self.root_container_layout();

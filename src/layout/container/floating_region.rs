@@ -296,7 +296,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                 return if self.is_floating_root(current) {
                     current
                 } else {
-                    self.root
+                    parent
                 };
             }
             current = parent;
@@ -322,7 +322,10 @@ impl<W: LayoutElement> ContainerArena<W> {
         stack_index: usize,
         kind: FloatingRootKind,
     ) {
-        assert_ne!(key, self.root, "the workspace root cannot become floating");
+        assert!(
+            !self.is_workspace(key),
+            "a workspace node cannot become floating"
+        );
         assert_eq!(
             self.parent_of(key),
             None,
@@ -490,9 +493,12 @@ impl<W: LayoutElement> ContainerArena<W> {
         wrapper.set_geometry(self.node_geometry(key)?);
 
         let raw_focus_returns_to_child = self.seat.node() == Some(key);
+        // The wrapper takes over the root's slot, so it hangs off the workspace the root
+        // hung off — read before the swap, while `key` still names that root.
+        let workspace = self.workspace_of(key);
         let wrapper_key = self.insert_node(NodeData::Container(wrapper));
         self.floating_roots[root_idx].key = wrapper_key;
-        self.set_parent(wrapper_key, Some(self.root));
+        self.set_parent(wrapper_key, workspace);
         self.get_container_mut(wrapper_key)
             .expect("the wrapper was just inserted")
             .insert_child(0, key);

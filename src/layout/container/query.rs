@@ -140,6 +140,22 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Both, deliberately. This is what the transaction machinery compares its snapshot
     /// against, and a floating window that the comparison cannot see is a window whose
     /// configure gets computed from a tree that does not contain it.
+    /// The workspace `key` belongs to.
+    ///
+    /// Every node's parent chain reaches one: a floating root is parented to its workspace even
+    /// though the workspace holds it in `floating_roots` rather than among its children, so
+    /// there is no second rule for the floating side. `None` only for a node the arena does not
+    /// hold, or one detached and not yet reattached.
+    pub(in crate::layout) fn workspace_of(&self, key: NodeKey) -> Option<NodeKey> {
+        let mut current = key;
+        loop {
+            if self.is_workspace(current) {
+                return Some(current);
+            }
+            current = self.parent_of(current)?;
+        }
+    }
+
     /// Whether `key` is a workspace node.
     ///
     /// Asked of the node rather than compared against the arena's root, so that the answer
