@@ -10,7 +10,7 @@ use smithay::output::Output;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 use tiri_config::{CornerRadius, LayoutPart};
 
-use super::container::{Direction, NodeKey};
+use super::container::{DetachedView, Direction, NodeKey};
 use super::container_tree::{ContainerTree, RootTilingSubtree};
 use super::floating::{FloatingResizeResult, FloatingSpace};
 use super::insert_hint_element::{InsertHintElement, InsertHintRenderElement};
@@ -626,8 +626,8 @@ impl<W: LayoutElement> Monitor<W> {
             workspace.remove_tile(window, Transaction::new())
         };
 
-        removed.tile.set_scratchpad(false);
-        removed.tile.set_sticky(true);
+        removed.tile.tile_mut().set_scratchpad(false);
+        removed.tile.tile_mut().set_sticky(true);
 
         self.sticky_floating
             .add_tile(&mut self.sticky_containers, removed.tile, activate);
@@ -638,9 +638,9 @@ impl<W: LayoutElement> Monitor<W> {
         true
     }
 
-    pub fn add_sticky_tile(&mut self, mut tile: Tile<W>, activate: bool) {
-        tile.set_scratchpad(false);
-        tile.set_sticky(true);
+    pub fn add_sticky_tile(&mut self, mut tile: DetachedView<W>, activate: bool) {
+        tile.tile_mut().set_scratchpad(false);
+        tile.tile_mut().set_sticky(true);
 
         self.sticky_floating
             .add_tile(&mut self.sticky_containers, tile, activate);
@@ -649,7 +649,7 @@ impl<W: LayoutElement> Monitor<W> {
         }
     }
 
-    pub fn add_scratchpad_tile(&mut self, tile: Tile<W>, activate: bool) {
+    pub fn add_scratchpad_tile(&mut self, tile: DetachedView<W>, activate: bool) {
         let mut workspace_idx = self.active_workspace_idx;
 
         {
@@ -701,7 +701,7 @@ impl<W: LayoutElement> Monitor<W> {
         let mut removed = self
             .sticky_floating
             .remove_tile(&mut self.sticky_containers, window);
-        removed.tile.set_sticky(false);
+        removed.tile.tile_mut().set_sticky(false);
 
         let ws_id = self.workspaces[self.active_workspace_idx].id();
         let activate = if activate {
@@ -1125,7 +1125,7 @@ impl<W: LayoutElement> Monitor<W> {
     #[allow(clippy::too_many_arguments)]
     pub fn add_tile(
         &mut self,
-        tile: Tile<W>,
+        tile: DetachedView<W>,
         target: MonitorAddWindowTarget<W>,
         activate: ActivateWindow,
         // FIXME: Refactor ActivateWindow enum to make this better.
@@ -1164,7 +1164,7 @@ impl<W: LayoutElement> Monitor<W> {
         workspace_idx: usize,
         target: NodeKey,
         direction: Direction,
-        tile: Tile<W>,
+        tile: DetachedView<W>,
         activate: bool,
         allow_to_activate_workspace: bool,
     ) -> bool {
@@ -1206,7 +1206,7 @@ impl<W: LayoutElement> Monitor<W> {
         &mut self,
         workspace_idx: usize,
         direction: Direction,
-        tile: Tile<W>,
+        tile: DetachedView<W>,
         activate: bool,
         allow_to_activate_workspace: bool,
     ) -> bool {
@@ -1249,7 +1249,7 @@ impl<W: LayoutElement> Monitor<W> {
         workspace_idx: usize,
         root_idx: usize,
         tile_idx: Option<usize>,
-        tile: Tile<W>,
+        tile: DetachedView<W>,
         activate: bool,
         // FIXME: Refactor ActivateWindow enum to make this better.
         allow_to_activate_workspace: bool,
@@ -1482,7 +1482,7 @@ impl<W: LayoutElement> Monitor<W> {
                 let mut removed = self
                     .take_sticky_window(window_id)
                     .expect("sticky window should exist");
-                removed.tile.set_sticky(false);
+                removed.tile.tile_mut().set_sticky(false);
 
                 self.add_tile(
                     removed.tile,

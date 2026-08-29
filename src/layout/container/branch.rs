@@ -38,8 +38,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         branch_root: NodeKey,
     ) -> Vec<TabBarInfo> {
         let mut out = Vec::new();
-        let mut path = Vec::new();
-        self.collect_tab_bar_layouts(branch_root, &mut path, &mut out, true);
+        self.collect_tab_bar_layouts(branch_root, &mut out, true);
         out
     }
 

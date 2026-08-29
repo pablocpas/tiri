@@ -15,8 +15,10 @@ use tiri_config::utils::MergeWith as _;
 use tiri_config::{CornerRadius, OutputName, PresetSize, Struts, Workspace as WorkspaceConfig};
 use tiri_ipc::{ColumnDisplay, LayoutTreeNode, PositionChange, SizeChange, WindowLayout};
 
+use super::closing_window::ClosingWindow;
 use super::container::{
-    Direction, InactiveTilingReference, InsertParentInfo, InteractiveResizeState, Layout, NodeKey,
+    DetachedView, Direction, InactiveTilingReference, InsertParentInfo, InteractiveResizeState,
+    Layout, NodeKey,
 };
 use super::container_tree::{ContainerTree, ContainerTreeRenderElement, RootTilingSubtree};
 use super::floating::{
@@ -24,7 +26,6 @@ use super::floating::{
 };
 use super::shadow::Shadow;
 use super::tile::{Tile, TileRenderSnapshot};
-use super::closing_window::ClosingWindow;
 use super::{
     ActivateWindow, HitType, InsertPosition, InteractiveResizeData, LayoutCycleEntry,
     LayoutElement, Options, RemovedTile, ResizeHit, ResizeRequest, SizeFrac,
@@ -1170,20 +1171,20 @@ impl<W: LayoutElement> Workspace<W> {
         self.view_size
     }
 
-    pub fn make_tile(&self, window: W) -> Tile<W> {
-        Tile::new(
+    pub fn make_tile(&self, window: W) -> DetachedView<W> {
+        DetachedView::new(Tile::new(
             window,
             self.view_size,
             self.scale.fractional_scale(),
             self.clock.clone(),
             self.options.clone(),
-        )
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
     pub fn add_tile(
         &mut self,
-        mut tile: Tile<W>,
+        mut tile: DetachedView<W>,
         target: WorkspaceAddWindowTarget<W>,
         activate: ActivateWindow,
         is_floating: bool,
@@ -1209,7 +1210,7 @@ impl<W: LayoutElement> Workspace<W> {
         });
         match target {
             WorkspaceAddWindowTarget::Auto => {
-                let has_floating_reinsert_hint = tile.floating_reinsert_hint.is_some();
+                let has_floating_reinsert_hint = tile.tile().floating_reinsert_hint.is_some();
                 // A focused node below the `ws->floating` list boundary is an insertion
                 // parent for a newly mapped window. The root entry itself is not. This is a
                 // structural distinction: a workspace wrapper can acquire an inner split,
@@ -1295,7 +1296,7 @@ impl<W: LayoutElement> Workspace<W> {
                         self.floating
                             .add_tile_above(&mut self.containers, next_to, tile, activate);
                     } else {
-                        self.center_new_floating_tile_on(&mut tile, next_to);
+                        self.center_new_floating_tile_on(tile.tile_mut(), next_to);
                         self.floating.add_tile(&mut self.containers, tile, activate);
                     }
 
@@ -1370,10 +1371,10 @@ impl<W: LayoutElement> Workspace<W> {
         &mut self,
         root_idx: usize,
         tile_idx: Option<usize>,
-        mut tile: Tile<W>,
+        mut tile: DetachedView<W>,
         activate: bool,
     ) {
-        tile.set_scratchpad(false);
+        tile.tile_mut().set_scratchpad(false);
         self.enter_output_for_window(tile.window());
         self.containers
             .add_tile_to_root_container(root_idx, tile_idx, tile, activate);
@@ -1470,16 +1471,15 @@ impl<W: LayoutElement> Workspace<W> {
     pub(super) fn tiling_swap_tile(
         &mut self,
         target: NodeKey,
-        tile: Tile<W>,
+        tile: DetachedView<W>,
         origin: &InsertParentInfo,
-    ) -> Result<(), Tile<W>> {
+    ) -> Result<(), DetachedView<W>> {
         if !self.containers.is_tiling_leaf(target) {
             return Err(tile);
         }
-        let Some(displaced) = self.containers.replace_tiling_tile(target, tile) else {
-            // is_tiling_leaf just said otherwise; the tile is already gone into the tree.
-            return Ok(());
-        };
+        // A refusal hands the dragged view back untouched, so the caller still has a window to
+        // fall back with. Nothing has entered the tree.
+        let displaced = self.containers.replace_tiling_tile(target, tile)?;
         self.containers
             .insert_tile_with_parent_info(origin, displaced, false);
         Ok(())
@@ -1489,10 +1489,10 @@ impl<W: LayoutElement> Workspace<W> {
         &mut self,
         target: NodeKey,
         direction: Direction,
-        mut tile: Tile<W>,
+        mut tile: DetachedView<W>,
         activate: bool,
     ) -> bool {
-        tile.set_scratchpad(false);
+        tile.tile_mut().set_scratchpad(false);
         self.enter_output_for_window(tile.window());
 
         let inserted = self
@@ -1510,10 +1510,10 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn add_tile_split_root(
         &mut self,
         direction: Direction,
-        mut tile: Tile<W>,
+        mut tile: DetachedView<W>,
         activate: bool,
     ) -> bool {
-        tile.set_scratchpad(false);
+        tile.tile_mut().set_scratchpad(false);
         self.enter_output_for_window(tile.window());
 
         let inserted = self
@@ -2758,7 +2758,7 @@ impl<W: LayoutElement> Workspace<W> {
     /// its one pointer to somebody else.
     ///
     /// sway/tree/root.c:108-112, sway/tree/root.c:212-233
-    pub fn take_tile_for_hiding_in_scratchpad(&mut self, id: &W::Id) -> Option<Tile<W>> {
+    pub fn take_tile_for_hiding_in_scratchpad(&mut self, id: &W::Id) -> Option<DetachedView<W>> {
         self.set_fullscreen(id, false);
         self.take_tile_for_scratchpad(id)
     }
@@ -2780,10 +2780,10 @@ impl<W: LayoutElement> Workspace<W> {
         self.containers.toggle_fullscreen_container(scope);
     }
 
-    pub fn take_tile_for_scratchpad(&mut self, id: &W::Id) -> Option<Tile<W>> {
+    pub fn take_tile_for_scratchpad(&mut self, id: &W::Id) -> Option<DetachedView<W>> {
         let removed = self.remove_tile(id, Transaction::new());
         let mut tile = removed.tile;
-        tile.set_scratchpad(true);
+        tile.tile_mut().set_scratchpad(true);
         tile.window_mut().set_floating(true);
 
         // `root_scratchpad_add_container`: a window that was already floating is put away
@@ -2794,18 +2794,19 @@ impl<W: LayoutElement> Workspace<W> {
         //
         // sway/tree/root.c:114-119
         if !removed.is_floating {
-            tile.stop_move_animations();
-            tile.clear_resize_animation();
-            tile.floating_pos = None;
+            tile.tile_mut().stop_move_animations();
+            tile.tile_mut().clear_resize_animation();
+            tile.tile_mut().floating_pos = None;
 
-            let size = self.scratchpad_default_size(&tile);
-            tile.floating_window_size = Some(size);
+            let size = self.scratchpad_default_size(tile.tile());
+            tile.tile_mut().floating_window_size = Some(size);
             tile.window_mut().request_size_once(size, false);
 
             let working_area = self.containers.working_area();
             let size_f = Size::from((size.w as f64, size.h as f64));
             let pos = center_preferring_top_left_in_area(working_area, size_f);
-            tile.floating_pos = Some(self.floating.logical_to_size_frac(working_area, pos));
+            tile.tile_mut().floating_pos =
+                Some(self.floating.logical_to_size_frac(working_area, pos));
 
             let border_config = self
                 .options
@@ -2828,7 +2829,7 @@ impl<W: LayoutElement> Workspace<W> {
     /// longest ago is at the bottom, and that is the one [`Self::next_scratchpad_window`]
     /// brings out. A queue, said with the ordering the workspace already has rather than with
     /// one beside it.
-    pub fn hide_in_scratchpad(&mut self, tile: Tile<W>) {
+    pub fn hide_in_scratchpad(&mut self, tile: DetachedView<W>) {
         self.add_scratchpad_tile(tile, false);
     }
 
@@ -2837,8 +2838,8 @@ impl<W: LayoutElement> Workspace<W> {
         self.windows().last().map(|window| window.id().clone())
     }
 
-    pub fn add_scratchpad_tile(&mut self, mut tile: Tile<W>, activate: bool) {
-        tile.set_scratchpad(true);
+    pub fn add_scratchpad_tile(&mut self, mut tile: DetachedView<W>, activate: bool) {
+        tile.tile_mut().set_scratchpad(true);
         tile.window_mut().set_floating(true);
         self.enter_output_for_window(tile.window());
         self.floating.add_tile(&mut self.containers, tile, activate);
@@ -2995,12 +2996,13 @@ impl<W: LayoutElement> Workspace<W> {
             .tiles_with_render_positions()
             .map(move |(tile, pos, visible)| (tile, pos, visible && fullscreen_scope.is_none()));
 
-        let floating = self.floating.tiles_with_render_positions(&self.containers);
+        let floating = self
+            .floating
+            .tiles_with_render_positions_keyed(&self.containers);
         let visible = self.is_floating_visible();
         let tree = self.containers.arena();
-        let floating = floating.map(move |(tile, pos)| {
-            let in_scope =
-                fullscreen_scope.is_none_or(|scope| tree.is_descendant(tile.node_key(), scope));
+        let floating = floating.map(move |(key, tile, pos)| {
+            let in_scope = fullscreen_scope.is_none_or(|scope| tree.is_descendant(key, scope));
             (tile, pos, visible && in_scope)
         });
 
@@ -3016,7 +3018,6 @@ impl<W: LayoutElement> Workspace<W> {
             .containers
             .arena()
             .leaf_layouts()
-            .iter()
             .map(|info| (info.key, info.rect.loc))
             .collect();
         let keys: Vec<_> = layouts.iter().map(|(key, _)| *key).collect();
@@ -3090,10 +3091,12 @@ impl<W: LayoutElement> Workspace<W> {
             return;
         }
         let tiling_focus_ring = focus_ring && !self.floating_is_active();
-        if let Some(elem) =
-            self.containers
-                .render_as_offscreen(&self.tiling_closing, renderer, target, tiling_focus_ring)
-        {
+        if let Some(elem) = self.containers.render_as_offscreen(
+            &self.tiling_closing,
+            renderer,
+            target,
+            tiling_focus_ring,
+        ) {
             push(elem.into());
         }
     }

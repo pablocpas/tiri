@@ -91,7 +91,6 @@ impl<W: LayoutElement> ContainerArena<W> {
             container_key = parent_key;
         };
 
-        self.readdress_leaf_layouts();
         self.prune_focus_order();
         Some(branch_root)
     }
@@ -157,12 +156,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         target: NodeKey,
     ) -> bool {
         self.flatten_layout_parent_once(target);
-        let changed = self.set_layout_for_prepared_target(layout, target);
-        // `layout` may either flatten an existing wrapper or build one around workspace
-        // children. Both change leaf addresses even when the surviving layout itself does
-        // not change and no arrange pass follows.
-        self.readdress_leaf_layouts();
-        changed
+        self.set_layout_for_prepared_target(layout, target)
     }
 
     fn set_layout_for_prepared_target(&mut self, layout: Layout, target: NodeKey) -> bool {
@@ -229,7 +223,6 @@ impl<W: LayoutElement> ContainerArena<W> {
             self.seat.redirect_focused_leaf(Some(child_key));
         }
         self.remove_node_from_store(container_key);
-        self.readdress_leaf_layouts();
     }
 
     pub(super) fn layout_container_key_for_target(&self, target: NodeKey) -> Option<NodeKey> {
@@ -463,9 +456,6 @@ impl<W: LayoutElement> ContainerArena<W> {
                 None => false,
             }
         };
-        if changed {
-            self.readdress_leaf_layouts();
-        }
         changed
     }
 

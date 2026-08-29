@@ -54,11 +54,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                     focused: focused_key == Some(node_key),
                     is_floating,
                     floating_root_kind: None,
-                    visible: self
-                        .leaf_layouts()
-                        .iter()
-                        .find(|info| info.key == node_key)
-                        .is_none_or(|info| info.visible),
+                    visible: self.leaf_layout(node_key).is_none_or(|info| info.visible),
                     is_urgent: window.is_urgent(),
                     is_sticky: tile.is_sticky(),
                     is_scratchpad: tile.is_scratchpad(),
@@ -135,34 +131,23 @@ impl<W: LayoutElement> ContainerArena<W> {
         // window opened into one — reports 0x0 for as long as that lasts. Working the
         // rectangle out from the parent instead answers where the node *will* be, which is a
         // different question and one nothing asked.
-        let rect = match self.get_node(node_key)? {
-            node if node.is_view() => {
-                let tile = node.as_tile().expect("a view holds a tile");
-                self.leaf_layouts()
-                    .iter()
-                    .find(|info| info.key == node_key)
-                    .map(|info| {
-                        let mut rect = info.node_rect;
-                        if !tile.window().pending_sizing_mode().is_fullscreen() {
-                            if let Some(parent) = self.parent_of(node_key) {
-                                if let Some(container) = self.get_container(parent) {
-                                    let offset = self.switcher_content_offset(
-                                        container.layout(),
-                                        container.child_count(),
-                                        rect.size.h,
-                                    );
-                                    rect.loc.y += offset;
-                                    rect.size.h = (rect.size.h - offset).max(0.0);
-                                }
-                            }
-                        }
-                        rect
-                    })
-                    .unwrap_or_default()
+        let mut rect = self.node_geometry(node_key)?;
+        if let Some(tile) = self.get_tile(node_key) {
+            if !tile.window().pending_sizing_mode().is_fullscreen() {
+                if let Some(container) = self
+                    .parent_of(node_key)
+                    .and_then(|parent| self.get_container(parent))
+                {
+                    let offset = self.switcher_content_offset(
+                        container.layout(),
+                        container.child_count(),
+                        rect.size.h,
+                    );
+                    rect.loc.y += offset;
+                    rect.size.h = (rect.size.h - offset).max(0.0);
+                }
             }
-            NodeData::Workspace(workspace) => workspace.geometry(),
-            NodeData::Container(container) => container.geometry(),
-        };
+        }
 
         Some(rect_to_ipc(rect))
     }

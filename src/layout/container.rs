@@ -213,8 +213,6 @@ pub struct TabBarTab {
 pub struct TabBarInfo {
     /// The container this bar belongs to.
     pub key: NodeKey,
-    /// Its path, kept for the render cache key and the IPC-facing consumers.
-    pub path: Vec<usize>,
     pub layout: Layout,
     pub rect: Rectangle<f64, Logical>,
     pub row_height: f64,
@@ -269,33 +267,43 @@ impl<W: LayoutElement> NodeData<W> {
     pub(super) fn is_split(&self) -> bool {
         matches!(self, NodeData::Container(container) if !container.is_view())
     }
-
-    pub(super) fn into_tile(self) -> Option<Tile<W>> {
-        match self {
-            NodeData::Container(container) => container.into_tile(),
-            NodeData::Workspace(_) => None,
-        }
-    }
 }
 
-/// Detached subtree used to move container structures across trees.
+/// A view node while no workspace arena owns it.
 ///
-/// One type, the same way the arena has one: a node carries a tile or children, never both.
-/// Splitting this in two was what made a window in transit unable to say anything a container
-/// can say, so the two halves had to be kept in step by hand at both ends of every move.
+/// `Tile` is only the visual/protocol object. Identity, marks and sizing belong to the sway
+/// container node and therefore stay beside it while the view crosses workspaces, sits in the
+/// scratchpad or follows an interactive move outside every tree.
 #[derive(Debug)]
-pub struct DetachedNode<W: LayoutElement> {
+pub struct DetachedView<W: LayoutElement> {
+    key: NodeKey,
+    sizing: NodeSizing,
+    marks: Vec<String>,
+    tile: Tile<W>,
+}
+
+/// A split node while no workspace arena owns it.
+#[derive(Debug)]
+pub struct DetachedSplit<W: LayoutElement> {
     key: NodeKey,
     sizing: NodeSizing,
     layout: Layout,
-    /// Marks belong to the addressed node and travel with it across workspace arenas.
     marks: Vec<String>,
-    /// The view this node *is*, when it is one. Mirrors `ContainerData::tile`.
-    tile: Option<Tile<W>>,
     children: Vec<DetachedNode<W>>,
     focus_stack: Vec<NodeKey>,
     user_created: bool,
     prev_split_layout: Option<Layout>,
+}
+
+/// Detached subtree used to move container structures across trees.
+///
+/// The enum encodes the same invariant as sway's `sway_container`: a node is a view or it is a
+/// split. A detached leaf is the exact same [`DetachedView`] used by single-window moves, so
+/// removing one window can no longer degrade the node into a bare tile.
+#[derive(Debug)]
+pub enum DetachedNode<W: LayoutElement> {
+    View(Box<DetachedView<W>>),
+    Split(DetachedSplit<W>),
 }
 
 /// Fields shared by the workspace and real containers because both lay out child nodes.
@@ -371,23 +379,39 @@ struct FloatingGeometry {
     resize_base_size: Size<f64, Logical>,
 }
 
-/// Cached layout information for a leaf tile.
+/// Presentation state calculated together for one leaf.
+///
+/// These values describe one candidate or committed layout. Keeping them beside the content
+/// rectangle prevents independently keyed maps from representing only part of a leaf's state.
+#[derive(Debug, Clone, Copy, Default)]
+struct LeafPresentation {
+    tab_bar_offset: f64,
+    draw_titlebar: bool,
+    in_tabbed_context: bool,
+}
+
+impl LeafPresentation {
+    fn new(tab_bar_offset: f64, draw_titlebar: bool, in_tabbed_context: bool) -> Self {
+        Self {
+            tab_bar_offset: tab_bar_offset.max(0.0),
+            draw_titlebar,
+            in_tabbed_context,
+        }
+    }
+}
+
+/// Cached presentation information for a leaf tile.
+///
+/// The node's own pending box lives on [`ContainerData`] like it does for every real
+/// container. This cache only holds the decorated content box and state needed to present the
+/// leaf; keeping those meanings separate prevents tree operations from having to know whether a
+/// node currently holds a view or children.
 #[derive(Debug, Clone)]
 pub struct LeafLayoutInfo {
     pub key: NodeKey,
-    /// The root of the branch this leaf lives in — the workspace, or a floating group.
-    ///
-    /// Beside the path because it is half of the address: a path is read from a branch's own
-    /// root, which is what sway's `get_tree` publishes as `nodes` and `floating_nodes`.
-    pub branch: NodeKey,
-    pub path: Vec<usize>,
     /// The box used to place and render the tile after layout decoration is applied.
     pub rect: Rectangle<f64, Logical>,
-    /// The pending box belonging to the node itself.
-    ///
-    /// sway keeps this separate from the rectangle IPC derives after adding a tab or stack
-    /// title bar. Tree surgery can change the latter without arranging or changing this one.
-    pub node_rect: Rectangle<f64, Logical>,
+    presentation: LeafPresentation,
     pub visible: bool,
     /// This geometry came from `arrange_workspace`'s fullscreen branch.
     ///
@@ -536,8 +560,8 @@ pub(super) struct ContainerArena<W: LayoutElement> {
     /// for the commands whose authors remembered and wrong for the rest.
     seat: seat::SeatFocus,
     fullscreen_key: Option<NodeKey>,
-    /// Cached layout info for leaves
-    leaf_layouts: Vec<LeafLayoutInfo>,
+    /// Cached presentation by stable leaf identity.
+    leaf_layouts: HashMap<NodeKey, LeafLayoutInfo>,
     /// Branches whose arrange is waiting for the windows it asked to resize.
     ///
     /// One entry per branch, because a branch's windows share space with each other and with
@@ -702,16 +726,22 @@ impl<W: LayoutElement> ContainerData<W> {
         }
     }
 
-    /// Create the node a window *is*.
-    pub(super) fn new_view(mut tile: Tile<W>) -> Self {
-        let marks = tile.take_marks();
-        Self {
+    /// Reattach the node a window is, returning its stable identity with the arena payload.
+    pub(super) fn new_view(view: DetachedView<W>) -> (NodeKey, Self) {
+        let DetachedView {
+            key,
+            sizing,
+            marks,
+            tile,
+        } = view;
+        let node = Self {
             common: LayoutParentData::new(Layout::SplitH),
             marks,
             tile: Some(tile),
             user_created: false,
-            sizing: NodeSizing::default(),
-        }
+            sizing,
+        };
+        (key, node)
     }
 
     pub(super) fn tile(&self) -> Option<&Tile<W>> {
@@ -726,15 +756,13 @@ impl<W: LayoutElement> ContainerData<W> {
         self.tile.is_some()
     }
 
-    pub(super) fn into_tile(mut self) -> Option<Tile<W>> {
-        let mut tile = self.tile.take()?;
-        tile.replace_marks(self.marks);
-        Some(tile)
-    }
-
-    /// Split a node into the parts needed by [`DetachedNode`].
-    fn into_detached_parts(self) -> (Option<Tile<W>>, Vec<String>) {
-        (self.tile, self.marks)
+    pub(super) fn into_view(self, key: NodeKey) -> Option<DetachedView<W>> {
+        Some(DetachedView {
+            key,
+            sizing: self.sizing,
+            marks: self.marks,
+            tile: self.tile?,
+        })
     }
 
     pub(super) fn marks(&self) -> &[String] {
@@ -759,19 +787,12 @@ impl<W: LayoutElement> ContainerData<W> {
         self.marks.clear();
     }
 
-    /// Where this node's fractions live: on the tile when it is a view.
     pub(super) fn sizing(&self) -> &NodeSizing {
-        match &self.tile {
-            Some(tile) => tile.node_sizing(),
-            None => &self.sizing,
-        }
+        &self.sizing
     }
 
     pub(super) fn sizing_mut(&mut self) -> &mut NodeSizing {
-        match &mut self.tile {
-            Some(tile) => tile.node_sizing_mut(),
-            None => &mut self.sizing,
-        }
+        &mut self.sizing
     }
 
     pub(super) fn set_layout_explicit(&mut self, layout: Layout) {
@@ -813,11 +834,10 @@ impl<W: LayoutElement> DerefMut for ContainerData<W> {
 // ============================================================================
 
 impl<W: LayoutElement> DetachedNode<W> {
-    /// Where this node's fractions live: on the tile when it is a view, as in the arena.
     pub(super) fn unset_root_fractions(&mut self) {
-        match &mut self.tile {
-            Some(tile) => tile.unset_node_fractions(),
-            None => self.sizing.unset_fractions(),
+        match self {
+            DetachedNode::View(view) => view.sizing.unset_fractions(),
+            DetachedNode::Split(split) => split.sizing.unset_fractions(),
         }
     }
 
@@ -828,16 +848,76 @@ impl<W: LayoutElement> DetachedNode<W> {
     }
 
     fn collect_tiles<'a>(&'a self, tiles: &mut Vec<&'a Tile<W>>) {
-        match &self.tile {
-            Some(tile) => tiles.push(tile),
-            None => {
-                for child in &self.children {
+        match self {
+            DetachedNode::View(view) => tiles.push(&view.tile),
+            DetachedNode::Split(split) => {
+                for child in &split.children {
                     child.collect_tiles(tiles);
                 }
             }
         }
     }
 }
+
+impl<W: LayoutElement> DetachedView<W> {
+    pub(super) fn new(tile: Tile<W>) -> Self {
+        Self {
+            key: NodeKey::next(),
+            sizing: NodeSizing::default(),
+            marks: Vec::new(),
+            tile,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn key(&self) -> NodeKey {
+        self.key
+    }
+
+    /// The visual object, and only that.
+    ///
+    /// Deliberately not a `Deref`. A detached node is a node, and the whole reason it is one is
+    /// that identity, marks and fractions are not the tile's to answer for; borrowing every
+    /// `Tile` method onto this type would put the two vocabularies back in one namespace, where
+    /// an inherent method here and a like-named one there differ by which the compiler picks.
+    pub(super) fn tile(&self) -> &Tile<W> {
+        &self.tile
+    }
+
+    pub(super) fn tile_mut(&mut self) -> &mut Tile<W> {
+        &mut self.tile
+    }
+
+    /// The window this node *is*.
+    ///
+    /// Forwarded rather than reached through [`Self::tile`] because it is the one thing a
+    /// detached node answers in its own right: a view node is a window, in the arena or out of
+    /// it. Everything else about the tile is presentation and goes through the accessor.
+    pub(super) fn window(&self) -> &W {
+        self.tile.window()
+    }
+
+    pub(super) fn window_mut(&mut self) -> &mut W {
+        self.tile.window_mut()
+    }
+
+    pub(super) fn unset_fractions(&mut self) {
+        self.sizing.unset_fractions();
+    }
+
+    pub(super) fn clear_marks(&mut self) {
+        self.marks.clear();
+    }
+
+    pub(super) fn has_mark(&self, mark: &str) -> bool {
+        self.marks.iter().any(|candidate| candidate == mark)
+    }
+
+    pub(super) fn remove_mark(&mut self, mark: &str) {
+        self.marks.retain(|candidate| candidate != mark);
+    }
+}
+
 
 // ============================================================================
 // ContainerArena Implementation
@@ -870,7 +950,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             next_floating_root_id: 1,
             seat,
             fullscreen_key: None,
-            leaf_layouts: Vec::new(),
+            leaf_layouts: HashMap::new(),
             pending_layouts: Vec::new(),
             pending_transaction: None,
             pending_relayout: false,

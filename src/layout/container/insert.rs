@@ -3,23 +3,27 @@
 use super::ContainerArena;
 use super::ContainerData;
 use super::DetachedNode;
+use super::DetachedView;
 use super::Direction;
 use super::InsertParentInfo;
 use super::Layout;
 use super::LayoutElement;
 use super::NodeData;
 use super::NodeKey;
-use crate::layout::tile::Tile;
 
 impl<W: LayoutElement> ContainerArena<W> {
     /// Insert a window into the tree, focusing it afterwards.
     #[cfg(test)]
-    pub(in crate::layout) fn insert_window(&mut self, tile: Tile<W>) {
+    pub(in crate::layout) fn insert_window(&mut self, tile: DetachedView<W>) {
         self.insert_window_with_focus(tile, true);
     }
 
     /// Insert a window into the tree, optionally focusing it afterwards.
-    pub(in crate::layout) fn insert_window_with_focus(&mut self, tile: Tile<W>, focus: bool) {
+    pub(in crate::layout) fn insert_window_with_focus(
+        &mut self,
+        tile: DetachedView<W>,
+        focus: bool,
+    ) {
         let root = self.root;
         self.insert_window_into_branch(root, tile, focus);
     }
@@ -28,7 +32,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     pub(in crate::layout) fn insert_window_into_branch(
         &mut self,
         branch_root: NodeKey,
-        tile: Tile<W>,
+        tile: DetachedView<W>,
         focus: bool,
     ) {
         self.clear_focus_history();
@@ -37,7 +41,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         // is not attached to anything yet.
         self.autotile_presplit(branch_root);
 
-        let tile_key = self.insert_node(NodeData::Container(ContainerData::new_view(tile)));
+        let tile_key = self.insert_view(tile);
         self.insert_key_as_focus_sibling(branch_root, tile_key, focus);
     }
 
@@ -300,7 +304,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     pub(in crate::layout) fn insert_leaf_after(
         &mut self,
         window_id: &W::Id,
-        tile: Tile<W>,
+        tile: DetachedView<W>,
         focus: bool,
     ) {
         let slot = self
@@ -317,7 +321,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             return;
         };
 
-        let tile_key = self.insert_node(NodeData::Container(ContainerData::new_view(tile)));
+        let tile_key = self.insert_view(tile);
         self.get_container_mut(parent_key)
             .expect("child_index resolved this parent as a layout parent")
             .insert_child(insert_idx, tile_key);
@@ -329,7 +333,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         &mut self,
         root_idx: usize,
         tile_idx: Option<usize>,
-        tile: Tile<W>,
+        tile: DetachedView<W>,
         focus: bool,
     ) -> bool {
         let root_key = self.root;
@@ -377,7 +381,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         let insert_at = tile_idx.unwrap_or(root_child_container.children.len());
         let insert_at = insert_at.min(root_child_container.children.len());
 
-        let tile_key = self.insert_node(NodeData::Container(ContainerData::new_view(tile)));
+        let tile_key = self.insert_view(tile);
 
         if let Some(root_child_container) = self.get_container_mut(root_child_key) {
             root_child_container.insert_child(insert_at, tile_key);
@@ -431,14 +435,70 @@ impl<W: LayoutElement> ContainerArena<W> {
         })
     }
 
-    /// Swap the tile held by the leaf at `key`, returning the previous one.
+    /// Replace one view node with another in the same tree slot.
+    ///
+    /// Identity follows the view, not the slot. Replacing only the `Tile` would leave the store
+    /// indexed by the displaced view's key while sizing and marks belonged to the arriving one.
+    ///
+    /// The slot's standing in the seat comes with it. Leaving the arriving node at the back of
+    /// the order the way a brand new node arrives would answer a different question than the one
+    /// the swap asked: `seat_get_active_tiling_child` reads that order to pick the tab a switcher
+    /// shows, so a drop onto the visible tab would quietly show a different one, and a drop onto
+    /// the focused leaf would leave the workspace with no focused leaf at all.
+    ///
+    /// Every refusal happens before anything is removed, and hands the arriving view back: a
+    /// swap that cannot happen is the caller's to fall back from, and it cannot fall back to
+    /// anything without the window. Past that point the node is out of the store and both views
+    /// are in hand, so there is nothing left to report and no way to report it.
+    // Both variants carry a view back to the caller; boxing would only add an allocation.
+    #[allow(clippy::result_large_err)]
     pub(in crate::layout) fn replace_leaf(
         &mut self,
         key: NodeKey,
-        tile: Tile<W>,
-    ) -> Option<Tile<W>> {
-        let existing = self.get_node_mut(key)?.as_tile_mut()?;
-        Some(std::mem::replace(existing, tile))
+        view: DetachedView<W>,
+    ) -> Result<DetachedView<W>, DetachedView<W>> {
+        if !self.get_node(key).is_some_and(|node| node.is_view()) {
+            return Err(view);
+        }
+        let Some(parent) = self.parent_of(key) else {
+            return Err(view);
+        };
+        let Some(idx) = self.child_index(parent, key) else {
+            return Err(view);
+        };
+
+        let rank = self.seat.order().iter().position(|entry| *entry == key);
+        let was_focused_leaf = self.focused_key() == Some(key);
+        let was_selected = self.selected_key() == Some(key);
+
+        let node = self
+            .remove_node_from_store(key)
+            .expect("the node was just read out of the store");
+        let NodeData::Container(container) = node else {
+            unreachable!("a leaf cannot be the workspace")
+        };
+        let displaced = container
+            .into_view(key)
+            .expect("a view container must hold its tile");
+
+        let replacement = self.insert_view(view);
+        self.get_container_mut(parent)
+            .expect("child_index resolved this parent as a layout parent")
+            .children[idx] = replacement;
+        self.set_parent(replacement, Some(parent));
+
+        if let Some(rank) = rank {
+            self.seat.restore_at(rank, [replacement]);
+        }
+        if was_focused_leaf {
+            self.seat.redirect_focused_leaf(Some(replacement));
+        }
+        if was_selected {
+            self.seat.redirect_selection(Some(replacement));
+        }
+
+        self.prune_leaf_layouts();
+        Ok(displaced)
     }
 
     /// Whether `key` addresses a leaf (window) node.
@@ -450,10 +510,10 @@ impl<W: LayoutElement> ContainerArena<W> {
         &mut self,
         branch_root: NodeKey,
         info: &InsertParentInfo,
-        tile: Tile<W>,
+        tile: DetachedView<W>,
         focus: bool,
     ) -> bool {
-        let tile_key = self.insert_node(NodeData::Container(ContainerData::new_view(tile)));
+        let tile_key = self.insert_view(tile);
         self.insert_key_with_parent_info(branch_root, info, tile_key, focus)
     }
 
@@ -528,7 +588,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         &mut self,
         target_key: NodeKey,
         direction: Direction,
-        tile: Tile<W>,
+        tile: DetachedView<W>,
         focus: bool,
     ) -> bool {
         if self.is_empty() {
@@ -563,7 +623,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             } else {
                 target_idx + 1
             };
-            let tile_key = self.insert_node(NodeData::Container(ContainerData::new_view(tile)));
+            let tile_key = self.insert_view(tile);
 
             let container = self
                 .get_container_mut(parent_key)
@@ -577,7 +637,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         // Otherwise wrap the target and the new tile in a fresh split container that
         // replaces the target in its parent.
-        let tile_key = self.insert_node(NodeData::Container(ContainerData::new_view(tile)));
+        let tile_key = self.insert_view(tile);
         let new_container_key = self.new_split_pair_container(target_key, tile_key, direction);
 
         self.replace_child_node(parent_key, target_key, new_container_key);
@@ -590,7 +650,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     pub(in crate::layout) fn insert_leaf_split_root(
         &mut self,
         direction: Direction,
-        tile: Tile<W>,
+        tile: DetachedView<W>,
         focus: bool,
     ) -> bool {
         let root_key = self.root;
@@ -603,7 +663,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             self.wrap_workspace_children(previous, direction.split_layout());
         }
 
-        let tile_key = self.insert_node(NodeData::Container(ContainerData::new_view(tile)));
+        let tile_key = self.insert_view(tile);
         let insert_idx = match direction.is_leading() {
             true => 0,
             false => self

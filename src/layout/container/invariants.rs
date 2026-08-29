@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::{ContainerArena, Layout, LayoutElement, LeafLayoutInfo, NodeData, NodeKey};
 
@@ -106,13 +106,33 @@ impl<W: LayoutElement> ContainerArena<W> {
             );
         }
 
-        self.verify_leaf_layout_cache(self.leaf_layouts.as_slice(), &leaves, "leaf_layouts");
+        self.verify_leaf_layout_cache(&self.leaf_layouts, &leaves, "leaf_layouts");
+        for info in self.leaf_layouts.values() {
+            let geometry = self
+                .node_geometry(info.key)
+                .expect("a committed leaf layout must have node geometry");
+            assert!(
+                geometry.size.w >= 0.0 && geometry.size.h >= 0.0,
+                "committed node rectangles must not have negative size"
+            );
+        }
         for pending in &self.pending_layouts {
             self.verify_leaf_layout_cache(
-                pending.data.leaf_layouts.as_slice(),
+                &pending.data.leaf_layouts,
                 &leaves,
                 "pending leaf_layouts",
             );
+            for info in pending.data.leaf_layouts.values() {
+                let geometry = pending
+                    .data
+                    .node_geometries
+                    .get(&info.key)
+                    .expect("a pending leaf layout must have candidate node geometry");
+                assert!(
+                    geometry.size.w >= 0.0 && geometry.size.h >= 0.0,
+                    "pending node rectangles must not have negative size"
+                );
+            }
         }
 
         assert!(
@@ -208,28 +228,24 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     fn verify_leaf_layout_cache(
         &self,
-        layouts: &[LeafLayoutInfo],
+        layouts: &HashMap<NodeKey, LeafLayoutInfo>,
         leaves: &HashSet<NodeKey>,
         label: &str,
     ) {
-        let mut seen = HashSet::with_capacity(layouts.len());
-        for info in layouts {
+        for (key, info) in layouts {
+            assert!(leaves.contains(key), "{label} entry must point to a leaf");
             assert!(
-                leaves.contains(&info.key),
-                "{label} entry must point to a leaf"
-            );
-            assert!(
-                seen.insert(info.key),
-                "{label} must not contain duplicate leaf keys"
-            );
-            assert_eq!(
-                self.branch_relative_path(info.key).as_deref(),
-                Some(info.path.as_slice()),
-                "{label} path must match the current tree"
+                *key == info.key,
+                "{label} map key must match the cached leaf identity"
             );
             assert!(
                 info.rect.size.w >= 0.0 && info.rect.size.h >= 0.0,
                 "{label} rectangles must not have negative size"
+            );
+            assert!(
+                info.presentation.tab_bar_offset.is_finite()
+                    && info.presentation.tab_bar_offset >= 0.0,
+                "{label} tab bar offsets must be finite and non-negative"
             );
         }
     }

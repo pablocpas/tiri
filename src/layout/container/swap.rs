@@ -250,12 +250,6 @@ impl<W: LayoutElement> ContainerArena<W> {
                 self.restore_swap_focus(root, node, focused);
                 self.swap_fullscreen_slot(root, node);
 
-                // The exchanged leaves changed branch ownership. A fullscreen arrange below
-                // can run immediately afterwards; if cached addresses still name the old
-                // branches, that partial pass treats the newly floating leaf as stale tiled
-                // data and drops the pending box just exchanged above.
-                self.readdress_leaf_layouts();
-
                 true
             }
         }

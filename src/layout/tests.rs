@@ -1058,7 +1058,7 @@ impl Op {
                 let mut found_next_to = false;
 
                 if let Some(InteractiveMoveState::Moving(move_)) = &layout.interactive_move {
-                    if move_.tile.window().0.id == next_to_id {
+                    if move_.view.window().0.id == next_to_id {
                         found_next_to = true;
                     }
                 }
@@ -1520,8 +1520,8 @@ impl Op {
                 let mut update = false;
 
                 if let Some(InteractiveMoveState::Moving(move_)) = &layout.interactive_move {
-                    if move_.tile.window().0.id == id {
-                        move_.tile.window().0.parent_id.set(new_parent_id);
+                    if move_.view.window().0.id == id {
+                        move_.view.window().0.parent_id.set(new_parent_id);
                         update = true;
                     }
                 }
@@ -1571,8 +1571,8 @@ impl Op {
                 let mut update = false;
 
                 if let Some(InteractiveMoveState::Moving(move_)) = &layout.interactive_move {
-                    if move_.tile.window().0.id == id {
-                        if move_.tile.window().communicate() {
+                    if move_.view.window().0.id == id {
+                        if move_.view.window().communicate() {
                             update = true;
                         }
 
@@ -2458,7 +2458,7 @@ fn check_ops_with_options(
 }
 
 #[test]
-fn tabbing_a_fullscreen_floating_window_readdresses_cached_layouts() {
+fn tabbing_a_fullscreen_floating_window_keeps_the_layout_cache_consistent() {
     let mut floating = TestWindowParams::new(2);
     floating.is_floating = true;
 

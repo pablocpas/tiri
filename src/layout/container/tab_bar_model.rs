@@ -14,15 +14,13 @@ impl<W: LayoutElement> ContainerArena<W> {
         let mut out = Vec::new();
         let root_key = self.root;
 
-        let mut path = Vec::new();
-        self.collect_tab_bar_layouts(root_key, &mut path, &mut out, true);
+        self.collect_tab_bar_layouts(root_key, &mut out, true);
         out
     }
 
     pub(super) fn collect_tab_bar_layouts(
         &self,
         node_key: NodeKey,
-        path: &mut Vec<usize>,
         out: &mut Vec<TabBarInfo>,
         visible: bool,
     ) {
@@ -57,7 +55,6 @@ impl<W: LayoutElement> ContainerArena<W> {
 
                 out.push(TabBarInfo {
                     key: node_key,
-                    path: path.clone(),
                     layout: container.layout,
                     rect,
                     row_height,
@@ -68,13 +65,11 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         let focused_idx = self.active_child_index(node_key).unwrap_or(0);
         for (idx, &child_key) in container.children.iter().enumerate() {
-            path.push(idx);
             let child_visible = match container.layout {
                 Layout::Tabbed | Layout::Stacked => idx == focused_idx,
                 _ => true,
             };
-            self.collect_tab_bar_layouts(child_key, path, out, visible && child_visible);
-            path.pop();
+            self.collect_tab_bar_layouts(child_key, out, visible && child_visible);
         }
     }
 

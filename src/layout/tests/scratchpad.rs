@@ -567,26 +567,18 @@ fn moving_a_tiled_window_to_the_scratchpad_resizes_the_survivors() {
     );
 }
 
-fn space_root(layout: &Layout<TestWindow>) -> crate::layout::container::NodeKey {
-    layout
-        .active_workspace()
-        .expect("active workspace")
-        .container_tree()
-        .arena()
-        .workspace_root()
-}
-
 fn tiled_window_rects(
     layout: &Layout<TestWindow>,
 ) -> Vec<smithay::utils::Rectangle<f64, smithay::utils::Logical>> {
-    layout
+    let arena = layout
         .active_workspace()
         .expect("active workspace")
         .container_tree()
-        .arena()
+        .arena();
+    let root = arena.workspace_root();
+    arena
         .leaf_layouts()
-        .iter()
-        .filter(|info| info.branch == space_root(layout))
+        .filter(|info| arena.branch_root(info.key) == root)
         .map(|info| info.rect)
         .collect()
 }

@@ -330,7 +330,7 @@ fn an_interactive_move_between_outputs_keeps_node_identity_while_detached() {
     else {
         panic!("window should have crossed the interactive-move threshold");
     };
-    assert_eq!(move_.tile.node_key(), key);
+    assert_eq!(move_.view.key(), key);
 
     check_ops_on_layout(&mut layout, [Op::InteractiveMoveEnd { window: 1 }]);
     assert_eq!(workspace_node_key(&layout, 1), key);
@@ -361,7 +361,7 @@ fn sticky_and_scratchpad_roundtrips_keep_node_identity() {
 
     layout.move_window_to_scratchpad(Some(&1));
     assert_eq!(
-        layout.scratchpad.tiles().next().map(Tile::node_key),
+        layout.scratchpad.container_tree().arena().window_key(&1),
         Some(key)
     );
     layout.scratchpad_show();

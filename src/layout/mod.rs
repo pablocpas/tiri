@@ -53,8 +53,8 @@ use tiri_config::{
 use tiri_ipc::{ColumnDisplay, LayoutTree, PositionChange, SizeChange, WindowLayout};
 use workspace::{WorkspaceAddWindowTarget, WorkspaceId, WorkspaceLifetime};
 
+use self::container::{DetachedView, InsertParentInfo, NodeKey};
 pub use self::container::{Direction, Layout as ContainerLayout};
-use self::container::{InsertParentInfo, NodeKey};
 pub use self::monitor::MonitorRenderElement;
 use self::monitor::{Monitor, WorkspaceSwitch};
 use self::seat_focus::{SeatFocusNode, SeatFocusStack};
@@ -581,8 +581,8 @@ enum InteractiveMoveState<W: LayoutElement> {
 
 #[derive(Debug)]
 struct InteractiveMoveData<W: LayoutElement> {
-    /// The window being moved.
-    pub(self) tile: Tile<W>,
+    /// The view node being moved outside every workspace arena.
+    pub(self) view: DetachedView<W>,
     /// Output where the window is currently located/rendered.
     pub(self) output: Output,
     /// Current pointer position within output.
@@ -681,9 +681,9 @@ pub enum MarkMode {
     Toggle,
 }
 
-/// Tile that was just removed from the layout.
+/// View node that was just removed from the layout.
 pub struct RemovedTile<W: LayoutElement> {
-    tile: Tile<W>,
+    tile: DetachedView<W>,
     /// Whether the tile was floating.
     is_floating: bool,
 }
@@ -698,7 +698,7 @@ impl<W: LayoutElement> RemovedTile<W> {
     /// sway/commands/move.c:198-239
     fn prepare_for_workspace_move(&mut self) {
         if !self.is_floating {
-            self.tile.unset_node_fractions();
+            self.tile.unset_fractions();
         }
     }
 }
@@ -806,7 +806,7 @@ impl<W: LayoutElement> InteractiveMoveState<W> {
 
     fn moving_window_id(&self) -> Option<&W::Id> {
         match self {
-            InteractiveMoveState::Moving(move_) => Some(move_.tile.window().id()),
+            InteractiveMoveState::Moving(move_) => Some(move_.view.window().id()),
             InteractiveMoveState::MovingContainer(move_) => Some(&move_.window_id),
             _ => None,
         }
@@ -823,13 +823,14 @@ impl<W: LayoutElement> InteractiveMoveState<W> {
 impl<W: LayoutElement> InteractiveMoveData<W> {
     fn tile_render_location(&self, zoom: f64) -> Point<f64, Logical> {
         let scale = Scale::from(self.output.current_scale().fractional_scale());
-        let window_size = self.tile.window_size();
+        let window_size = self.view.tile().window_size();
         let pointer_offset_within_window = Point::from((
             window_size.w * self.pointer_ratio_within_window.0,
             window_size.h * self.pointer_ratio_within_window.1,
         ));
+        let tile = self.view.tile();
         let pos = self.pointer_pos_within_output
-            - (pointer_offset_within_window + self.tile.window_loc() - self.tile.render_offset())
+            - (pointer_offset_within_window + tile.window_loc() - tile.render_offset())
                 .upscale(zoom);
         // Round to physical pixels.
         pos.to_physical_precise_round(scale).to_logical(scale)
@@ -1233,7 +1234,7 @@ impl<W: LayoutElement> Layout<W> {
                                     None
                                 }
                             })
-                            .filter(|move_| next_to == move_.tile.window().id())
+                            .filter(|move_| next_to == move_.view.window().id())
                             .map(|move_| move_.output.clone())
                         {
                             // The next_to window is being interactively moved.
@@ -1306,7 +1307,7 @@ impl<W: LayoutElement> Layout<W> {
                                     None
                                 }
                             })
-                            .filter(|move_| next_to == move_.tile.window().id())
+                            .filter(|move_| next_to == move_.view.window().id())
                             .is_some()
                         {
                             // The next_to window is being interactively moved. If there are no
@@ -1372,7 +1373,7 @@ impl<W: LayoutElement> Layout<W> {
                     }
                 }
                 InteractiveMoveState::Moving(move_) => {
-                    if move_.tile.window().id() == window {
+                    if move_.view.window().id() == window {
                         let Some(InteractiveMoveState::Moving(move_)) =
                             self.interactive_move.take()
                         else {
@@ -1384,7 +1385,7 @@ impl<W: LayoutElement> Layout<W> {
                         }
 
                         return Some(RemovedTile {
-                            tile: move_.tile,
+                            tile: move_.view,
                             is_floating: false,
                         });
                     }
@@ -1413,7 +1414,7 @@ impl<W: LayoutElement> Layout<W> {
             .find(|mon| mon.has_sticky_window(window))
         {
             let mut removed = mon.take_sticky_window(window)?;
-            removed.tile.set_sticky(false);
+            removed.tile.tile_mut().set_sticky(false);
 
             if mon.sticky_is_active()
                 && mon.sticky_active_window_id().is_some_and(|id| id == window)
@@ -1495,13 +1496,13 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn update_window(&mut self, window: &W::Id, serial: Option<Serial>) {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            if move_.tile.window().id() == window {
+            if move_.view.window().id() == window {
                 // Do this before calling update_window() so it can get up-to-date info.
                 if let Some(serial) = serial {
-                    move_.tile.window_mut().on_commit(serial);
+                    move_.view.window_mut().on_commit(serial);
                 }
 
-                move_.tile.update_window();
+                move_.view.tile_mut().update_window();
                 return;
             }
         }
@@ -1765,8 +1766,8 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn find_window_and_output(&self, wl_surface: &WlSurface) -> Option<(&W, Option<&Output>)> {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
-            if move_.tile.window().is_wl_surface(wl_surface) {
-                return Some((move_.tile.window(), Some(&move_.output)));
+            if move_.view.window().is_wl_surface(wl_surface) {
+                return Some((move_.view.window(), Some(&move_.output)));
             }
         }
 
@@ -1811,8 +1812,8 @@ impl<W: LayoutElement> Layout<W> {
         wl_surface: &WlSurface,
     ) -> Option<(&mut W, Option<&Output>)> {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            if move_.tile.window().is_wl_surface(wl_surface) {
-                return Some((move_.tile.window_mut(), Some(&move_.output)));
+            if move_.view.window().is_wl_surface(wl_surface) {
+                return Some((move_.view.window_mut(), Some(&move_.output)));
             }
         }
 
@@ -1927,16 +1928,16 @@ impl<W: LayoutElement> Layout<W> {
     /// We will try to fit popups inside this rect.
     pub fn popup_target_rect(&self, window: &W::Id) -> Rectangle<f64, Logical> {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
-            if move_.tile.window().id() == window {
+            if move_.view.window().id() == window {
                 // Follow the tiling layout logic and fit the popup horizontally within the
                 // window geometry.
-                let width = move_.tile.window_size().w;
+                let width = move_.view.tile().window_size().w;
                 let height = output_size(&move_.output).h;
                 let mut target = Rectangle::from_size(Size::from((width, height)));
                 // FIXME: ideally this shouldn't include the tile render offset, but the code
                 // duplication would be a bit annoying for this edge case.
                 target.loc.y -= move_.tile_render_location(1.).y;
-                target.loc.y -= move_.tile.window_loc().y;
+                target.loc.y -= move_.view.tile().window_loc().y;
                 return target;
             }
         }
@@ -2166,7 +2167,7 @@ impl<W: LayoutElement> Layout<W> {
             .as_ref()
             .and_then(|x| x.moving())
             .filter(|move_| move_.output == *output)
-            .map(|move_| move_.tile.window())
+            .map(|move_| move_.view.window())
             .into_iter();
 
         let mon = monitors.iter().find(|mon| &mon.output == output).unwrap();
@@ -2186,7 +2187,7 @@ impl<W: LayoutElement> Layout<W> {
             .as_mut()
             .and_then(|x| x.moving_mut())
             .filter(|move_| move_.output == *output)
-            .map(|move_| move_.tile.window_mut())
+            .map(|move_| move_.view.window_mut())
             .into_iter();
 
         let mon = monitors
@@ -2204,8 +2205,8 @@ impl<W: LayoutElement> Layout<W> {
     ) {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
             // We don't fill any positions for interactively moved windows.
-            let layout = move_.tile.ipc_layout_template();
-            f(move_.tile.window(), Some(&move_.output), None, layout);
+            let layout = move_.view.tile().ipc_layout_template();
+            f(move_.view.window(), Some(&move_.output), None, layout);
         }
 
         for tile in self.scratchpad.tiles() {
@@ -2240,7 +2241,7 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn with_windows_mut(&mut self, mut f: impl FnMut(&mut W, Option<&Output>)) {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            f(move_.tile.window_mut(), Some(&move_.output));
+            f(move_.view.window_mut(), Some(&move_.output));
         }
 
         for tile in self.scratchpad.tiles_mut() {
@@ -2753,7 +2754,7 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn consume_or_expel_window_left(&mut self, window: Option<&W::Id>) {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            if window.is_none() || window == Some(move_.tile.window().id()) {
+            if window.is_none() || window == Some(move_.view.window().id()) {
                 return;
             }
         }
@@ -2775,7 +2776,7 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn consume_or_expel_window_right(&mut self, window: Option<&W::Id>) {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            if window.is_none() || window == Some(move_.tile.window().id()) {
+            if window.is_none() || window == Some(move_.view.window().id()) {
                 return;
             }
         }
@@ -2997,7 +2998,7 @@ impl<W: LayoutElement> Layout<W> {
     ) {
         self.request_refresh();
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            if window.is_none() || window == Some(move_.tile.window().id()) {
+            if window.is_none() || window == Some(move_.view.window().id()) {
                 return;
             }
         }
@@ -3278,7 +3279,7 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn center_window(&mut self, id: Option<&W::Id>) {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            if id.is_none() || id == Some(move_.tile.window().id()) {
+            if id.is_none() || id == Some(move_.view.window().id()) {
                 return;
             }
         }
@@ -3336,7 +3337,7 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn focus_with_output(&self) -> Option<(&W, &Output)> {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
-            return Some((move_.tile.window(), &move_.output));
+            return Some((move_.view.window(), &move_.output));
         }
 
         let MonitorSet::Normal {
@@ -3369,12 +3370,15 @@ impl<W: LayoutElement> Layout<W> {
                     let pos_within_tile = (pos_within_output - tile_pos).downscale(zoom);
                     // During the overview animation, we cannot do input hits because we cannot
                     // really represent scaled windows properly.
-                    let (win, hit) =
-                        HitType::hit_tile(&move_.tile, Point::from((0., 0.)), pos_within_tile)?;
+                    let (win, hit) = HitType::hit_tile(
+                        move_.view.tile(),
+                        Point::from((0., 0.)),
+                        pos_within_tile,
+                    )?;
                     return Some((win, hit.to_activate()));
                 } else {
                     let tile_pos = move_.tile_render_location(1.);
-                    return HitType::hit_tile(&move_.tile, tile_pos, pos_within_output);
+                    return HitType::hit_tile(move_.view.tile(), tile_pos, pos_within_output);
                 }
             }
         }
@@ -3505,10 +3509,10 @@ impl<W: LayoutElement> Layout<W> {
                     move_win_id = Some(window_id.clone());
                 }
                 InteractiveMoveState::Moving(move_) => {
-                    assert_eq!(self.clock, move_.tile.clock);
-                    assert!(move_.tile.window().pending_sizing_mode().is_normal());
+                    assert_eq!(self.clock, move_.view.tile().clock);
+                    assert!(move_.view.window().pending_sizing_mode().is_normal());
 
-                    move_.tile.verify_invariants();
+                    move_.view.tile().verify_invariants();
 
                     let scale = move_.output.current_scale().fractional_scale();
                     let options = Options::clone(&self.options)
@@ -3516,7 +3520,7 @@ impl<W: LayoutElement> Layout<W> {
                         .with_merged_layout(move_.workspace_config.as_ref().map(|(_, c)| c))
                         .adjusted_for_scale(scale);
                     assert_eq!(
-                        &*move_.tile.options, &options,
+                        &*move_.view.tile().options, &options,
                         "interactive moved tile options must be \
                          base options adjusted for output scale"
                     );
@@ -3528,7 +3532,7 @@ impl<W: LayoutElement> Layout<W> {
                     assert_abs_diff_eq!(tile_pos.x, rounded_pos.x, epsilon = 1e-5);
                     assert_abs_diff_eq!(tile_pos.y, rounded_pos.y, epsilon = 1e-5);
 
-                    if let Some(alpha) = &move_.tile.alpha_animation {
+                    if let Some(alpha) = &move_.view.tile().alpha_animation {
                         if move_.is_floating {
                             assert_eq!(
                                 alpha.anim.to(),
@@ -3689,7 +3693,7 @@ impl<W: LayoutElement> Layout<W> {
         }
 
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            move_.tile.advance_animations();
+            move_.view.tile_mut().advance_animations();
 
             if dnd_scroll.is_none() {
                 dnd_scroll = Some((
@@ -3826,7 +3830,7 @@ impl<W: LayoutElement> Layout<W> {
 
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
             if output.is_none_or(|output| *output == move_.output) {
-                if move_.tile.are_animations_ongoing() {
+                if move_.view.tile().are_animations_ongoing() {
                     return true;
                 }
 
@@ -3878,7 +3882,7 @@ impl<W: LayoutElement> Layout<W> {
                 let view_rect =
                     Rectangle::new(pos_within_output.upscale(-1.), output_size(&move_.output))
                         .downscale(zoom);
-                move_.tile.update_render_elements(
+                move_.view.tile_mut().update_render_elements(
                     true,
                     true,
                     true,
@@ -3924,7 +3928,7 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn update_shaders(&mut self) {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            move_.tile.update_shaders();
+            move_.view.tile_mut().update_shaders();
         }
 
         match &mut self.monitor_set {
@@ -3976,9 +3980,9 @@ impl<W: LayoutElement> Layout<W> {
                         ws.tiling_insert_position(pos_within_workspace)
                     };
 
-                    let border_width = move_.tile.effective_border_width().unwrap_or(0.);
+                    let border_width = move_.view.tile().effective_border_width().unwrap_or(0.);
                     let corner_radius = move_
-                        .tile
+                        .view
                         .window()
                         .geometry_corner_radius()
                         .expanded_by(border_width as f32);
@@ -4075,7 +4079,7 @@ impl<W: LayoutElement> Layout<W> {
                 .with_merged_layout(move_.output_config.as_ref())
                 .with_merged_layout(move_.workspace_config.as_ref().map(|(_, c)| c))
                 .adjusted_for_scale(scale);
-            move_.tile.update_config(view_size, scale, Rc::new(options));
+            move_.view.tile_mut().update_config(view_size, scale, Rc::new(options));
         }
 
         match &mut self.monitor_set {
@@ -4104,7 +4108,7 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn toggle_window_width(&mut self, window: Option<&W::Id>, forwards: bool) {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            if window.is_none() || window == Some(move_.tile.window().id()) {
+            if window.is_none() || window == Some(move_.view.window().id()) {
                 return;
             }
         }
@@ -4123,7 +4127,7 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn toggle_window_height(&mut self, window: Option<&W::Id>, forwards: bool) {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            if window.is_none() || window == Some(move_.tile.window().id()) {
+            if window.is_none() || window == Some(move_.view.window().id()) {
                 return;
             }
         }
@@ -4273,7 +4277,7 @@ impl<W: LayoutElement> Layout<W> {
     pub fn resize_window(&mut self, window: Option<&W::Id>, request: ResizeRequest) {
         self.request_refresh();
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            if window.is_none() || window == Some(move_.tile.window().id()) {
+            if window.is_none() || window == Some(move_.view.window().id()) {
                 return;
             }
         }
@@ -4293,7 +4297,7 @@ impl<W: LayoutElement> Layout<W> {
     pub fn reset_window_height(&mut self, window: Option<&W::Id>) {
         self.request_refresh();
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            if window.is_none() || window == Some(move_.tile.window().id()) {
+            if window.is_none() || window == Some(move_.view.window().id()) {
                 return;
             }
         }
@@ -4320,13 +4324,13 @@ impl<W: LayoutElement> Layout<W> {
     pub fn toggle_window_floating(&mut self, window: Option<&W::Id>) {
         self.request_refresh();
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            if window.is_none() || window == Some(move_.tile.window().id()) {
+            if window.is_none() || window == Some(move_.view.window().id()) {
                 move_.is_floating = !move_.is_floating;
 
                 // When going to floating, restore the floating window size.
                 if move_.is_floating {
-                    let floating_size = move_.tile.floating_window_size;
-                    let win = move_.tile.window_mut();
+                    let floating_size = move_.view.tile().floating_window_size;
+                    let win = move_.view.window_mut();
                     let mut size =
                         floating_size.unwrap_or_else(|| win.expected_size().unwrap_or_default());
 
@@ -4341,19 +4345,19 @@ impl<W: LayoutElement> Layout<W> {
                     win.request_size_once(size, true);
 
                     // Animate the tile back to opaque.
-                    move_.tile.animate_alpha(
+                    move_.view.tile_mut().animate_alpha(
                         INTERACTIVE_MOVE_ALPHA,
                         1.,
                         self.options.animations.window_movement.0,
                     );
                 } else {
                     // Animate the tile back to semitransparent.
-                    move_.tile.animate_alpha(
+                    move_.view.tile_mut().animate_alpha(
                         1.,
                         INTERACTIVE_MOVE_ALPHA,
                         self.options.animations.window_movement.0,
                     );
-                    move_.tile.hold_alpha_animation_after_done();
+                    move_.view.tile_mut().hold_alpha_animation_after_done();
                 }
 
                 return;
@@ -4395,7 +4399,7 @@ impl<W: LayoutElement> Layout<W> {
     pub fn toggle_window_sticky(&mut self, window: Option<&W::Id>) {
         self.request_refresh();
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
-            if window.is_none() || window == Some(move_.tile.window().id()) {
+            if window.is_none() || window == Some(move_.view.window().id()) {
                 return;
             }
         }
@@ -4430,7 +4434,7 @@ impl<W: LayoutElement> Layout<W> {
     pub fn set_window_floating(&mut self, window: Option<&W::Id>, floating: bool) {
         self.request_refresh();
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            if window.is_none() || window == Some(move_.tile.window().id()) {
+            if window.is_none() || window == Some(move_.view.window().id()) {
                 if move_.is_floating != floating {
                     self.toggle_window_floating(window);
                 }
@@ -4546,7 +4550,7 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn move_window_to_scratchpad(&mut self, window: Option<&W::Id>) {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
-            if window.is_none() || window == Some(move_.tile.window().id()) {
+            if window.is_none() || window == Some(move_.view.window().id()) {
                 return;
             }
         }
@@ -4700,8 +4704,8 @@ impl<W: LayoutElement> Layout<W> {
     /// use the focused descendant without weakening the mark's actual node identity.
     pub fn window_id_with_mark(&self, mark: &str) -> Option<W::Id> {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
-            if move_.tile.has_mark(mark) {
-                return Some(move_.tile.window().id().clone());
+            if move_.view.has_mark(mark) {
+                return Some(move_.view.window().id().clone());
             }
         }
 
@@ -4751,7 +4755,7 @@ impl<W: LayoutElement> Layout<W> {
     ) {
         self.request_refresh();
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            if id.is_none() || id == Some(move_.tile.window().id()) {
+            if id.is_none() || id == Some(move_.view.window().id()) {
                 return;
             }
         }
@@ -4890,7 +4894,7 @@ impl<W: LayoutElement> Layout<W> {
     ) {
         self.request_refresh();
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            if window.is_none() || window == Some(move_.tile.window().id()) {
+            if window.is_none() || window == Some(move_.view.window().id()) {
                 return;
             }
         }
@@ -4942,7 +4946,7 @@ impl<W: LayoutElement> Layout<W> {
                     let mut removed = monitors[src_idx]
                         .take_sticky_window(&sticky_id)
                         .expect("sticky window should exist");
-                    removed.tile.set_sticky(true);
+                    removed.tile.tile_mut().set_sticky(true);
                     if was_active {
                         monitors[src_idx].clear_sticky_focus();
                     }
@@ -5012,7 +5016,7 @@ impl<W: LayoutElement> Layout<W> {
             let mut removed = ws.remove_tile(&window, transaction);
 
             removed.prepare_for_workspace_move();
-            removed.tile.stop_move_animations();
+            removed.tile.tile_mut().stop_move_animations();
 
             let mon = &mut monitors[new_idx];
             mon.add_tile(
@@ -5302,7 +5306,7 @@ impl<W: LayoutElement> Layout<W> {
     fn interactive_move_targets_window(&self, id: &W::Id) -> bool {
         match &self.interactive_move {
             Some(InteractiveMoveState::Starting { window_id, .. }) => window_id == id,
-            Some(InteractiveMoveState::Moving(move_)) => move_.tile.window().id() == id,
+            Some(InteractiveMoveState::Moving(move_)) => move_.view.window().id() == id,
             Some(InteractiveMoveState::MovingContainer(move_)) => &move_.window_id == id,
             None => false,
         }
@@ -5774,11 +5778,11 @@ impl<W: LayoutElement> Layout<W> {
                 } = self.remove_window(window, Transaction::new()).unwrap();
 
                 if was_sticky {
-                    tile.set_sticky(true);
+                    tile.tile_mut().set_sticky(true);
                 }
 
-                tile.stop_move_animations();
-                tile.interactive_move_offset = Point::from((0., 0.));
+                tile.tile_mut().stop_move_animations();
+                tile.tile_mut().interactive_move_offset = Point::from((0., 0.));
                 tile.window().output_enter(&output);
                 tile.window().set_preferred_scale_transform(
                     output.current_scale(),
@@ -5791,23 +5795,25 @@ impl<W: LayoutElement> Layout<W> {
                     .with_merged_layout(output_config.as_ref())
                     .with_merged_layout(workspace_config.as_ref().map(|(_, c)| c))
                     .adjusted_for_scale(scale);
-                tile.update_config(view_size, scale, Rc::new(options));
+                tile.tile_mut().update_config(view_size, scale, Rc::new(options));
                 if !tile.window().pending_sizing_mode().is_normal() {
-                    tile.request_tile_size(tile.tile_size(), !self.options.animations.off, None);
+                    let tile_size = tile.tile().tile_size();
+                    tile.tile_mut()
+                        .request_tile_size(tile_size, !self.options.animations.off, None);
                 }
 
                 if !is_floating {
                     // Animate to semitransparent.
-                    tile.animate_alpha(
+                    tile.tile_mut().animate_alpha(
                         1.,
                         INTERACTIVE_MOVE_ALPHA,
                         self.options.animations.window_movement.0,
                     );
-                    tile.hold_alpha_animation_after_done();
+                    tile.tile_mut().hold_alpha_animation_after_done();
                 }
 
                 let mut data = InteractiveMoveData {
-                    tile,
+                    view: tile,
                     output,
                     pointer_pos_within_output,
                     is_floating,
@@ -5821,14 +5827,15 @@ impl<W: LayoutElement> Layout<W> {
 
                 if let Some((tile_pos, zoom)) = tile_pos {
                     let new_tile_pos = data.tile_render_location(zoom);
-                    data.tile
+                    data.view
+                        .tile_mut()
                         .animate_move_from((tile_pos - new_tile_pos).downscale(zoom));
                 }
 
                 self.interactive_move = Some(InteractiveMoveState::Moving(data));
             }
             InteractiveMoveState::Moving(mut move_) => {
-                if window != move_.tile.window().id() {
+                if window != move_.view.window().id() {
                     self.interactive_move = Some(InteractiveMoveState::Moving(move_));
                     return false;
                 }
@@ -5851,9 +5858,9 @@ impl<W: LayoutElement> Layout<W> {
                 }
 
                 if output != move_.output {
-                    move_.tile.window().output_leave(&move_.output);
-                    move_.tile.window().output_enter(&output);
-                    move_.tile.window().set_preferred_scale_transform(
+                    move_.view.window().output_leave(&move_.output);
+                    move_.view.window().output_enter(&output);
+                    move_.view.window().set_preferred_scale_transform(
                         output.current_scale(),
                         output.current_transform(),
                     );
@@ -5874,7 +5881,7 @@ impl<W: LayoutElement> Layout<W> {
                         .with_merged_layout(move_.output_config.as_ref())
                         .with_merged_layout(move_.workspace_config.as_ref().map(|(_, c)| c))
                         .adjusted_for_scale(scale);
-                    move_.tile.update_config(view_size, scale, Rc::new(options));
+                    move_.view.tile_mut().update_config(view_size, scale, Rc::new(options));
                 }
 
                 move_.pointer_pos_within_output = pointer_pos_within_output;
@@ -6025,7 +6032,7 @@ impl<W: LayoutElement> Layout<W> {
             }
         };
 
-        if window != move_.tile.window().id() {
+        if window != move_.view.window().id() {
             return;
         }
 
@@ -6039,7 +6046,7 @@ impl<W: LayoutElement> Layout<W> {
 
         // Animate the tile back to opaque.
         if !move_.is_floating {
-            move_.tile.animate_alpha(
+            move_.view.tile_mut().animate_alpha(
                 INTERACTIVE_MOVE_ALPHA,
                 1.,
                 self.options.animations.window_movement.0,
@@ -6106,9 +6113,9 @@ impl<W: LayoutElement> Layout<W> {
 
                 if move_.was_sticky {
                     let tile_render_loc = move_.tile_render_location(zoom);
-                    let mut tile = move_.tile;
-                    tile.set_sticky(true);
-                    tile.floating_pos = None;
+                    let mut tile = move_.view;
+                    tile.tile_mut().set_sticky(true);
+                    tile.tile_mut().floating_pos = None;
 
                     let ws_idx_for_pos = match insert_ws {
                         InsertWorkspace::Existing(ws_id) => mon
@@ -6122,14 +6129,14 @@ impl<W: LayoutElement> Layout<W> {
                     if let (InsertWorkspace::Existing(_), Some(offset)) = (insert_ws, offset) {
                         let pos = (tile_render_loc - offset).downscale(zoom);
                         let pos = mon.workspaces[ws_idx_for_pos].floating_logical_to_size_frac(pos);
-                        tile.floating_pos = Some(pos);
+                        tile.tile_mut().floating_pos = Some(pos);
                     }
 
                     mon.add_sticky_tile(tile, true);
                     return;
                 }
 
-                let win_id = move_.tile.window().id().clone();
+                let win_id = move_.view.window().id().clone();
                 let tile_render_loc = move_.tile_render_location(zoom);
 
                 let ws_idx = match insert_ws {
@@ -6152,7 +6159,7 @@ impl<W: LayoutElement> Layout<W> {
                     InsertPosition::RootStart => {
                         let ws_id = mon.workspaces[ws_idx].id();
                         mon.add_tile(
-                            move_.tile,
+                            move_.view,
                             MonitorAddWindowTarget::Workspace {
                                 id: ws_id,
                                 root_index: Some(0),
@@ -6173,9 +6180,9 @@ impl<W: LayoutElement> Layout<W> {
 
                         let swap = match origin {
                             Some(origin) => {
-                                mon.workspaces[ws_idx].tiling_swap_tile(target, move_.tile, &origin)
+                                mon.workspaces[ws_idx].tiling_swap_tile(target, move_.view, &origin)
                             }
-                            None => Err(move_.tile),
+                            None => Err(move_.view),
                         };
 
                         match swap {
@@ -6203,7 +6210,7 @@ impl<W: LayoutElement> Layout<W> {
                             ws_idx,
                             target,
                             direction,
-                            move_.tile,
+                            move_.view,
                             true,
                             allow_to_activate_workspace,
                         );
@@ -6212,14 +6219,14 @@ impl<W: LayoutElement> Layout<W> {
                         let _ = mon.add_tile_split_root(
                             ws_idx,
                             direction,
-                            move_.tile,
+                            move_.view,
                             true,
                             allow_to_activate_workspace,
                         );
                     }
                     InsertPosition::Floating => {
-                        let mut tile = move_.tile;
-                        tile.floating_pos = None;
+                        let mut tile = move_.view;
+                        tile.tile_mut().floating_pos = None;
 
                         match insert_ws {
                             InsertWorkspace::Existing(_) => {
@@ -6227,7 +6234,7 @@ impl<W: LayoutElement> Layout<W> {
                                     let pos = (tile_render_loc - offset).downscale(zoom);
                                     let pos =
                                         mon.workspaces[ws_idx].floating_logical_to_size_frac(pos);
-                                    tile.floating_pos = Some(pos);
+                                    tile.tile_mut().floating_pos = Some(pos);
                                 } else {
                                     error!(
                                         "offset unset for inserting a floating tile \
@@ -6244,7 +6251,7 @@ impl<W: LayoutElement> Layout<W> {
                         // Set the floating size so it takes into account any window resizing that
                         // took place during the move.
                         if let Some(size) = tile.window().expected_size() {
-                            tile.floating_window_size = Some(size);
+                            tile.tile_mut().floating_window_size = Some(size);
                         }
 
                         let ws_id = mon.workspaces[ws_idx].id();
@@ -6286,7 +6293,7 @@ impl<W: LayoutElement> Layout<W> {
 
                 // No point in trying to use the pointer position without outputs.
                 ws.add_tile(
-                    move_.tile,
+                    move_.view,
                     WorkspaceAddWindowTarget::Auto,
                     ActivateWindow::Yes,
                     move_.is_floating,
@@ -6419,7 +6426,7 @@ impl<W: LayoutElement> Layout<W> {
     ) -> bool {
         self.request_refresh();
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
-            if move_.tile.window().id() == window {
+            if move_.view.window().id() == window {
                 return false;
             }
         }
@@ -6454,7 +6461,7 @@ impl<W: LayoutElement> Layout<W> {
     pub fn interactive_resize_end(&mut self, window: &W::Id) {
         self.request_refresh();
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
-            if move_.tile.window().id() == window {
+            if move_.view.window().id() == window {
                 return;
             }
         }
@@ -6688,7 +6695,7 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn start_open_animation_for_window(&mut self, window: &W::Id) {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
-            if move_.tile.window().id() == window {
+            if move_.view.window().id() == window {
                 return;
             }
         }
@@ -6712,14 +6719,14 @@ impl<W: LayoutElement> Layout<W> {
         let zoom = self.overview_zoom();
 
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            if move_.tile.window().id() == window {
+            if move_.view.window().id() == window {
                 let pos_within_output = move_.tile_render_location(zoom);
 
                 // Computation matches update_render_elements().
                 let view_rect =
                     Rectangle::new(pos_within_output.upscale(-1.), output_size(&move_.output))
                         .downscale(zoom);
-                move_.tile.update_render_elements(
+                move_.view.tile_mut().update_render_elements(
                     false,
                     false,
                     false,
@@ -6728,7 +6735,7 @@ impl<W: LayoutElement> Layout<W> {
                     view_rect,
                 );
 
-                move_.tile.store_unmap_snapshot_if_empty(
+                move_.view.tile_mut().store_unmap_snapshot_if_empty(
                     renderer,
                     xray,
                     xray_has_blocked_out_layers,
@@ -6774,8 +6781,8 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn clear_unmap_snapshot(&mut self, window: &W::Id) {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            if move_.tile.window().id() == window {
-                let _ = move_.tile.take_unmap_snapshot();
+            if move_.view.window().id() == window {
+                let _ = move_.view.tile_mut().take_unmap_snapshot();
                 return;
             }
         }
@@ -6813,12 +6820,12 @@ impl<W: LayoutElement> Layout<W> {
         let zoom = self.overview_zoom();
 
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            if move_.tile.window().id() == window {
-                let Some(snapshot) = move_.tile.take_unmap_snapshot() else {
+            if move_.view.window().id() == window {
+                let Some(snapshot) = move_.view.tile_mut().take_unmap_snapshot() else {
                     return;
                 };
                 let tile_pos = move_.tile_render_location(zoom);
-                let tile_size = move_.tile.tile_size();
+                let tile_size = move_.view.tile().tile_size();
 
                 let output = move_.output.clone();
                 let pointer_pos_within_output = move_.pointer_pos_within_output;
@@ -6889,7 +6896,8 @@ impl<W: LayoutElement> Layout<W> {
         let xray_pos = XrayPos::new(pos_in_backdrop, zoom);
 
         move_
-            .tile
+            .view
+            .tile()
             .render(ctx, pos_in_backdrop, xray_pos, true, &mut |elem| {
                 push(RescaleRenderElement::from_element(
                     elem,
@@ -6907,7 +6915,7 @@ impl<W: LayoutElement> Layout<W> {
         let mut ongoing_scrolling_dnd = self.dnd.is_some().then_some(true);
 
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            let win = move_.tile.window_mut();
+            let win = move_.view.window_mut();
 
             win.set_active_in_column(true);
             win.set_floating(move_.is_floating);
@@ -7033,7 +7041,7 @@ impl<W: LayoutElement> Layout<W> {
             .interactive_move
             .as_ref()
             .and_then(|x| x.moving())
-            .map(|move_| (self.monitor_for_output(&move_.output), move_.tile.window()))
+            .map(|move_| (self.monitor_for_output(&move_.output), move_.view.window()))
             .into_iter();
 
         let rest = self
@@ -7131,7 +7139,7 @@ impl<W: LayoutElement> Layout<W> {
 
     fn clear_marks_everywhere(&mut self) {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            move_.tile.clear_marks();
+            move_.view.clear_marks();
         }
 
         self.scratchpad.clear_marks_everywhere();
@@ -7145,7 +7153,7 @@ impl<W: LayoutElement> Layout<W> {
 
     fn remove_mark_everywhere(&mut self, mark: &str) {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            move_.tile.remove_mark(mark);
+            move_.view.remove_mark(mark);
         }
 
         self.scratchpad.remove_mark_everywhere(mark);

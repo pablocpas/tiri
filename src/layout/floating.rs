@@ -14,8 +14,8 @@ use tiri_ipc::{
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::container::{
-    floating_position_from_logical, scale_floating_position, Direction, FloatingRootKind,
-    InactiveTilingReference, InsertParentInfo, Layout, NodeKey, TabBarInfo,
+    floating_position_from_logical, scale_floating_position, DetachedView, Direction,
+    FloatingRootKind, InactiveTilingReference, InsertParentInfo, Layout, NodeKey, TabBarInfo,
 };
 use super::container_tree::{percent_from_size_change, ContainerTree, LeafFrameInfo, TileConfig};
 use super::focus_ring::{render_container_selection, FocusRingEdges, FocusRingRenderElement};
@@ -157,20 +157,22 @@ fn floating_tile_iter_mut<'a, W: LayoutElement>(
 
 impl<W: LayoutElement> FloatingSpace<W> {
     fn leaf_point_hits_tab_bar(
+        tree: &super::container::ContainerArena<W>,
         tab_bar_infos: &[TabBarInfo],
-        leaf_path: &[usize],
+        branch: NodeKey,
+        leaf_key: NodeKey,
         pos_in_container: Point<f64, Logical>,
         gap: f64,
         scale: f64,
     ) -> bool {
         let eps = 1.0 / scale.max(1e-6);
         tab_bar_infos.iter().any(|info| {
-            if !leaf_path.starts_with(info.path.as_slice()) {
+            if !tree.is_descendant(leaf_key, info.key) {
                 return false;
             }
 
             let mut rect = info.rect;
-            if gap > 0.0 && info.path.is_empty() {
+            if gap > 0.0 && info.key == branch {
                 rect.loc.x -= gap;
                 rect.loc.y -= gap;
                 rect.size.w = (rect.size.w + gap * 2.0).max(0.0);
@@ -185,10 +187,14 @@ impl<W: LayoutElement> FloatingSpace<W> {
         })
     }
 
-    fn leaf_has_tab_bar_ancestor(tab_bar_infos: &[TabBarInfo], leaf_path: &[usize]) -> bool {
+    fn leaf_has_tab_bar_ancestor(
+        tree: &super::container::ContainerArena<W>,
+        tab_bar_infos: &[TabBarInfo],
+        leaf_key: NodeKey,
+    ) -> bool {
         tab_bar_infos
             .iter()
-            .any(|info| leaf_path.starts_with(info.path.as_slice()))
+            .any(|info| tree.is_descendant(leaf_key, info.key))
     }
 
     fn external_edges_for_rect(
@@ -338,7 +344,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                     tracy_client::span!("FloatingSpace::project_display_layouts_for_render");
                 layouts.extend(
                     super::container_tree::branch_display_layouts(containers.arena(), root)
-                        .map(LeafFrameInfo::from),
+                        .map(|info| LeafFrameInfo::new(root, info)),
                 );
             }
             #[cfg(feature = "profile-with-tracy")]
@@ -477,8 +483,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 }
 
                 if Self::leaf_point_hits_tab_bar(
+                    tree,
                     &tab_bar_infos,
-                    &info.path,
+                    root,
+                    info.key,
                     pos,
                     gap,
                     containers.scale(),
@@ -490,7 +498,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 let size = tile.tile_size();
                 let mut edges =
                     resize_edges_for_point(pos_within_tile, size, tile.effective_border_width());
-                if Self::leaf_has_tab_bar_ancestor(&tab_bar_infos, &info.path) {
+                if Self::leaf_has_tab_bar_ancestor(tree, &tab_bar_infos, info.key) {
                     edges.remove(ResizeEdge::TOP);
                 }
                 if edges.is_empty() {
@@ -524,10 +532,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
     }
 
-    fn tiles_with_offsets_visible<'a>(
+    fn tiles_with_offsets_visible_keyed<'a>(
         &'a self,
         containers: &'a ContainerTree<W>,
-    ) -> impl Iterator<Item = (&'a Tile<W>, Point<f64, Logical>)> + 'a {
+    ) -> impl Iterator<Item = (NodeKey, &'a Tile<W>, Point<f64, Logical>)> + 'a {
         let tree = containers.arena();
         let mut tiles = Vec::new();
         for root in tree.floating_roots() {
@@ -535,11 +543,19 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 .filter(|info| info.visible)
             {
                 if let Some(tile) = tree.get_tile(info.key) {
-                    tiles.push((tile, info.rect.loc));
+                    tiles.push((info.key, tile, info.rect.loc));
                 }
             }
         }
         tiles.into_iter()
+    }
+
+    fn tiles_with_offsets_visible<'a>(
+        &'a self,
+        containers: &'a ContainerTree<W>,
+    ) -> impl Iterator<Item = (&'a Tile<W>, Point<f64, Logical>)> + 'a {
+        self.tiles_with_offsets_visible_keyed(containers)
+            .map(|(_, tile, pos)| (tile, pos))
     }
 
     pub fn tiles_with_offsets_mut<'a>(
@@ -573,6 +589,19 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 // Round to physical pixels.
                 let pos = pos.to_physical_precise_round(scale).to_logical(scale);
                 (tile, pos)
+            })
+    }
+
+    pub(super) fn tiles_with_render_positions_keyed<'a>(
+        &'a self,
+        containers: &'a ContainerTree<W>,
+    ) -> impl Iterator<Item = (NodeKey, &'a Tile<W>, Point<f64, Logical>)> + 'a {
+        let scale = containers.scale();
+        self.tiles_with_offsets_visible_keyed(containers)
+            .map(move |(key, tile, offset)| {
+                let pos = offset + tile.render_offset();
+                let pos = pos.to_physical_precise_round(scale).to_logical(scale);
+                (key, tile, pos)
             })
     }
 
@@ -611,10 +640,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return Some(hit);
         }
 
-        for (tile, tile_pos) in self.tiles_with_render_positions(containers) {
-            if fullscreen_scope
-                .is_some_and(|scope| !containers.arena().is_descendant(tile.node_key(), scope))
-            {
+        for (key, tile, tile_pos) in self.tiles_with_render_positions_keyed(containers) {
+            if fullscreen_scope.is_some_and(|scope| !containers.arena().is_descendant(key, scope)) {
                 continue;
             }
             if let Some(rv) = super::HitType::hit_tile(tile, tile_pos, pos) {
@@ -907,17 +934,22 @@ impl<W: LayoutElement> FloatingSpace<W> {
         tree.clear_selection();
     }
 
-    pub fn add_tile(&mut self, containers: &mut ContainerTree<W>, tile: Tile<W>, activate: bool) {
+    pub fn add_tile(
+        &mut self,
+        containers: &mut ContainerTree<W>,
+        tile: DetachedView<W>,
+        activate: bool,
+    ) {
         self.add_tile_at(containers, 0, tile, activate);
     }
 
     pub fn add_tile_with_restore_hint(
         &mut self,
         containers: &mut ContainerTree<W>,
-        mut tile: Tile<W>,
+        mut tile: DetachedView<W>,
         activate: bool,
     ) {
-        let hint = tile.floating_reinsert_hint.take();
+        let hint = tile.tile_mut().floating_reinsert_hint.take();
 
         // A tile that was the whole group has no position inside one to be restored to, and
         // the group it was went away with it; it comes back the way it left, as its own. Nor
@@ -1034,7 +1066,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         &mut self,
         containers: &mut ContainerTree<W>,
         mut idx: usize,
-        mut tile: Tile<W>,
+        mut tile: DetachedView<W>,
         activate: bool,
     ) {
         let config = containers.tile_config();
@@ -1044,18 +1076,18 @@ impl<W: LayoutElement> FloatingSpace<W> {
         // to a floating size on the way in.
         let maps_fullscreen = tile.window().pending_sizing_mode().is_fullscreen();
         let requested_tile_size = if maps_fullscreen {
-            Self::preserve_fullscreen_tile_for_floating(&config, &mut tile, None);
+            Self::preserve_fullscreen_tile_for_floating(&config, tile.tile_mut(), None);
             // The group's box is the one the view would have had unfullscreened.
             // `container_init_floating` computes it from the natural size whatever the
             // fullscreen state, and it is what `fullscreen disable` restores to later.
-            tile.floating_window_size.map(|size| {
+            tile.tile().floating_window_size.map(|size| {
                 Size::from((
-                    tile.tile_width_for_window_width(f64::from(size.w)),
-                    tile.tile_height_for_window_height(f64::from(size.h)),
+                    tile.tile().tile_width_for_window_width(f64::from(size.w)),
+                    tile.tile().tile_height_for_window_height(f64::from(size.h)),
                 ))
             })
         } else {
-            Self::prepare_tile_for_floating(&config, &mut tile).1
+            Self::prepare_tile_for_floating(&config, tile.tile_mut()).1
         };
 
         // Make sure the tile isn't inserted below its parent.
@@ -1072,9 +1104,9 @@ impl<W: LayoutElement> FloatingSpace<W> {
             }
         }
 
-        let tile_size = requested_tile_size.unwrap_or_else(|| tile.tile_size());
+        let tile_size = requested_tile_size.unwrap_or_else(|| tile.tile().tile_size());
         let pos = self
-            .stored_or_default_tile_pos(containers.working_area(), &tile)
+            .stored_or_default_tile_pos(containers.working_area(), tile.tile())
             .unwrap_or_else(|| {
                 center_preferring_top_left_in_area(containers.working_area(), tile_size)
             });
@@ -1096,7 +1128,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     pub(super) fn add_tile_to_active_container(
         &mut self,
         containers: &mut ContainerTree<W>,
-        tile: Tile<W>,
+        tile: DetachedView<W>,
         activate: bool,
     ) -> bool {
         let Some(idx) = self.active_container_idx(containers) else {
@@ -1109,7 +1141,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         &mut self,
         containers: &mut ContainerTree<W>,
         id: &W::Id,
-        tile: Tile<W>,
+        tile: DetachedView<W>,
         activate: bool,
     ) -> bool {
         let Some(idx) = self.idx_of(containers, id) else {
@@ -1123,11 +1155,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
         &mut self,
         containers: &mut ContainerTree<W>,
         idx: usize,
-        mut tile: Tile<W>,
+        mut tile: DetachedView<W>,
         activate: bool,
     ) -> bool {
         let config = containers.tile_config();
-        let (win_id, _) = Self::prepare_tile_for_floating(&config, &mut tile);
+        let (win_id, _) = Self::prepare_tile_for_floating(&config, tile.tile_mut());
         let root = Self::root(containers, idx);
         if containers.arena_mut().selected_container_key() == Some(root) {
             let insert_idx = containers.arena_mut().branch_children_len(root);
@@ -1156,12 +1188,12 @@ impl<W: LayoutElement> FloatingSpace<W> {
         &mut self,
         containers: &mut ContainerTree<W>,
         idx: usize,
-        mut tile: Tile<W>,
+        mut tile: DetachedView<W>,
         activate: bool,
         info: &InsertParentInfo,
     ) {
         let config = containers.tile_config();
-        let (win_id, _) = Self::prepare_tile_for_floating(&config, &mut tile);
+        let (win_id, _) = Self::prepare_tile_for_floating(&config, tile.tile_mut());
 
         let root = Self::root(containers, idx);
         let _ = containers
@@ -1219,17 +1251,18 @@ impl<W: LayoutElement> FloatingSpace<W> {
         &mut self,
         containers: &mut ContainerTree<W>,
         above: &W::Id,
-        mut tile: Tile<W>,
+        mut tile: DetachedView<W>,
         activate: bool,
     ) {
         let idx = self.idx_of(containers, above).unwrap();
 
         let above_area = self.container_area(containers, idx);
-        let tile_size = tile.tile_size();
+        let tile_size = tile.tile().tile_size();
         let pos =
             above_area.loc + (above_area.size.to_point() - tile_size.to_point()).downscale(2.);
         let pos = self.clamp_within_working_area(containers.working_area(), pos, tile_size);
-        tile.floating_pos = Some(self.logical_to_size_frac(containers.working_area(), pos));
+        tile.tile_mut().floating_pos =
+            Some(self.logical_to_size_frac(containers.working_area(), pos));
 
         self.add_tile_at(containers, idx, tile, activate);
     }
@@ -1497,10 +1530,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
             containers.arena_mut().forget_floating_root(root);
         }
 
-        Self::store_floating_size_for_restore(&mut tile);
+        Self::store_floating_size_for_restore(tile.tile_mut());
         // Store the floating position.
-        tile.floating_pos = Some(container_pos);
-        tile.floating_reinsert_hint = Some((container_id, insert_hint));
+        tile.tile_mut().floating_pos = Some(container_pos);
+        tile.tile_mut().floating_reinsert_hint = Some((container_id, insert_hint));
 
         RemovedTile {
             tile,
@@ -2997,7 +3030,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 let gap = containers.branch_gap(root);
                 for info in tree.tab_bar_layouts_in_branch(root) {
                     let mut info = info.clone();
-                    if gap > 0.0 && info.path.is_empty() {
+                    if gap > 0.0 && info.key == root {
                         info.rect.loc.x -= gap;
                         info.rect.loc.y -= gap;
                         info.rect.size.w = (info.rect.size.w + gap * 2.0).max(0.0);
@@ -3079,12 +3112,12 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 );
             }
         } else {
-            for (tile, tile_pos) in self.tiles_with_render_positions(containers) {
+            for (key, tile, tile_pos) in self.tiles_with_render_positions_keyed(containers) {
                 // Skip tiles belonging to a different render layer.
                 if layer.is_normal() == tile.is_moving_between_workspaces() {
                     continue;
                 }
-                if fullscreen_key.is_some_and(|scope| !tree.is_descendant(tile.node_key(), scope)) {
+                if fullscreen_key.is_some_and(|scope| !tree.is_descendant(key, scope)) {
                     continue;
                 }
                 // Skip tiles entirely outside the viewport (culling)

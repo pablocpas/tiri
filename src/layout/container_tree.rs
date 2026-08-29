@@ -27,8 +27,9 @@ use tiri_ipc::{ColumnDisplay, LayoutTreeNode, LayoutTreeRect, SizeChange};
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::container::{
-    ContainerArena, ContainerMetrics, DetachedNode, Direction, InteractiveResizeState, Layout,
-    LeafLayoutInfo, NodeKey, ResizeDelta, ResizeReach, ResizeSpace, ResizeTarget,
+    ContainerArena, ContainerMetrics, DetachedNode, DetachedView, Direction,
+    InteractiveResizeState, Layout, LeafLayoutInfo, NodeKey, ResizeDelta, ResizeReach, ResizeSpace,
+    ResizeTarget,
 };
 use super::focus_ring::{
     render_container_selection, FocusRingEdges, FocusRingIndicatorEdge, FocusRingRenderElement,
@@ -134,8 +135,8 @@ type LeafHit = (NodeKey, Rectangle<f64, Logical>);
 
 /// Copyable geometry needed while the tree is borrowed mutably.
 ///
-/// The owned `LeafLayoutInfo::path` is intentionally absent: paths belong to tree addressing and
-/// IPC, while state and render passes use stable `NodeKey`s.
+/// Branch membership is projected from the current tree for committed layouts and from the
+/// pending transaction that owns a candidate. Neither is duplicated in `LeafLayoutInfo`.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct LeafFrameInfo {
     pub(super) key: NodeKey,
@@ -144,11 +145,11 @@ pub(super) struct LeafFrameInfo {
     pub(super) visible: bool,
 }
 
-impl From<&LeafLayoutInfo> for LeafFrameInfo {
-    fn from(info: &LeafLayoutInfo) -> Self {
+impl LeafFrameInfo {
+    pub(super) fn new(branch: NodeKey, info: &LeafLayoutInfo) -> Self {
         Self {
             key: info.key,
-            branch: info.branch,
+            branch,
             rect: info.rect,
             visible: info.visible,
         }
@@ -396,7 +397,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         if let Some(parent) = other_parent.filter(|parent| Some(*parent) != current_parent) {
             arrange(parent);
         }
-        self.arena.readdress_leaf_layouts();
         // `arrange_container` computes visibility inside that subtree. IPC visibility still
         // includes tabbed/stacked ancestors above it, which may not have been part of either
         // arrange (notably a fullscreen wrapper swapped inside a zero-sized stack).
@@ -917,10 +917,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         if result.changed() {
             self.arena.layout();
         }
-        // Whatever the mutation reported, the addresses beside the cached geometry describe
-        // the tree and the tree may have moved. Keeping a derived field derived is cheaper
-        // than trusting every path through the tree to say so.
-        self.arena.readdress_leaf_layouts();
         result
     }
 
@@ -1498,9 +1494,18 @@ impl<W: LayoutElement> ContainerTree<W> {
         {
             let _span = tracy_client::span!("ContainerTree::project_state_layouts_for_render");
             if has_pending {
-                state_layouts.extend(self.arena.pending_leaf_layouts().map(LeafFrameInfo::from));
+                state_layouts.extend(
+                    self.arena
+                        .pending_leaf_layouts()
+                        .map(|(branch, info)| LeafFrameInfo::new(branch, info)),
+                );
             } else {
-                state_layouts.extend(self.arena.leaf_layouts().iter().map(LeafFrameInfo::from));
+                let arena = &self.arena;
+                state_layouts.extend(
+                    arena
+                        .leaf_layouts()
+                        .map(|info| LeafFrameInfo::new(arena.branch_root(info.key), info)),
+                );
             }
         }
         #[cfg(feature = "profile-with-tracy")]
@@ -1522,7 +1527,11 @@ impl<W: LayoutElement> ContainerTree<W> {
         render_layouts.clear();
         {
             let _span = tracy_client::span!("ContainerTree::project_display_layouts_for_render");
-            render_layouts.extend(self.display_layouts().map(LeafFrameInfo::from));
+            let branch = self.arena.workspace_root();
+            render_layouts.extend(
+                self.display_layouts()
+                    .map(|info| LeafFrameInfo::new(branch, info)),
+            );
         }
         #[cfg(feature = "profile-with-tracy")]
         {
@@ -2540,7 +2549,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                 continue;
             }
             // A branch's outermost bar sits on the branch's edge, and the gap is outside it.
-            if gap > 0.0 && info.path.is_empty() {
+            if gap > 0.0 && info.key == branch {
                 info.rect.loc.x -= gap;
                 info.rect.loc.y -= gap;
                 info.rect.size.w = (info.rect.size.w + gap * 2.0).max(0.0);
@@ -2717,7 +2726,10 @@ impl<W: LayoutElement> ContainerTree<W> {
             layout.tile_pos_in_workspace_view = Some((pos.x, pos.y));
             let window_offset = tile.window_loc();
             layout.window_offset_in_tile = (window_offset.x, window_offset.y);
-            layout.pos_in_tiling_layout = legacy_positions.get(&info.path).copied();
+            layout.pos_in_tiling_layout = self
+                .arena
+                .branch_relative_path(info.key)
+                .and_then(|path| legacy_positions.get(&path).copied());
             Some((tile, layout))
         })
     }
@@ -2767,7 +2779,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.arena.is_empty()
     }
 
-    pub fn add_tile(&mut self, root_index: Option<usize>, tile: Tile<W>, activate: bool) {
+    pub fn add_tile(&mut self, root_index: Option<usize>, tile: DetachedView<W>, activate: bool) {
         let id = tile.window().id().clone();
         if let Some(index) = root_index {
             self.arena.insert_leaf_at(index, tile, activate);
@@ -2778,7 +2790,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.layout_after_tiled_insert(&id);
     }
 
-    pub fn add_tile_right_of(&mut self, next_to: &W::Id, tile: Tile<W>, activate: bool) {
+    pub fn add_tile_right_of(&mut self, next_to: &W::Id, tile: DetachedView<W>, activate: bool) {
         let id = tile.window().id().clone();
         self.arena.insert_leaf_after(next_to, tile, activate);
         self.sync_fullscreen_window();
@@ -2789,7 +2801,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         &mut self,
         root_idx: usize,
         tile_idx: Option<usize>,
-        tile: Tile<W>,
+        tile: DetachedView<W>,
         activate: bool,
     ) {
         let id = tile.window().id().clone();
@@ -2819,9 +2831,15 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.arena.insert_parent_info_for_window(window)
     }
 
-    pub(super) fn replace_tiling_tile(&mut self, key: NodeKey, tile: Tile<W>) -> Option<Tile<W>> {
+    // Both variants carry a view back to the caller; boxing would only add an allocation.
+    #[allow(clippy::result_large_err)]
+    pub(super) fn replace_tiling_tile(
+        &mut self,
+        key: NodeKey,
+        tile: DetachedView<W>,
+    ) -> Result<DetachedView<W>, DetachedView<W>> {
         if !self.is_tiling_leaf(key) {
-            return None;
+            return Err(tile);
         }
         self.arena.replace_leaf(key, tile)
     }
@@ -2833,7 +2851,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(super) fn insert_tile_with_parent_info(
         &mut self,
         info: &super::container::InsertParentInfo,
-        tile: Tile<W>,
+        tile: DetachedView<W>,
         activate: bool,
     ) -> bool {
         let root = self.arena.workspace_root();
@@ -2854,7 +2872,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         &mut self,
         target: NodeKey,
         direction: Direction,
-        tile: Tile<W>,
+        tile: DetachedView<W>,
         activate: bool,
     ) -> bool {
         if !self.is_tiling_leaf(target) {
@@ -2875,7 +2893,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub fn insert_tile_split_root(
         &mut self,
         direction: Direction,
-        tile: Tile<W>,
+        tile: DetachedView<W>,
         activate: bool,
     ) -> bool {
         if self.arena.insert_leaf_split_root(direction, tile, activate) {
@@ -2889,10 +2907,8 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     pub fn active_tile_visual_rectangle(&self) -> Option<Rectangle<f64, Logical>> {
         let focused_key = self.focused_key();
-        self.arena
-            .leaf_layouts()
-            .iter()
-            .find(|info| Some(info.key) == focused_key)
+        focused_key
+            .and_then(|key| self.arena.leaf_layout(key))
             .and_then(|info| {
                 let mut rect = info.rect;
                 let tile = self.arena.get_tile(info.key)?;
@@ -3463,9 +3479,12 @@ impl<W: LayoutElement> ContainerTree<W> {
         let branches = std::iter::once(self.arena.workspace_root())
             .chain(self.arena.floating_roots().collect::<Vec<_>>());
         let pending_keys: Vec<_> = branches
-            .flat_map(|branch| self.arena.tiles_in_branch(branch))
-            .filter(|tile| tile.window().pending_sizing_mode().is_fullscreen())
-            .map(Tile::node_key)
+            .flat_map(|branch| self.arena.leaf_keys_in_branch(branch))
+            .filter(|key| {
+                self.arena
+                    .get_tile(*key)
+                    .is_some_and(|tile| tile.window().pending_sizing_mode().is_fullscreen())
+            })
             .collect();
         let authority = self.arena.fullscreen_key();
         let keep = authority.or_else(|| pending_keys.first().copied());
@@ -3539,9 +3558,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         let Some((rect, visible)) = self
             .arena
-            .leaf_layouts()
-            .iter()
-            .find(|info| info.key == key)
+            .leaf_layout(key)
             .map(|info| (info.rect, info.visible))
         else {
             return;
@@ -3594,7 +3611,12 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    pub(super) fn refresh(&mut self, resize: &Option<InteractiveResizeState<W>>, is_active: bool, is_focused: bool) {
+    pub(super) fn refresh(
+        &mut self,
+        resize: &Option<InteractiveResizeState<W>>,
+        is_active: bool,
+        is_focused: bool,
+    ) {
         let _span = tracy_client::span!("ContainerTree::refresh");
         let applied = self.arena.apply_pending_layouts_if_ready();
         if applied && self.arena.take_pending_relayout() {
@@ -3606,9 +3628,18 @@ impl<W: LayoutElement> ContainerTree<W> {
         {
             let _span = tracy_client::span!("ContainerTree::project_state_layouts_for_refresh");
             if has_pending {
-                layouts.extend(self.arena.pending_leaf_layouts().map(LeafFrameInfo::from));
+                layouts.extend(
+                    self.arena
+                        .pending_leaf_layouts()
+                        .map(|(branch, info)| LeafFrameInfo::new(branch, info)),
+                );
             } else {
-                layouts.extend(self.arena.leaf_layouts().iter().map(LeafFrameInfo::from));
+                let arena = &self.arena;
+                layouts.extend(
+                    arena
+                        .leaf_layouts()
+                        .map(|info| LeafFrameInfo::new(arena.branch_root(info.key), info)),
+                );
             }
         }
         #[cfg(feature = "profile-with-tracy")]
@@ -3728,9 +3759,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             .map(|tile| tile.window().ipc_id());
         let fullscreen_leaf_uses_output = self
             .arena
-            .leaf_layouts()
-            .iter()
-            .find(|info| info.key == fullscreen_key)
+            .leaf_layout(fullscreen_key)
             .is_some_and(|info| info.workspace_fullscreen);
         let view = LayoutTreeRect {
             x: 0.0,
@@ -3986,8 +4015,7 @@ fn split_indicator_edge_for_tile<W: LayoutElement>(
 /// The leaf layouts of one branch — the tiled side, or one floating group.
 ///
 /// One tree holds both sides now, so a consumer that means "my leaves" has to say which
-/// branch. Each cached layout carries the branch it was arranged in, so this is a filter
-/// rather than a walk up the tree per leaf.
+/// branch. Identity and order come from the live tree; the cache contributes presentation only.
 pub(super) fn branch_display_layouts<'a, W: LayoutElement>(
     tree: &'a ContainerArena<W>,
     branch: NodeKey,
@@ -3996,13 +4024,14 @@ pub(super) fn branch_display_layouts<'a, W: LayoutElement>(
     // branch has any. It has none only before its first arrange has landed, and then the
     // pending ones are the only answer there is — asking a neighbour's would be worse than
     // saying nothing.
-    let committed = tree.leaf_layouts();
-    let source = if committed.iter().any(|info| info.branch == branch) {
+    let keys = tree.leaf_keys_in_branch(branch);
+    let committed = tree.leaf_layout_cache();
+    let source = if keys.iter().any(|key| committed.contains_key(key)) {
         committed
     } else {
         tree.pending_leaf_layouts_for(branch).unwrap_or(committed)
     };
-    source.iter().filter(move |info| info.branch == branch)
+    keys.into_iter().filter_map(move |key| source.get(&key))
 }
 
 /// Span available to a container's children after subtracting inter-child gaps.

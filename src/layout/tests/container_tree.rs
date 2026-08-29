@@ -1,7 +1,8 @@
 use insta::assert_snapshot;
 
 use super::super::container::{
-    ContainerArena, ContainerData, Direction, FloatingRootKind, Layout as ContainerLayout,
+    ContainerArena, ContainerData, DetachedView, Direction, FloatingRootKind,
+    Layout as ContainerLayout,
 };
 use super::super::tile::Tile;
 use super::*;
@@ -62,15 +63,7 @@ impl TreeHarness {
     }
 
     pub(super) fn add_window_with_params(&mut self, params: TestWindowParams) {
-        let window = TestWindow::new(params);
-        let tile = Tile::new(
-            window,
-            self.view_size,
-            self.scale,
-            self.clock.clone(),
-            self.options.clone(),
-        );
-        self.tree.insert_window(tile);
+        self.tree.insert_window(self.detached_view(params));
     }
 
     pub(super) fn append_window(&mut self, id: usize) {
@@ -78,15 +71,18 @@ impl TreeHarness {
     }
 
     pub(super) fn append_window_with_params(&mut self, params: TestWindowParams) {
-        let window = TestWindow::new(params);
-        let tile = Tile::new(
-            window,
+        self.tree.append_leaf(self.detached_view(params), true);
+    }
+
+    /// A view node that no arena owns, the way one arrives from a scratchpad or a drag.
+    pub(super) fn detached_view(&self, params: TestWindowParams) -> DetachedView<TestWindow> {
+        DetachedView::new(Tile::new(
+            TestWindow::new(params),
             self.view_size,
             self.scale,
             self.clock.clone(),
             self.options.clone(),
-        );
-        self.tree.append_leaf(tile, true);
+        ))
     }
 
     /// Settle the tree the way the spaces do — every mutation there goes through
@@ -110,6 +106,76 @@ impl Drop for TreeHarness {
 }
 
 #[test]
+fn replacing_a_leaf_gives_the_arriving_view_the_slot_it_took() {
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+    harness.add_window(2);
+    assert!(harness.tree.set_focused_layout(ContainerLayout::Tabbed));
+    assert!(harness.tree.focus_window_by_id(&2));
+    harness.tree.layout();
+
+    let target = harness.tree.window_key(&2).expect("the tab being shown");
+    let arriving = harness.detached_view(TestWindowParams::new(3));
+    let arriving_key = arriving.key();
+
+    let displaced = harness
+        .tree
+        .replace_leaf(target, arriving)
+        .expect("a tiling leaf can be replaced");
+    assert_eq!(displaced.key(), target, "the displaced view keeps its own identity");
+
+    harness.tree.layout();
+
+    // Standing in the seat belongs to the slot, not to the node that happened to be in it.
+    // Appending the arriving node the way a new window arrives would leave the workspace with
+    // no focused leaf and the switcher showing the other tab.
+    assert_eq!(harness.tree.focused_key(), Some(arriving_key));
+    assert_eq!(harness.tree.focused_window_id(), Some(3));
+    assert!(
+        harness
+            .tree
+            .leaf_layout(arriving_key)
+            .expect("the arriving leaf was arranged")
+            .visible,
+        "the arriving view should be the tab the switcher shows",
+    );
+    assert!(
+        !harness
+            .tree
+            .leaf_layout(harness.tree.window_key(&1).expect("the other tab"))
+            .expect("the other leaf was arranged")
+            .visible,
+    );
+}
+
+#[test]
+fn a_refused_replacement_hands_the_view_back() {
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+    harness.add_window(2);
+    assert!(harness.tree.set_focused_layout(ContainerLayout::Tabbed));
+    harness.tree.layout();
+
+    // The tabbed container is a split, not a leaf: there is no slot to replace.
+    let split = harness
+        .tree
+        .parent_of(harness.tree.window_key(&1).expect("leaf"))
+        .expect("the tabbed container");
+    let arriving = harness.detached_view(TestWindowParams::new(3));
+    let arriving_key = arriving.key();
+
+    let returned = harness
+        .tree
+        .replace_leaf(split, arriving)
+        .expect_err("a split cannot be replaced by a view");
+    assert_eq!(
+        returned.key(),
+        arriving_key,
+        "a refusal must hand the window back, not drop it",
+    );
+}
+
+#[test]
 fn moving_a_leaf_between_workspace_stores_keeps_its_identity() {
     let mut source = TreeHarness::new();
     let mut target = TreeHarness::new();
@@ -117,7 +183,7 @@ fn moving_a_leaf_between_workspace_stores_keeps_its_identity() {
 
     let key = source.tree.window_key(&1).expect("source leaf");
     let tile = source.tree.remove_window(&1).expect("detached leaf");
-    assert_eq!(tile.node_key(), key);
+    assert_eq!(tile.key(), key);
 
     target.tree.append_leaf(tile, true);
     assert_eq!(target.tree.window_key(&1), Some(key));
@@ -1151,6 +1217,22 @@ fn direct_tabbed_tiles_use_content_rect_without_tile_tab_offset() {
             0.0,
             "window {id} should not embed tab bar offset in tile geometry"
         );
+
+        let key = harness.tree.window_key(&id).expect("leaf key");
+        let node_rect = harness.tree.node_geometry(key).expect("node geometry");
+        let content_rect = harness
+            .tree
+            .leaf_layout(key)
+            .expect("leaf presentation")
+            .rect;
+        assert!(
+            node_rect.size.h > content_rect.size.h,
+            "the node must retain the whole tabbed box while presentation excludes the tab bar"
+        );
+        assert!(
+            content_rect.loc.y > node_rect.loc.y,
+            "tabbed content must start below its node box"
+        );
     }
 }
 #[test]
@@ -2067,8 +2149,7 @@ fn a_floating_branch_is_arranged_in_its_own_rectangle() {
 
     let laid_out = data
         .leaf_layouts
-        .iter()
-        .find(|info| info.key == key)
+        .get(&key)
         .expect("the floating leaf should have been arranged");
     assert_eq!(
         laid_out.rect, box_of_its_own,
@@ -2104,14 +2185,7 @@ fn one_pass_arranges_the_tiled_side_and_the_floating_side() {
     harness.tree.layout();
     harness.tree.verify_invariants();
 
-    let rect_of = |key| {
-        harness
-            .tree
-            .leaf_layouts()
-            .iter()
-            .find(|info| info.key == key)
-            .map(|info| info.rect)
-    };
+    let rect_of = |key| harness.tree.leaf_layout(key).map(|info| info.rect);
 
     assert_eq!(
         rect_of(floated_leaf),

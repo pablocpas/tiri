@@ -27,7 +27,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         let window_leaf_mismatch = window_count != leaf_count;
         let zero_size = self
             .leaf_layouts
-            .iter()
+            .values()
             .filter(|info| info.rect.size.w <= 0.0 || info.rect.size.h <= 0.0)
             .count();
 
@@ -68,24 +68,24 @@ impl<W: LayoutElement> ContainerArena<W> {
             focused = ?self.focused_key(),
             "layout summary"
         );
-        for info in &self.leaf_layouts {
+        for info in self.leaf_layouts.values() {
             debug!(
                 context = context,
                 key = ?info.key,
                 rect = ?info.rect,
                 visible = info.visible,
-                path = ?info.path,
+                branch = ?self.branch_root(info.key),
                 "leaf layout"
             );
         }
         for pending in &self.pending_layouts {
-            for info in &pending.data.leaf_layouts {
+            for info in pending.data.leaf_layouts.values() {
                 debug!(
                     context = context,
                     key = ?info.key,
                     rect = ?info.rect,
                     visible = info.visible,
-                    path = ?info.path,
+                    branch = ?pending.branch,
                     "pending leaf layout"
                 );
             }

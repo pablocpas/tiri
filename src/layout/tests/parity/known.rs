@@ -71,16 +71,6 @@ pub(super) const KNOWN: &[Divergence] = &[
             the two disagree about, not the tree.",
     },
     Divergence {
-        fixture: "swap-a-tab-with-a-window-behind-a-fullscreen.parity",
-        verdict: Verdict::Deliberate,
-        step: 8,
-        reason: "\
-            Reached through a swap: sway leaves the node the fullscreen arrange never visited \
-            with the box it had, `0.334,0.000 0.334x1.000`, and tiri gives it 0x0. Only one \
-            of the two boxes is empty, so the empty-box rule does not reach it; what is left \
-            is the arrange itself. Tiri keeps arranging — see the entry below for why.",
-    },
-    Divergence {
         fixture: "move-left-under-a-fullscreen-sibling.parity",
         verdict: Verdict::Deliberate,
         step: 8,

@@ -4,6 +4,7 @@ use smithay::utils::{Logical, Point, Rectangle};
 
 use super::ContainerArena;
 use super::ContainerData;
+use super::DetachedView;
 use super::Layout;
 use super::LayoutElement;
 use super::LayoutParentData;
@@ -225,18 +226,6 @@ impl<W: LayoutElement> ContainerArena<W> {
     pub(in crate::layout) fn node_geometry(&self, key: NodeKey) -> Option<Rectangle<f64, Logical>> {
         match self.get_node(key)? {
             NodeData::Workspace(workspace) => Some(workspace.geometry()),
-            // A view directly under tabs keeps the parent's whole pending box. The rendered
-            // rectangle beside it has already had the title bar applied, so it cannot answer
-            // resize or survive a reparent faithfully.
-            //
-            // sway/tree/arrange.c:185-211
-            node if node.is_view() => Some(
-                self.leaf_layouts
-                    .iter()
-                    .find(|info| info.key == key)
-                    .map(|info| info.node_rect)
-                    .unwrap_or_default(),
-            ),
             NodeData::Container(container) => Some(container.geometry()),
         }
     }
@@ -244,26 +233,18 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Replace the pending node box without arranging its parent.
     ///
     /// Sway mutates these boxes directly during operations such as `container_swap` and an
-    /// unfloat. A view's node box lives in the leaf-layout cache while a real container owns
-    /// it directly; callers should not need to know which representation a stable node key
-    /// currently names.
+    /// unfloat. Every node owns the same representation, so callers do not need to know whether
+    /// a stable node key currently names a view or a split container.
     pub(in crate::layout) fn set_node_geometry(
         &mut self,
         key: NodeKey,
         geometry: Rectangle<f64, Logical>,
     ) -> bool {
-        if self.get_node(key).is_some_and(|node| node.is_view()) {
-            let Some(info) = self.leaf_layouts.iter_mut().find(|info| info.key == key) else {
-                return false;
-            };
-            info.node_rect = geometry;
-            return true;
+        match self.get_node_mut(key) {
+            Some(NodeData::Workspace(workspace)) => workspace.set_geometry(geometry),
+            Some(NodeData::Container(container)) => container.set_geometry(geometry),
+            None => return false,
         }
-
-        let Some(container) = self.get_real_container_mut(key) else {
-            return false;
-        };
-        container.set_geometry(geometry);
         true
     }
 
@@ -282,17 +263,17 @@ impl<W: LayoutElement> ContainerArena<W> {
             .map(|container| container.children().to_vec())
             .unwrap_or_default();
 
+        if let Some(mut geometry) = self.node_geometry(key) {
+            geometry.loc += delta;
+            self.set_node_geometry(key, geometry);
+        }
+
         if self.get_node(key).is_some_and(|node| node.is_view()) {
-            if let Some(info) = self.leaf_layouts.iter_mut().find(|info| info.key == key) {
-                // `node_rect` is sway's pending container box; `rect` is the corresponding
+            if let Some(info) = self.leaf_layouts.get_mut(&key) {
+                // The node geometry is sway's pending container box; `rect` is the corresponding
                 // content/render box. `container_floating_translate` changes both.
-                info.node_rect.loc += delta;
                 info.rect.loc += delta;
             }
-        } else if let Some(container) = self.get_real_container_mut(key) {
-            let mut geometry = container.geometry();
-            geometry.loc += delta;
-            container.set_geometry(geometry);
         }
 
         for child in children {
@@ -328,13 +309,19 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     /// Insert a node that has not belonged to a tree before.
     pub(super) fn insert_node(&mut self, node: NodeData<W>) -> NodeKey {
-        let key = match &node {
-            NodeData::Workspace(_) => panic!("a workspace node is created with the tree"),
-            NodeData::Container(container) => container
-                .tile()
-                .map_or_else(NodeKey::next, |tile| tile.node_key()),
-        };
+        assert!(
+            !matches!(node, NodeData::Workspace(_)),
+            "a workspace node is created with the tree"
+        );
+        let key = NodeKey::next();
         self.insert_node_with_key(key, node);
+        key
+    }
+
+    /// Reattach a view node without changing the identity it carried outside the arena.
+    pub(super) fn insert_view(&mut self, view: DetachedView<W>) -> NodeKey {
+        let (key, container) = ContainerData::new_view(view);
+        self.insert_node_with_key(key, NodeData::Container(container));
         key
     }
 

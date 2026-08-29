@@ -10,7 +10,7 @@ use tiri_config::utils::MergeWith as _;
 use tiri_config::{Color, CornerRadius, GradientInterpolation, TabBar};
 use tiri_ipc::WindowLayout;
 
-use super::container::{InsertParentInfo, Layout, NodeKey, NodeSizing, TabBarTab};
+use super::container::{InsertParentInfo, Layout, TabBarTab};
 use super::focus_ring::{
     FocusRing, FocusRingEdges, FocusRingIndicatorEdge, FocusRingRenderElement, FocusRingState,
 };
@@ -46,18 +46,6 @@ use crate::utils::{
 /// Toplevel window with decorations.
 #[derive(Debug)]
 pub struct Tile<W: LayoutElement> {
-    /// Identity of the corresponding sway container.
-    ///
-    /// It belongs to the tile rather than to a workspace store because scratchpad and
-    /// interactive moves temporarily hold the window outside every tree. Reattaching the tile
-    /// must put the same node back, not allocate a replacement.
-    ///
-    /// sway/commands/move.c:198-239
-    node_key: NodeKey,
-
-    /// Fractions and resize reference spans of this node.
-    node_sizing: NodeSizing,
-
     /// The toplevel window itself.
     window: W,
 
@@ -84,9 +72,6 @@ pub struct Tile<W: LayoutElement> {
     pub(super) is_scratchpad: bool,
     /// Whether this tile is sticky (floating across workspaces on an output).
     pub(super) is_sticky: bool,
-
-    /// Marks assigned to this tile.
-    marks: Vec<String>,
 
     /// The size that the window should assume when going floating.
     ///
@@ -336,8 +321,6 @@ impl<W: LayoutElement> Tile<W> {
         let sizing_mode = window.sizing_mode();
 
         Self {
-            node_key: NodeKey::next(),
-            node_sizing: NodeSizing::default(),
             window,
             border: FocusRing::new(border_config.into()),
             focus_ring: FocusRing::new(focus_ring_config),
@@ -346,7 +329,6 @@ impl<W: LayoutElement> Tile<W> {
             fullscreen_backdrop: SolidColorBuffer::new((0., 0.), [0., 0., 0., 1.]),
             is_scratchpad: false,
             is_sticky: false,
-            marks: Vec::new(),
             floating_window_size: None,
             floating_pos: None,
             floating_reinsert_hint: None,
@@ -371,22 +353,6 @@ impl<W: LayoutElement> Tile<W> {
             clock,
             options,
         }
-    }
-
-    pub(super) fn node_key(&self) -> NodeKey {
-        self.node_key
-    }
-
-    pub(super) fn node_sizing(&self) -> &NodeSizing {
-        &self.node_sizing
-    }
-
-    pub(super) fn node_sizing_mut(&mut self) -> &mut NodeSizing {
-        &mut self.node_sizing
-    }
-
-    pub(super) fn unset_node_fractions(&mut self) {
-        self.node_sizing.unset_fractions();
     }
 
     pub fn update_config(
@@ -446,14 +412,11 @@ impl<W: LayoutElement> Tile<W> {
         }
     }
 
-    pub(super) fn draw_titlebar(&self) -> bool {
-        self.draw_titlebar
-    }
-
     pub(super) fn set_in_tabbed_context(&mut self, in_tabbed_context: bool) {
         self.in_tabbed_context = in_tabbed_context;
     }
 
+    #[cfg(test)]
     pub(super) fn in_tabbed_context(&self) -> bool {
         self.in_tabbed_context
     }
@@ -1073,27 +1036,6 @@ impl<W: LayoutElement> Tile<W> {
         self.is_sticky = sticky;
     }
 
-    pub(super) fn has_mark(&self, mark: &str) -> bool {
-        self.marks.iter().any(|m| m == mark)
-    }
-
-    pub(super) fn remove_mark(&mut self, mark: &str) {
-        self.marks.retain(|m| m != mark);
-    }
-
-    pub(super) fn clear_marks(&mut self) {
-        self.marks.clear();
-    }
-
-    /// Marks live on an attached container node. A detached view carries them in its tile
-    /// until another arena constructs that node again.
-    pub(super) fn take_marks(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.marks)
-    }
-
-    pub(super) fn replace_marks(&mut self, marks: Vec<String>) {
-        self.marks = marks;
-    }
     pub fn sizing_mode(&self) -> SizingMode {
         self.sizing_mode
     }
@@ -1368,30 +1310,29 @@ impl<W: LayoutElement> Tile<W> {
 
     pub fn request_tile_size(
         &mut self,
-        mut size: Size<f64, Logical>,
+        size: Size<f64, Logical>,
+        animate: bool,
+        transaction: Option<Transaction>,
+    ) {
+        self.request_tile_size_with_tab_bar_offset(size, self.tab_bar_offset, animate, transaction);
+    }
+
+    /// Request a normal window size for a candidate presentation that is not committed yet.
+    ///
+    /// A layout transaction must be able to size the client from its candidate tab offset without
+    /// installing that offset on the tile that is still being rendered. The ordinary entry point
+    /// above uses the committed offset.
+    pub(super) fn request_tile_size_with_tab_bar_offset(
+        &mut self,
+        size: Size<f64, Logical>,
+        tab_bar_offset: f64,
         animate: bool,
         transaction: Option<Transaction>,
     ) {
         self.record_pending_resize(transaction.as_ref());
-        // Can't go through effective_border_width() because we might be fullscreen.
-        if !self.border.is_off() {
-            let width = self.border.width();
-            size.w = f64::max(1., size.w - width * 2.);
-            size.h = f64::max(1., size.h - width * 2.);
-        }
-        if self.tab_bar_offset > 0.0 {
-            size.h = f64::max(1., size.h - self.tab_bar_offset);
-        }
-
-        // The size request has to be i32 unfortunately, due to Wayland. We floor here instead of
-        // round to avoid situations where proportionally-sized columns don't fit on the screen
-        // exactly.
-        self.window.request_size(
-            size.to_i32_floor(),
-            SizingMode::Normal,
-            animate,
-            transaction,
-        );
+        let size = self.requested_window_size_for_tile(size, tab_bar_offset);
+        self.window
+            .request_size(size, SizingMode::Normal, animate, transaction);
     }
 
     pub(super) fn requested_window_size_for_tile(

@@ -3,25 +3,22 @@ use std::collections::{HashMap, HashSet};
 use smithay::utils::{Logical, Point, Rectangle, Size};
 use smithay::wayland::compositor::{Blocker, BlockerState};
 
-use super::{ContainerArena, Layout, LayoutElement, LeafLayoutInfo, NodeData, NodeKey};
+use super::{
+    ContainerArena, Layout, LayoutElement, LeafLayoutInfo, LeafPresentation, NodeData, NodeKey,
+};
 use crate::layout::tab_bar::tab_bar_row_height;
 use crate::layout::tile::Tile;
 use crate::utils::transaction::{Transaction, TransactionBlocker};
 
 #[derive(Debug)]
 pub(in crate::layout) struct LayoutData {
-    pub(in crate::layout) leaf_layouts: Vec<LeafLayoutInfo>,
-    container_geometries: HashMap<NodeKey, Rectangle<f64, Logical>>,
-    tab_bar_offsets: HashMap<NodeKey, f64>,
-    titlebar_flags: HashMap<NodeKey, bool>,
-    tabbed_context_flags: HashMap<NodeKey, bool>,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct LeafLayoutContext {
-    tab_bar_offset: f64,
-    draw_titlebar: bool,
-    in_tabbed_context: bool,
+    pub(in crate::layout) leaf_layouts: HashMap<NodeKey, LeafLayoutInfo>,
+    /// The candidate pending box for every node this arrange visited.
+    ///
+    /// This remains in the transaction snapshot until commit. Once applied, the box is stored on
+    /// the node itself for both views and split containers; `leaf_layouts` only carries the
+    /// decorated presentation box.
+    pub(super) node_geometries: HashMap<NodeKey, Rectangle<f64, Logical>>,
 }
 
 /// What an arrange pass carries from its root all the way down.
@@ -30,9 +27,7 @@ struct LeafLayoutContext {
 /// and the two accumulators. They were nine loose parameters threaded through a recursion,
 /// where the only ones that actually change on the way down are the node and its box.
 struct LayoutWalk<'a> {
-    branch: NodeKey,
     gap: f64,
-    path: Vec<usize>,
     data: &'a mut LayoutData,
 }
 
@@ -147,25 +142,14 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         // Only leaves reachable from a root count: the store can still hold nodes that were
         // detached but not yet dropped.
-        let current: HashSet<(NodeKey, NodeKey)> = self
-            .dfs_leaf_keys()
-            .into_iter()
-            .map(|key| (key, self.branch_root(key)))
-            .collect();
-
         // A branch is stale when the leaves it describes are no longer the leaves that branch
         // has. The other branches' leaves are in `current` too and are none of its business.
         self.pending_layouts.iter().any(|pending| {
-            let snapshot: HashSet<(NodeKey, NodeKey)> = pending
-                .data
-                .leaf_layouts
-                .iter()
-                .map(|info| (info.key, info.branch))
-                .collect();
-            let now: HashSet<(NodeKey, NodeKey)> = current
-                .iter()
-                .filter(|(_, branch)| *branch == pending.branch)
-                .copied()
+            let snapshot: HashSet<NodeKey> = pending.data.leaf_layouts.keys().copied().collect();
+            let now: HashSet<NodeKey> = self
+                .dfs_leaf_keys()
+                .into_iter()
+                .filter(|key| self.branch_root(*key) == pending.branch)
                 .collect();
             snapshot != now
         })
@@ -380,15 +364,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
         self.pending_transaction = None;
 
-        // A pass does not necessarily reach every branch. One waiting on its own configures is
-        // skipped on purpose, and a fullscreen makes `arrange_each_branch` return that branch
-        // alone — sway's `arrange_workspace` never descends the rest either. Those branches
-        // keep the geometry they last had, which is what is still on screen, but a path is an
-        // address rather than geometry: the tree may have moved under it while it was not
-        // being arranged. Re-point every cached leaf at where it is now; for the branches this
-        // pass did arrange, the addresses it just wrote are these same ones.
-        self.readdress_leaf_layouts();
-
         if requested {
             self.debug_layout_state("layout_atomic_requested");
         } else {
@@ -450,7 +425,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// sway/tree/arrange.c:72-83,157-169
     fn record_child_totals(&mut self, data: &LayoutData) {
         let arranged: Vec<(NodeKey, Rectangle<f64, Logical>)> = data
-            .container_geometries
+            .node_geometries
             .iter()
             .map(|(key, rect)| (*key, *rect))
             .collect();
@@ -481,55 +456,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.floating_roots_snapshot()
     }
 
-    /// Point the cached layout at where its leaves are *now*.
-    ///
-    /// While a resize is in flight the cached geometry is deliberately the old one — it is
-    /// what is still on screen — but the path beside it is an address, not geometry, and an
-    /// address of a tree that has moved on is simply wrong. A structural change during a
-    /// transaction is what pulls the two apart: the leaves are the same, their rectangles
-    /// are the same, and they are somewhere else.
-    pub(in crate::layout) fn readdress_leaf_layouts(&mut self) {
-        let addresses: HashMap<NodeKey, (Vec<usize>, NodeKey)> = self
-            .nodes
-            .keys()
-            .filter_map(|key| {
-                self.get_node(key)
-                    .is_some_and(|node| node.is_view())
-                    .then(|| {
-                        Some((
-                            key,
-                            (self.branch_relative_path(key)?, self.branch_root(key)),
-                        ))
-                    })?
-            })
-            .collect();
-        self.leaf_layouts.retain_mut(|info| {
-            let Some((path, branch)) = addresses.get(&info.key) else {
-                // The leaf left the tree while the transaction was open; nothing on screen
-                // can belong to it any more.
-                return false;
-            };
-            info.path.clone_from(path);
-            info.branch = *branch;
-            true
-        });
-        for pending in &mut self.pending_layouts {
-            pending.data.leaf_layouts.retain_mut(|info| {
-                let Some((path, branch)) = addresses.get(&info.key) else {
-                    return false;
-                };
-                // A path is an address in one branch and follows structural changes there.
-                // The branch beside a pending rectangle is provenance: changing it would
-                // make a floating configure look valid after the node moved to tiling (or
-                // vice versa), and the state pass would flush bounds for the wrong side.
-                if info.branch == *branch {
-                    info.path.clone_from(path);
-                }
-                true
-            });
-        }
-    }
-
     /// Keep a leaf's node box when tree surgery changes how its parent decorates it.
     ///
     /// A leaf directly under tabs is the awkward representation boundary in tiri: the
@@ -543,14 +469,18 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// sway/commands/layout.c:134-196
     /// sway/tree/container.c:1534-1554
     pub(super) fn preserve_leaf_node_geometry(&mut self, key: NodeKey) {
-        let preserve = |layouts: &mut Vec<LeafLayoutInfo>| {
-            if let Some(info) = layouts.iter_mut().find(|info| info.key == key) {
-                info.rect = info.node_rect;
+        let preserve = |layouts: &mut HashMap<NodeKey, LeafLayoutInfo>, geometry| {
+            if let Some(info) = layouts.get_mut(&key) {
+                info.rect = geometry;
             }
         };
-        preserve(&mut self.leaf_layouts);
+        if let Some(geometry) = self.node_geometry(key) {
+            preserve(&mut self.leaf_layouts, geometry);
+        }
         for pending in &mut self.pending_layouts {
-            preserve(&mut pending.data.leaf_layouts);
+            if let Some(geometry) = pending.data.node_geometries.get(&key).copied() {
+                preserve(&mut pending.data.leaf_layouts, geometry);
+            }
         }
     }
 
@@ -571,9 +501,9 @@ impl<W: LayoutElement> ContainerArena<W> {
             .filter(|key| self.get_node(*key).is_some_and(|node| node.is_view()))
             .map(|key| (key, self.focus_makes_leaf_visible(key)))
             .collect();
-        let refresh = |layouts: &mut Vec<LeafLayoutInfo>| {
-            for info in layouts {
-                if let Some(visible) = visibility.get(&info.key) {
+        let refresh = |layouts: &mut HashMap<NodeKey, LeafLayoutInfo>| {
+            for (key, info) in layouts {
+                if let Some(visible) = visibility.get(key) {
                     info.visible = *visible;
                 }
             }
@@ -609,35 +539,19 @@ impl<W: LayoutElement> ContainerArena<W> {
         true
     }
 
-    /// Whether a deferred arrange still addresses the same live branch shape.
+    /// Whether a deferred arrange still describes the same live branch leaves.
     ///
-    /// Geometry may intentionally stay old until the transaction completes; node paths may
-    /// not. A leaf that moved branches, gained a wrapper, or disappeared makes the snapshot
-    /// unusable as committed cache data. The pending relayout will calculate a fresh one.
-    fn pending_layout_addresses_are_current(&self, pending: &PendingLayout) -> bool {
-        let described_branches: HashSet<NodeKey> = pending
-            .data
-            .leaf_layouts
-            .iter()
-            .map(|info| info.branch)
-            .collect();
-        let snapshot: HashSet<(NodeKey, NodeKey)> = pending
-            .data
-            .leaf_layouts
-            .iter()
-            .map(|info| (info.key, info.branch))
-            .collect();
-        let current: HashSet<(NodeKey, NodeKey)> = self
+    /// Geometry may intentionally stay old until the transaction completes. Stable node
+    /// identities make structural addresses unnecessary; a leaf moving branch or disappearing
+    /// is enough to invalidate the snapshot and request a fresh layout.
+    fn pending_layout_is_current(&self, pending: &PendingLayout) -> bool {
+        let snapshot: HashSet<NodeKey> = pending.data.leaf_layouts.keys().copied().collect();
+        let current: HashSet<NodeKey> = self
             .dfs_leaf_keys()
             .into_iter()
-            .map(|key| (key, self.branch_root(key)))
-            .filter(|(_, branch)| described_branches.contains(branch))
+            .filter(|key| self.branch_root(*key) == pending.branch)
             .collect();
-
         snapshot == current
-            && pending.data.leaf_layouts.iter().all(|info| {
-                self.branch_relative_path(info.key).as_deref() == Some(info.path.as_slice())
-            })
     }
 
     /// Commit every branch whose windows have answered. A branch still waiting keeps its
@@ -659,7 +573,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             return false;
         }
         for pending in ready {
-            if !self.pending_layout_addresses_are_current(&pending) {
+            if !self.pending_layout_is_current(&pending) {
                 self.pending_relayout = true;
                 continue;
             }
@@ -707,20 +621,14 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     fn collect_layout_data(&self, root_key: NodeKey) -> LayoutData {
         let mut data = LayoutData {
-            leaf_layouts: Vec::new(),
-            container_geometries: HashMap::new(),
-            tab_bar_offsets: HashMap::new(),
-            titlebar_flags: HashMap::new(),
-            tabbed_context_flags: HashMap::new(),
+            leaf_layouts: HashMap::new(),
+            node_geometries: HashMap::new(),
         };
 
-        let path = Vec::new();
         let area = self.layout_area();
         let gap = self.gap_in(root_key);
         let mut walk = LayoutWalk {
-            branch: root_key,
             gap,
-            path,
             data: &mut data,
         };
         self.collect_layout_node(
@@ -728,7 +636,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             area,
             area,
             true,
-            LeafLayoutContext::default(),
+            LeafPresentation::default(),
             &mut walk,
         );
         data
@@ -768,11 +676,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         };
         let mut data = self.collect_branch_layout_data(fullscreen_key, area);
         if self.get_tile(fullscreen_key).is_some() {
-            if let Some(info) = data
-                .leaf_layouts
-                .iter_mut()
-                .find(|info| info.key == fullscreen_key)
-            {
+            if let Some(info) = data.leaf_layouts.get_mut(&fullscreen_key) {
                 info.workspace_fullscreen = true;
             }
         }
@@ -795,24 +699,18 @@ impl<W: LayoutElement> ContainerArena<W> {
         area: Rectangle<f64, Logical>,
     ) -> LayoutData {
         let mut data = LayoutData {
-            leaf_layouts: Vec::new(),
-            container_geometries: HashMap::new(),
-            tab_bar_offsets: HashMap::new(),
-            titlebar_flags: HashMap::new(),
-            tabbed_context_flags: HashMap::new(),
+            leaf_layouts: HashMap::new(),
+            node_geometries: HashMap::new(),
         };
 
-        // Addresses are relative to the node's actual branch, not necessarily to the tiled
-        // workspace root. This matters when fullscreen names a descendant of a floating
-        // group: the subtree keeps its NodeKey authority but is arranged against the output.
-        let path = match self.branch_relative_path(branch_root) {
-            Some(path) => path,
-            None => return self.collect_layout_data(self.root),
-        };
+        // The transaction belongs to the node's actual branch, not necessarily to the tiled
+        // workspace. This matters when fullscreen names a descendant of a floating group: the
+        // subtree keeps its NodeKey authority but is arranged against the output.
+        if !self.holds_node(branch_root) {
+            return self.collect_layout_data(self.root);
+        }
         let mut walk = LayoutWalk {
-            branch: self.branch_root(branch_root),
             gap: self.gap_in(branch_root),
-            path,
             data: &mut data,
         };
         self.collect_layout_node(
@@ -820,58 +718,54 @@ impl<W: LayoutElement> ContainerArena<W> {
             area,
             area,
             true,
-            LeafLayoutContext::default(),
+            LeafPresentation::default(),
             &mut walk,
         );
 
         // A pass describes its own branch and no other: what it does not mention is committed
         // separately, by whoever arranged it. Inside this branch, though, silence would be
         // taken for absence — so leaves this pass did not revisit keep their rectangle, which
-        // is the box sway is not revisiting. Not their address: the tree can be reshaped while
-        // a fullscreen is up, and a path into a tree that has moved on is simply wrong. A leaf
-        // that is gone is dropped.
+        // is the box sway is not revisiting. Identity comes from the map key and topology from
+        // the live tree; a leaf that is gone is dropped.
         let branch = self.branch_root(branch_root);
-        let arranged: HashSet<NodeKey> = data.leaf_layouts.iter().map(|info| info.key).collect();
-        let held: Vec<LeafLayoutInfo> = self
+        let arranged: HashSet<NodeKey> = data.leaf_layouts.keys().copied().collect();
+        let held: Vec<(LeafLayoutInfo, Rectangle<f64, Logical>)> = self
             .leaf_layouts
-            .iter()
+            .values()
             .filter(|info| !arranged.contains(&info.key))
             .filter(|info| self.branch_root(info.key) == branch)
-            .filter_map(|info| {
-                Some(LeafLayoutInfo {
-                    path: self.branch_relative_path(info.key)?,
-                    ..info.clone()
-                })
-            })
+            .filter_map(|info| Some((info.clone(), self.node_geometry(info.key)?)))
             .collect();
-        data.leaf_layouts.extend(held);
+        for (info, geometry) in held {
+            data.node_geometries.insert(info.key, geometry);
+            data.leaf_layouts.insert(info.key, info);
+        }
 
         // A window can map outside the fullscreen subtree. sway keeps that new tiling node
         // in the workspace with its untouched zero pending box until fullscreen ends. It has
         // no previous cache entry for us to carry above, but it still belongs to this branch:
-        // omitting it makes `pending_layout_addresses_are_current` reject an otherwise valid
+        // omitting it makes `pending_layout_is_current` reject an otherwise valid
         // arrange of the fullscreen subtree because the snapshot appears to have lost a leaf.
         // Give every such new leaf the state sway exposes instead — present, hidden and with
         // a zero box — so snapshots remain complete without arranging outside fullscreen.
-        let represented: HashSet<NodeKey> = data.leaf_layouts.iter().map(|info| info.key).collect();
+        let represented: HashSet<NodeKey> = data.leaf_layouts.keys().copied().collect();
         let zero = Rectangle::new(Point::from((0.0, 0.0)), Size::from((0.0, 0.0)));
         for key in self
             .dfs_leaf_keys()
             .into_iter()
             .filter(|key| self.branch_root(*key) == branch && !represented.contains(key))
         {
-            let Some(path) = self.branch_relative_path(key) else {
-                continue;
-            };
-            data.leaf_layouts.push(LeafLayoutInfo {
+            data.leaf_layouts.insert(
                 key,
-                branch,
-                path,
-                rect: zero,
-                node_rect: zero,
-                visible: false,
-                workspace_fullscreen: false,
-            });
+                LeafLayoutInfo {
+                    key,
+                    rect: zero,
+                    presentation: LeafPresentation::default(),
+                    visible: false,
+                    workspace_fullscreen: false,
+                },
+            );
+            data.node_geometries.insert(key, zero);
         }
         data
     }
@@ -993,7 +887,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         rect: Rectangle<f64, Logical>,
         node_rect: Rectangle<f64, Logical>,
         visible: bool,
-        ctx: LeafLayoutContext,
+        ctx: LeafPresentation,
         walk: &mut LayoutWalk<'_>,
     ) {
         let (layout, child_count, focused_idx, percents) = match self.get_node(node_key) {
@@ -1005,25 +899,26 @@ impl<W: LayoutElement> ContainerArena<W> {
                 } else {
                     (ctx.tab_bar_offset, ctx.draw_titlebar)
                 };
-                walk.data.tab_bar_offsets.insert(node_key, offset);
-                walk.data.titlebar_flags.insert(node_key, show_titlebar);
-                walk.data
-                    .tabbed_context_flags
-                    .insert(node_key, ctx.in_tabbed_context);
-                walk.data.leaf_layouts.push(LeafLayoutInfo {
-                    key: node_key,
-                    branch: walk.branch,
-                    path: walk.path.clone(),
-                    rect,
-                    node_rect,
-                    visible,
-                    workspace_fullscreen: false,
-                });
+                walk.data.node_geometries.insert(node_key, node_rect);
+                walk.data.leaf_layouts.insert(
+                    node_key,
+                    LeafLayoutInfo {
+                        key: node_key,
+                        rect,
+                        presentation: LeafPresentation::new(
+                            offset,
+                            show_titlebar,
+                            ctx.in_tabbed_context,
+                        ),
+                        visible,
+                        workspace_fullscreen: false,
+                    },
+                );
                 return;
             }
             Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => {
                 let container = self.get_container(node_key).expect("layout parent");
-                walk.data.container_geometries.insert(node_key, rect);
+                walk.data.node_geometries.insert(node_key, rect);
                 (
                     container.layout(),
                     container.child_count(),
@@ -1050,18 +945,13 @@ impl<W: LayoutElement> ContainerArena<W> {
                         continue;
                     };
 
-                    walk.path.push(idx);
                     let (child_offset, child_titlebar) =
                         self.split_child_titlebar(child_key, split_bar_height);
-                    let child_ctx = LeafLayoutContext {
-                        tab_bar_offset: child_offset,
-                        draw_titlebar: child_titlebar,
-                        in_tabbed_context: ctx.in_tabbed_context,
-                    };
+                    let child_ctx =
+                        LeafPresentation::new(child_offset, child_titlebar, ctx.in_tabbed_context);
                     self.collect_layout_node(
                         child_key, child_rect, child_rect, visible, child_ctx, walk,
                     );
-                    walk.path.pop();
                 }
             }
             Layout::Tabbed | Layout::Stacked => {
@@ -1071,13 +961,8 @@ impl<W: LayoutElement> ContainerArena<W> {
                     let Some(child_key) = self.get_container_child_at(node_key, idx) else {
                         continue;
                     };
-                    walk.path.push(idx);
                     let child_visible = visible && idx == focused_idx;
-                    let child_ctx = LeafLayoutContext {
-                        tab_bar_offset: 0.0,
-                        draw_titlebar: false,
-                        in_tabbed_context: true,
-                    };
+                    let child_ctx = LeafPresentation::new(0.0, false, true);
                     // A view gets the switcher's whole parent box and IPC adds its title bar
                     // afterwards. A child container is itself placed below that bar.
                     //
@@ -1096,7 +981,6 @@ impl<W: LayoutElement> ContainerArena<W> {
                         child_ctx,
                         walk,
                     );
-                    walk.path.pop();
                 }
             }
         }
@@ -1104,7 +988,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     fn changed_layout_keys(&self, data: &LayoutData) -> HashSet<NodeKey> {
         let mut current = HashMap::new();
-        for info in &self.leaf_layouts {
+        for info in self.leaf_layouts.values() {
             let Some(tile) = self.get_tile(info.key) else {
                 continue;
             };
@@ -1113,13 +997,13 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
 
         let mut changed = HashSet::new();
-        for info in &data.leaf_layouts {
-            let offset = data.tab_bar_offsets.get(&info.key).copied().unwrap_or(0.0);
+        for info in data.leaf_layouts.values() {
             let Some(tile) = self.get_tile(info.key) else {
                 changed.insert(info.key);
                 continue;
             };
-            let request = self.layout_request_for(tile, info.rect.size, offset);
+            let request =
+                self.layout_request_for(tile, info.rect.size, info.presentation.tab_bar_offset);
             if current.get(&info.key).is_none_or(|old| *old != request) {
                 changed.insert(info.key);
             }
@@ -1135,94 +1019,67 @@ impl<W: LayoutElement> ContainerArena<W> {
         transaction: &Transaction,
         animate_resize: bool,
     ) {
-        for info in &data.leaf_layouts {
-            let Some(tile) = self.get_tile_mut(info.key) else {
+        for key in self.dfs_leaf_keys() {
+            let Some(info) = data.leaf_layouts.get(&key) else {
                 continue;
             };
-            let offset = data.tab_bar_offsets.get(&info.key).copied().unwrap_or(0.0);
-            let show_titlebar = data.titlebar_flags.get(&info.key).copied().unwrap_or(false);
-            let in_tabbed_context = data
-                .tabbed_context_flags
-                .get(&info.key)
-                .copied()
-                .unwrap_or(false);
-            let old_offset = tile.tab_bar_offset();
-            let old_titlebar = tile.draw_titlebar();
-            let old_tabbed_context = tile.in_tabbed_context();
-            tile.set_tab_bar_offset(offset);
-            tile.set_draw_titlebar(show_titlebar);
-            tile.set_in_tabbed_context(in_tabbed_context);
-
-            let tx = changed.contains(&info.key).then(|| transaction.clone());
+            let Some(tile) = self.get_tile_mut(key) else {
+                continue;
+            };
+            let tx = changed.contains(&key).then(|| transaction.clone());
             let size = Size::from((info.rect.size.w, info.rect.size.h));
             if tile.window().pending_sizing_mode().is_fullscreen() {
                 tile.request_fullscreen(animate_resize, tx);
             } else {
-                tile.request_tile_size(size, animate_resize, tx);
+                tile.request_tile_size_with_tab_bar_offset(
+                    size,
+                    info.presentation.tab_bar_offset,
+                    animate_resize,
+                    tx,
+                );
             }
-
-            tile.set_tab_bar_offset(old_offset);
-            tile.set_draw_titlebar(old_titlebar);
-            tile.set_in_tabbed_context(old_tabbed_context);
         }
     }
 
     /// Commit one branch's arrange.
     ///
     /// Only that branch's leaves are replaced: the others are either still on screen as they
-    /// were, or waiting for their own windows, and neither is this pass's to overwrite. They
-    /// are put back in a fixed order — the tiled side, then the floating groups in the order
-    /// the workspace holds them — so that what reads the cache back in order (hit-testing,
-    /// rendering) gets the same answer whichever branch was arranged last.
+    /// were, or waiting for their own windows, and neither is this pass's to overwrite. Render
+    /// order comes from the current tree rather than insertion order in this identity map.
     pub(super) fn apply_layout_data(&mut self, branch: NodeKey, data: LayoutData) {
-        for (key, rect) in data.container_geometries {
-            if let Some(container) = self.get_container_mut(key) {
-                container.set_geometry(rect);
-            }
+        let ordered_leaves = self.dfs_leaf_keys();
+        for (key, rect) in data.node_geometries {
+            self.set_node_geometry(key, rect);
         }
-        for (key, offset) in data.tab_bar_offsets {
+        for key in ordered_leaves {
+            let Some(info) = data.leaf_layouts.get(&key) else {
+                continue;
+            };
             if let Some(tile) = self.get_tile_mut(key) {
-                tile.set_tab_bar_offset(offset);
-            }
-        }
-        for (key, show_titlebar) in data.titlebar_flags {
-            if let Some(tile) = self.get_tile_mut(key) {
-                tile.set_draw_titlebar(show_titlebar);
-            }
-        }
-        for (key, in_tabbed_context) in data.tabbed_context_flags {
-            if let Some(tile) = self.get_tile_mut(key) {
-                tile.set_in_tabbed_context(in_tabbed_context);
+                tile.set_tab_bar_offset(info.presentation.tab_bar_offset);
+                tile.set_draw_titlebar(info.presentation.draw_titlebar);
+                tile.set_in_tabbed_context(info.presentation.in_tabbed_context);
             }
         }
         // Out go this branch's old entries, and any entry for a leaf this pass is about to
         // describe: a leaf that crossed between branches is still one leaf, and its entry
         // under the branch it left would otherwise sit there beside its new one.
-        let incoming: HashSet<NodeKey> = data.leaf_layouts.iter().map(|info| info.key).collect();
-        // And out go the leaves the tree no longer holds. A whole-workspace replace used to
-        // drop those by construction; keeping the other branches' entries means saying so.
-        let gone: HashSet<NodeKey> = self
+        let incoming: HashSet<NodeKey> = data.leaf_layouts.keys().copied().collect();
+        // Out go old entries still belonging to this branch, plus leaves the tree no longer
+        // holds. A leaf that crossed branches is retained until its new branch commits.
+        let stale: Vec<NodeKey> = self
             .leaf_layouts
-            .iter()
-            .map(|info| info.key)
-            .filter(|key| !self.holds_node(*key))
+            .keys()
+            .copied()
+            .filter(|key| {
+                !self.holds_node(*key)
+                    || (self.branch_root(*key) == branch && !incoming.contains(key))
+            })
             .collect();
-        self.leaf_layouts.retain(|info| {
-            info.branch != branch && !incoming.contains(&info.key) && !gone.contains(&info.key)
-        });
+        for key in stale {
+            self.leaf_layouts.remove(&key);
+        }
         self.leaf_layouts.extend(data.leaf_layouts);
-        self.sort_leaf_layouts_by_branch();
-    }
-
-    /// The tiled side first, then the floating groups in the workspace's order.
-    fn sort_leaf_layouts_by_branch(&mut self) {
-        let order: HashMap<NodeKey, usize> = std::iter::once(self.root)
-            .chain(self.floating_roots())
-            .enumerate()
-            .map(|(idx, key)| (key, idx))
-            .collect();
-        self.leaf_layouts
-            .sort_by_key(|info| order.get(&info.branch).copied().unwrap_or(usize::MAX));
     }
 
     pub(in crate::layout) fn tab_bar_row_height(&self) -> f64 {

@@ -1,5 +1,6 @@
 //! View size, config, leaf-layout cache and pending-layout bookkeeping.
 
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use smithay::utils::Logical;
@@ -83,8 +84,20 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
     }
 
-    /// Access the cached leaf layout information from the last layout pass.
-    pub(in crate::layout) fn leaf_layouts(&self) -> &[LeafLayoutInfo] {
+    /// Cached leaf presentations in current tree/render order.
+    pub(in crate::layout) fn leaf_layouts(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = &LeafLayoutInfo> + '_ {
+        self.dfs_leaf_keys()
+            .into_iter()
+            .filter_map(|key| self.leaf_layouts.get(&key))
+    }
+
+    pub(in crate::layout) fn leaf_layout(&self, key: NodeKey) -> Option<&LeafLayoutInfo> {
+        self.leaf_layouts.get(&key)
+    }
+
+    pub(in crate::layout) fn leaf_layout_cache(&self) -> &HashMap<NodeKey, LeafLayoutInfo> {
         &self.leaf_layouts
     }
 
@@ -92,18 +105,28 @@ impl<W: LayoutElement> ContainerArena<W> {
     pub(in crate::layout) fn pending_leaf_layouts_for(
         &self,
         branch: NodeKey,
-    ) -> Option<&[LeafLayoutInfo]> {
+    ) -> Option<&HashMap<NodeKey, LeafLayoutInfo>> {
         self.pending_layouts
             .iter()
             .find(|pending| pending.branch == branch)
-            .map(|pending| pending.data.leaf_layouts.as_slice())
+            .map(|pending| &pending.data.leaf_layouts)
     }
 
     /// Cached leaves from every layout transaction that is still waiting for clients.
-    pub(in crate::layout) fn pending_leaf_layouts(&self) -> impl Iterator<Item = &LeafLayoutInfo> {
-        self.pending_layouts
-            .iter()
-            .flat_map(|pending| pending.data.leaf_layouts.iter())
+    pub(in crate::layout) fn pending_leaf_layouts(
+        &self,
+    ) -> impl Iterator<Item = (NodeKey, &LeafLayoutInfo)> {
+        self.pending_layouts.iter().flat_map(|pending| {
+            self.leaf_keys_in_branch(pending.branch)
+                .into_iter()
+                .filter_map(move |key| {
+                    pending
+                        .data
+                        .leaf_layouts
+                        .get(&key)
+                        .map(|info| (pending.branch, info))
+                })
+        })
     }
 
     pub(in crate::layout) fn set_pending_transaction(&mut self, transaction: Transaction) {
@@ -126,7 +149,18 @@ impl<W: LayoutElement> ContainerArena<W> {
             self.seat.redirect_selection(None);
         }
 
-        self.readdress_leaf_layouts();
+        let live: HashSet<NodeKey> = self
+            .nodes
+            .keys()
+            .filter(|key| self.get_node(*key).is_some_and(|node| node.is_view()))
+            .collect();
+        self.leaf_layouts.retain(|key, _| live.contains(key));
+        for pending in &mut self.pending_layouts {
+            pending
+                .data
+                .leaf_layouts
+                .retain(|key, _| live.contains(key));
+        }
     }
 
     /// Focused tile (if any).

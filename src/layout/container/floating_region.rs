@@ -18,10 +18,9 @@
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use super::{
-    ContainerArena, ContainerData, FloatingGeometry, FloatingRoot, FloatingRootKind,
+    ContainerArena, ContainerData, DetachedView, FloatingGeometry, FloatingRoot, FloatingRootKind,
     InactiveTilingReference, Layout, LayoutElement, NodeData, NodeKey,
 };
-use crate::layout::tile::Tile;
 use crate::layout::SizeFrac;
 
 pub(in crate::layout) fn scale_floating_position(
@@ -382,11 +381,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         if let Some(old_parent) = old_parent {
             self.reap_empty(old_parent);
         }
-        // A workspace fullscreen arrange may skip the new floating branch entirely. Move its
-        // cached leaves to their new branch address now so that arranging the old tiled branch
-        // does not discard them as stale tiled entries before the floating pending boxes can be
-        // observed.
-        self.readdress_leaf_layouts();
         true
     }
 
@@ -507,7 +501,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Returns the floating root and the view, which are now the same node.
     pub(in crate::layout) fn float_new_group(
         &mut self,
-        tile: Tile<W>,
+        tile: DetachedView<W>,
         area: Rectangle<f64, Logical>,
         stack_index: usize,
     ) -> (NodeKey, NodeKey) {
@@ -517,7 +511,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         // a transaction that describes a layout the tile has already left, and the group sits
         // on the workspace, focused, with nothing on screen.
         self.discard_layout_superseded_by_transfer();
-        let leaf = self.insert_node(NodeData::Container(ContainerData::new_view(tile)));
+        let leaf = self.insert_view(tile);
         self.register_floating_root(
             leaf,
             area,

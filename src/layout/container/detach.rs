@@ -3,16 +3,20 @@
 use super::ContainerArena;
 use super::ContainerData;
 use super::DetachedNode;
+use super::DetachedSplit;
+use super::DetachedView;
 #[cfg(test)]
 use super::InsertParentInfo;
 use super::LayoutElement;
 use super::NodeData;
 use super::NodeKey;
-use crate::layout::tile::Tile;
 
 impl<W: LayoutElement> ContainerArena<W> {
-    /// Remove a window by ID, returns the removed tile
-    pub(in crate::layout) fn remove_window(&mut self, window_id: &W::Id) -> Option<Tile<W>> {
+    /// Remove a view node by window ID without discarding its semantic state.
+    pub(in crate::layout) fn remove_window(
+        &mut self,
+        window_id: &W::Id,
+    ) -> Option<DetachedView<W>> {
         let node_key = self.window_key(window_id)?;
         let cleanup_key = self.parent_of(node_key);
         let was_focused = self.focused_key() == Some(node_key);
@@ -41,7 +45,10 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         // Now remove from this workspace store (only the leaf, not recursive).
         let node_data = self.remove_node_from_store(node_key)?;
-        let tile = node_data.into_tile()?;
+        let NodeData::Container(container) = node_data else {
+            unreachable!("a window key must name a container node")
+        };
+        let view = container.into_view(node_key)?;
 
         if let Some(cleanup_key) = cleanup_key {
             self.reap_empty(cleanup_key);
@@ -69,7 +76,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         self.layout();
 
-        Some(tile)
+        Some(view)
     }
 
     /// Detach the subtree rooted at `node_key`, returning it along with enough information
@@ -187,50 +194,47 @@ impl<W: LayoutElement> ContainerArena<W> {
             children.push(self.extract_subtree(child_key));
         }
 
-        let sizing = container.sizing;
-        let layout = container.layout;
-        let user_created = container.user_created;
-        let prev_split_layout = container.prev_split_layout;
-        let (tile, marks) = container.into_detached_parts();
+        if container.is_view() {
+            debug_assert!(children.is_empty());
+            return DetachedNode::View(Box::new(
+                container
+                    .into_view(key)
+                    .expect("a view container must hold its tile"),
+            ));
+        }
 
-        // `sizing` is the split's own; a view's lives on its tile, here as in the arena.
-        let detached = DetachedNode {
+        let layout = container.common.layout;
+        let prev_split_layout = container.common.prev_split_layout;
+        DetachedNode::Split(DetachedSplit {
             key,
-            sizing,
+            sizing: container.sizing,
             layout,
-            marks,
-            user_created,
+            marks: container.marks,
+            user_created: container.user_created,
             prev_split_layout,
-            tile,
             children,
             focus_stack,
-        };
-        debug_assert!(detached
-            .tile
-            .as_ref()
-            .is_none_or(|tile| tile.node_key() == key));
-        detached
+        })
     }
 
     /// Insert a detached subtree into this tree, returning the new root key.
     pub(super) fn insert_subtree(&mut self, subtree: DetachedNode<W>) -> NodeKey {
-        // A view keeps the key it left with, the same as a split: node identity surviving the
-        // crossing is what the whole detached representation exists for.
-        let DetachedNode {
+        let split = match subtree {
+            DetachedNode::View(view) => return self.insert_view(*view),
+            DetachedNode::Split(split) => split,
+        };
+        let DetachedSplit {
             key: container_key,
             sizing,
             layout,
             marks,
-            tile,
             children,
             focus_stack,
             user_created,
             prev_split_layout,
-        } = subtree;
-        let mut node = match tile {
-            Some(tile) => ContainerData::new_view(tile),
-            None => ContainerData::new(layout),
-        };
+        } = split;
+
+        let mut node = ContainerData::new(layout);
         node.marks = marks;
         self.insert_node_with_key(container_key, NodeData::Container(node));
 
