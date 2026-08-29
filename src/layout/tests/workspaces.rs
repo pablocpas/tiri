@@ -2550,3 +2550,179 @@ fn a_workspace_left_with_only_a_floating_window_still_has_a_focused_leaf() {
         Op::MoveColumnToWorkspaceDown(false),
     ]);
 }
+
+// ============================================================================
+// What a single tree would change
+// ============================================================================
+//
+// Each workspace owns a `SeatFocus`, and `Layout` keeps a second focus history above them
+// that only chooses the workspace. A window crossing between workspaces therefore crosses
+// between two focus orders, and arrives at the back of the receiving one — `insert_subtree`
+// says so, and `seat.restore_at`'s doc says why.
+//
+// sway has one seat and one `focus_stack` for the whole tree, so none of these crossings
+// exist there. Folding tiri's arenas into one tree is what would remove them here, and these
+// are the answers that must come out the same on the other side. They are behaviour, not
+// implementation: which window is focused, which tab is shown.
+
+/// Which window a workspace falls back to when the focused one leaves it.
+///
+/// sway's `seat_get_focus_inactive`: the most recently focused survivor, not the first child.
+/// The focus order is what answers this, so it is the first thing a shared seat could get
+/// wrong.
+#[test]
+fn a_window_leaving_hands_focus_to_the_most_recent_survivor() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::FocusWindow(2),
+        Op::FocusWindow(3),
+        Op::FocusWindow(1),
+    ]);
+    assert_eq!(focused_window(&layout), Some(1));
+
+    // 3 was focused more recently than 2, and neither is the first child.
+    check_ops_on_layout(&mut layout, [Op::MoveWindowToWorkspaceDown(false)]);
+    assert_eq!(
+        focused_window(&layout),
+        Some(3),
+        "the survivor focused most recently takes the focus, not the first child",
+    );
+}
+
+/// A tab that leaves and comes back does not take the switcher with it.
+///
+/// Arriving is not being focused — sway appends a moved container without raising it — so the
+/// switcher goes on showing whatever it was showing. This is the observable form of "the
+/// arriving node lands at the back of the order", and a shared seat must not turn it into
+/// "the arriving node lands wherever it used to be".
+#[test]
+fn a_tab_that_leaves_and_returns_does_not_take_the_switcher_back() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::SetLayoutTabbed,
+        Op::FocusWindow(2),
+    ]);
+    assert_eq!(visible_windows(&layout), vec![2]);
+
+    check_ops_on_layout(&mut layout, [Op::MoveWindowToWorkspaceDown(false)]);
+    assert_eq!(
+        visible_windows(&layout),
+        vec![3],
+        "the switcher falls back to the most recently focused tab that stayed",
+    );
+
+    check_ops_on_layout(
+        &mut layout,
+        [
+            Op::FocusWorkspaceDown,
+            Op::MoveWindowToWorkspaceUp(false),
+            Op::FocusWorkspaceUp,
+        ],
+    );
+    assert_eq!(
+        visible_windows(&layout),
+        vec![3],
+        "a returning tab does not raise itself; the switcher shows what it was showing",
+    );
+}
+
+/// A sticky window is on the output, so switching workspace does not take focus off it.
+///
+/// Today it is a `ContainerTree` of its own on the monitor, with a third focus order. A single
+/// tree makes it an ordinary floating container of whichever workspace is active, which is
+/// what sway has — and this is the answer that must survive that change.
+#[test]
+fn a_sticky_window_keeps_focus_across_a_workspace_switch() {
+    let mut floating = TestWindowParams::new(2);
+    floating.is_floating = true;
+
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow { params: floating },
+    ]);
+    layout.toggle_window_sticky(Some(&2));
+    assert_eq!(focused_window(&layout), Some(2));
+
+    check_ops_on_layout(&mut layout, [Op::FocusWorkspaceDown]);
+    assert_eq!(
+        focused_window(&layout),
+        Some(2),
+        "the sticky window came along, and nothing took the focus off it",
+    );
+}
+
+/// Showing a scratchpad window focuses it and leaves the workspace's own history behind.
+///
+/// The scratchpad is already a workspace rather than a queue of detached tiles, so this
+/// crossing is a workspace-to-workspace move like any other — and the one whose focus answer
+/// a user notices immediately.
+#[test]
+fn showing_a_scratchpad_window_focuses_it_and_hiding_it_restores_the_previous() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::FocusWindow(1),
+        Op::FocusWindow(2),
+    ]);
+
+    layout.move_window_to_scratchpad(Some(&2));
+    assert_eq!(
+        focused_window(&layout),
+        Some(1),
+        "hiding the focused window falls back to the most recent survivor",
+    );
+
+    layout.scratchpad_show();
+    assert_eq!(focused_window(&layout), Some(2), "showing focuses it");
+
+    // And the crossing is repeatable: the second roundtrip answers like the first.
+    layout.move_window_to_scratchpad(Some(&2));
+    assert_eq!(focused_window(&layout), Some(1));
+    layout.scratchpad_show();
+    assert_eq!(focused_window(&layout), Some(2));
+}
+
+fn focused_window(layout: &Layout<TestWindow>) -> Option<usize> {
+    layout.focus().map(|window| *window.id())
+}
+
+/// Every window the active workspace currently shows, in tree order.
+///
+/// A tabbed or stacked container shows one child, so this is how "which tab is up" is asked
+/// without reaching for the switcher's own model.
+fn visible_windows(layout: &Layout<TestWindow>) -> Vec<usize> {
+    let workspace = layout.active_workspace().expect("active workspace");
+    let arena = workspace.container_tree().arena();
+    arena
+        .leaf_layouts()
+        .filter(|info| info.visible)
+        .filter_map(|info| arena.get_tile(info.key))
+        .map(|tile| *tile.window().id())
+        .collect()
+}
