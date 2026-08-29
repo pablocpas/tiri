@@ -81,8 +81,19 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
     }
 
+    /// The workspace this arena lays out in.
+    ///
+    /// Always present: the root is a workspace node for the arena's whole life. The `Option`
+    /// is for callers that would rather ask than assert.
     pub(super) fn get_workspace(&self) -> Option<&WorkspaceData> {
         match self.nodes.get(self.root)? {
+            NodeData::Workspace(workspace) => Some(workspace),
+            _ => None,
+        }
+    }
+
+    pub(super) fn get_workspace_mut(&mut self) -> Option<&mut WorkspaceData> {
+        match self.nodes.get_mut(self.root)? {
             NodeData::Workspace(workspace) => Some(workspace),
             _ => None,
         }
@@ -336,7 +347,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     pub(super) fn insert_node_with_key(&mut self, key: NodeKey, mut node: NodeData<W>) {
         if let NodeData::Container(container) = &mut node {
             if let Some(tile) = container.tile_mut() {
-                tile.update_config(self.view_size, self.scale, self.options.clone());
+                tile.update_config(self.view_size(), self.scale(), self.options().clone());
             }
         }
         self.nodes.insert(key, node);

@@ -61,9 +61,9 @@ impl<W: LayoutElement> ContainerArena<W> {
             leaf_count,
             pending_leaf_count,
             has_pending,
-            working_area = ?self.working_area,
-            view_size = ?self.view_size,
-            scale = self.scale,
+            working_area = ?self.working_area(),
+            view_size = ?self.view_size(),
+            scale = self.scale(),
             root = ?self.root,
             focused = ?self.focused_key(),
             "layout summary"

@@ -73,7 +73,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     /// Calculate and apply layout to the tree, with control over resize animation.
     pub(in crate::layout) fn layout_with_resize_animation(&mut self, animate_resize: bool) {
-        let animate = !self.options.animations.off;
+        let animate = !self.options().animations.off;
         self.layout_with_animations(animate, animate_resize);
     }
 
@@ -118,8 +118,8 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     pub(in crate::layout) fn layout_area(&self) -> Rectangle<f64, Logical> {
-        let mut area = self.working_area;
-        let gap = self.options.layout.gaps;
+        let mut area = self.working_area();
+        let gap = self.options().layout.gaps;
         if gap > 0.0 {
             area.loc.x += gap;
             area.loc.y += gap;
@@ -244,8 +244,8 @@ impl<W: LayoutElement> ContainerArena<W> {
             return;
         }
 
-        let animate = !self.options.animations.off;
-        let working_area_size = self.working_area.size;
+        let animate = !self.options().animations.off;
+        let working_area_size = self.working_area().size;
         let replacement_restore = self.node_geometry(new_key).unwrap_or_default();
         if let Some(tile) = self.get_tile_mut(old_key) {
             tile.request_tile_size(working_area_size, animate, None);
@@ -609,7 +609,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         if tile.window().pending_sizing_mode().is_fullscreen() {
             LayoutRequest {
                 mode: LayoutRequestMode::Fullscreen,
-                size: self.view_size.to_i32_round(),
+                size: self.view_size().to_i32_round(),
             }
         } else {
             LayoutRequest {
@@ -651,7 +651,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         if self.is_in_floating_branch(key) {
             0.0
         } else {
-            self.options.layout.gaps
+            self.options().layout.gaps
         }
     }
 
@@ -670,7 +670,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// the output box directly.
     fn collect_fullscreen_layout_data(&self, fullscreen_key: NodeKey) -> LayoutData {
         let area = if self.get_container(fullscreen_key).is_some() {
-            Rectangle::from_size(self.view_size)
+            Rectangle::from_size(self.view_size())
         } else {
             self.layout_area()
         };
@@ -1083,14 +1083,14 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     pub(in crate::layout) fn tab_bar_row_height(&self) -> f64 {
-        if self.options.layout.tab_bar.off {
+        if self.options().layout.tab_bar.off {
             return 0.0;
         }
-        tab_bar_row_height(&self.options.layout.tab_bar, self.scale)
+        tab_bar_row_height(&self.options().layout.tab_bar, self.scale())
     }
 
     pub(in crate::layout) fn split_title_bar_height(&self) -> f64 {
-        if !self.options.layout.tab_bar.show_in_split {
+        if !self.options().layout.tab_bar.show_in_split {
             return 0.0;
         }
         self.tab_bar_row_height()
@@ -1122,7 +1122,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
 
         let available = available.max(0.0);
-        let available_phys = (available * self.scale).round().max(0.0) as i32;
+        let available_phys = (available * self.scale()).round().max(0.0) as i32;
         let default = 1.0 / child_count as f64;
         let mut weights: Vec<f64> = (0..child_count)
             .map(|idx| percents.get(idx).copied().unwrap_or(default).max(0.0))
@@ -1153,7 +1153,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         lengths_int
             .into_iter()
-            .map(|v| v as f64 / self.scale)
+            .map(|v| v as f64 / self.scale())
             .collect()
     }
 
@@ -1198,10 +1198,10 @@ impl<W: LayoutElement> ContainerArena<W> {
         // where i3 has one. Growing the bar by that width covers the lane, and
         // `edge_visibility_for_tile` stops drawing it. Layout is untouched: only what is
         // painted (and what a click on the bar hits) changes.
-        let border_ext = if self.options.layout.border.off {
+        let border_ext = if self.options().layout.border.off {
             0.0
         } else {
-            self.options.layout.border.width
+            self.options().layout.border.width
         };
 
         let spacing = self.tab_bar_spacing();

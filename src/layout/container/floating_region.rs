@@ -329,7 +329,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             id: self.next_floating_root_id,
             key,
             kind,
-            geometry: FloatingGeometry::new(self.working_area, area),
+            geometry: FloatingGeometry::new(self.working_area(), area),
         };
         self.next_floating_root_id += 1;
         self.floating_roots

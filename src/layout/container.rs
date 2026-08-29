@@ -319,6 +319,17 @@ pub struct LayoutParentData {
 #[derive(Debug)]
 pub struct WorkspaceData {
     common: LayoutParentData,
+    /// The box this workspace is laid out in, and the config it is laid out with.
+    ///
+    /// On the workspace node rather than beside the tree because they are the workspace's and
+    /// not the tree's. A workspace parked without an output keeps the last box it had, and a
+    /// workspace can override the layout config its monitor handed down, so "the arena's view
+    /// size" is only an answer while an arena holds exactly one workspace. sway keeps the same
+    /// split: the box is `sway_output`'s and `arrange_output` walks it down.
+    view_size: Size<f64, Logical>,
+    working_area: Rectangle<f64, Logical>,
+    scale: f64,
+    options: Rc<Options>,
 }
 
 /// Container data stored under a stable node identity.
@@ -571,14 +582,6 @@ pub(super) struct ContainerArena<W: LayoutElement> {
     pending_transaction: Option<Transaction>,
     /// Whether a new layout is requested while a transaction is pending.
     pending_relayout: bool,
-    /// View size (output size)
-    view_size: Size<f64, Logical>,
-    /// Working area (view_size minus gaps/bars)
-    working_area: Rectangle<f64, Logical>,
-    /// Display scale
-    scale: f64,
-    /// Layout options
-    options: Rc<Options>,
     /// Generation counter for layout invalidation.
     generation: u64,
 }
@@ -693,9 +696,19 @@ impl LayoutParentData {
 }
 
 impl WorkspaceData {
-    fn new(layout: Layout) -> Self {
+    fn new(
+        layout: Layout,
+        view_size: Size<f64, Logical>,
+        working_area: Rectangle<f64, Logical>,
+        scale: f64,
+        options: Rc<Options>,
+    ) -> Self {
         Self {
             common: LayoutParentData::new(layout),
+            view_size,
+            working_area,
+            scale,
+            options,
         }
     }
 }
@@ -936,7 +949,13 @@ impl<W: LayoutElement> ContainerArena<W> {
         let root = NodeKey::next();
         nodes.insert(
             root,
-            NodeData::Workspace(WorkspaceData::new(Layout::SplitH)),
+            NodeData::Workspace(WorkspaceData::new(
+                Layout::SplitH,
+                view_size,
+                working_area,
+                scale,
+                options,
+            )),
         );
         parents.insert(root, None);
         let mut seat = seat::SeatFocus::default();
@@ -954,10 +973,6 @@ impl<W: LayoutElement> ContainerArena<W> {
             pending_layouts: Vec::new(),
             pending_transaction: None,
             pending_relayout: false,
-            view_size,
-            working_area,
-            scale,
-            options,
             generation: 0,
         }
     }

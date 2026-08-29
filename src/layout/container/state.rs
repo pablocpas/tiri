@@ -13,25 +13,41 @@ use super::LayoutElement;
 use super::LeafLayoutInfo;
 use super::NodeData;
 use super::NodeKey;
+use super::WorkspaceData;
 use crate::layout::tile::Tile;
 use crate::layout::Options;
 use crate::utils::transaction::Transaction;
 
 impl<W: LayoutElement> ContainerArena<W> {
+    /// The box and config the tree is laid out in, read off the workspace that owns them.
+    ///
+    /// Every reader goes through here rather than through a field beside the tree, so that the
+    /// day a second workspace root joins the arena the question "whose view size?" has one
+    /// place to be answered instead of forty.
+    fn workspace_data(&self) -> &WorkspaceData {
+        self.get_workspace()
+            .expect("the arena root is always a workspace node")
+    }
+
+    fn workspace_data_mut(&mut self) -> &mut WorkspaceData {
+        self.get_workspace_mut()
+            .expect("the arena root is always a workspace node")
+    }
+
     pub(in crate::layout) fn view_size(&self) -> Size<f64, Logical> {
-        self.view_size
+        self.workspace_data().view_size
     }
 
     pub(in crate::layout) fn working_area(&self) -> Rectangle<f64, Logical> {
-        self.working_area
+        self.workspace_data().working_area
     }
 
     pub(in crate::layout) fn scale(&self) -> f64 {
-        self.scale
+        self.workspace_data().scale
     }
 
     pub(in crate::layout) fn options(&self) -> &Rc<Options> {
-        &self.options
+        &self.workspace_data().options
     }
 
     /// Get the currently focused window
@@ -46,8 +62,9 @@ impl<W: LayoutElement> ContainerArena<W> {
         view_size: Size<f64, Logical>,
         working_area: Rectangle<f64, Logical>,
     ) {
-        self.view_size = view_size;
-        self.working_area = working_area;
+        let workspace = self.workspace_data_mut();
+        workspace.view_size = view_size;
+        workspace.working_area = working_area;
     }
 
     /// Update configuration
@@ -58,10 +75,11 @@ impl<W: LayoutElement> ContainerArena<W> {
         scale: f64,
         options: Rc<Options>,
     ) {
-        self.view_size = view_size;
-        self.working_area = working_area;
-        self.scale = scale;
-        self.options = options;
+        let workspace = self.workspace_data_mut();
+        workspace.view_size = view_size;
+        workspace.working_area = working_area;
+        workspace.scale = scale;
+        workspace.options = options;
     }
 
     /// Count total number of windows in tree

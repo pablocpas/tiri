@@ -80,7 +80,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         // child. The mode dissolves the same levels — see `autotile_squash_lone_children` —
         // but in place, replacing the level with its child and leaving every arity alone.
         // Two names for one job, so only one of them runs.
-        if self.options.layout.autotile && self.branch_root(branch_root) == self.root {
+        if self.options().layout.autotile && self.branch_root(branch_root) == self.root {
             return;
         }
 

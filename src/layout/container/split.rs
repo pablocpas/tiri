@@ -737,7 +737,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             Layout::SplitH => Layout::SplitV,
             Layout::SplitV => Layout::SplitH,
             Layout::Tabbed | Layout::Stacked => {
-                let along_the_screen = if self.view_size.h > self.view_size.w {
+                let along_the_screen = if self.view_size().h > self.view_size().w {
                     Layout::SplitV
                 } else {
                     Layout::SplitH

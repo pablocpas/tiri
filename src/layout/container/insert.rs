@@ -98,7 +98,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// side, its parent is a switcher — where "beside" already means another tab — or it has
     /// no box to measure yet.
     pub(super) fn autotile_layout_for(&self, key: NodeKey) -> Option<Layout> {
-        if !self.options.layout.autotile {
+        if !self.options().layout.autotile {
             return None;
         }
         if self.branch_root(key) != self.root {
@@ -113,7 +113,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             return None;
         }
 
-        let ratio = self.options.layout.autotile_ratio;
+        let ratio = self.options().layout.autotile_ratio;
         Some(if rect.size.w >= rect.size.h * ratio {
             Layout::SplitH
         } else {
@@ -178,7 +178,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// that ends up holding a single child is not always the one the caller was holding a key
     /// to when it started.
     pub(super) fn autotile_squash_lone_children(&mut self) {
-        if !self.options.layout.autotile {
+        if !self.options().layout.autotile {
             return;
         }
 
