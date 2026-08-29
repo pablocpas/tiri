@@ -113,7 +113,7 @@ fn observe(layout: &Layout<TestWindow>) -> Workspace {
     let workspace = layout
         .active_workspace()
         .expect("a script always runs on an output with a workspace");
-    let area = workspace.working_area();
+    let area = workspace.working_area(layout.containers());
     let area = LayoutTreeRect {
         x: area.loc.x,
         y: area.loc.y,

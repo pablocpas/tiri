@@ -93,20 +93,6 @@ pub struct Workspace<W: LayoutElement> {
     /// disconnected, preserved until a new output is connected.
     transform: Transform,
 
-    /// Latest known view size for this workspace.
-    ///
-    /// This should be computed from the current workspace output size, or, if all outputs have
-    /// been disconnected, preserved until a new output is connected.
-    view_size: Size<f64, Logical>,
-
-    /// Latest known working area for this workspace.
-    ///
-    /// Not rounded to physical pixels.
-    ///
-    /// This is similar to view size, but takes into account things like layer shell exclusive
-    /// zones.
-    working_area: Rectangle<f64, Logical>,
-
     /// This workspace's shadow in the overview.
     shadow: Shadow,
 
@@ -117,10 +103,12 @@ pub struct Workspace<W: LayoutElement> {
     pub(super) clock: Clock,
 
     /// Configurable properties of the layout as received from the parent monitor.
+    ///
+    /// The merged, scale-adjusted options this workspace is actually laid out with live on its
+    /// arena node, together with the box — see [`ContainerArena::update_config`]. Only what the
+    /// arena has no use for stays here: the monitor's unmerged options, which a scale change
+    /// re-derives from, the integer half of the scale, and the transform.
     pub(super) base_options: Rc<Options>,
-
-    /// Configurable properties of the layout with logical sizes adjusted for the current `scale`.
-    pub(super) options: Rc<Options>,
 
     /// Stable identity of this workspace.
     identity: WorkspaceIdentity,
@@ -563,14 +551,11 @@ impl<W: LayoutElement> Workspace<W> {
             original_output,
             scale,
             transform: output.current_transform(),
-            view_size,
-            working_area,
             shadow: Shadow::new(shadow_config),
             background_buffer: SolidColorBuffer::new(view_size, options.layout.background_color),
             output: Some(output),
             clock,
             base_options,
-            options,
             identity,
             lifetime: WorkspaceLifetime::Persistent,
             layout_config,
@@ -660,13 +645,10 @@ impl<W: LayoutElement> Workspace<W> {
             scale,
             transform: Transform::Normal,
             original_output,
-            view_size,
-            working_area,
             shadow: Shadow::new(shadow_config),
             background_buffer: SolidColorBuffer::new(view_size, options.layout.background_color),
             clock,
             base_options,
-            options,
             identity,
             lifetime: WorkspaceLifetime::Persistent,
             layout_config,
@@ -837,13 +819,13 @@ impl<W: LayoutElement> Workspace<W> {
         containers.set_active(self.workspace, is_active, self.floating_is_active.get());
         containers.update_render_elements(self.workspace, &self.tiling_resize);
 
-        let view_rect = Rectangle::from_size(self.view_size);
+        let view_rect = Rectangle::from_size(containers.view_size(self.workspace));
         self.floating
             .update_render_elements(containers, is_active, view_rect, layer);
 
         if layer.is_normal() {
             self.shadow.update_render_elements(
-                self.view_size,
+                containers.view_size(self.workspace),
                 true,
                 CornerRadius::default(),
                 self.scale.fractional_scale(),
@@ -860,42 +842,43 @@ impl<W: LayoutElement> Workspace<W> {
                 .adjusted_for_scale(scale),
         );
 
+        let view_size = containers.view_size(self.workspace);
+
         // Struts are the one layout option that changes the box everything is laid out in, so a
         // reload has to re-derive it rather than pass the box it was given on the last one.
-        if options.layout.struts != self.options.layout.struts {
-            if let Some(output) = self.output.as_ref() {
-                self.working_area = compute_working_area(output, options.layout.struts, scale);
+        let working_area =
+            if options.layout.struts != containers.options(self.workspace).layout.struts {
+                match self.output.as_ref() {
+                    Some(output) => compute_working_area(output, options.layout.struts, scale),
+                    None => inset_by_struts(
+                        Rectangle::from_size(view_size),
+                        options.layout.struts,
+                        scale,
+                    ),
+                }
             } else {
-                let area = Rectangle::from_size(self.view_size);
-                self.working_area = inset_by_struts(area, options.layout.struts, scale);
-            }
-        }
+                containers.working_area(self.workspace)
+            };
 
         containers.update_config(
             self.workspace,
-            self.view_size,
-            self.working_area,
-            self.scale.fractional_scale(),
+            view_size,
+            working_area,
+            scale,
             options.clone(),
         );
 
-        self.floating.update_config(
-            containers,
-            self.view_size,
-            self.working_area,
-            self.scale.fractional_scale(),
-            options.clone(),
-        );
+        self.floating
+            .update_config(containers, view_size, working_area, scale, options.clone());
 
         let shadow_config =
-            compute_workspace_shadow_config(options.overview.workspace_shadow, self.view_size);
+            compute_workspace_shadow_config(options.overview.workspace_shadow, view_size);
         self.shadow.update_config(shadow_config);
 
         self.background_buffer
             .set_color(options.layout.background_color);
 
         self.base_options = base_options;
-        self.options = options;
     }
 
     pub fn update_layout_config(
@@ -1258,8 +1241,11 @@ impl<W: LayoutElement> Workspace<W> {
         let scale = output.current_scale();
         let transform = output.current_transform();
         let view_size = output_size(output);
-        let working_area =
-            compute_working_area(output, self.options.layout.struts, scale.fractional_scale());
+        let working_area = compute_working_area(
+            output,
+            containers.options(self.workspace).layout.struts,
+            scale.fractional_scale(),
+        );
         self.set_view_size(containers, scale, transform, view_size, working_area);
     }
 
@@ -1274,7 +1260,10 @@ impl<W: LayoutElement> Workspace<W> {
         let scale_transform_changed = self.transform != transform
             || self.scale.integer_scale() != scale.integer_scale()
             || self.scale.fractional_scale() != scale.fractional_scale();
-        if !scale_transform_changed && self.view_size == size && self.working_area == working_area {
+        if !scale_transform_changed
+            && containers.view_size(self.workspace) == size
+            && containers.working_area(self.workspace) == working_area
+        {
             return;
         }
 
@@ -1282,31 +1271,37 @@ impl<W: LayoutElement> Workspace<W> {
 
         self.scale = scale;
         self.transform = transform;
-        self.view_size = size;
-        self.working_area = working_area;
+
+        // The node owns the box, so this is the write that records the new one, and it comes
+        // before the branch because both arms re-derive from what the node holds: the scale
+        // arm through `update_config`, which reads the view size back out to re-inset it by
+        // the struts.
+        let options = containers.options(self.workspace).clone();
+        containers.update_config(
+            self.workspace,
+            size,
+            working_area,
+            scale.fractional_scale(),
+            options.clone(),
+        );
 
         if fractional_scale_changed {
             // Options need to be recomputed for the new scale.
             self.update_config(containers, self.base_options.clone());
         } else {
             // Pass our existing options as is.
-            containers.update_config(
-                self.workspace,
-                size,
-                working_area,
-                scale.fractional_scale(),
-                self.options.clone(),
-            );
             self.floating.update_config(
                 containers,
                 size,
                 working_area,
                 scale.fractional_scale(),
-                self.options.clone(),
+                options,
             );
 
-            let shadow_config =
-                compute_workspace_shadow_config(self.options.overview.workspace_shadow, size);
+            let shadow_config = compute_workspace_shadow_config(
+                containers.options(self.workspace).overview.workspace_shadow,
+                size,
+            );
             self.shadow.update_config(shadow_config);
         }
 
@@ -1320,21 +1315,21 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     /// The struts this workspace reserves, which a named workspace may override.
-    pub(super) fn struts(&self) -> Struts {
-        self.options.layout.struts
+    pub(super) fn struts(&self, containers: &ContainerTree<W>) -> Struts {
+        containers.options(self.workspace).layout.struts
     }
 
-    pub fn view_size(&self) -> Size<f64, Logical> {
-        self.view_size
+    pub fn view_size(&self, containers: &ContainerTree<W>) -> Size<f64, Logical> {
+        containers.view_size(self.workspace)
     }
 
-    pub fn make_tile(&self, window: W) -> DetachedView<W> {
+    pub fn make_tile(&self, containers: &ContainerTree<W>, window: W) -> DetachedView<W> {
         DetachedView::new(Tile::new(
             window,
-            self.view_size,
+            containers.view_size(self.workspace),
             self.scale.fractional_scale(),
             self.clock.clone(),
-            self.options.clone(),
+            containers.options(self.workspace).clone(),
         ))
     }
 
@@ -1837,6 +1832,7 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn resolve_default_width(
         &self,
+        containers: &ContainerTree<W>,
         default_width: Option<Option<PresetSize>>,
         is_floating: bool,
     ) -> Option<PresetSize> {
@@ -1844,7 +1840,12 @@ impl<W: LayoutElement> Workspace<W> {
             Some(Some(width)) => Some(width),
             Some(None) => None,
             None if is_floating => None,
-            None => self.options.layout.default_column_width,
+            None => {
+                containers
+                    .options(self.workspace)
+                    .layout
+                    .default_column_width
+            }
         }
     }
 
@@ -1916,7 +1917,7 @@ impl<W: LayoutElement> Workspace<W> {
         });
         toplevel.with_pending_state(|state| {
             if state.states.contains(xdg_toplevel::State::Fullscreen) {
-                state.size = Some(self.view_size.to_i32_round());
+                state.size = Some(containers.view_size(self.workspace).to_i32_round());
             } else if !is_floating {
                 // Like sway, let an ordinary tiled window choose the geometry it maps with.
                 // Mapped stores that geometry as the natural floating size before tiling sends
@@ -3223,8 +3224,8 @@ impl<W: LayoutElement> Workspace<W> {
             tile.tile_mut().floating_pos =
                 Some(self.floating.logical_to_size_frac(working_area, pos));
 
-            let border_config = self
-                .options
+            let border_config = containers
+                .options(self.workspace)
                 .layout
                 .border
                 .merged_with(&tile.window().rules().border);
@@ -3562,7 +3563,7 @@ impl<W: LayoutElement> Workspace<W> {
             return;
         }
 
-        let view_rect = Rectangle::from_size(self.view_size);
+        let view_rect = Rectangle::from_size(containers.view_size(self.workspace));
         let floating_focus_ring = focus_ring && self.floating_is_active();
         self.floating.render(
             containers,
@@ -3621,7 +3622,7 @@ impl<W: LayoutElement> Workspace<W> {
         xray_pos: XrayPos,
         window: &W::Id,
     ) {
-        let view_size = self.view_size();
+        let view_size = containers.view_size(self.workspace);
         for (tile, tile_pos) in self.tiles_with_render_positions_mut(containers, false) {
             if tile.window().id() == window {
                 let view_pos = Point::from((-tile_pos.x, -tile_pos.y));
@@ -3954,8 +3955,8 @@ impl<W: LayoutElement> Workspace<W> {
             .move_container_for_window_to(containers, id, pos, false)
     }
 
-    pub fn working_area(&self) -> Rectangle<f64, Logical> {
-        self.working_area
+    pub fn working_area(&self, containers: &ContainerTree<W>) -> Rectangle<f64, Logical> {
+        containers.working_area(self.workspace)
     }
 
     pub fn layout_config(&self) -> Option<&tiri_config::LayoutPart> {
@@ -4064,33 +4065,49 @@ impl<W: LayoutElement> Workspace<W> {
             .with_merged_layout(self.layout_config.as_ref())
             .adjusted_for_scale(scale);
         assert_eq!(
-            &*self.options, &options,
+            &**containers.options(self.workspace),
+            &options,
             "options must be base options adjusted for scale"
         );
 
-        assert!(self.view_size.w > 0.);
-        assert!(self.view_size.h > 0.);
+        assert!(containers.view_size(self.workspace).w > 0.);
+        assert!(containers.view_size(self.workspace).h > 0.);
 
-        assert_eq!(self.background_buffer.size(), self.view_size);
+        assert_eq!(
+            self.background_buffer.size(),
+            containers.view_size(self.workspace)
+        );
         assert_eq!(
             self.background_buffer.color().components(),
             options.layout.background_color.to_array_unpremul(),
         );
 
-        assert_eq!(self.view_size, containers.view_size(self.workspace));
-        assert_eq!(self.working_area, containers.parent_area(self.workspace));
+        assert_eq!(
+            containers.view_size(self.workspace),
+            containers.view_size(self.workspace)
+        );
+        assert_eq!(
+            containers.working_area(self.workspace),
+            containers.parent_area(self.workspace)
+        );
         assert_eq!(&self.clock, containers.clock());
         assert!(Rc::ptr_eq(
-            &self.options,
+            containers.options(self.workspace),
             containers.options(self.workspace)
         ));
         containers.verify_invariants(self.workspace);
 
-        assert_eq!(self.view_size, containers.view_size(self.workspace));
-        assert_eq!(self.working_area, containers.working_area(self.workspace));
+        assert_eq!(
+            containers.view_size(self.workspace),
+            containers.view_size(self.workspace)
+        );
+        assert_eq!(
+            containers.working_area(self.workspace),
+            containers.working_area(self.workspace)
+        );
         assert_eq!(&self.clock, containers.clock());
         assert!(Rc::ptr_eq(
-            &self.options,
+            containers.options(self.workspace),
             containers.options(self.workspace)
         ));
         self.floating.verify_invariants(containers);

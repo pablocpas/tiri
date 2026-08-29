@@ -86,11 +86,7 @@ mod tests {
         // warning is wrong or the example is.
         let config = Config::parse_mem(include_str!("../../resources/default-config.kdl"))
             .expect("the default config parses");
-        let ignored: Vec<_> = config
-            .ignored_options()
-            .iter()
-            .map(|i| i.path)
-            .collect();
+        let ignored: Vec<_> = config.ignored_options().iter().map(|i| i.path).collect();
         assert!(ignored.is_empty(), "{ignored:?}");
     }
 
@@ -110,11 +106,7 @@ mod tests {
         )
         .unwrap();
 
-        let paths: Vec<_> = config
-            .ignored_options()
-            .iter()
-            .map(|i| i.path)
-            .collect();
+        let paths: Vec<_> = config.ignored_options().iter().map(|i| i.path).collect();
         assert_eq!(
             paths,
             ["layout { tab-indicator }", "debug { disable-transactions }"]

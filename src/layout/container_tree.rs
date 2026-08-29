@@ -1177,7 +1177,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.working_area(workspace)
     }
 
-    pub(super) fn working_area(&self, workspace: NodeKey) -> Rectangle<f64, Logical> {
+    pub fn working_area(&self, workspace: NodeKey) -> Rectangle<f64, Logical> {
         self.arena.working_area(workspace)
     }
 

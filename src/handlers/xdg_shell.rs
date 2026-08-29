@@ -997,6 +997,8 @@ impl State {
                     .or_else(|| self.niri.layout.active_workspace())
             });
 
+        let containers = self.niri.layout.containers();
+
         if let Some(ws) = ws {
             // Set the fullscreen state based on window request and window rule.
             if (wants_fullscreen.is_some() && rules.open_fullscreen.is_none())
@@ -1007,8 +1009,8 @@ impl State {
                 });
             }
 
-            width = ws.resolve_default_width(rules.default_width, false);
-            floating_width = ws.resolve_default_width(rules.default_width, true);
+            width = ws.resolve_default_width(containers, rules.default_width, false);
+            floating_width = ws.resolve_default_width(containers, rules.default_width, true);
             height = ws.resolve_default_height(rules.default_height, false);
             floating_height = ws.resolve_default_height(rules.default_height, true);
 

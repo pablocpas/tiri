@@ -1358,7 +1358,7 @@ impl<W: LayoutElement> Layout<W> {
                 };
                 let ws = &mut workspaces[ws_idx];
 
-                let tile = ws.make_tile(window);
+                let tile = ws.make_tile(&self.containers, window);
                 ws.add_tile(
                     &mut self.containers,
                     tile,

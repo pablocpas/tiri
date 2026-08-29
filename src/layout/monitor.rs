@@ -1125,7 +1125,7 @@ impl<W: LayoutElement> Monitor<W> {
     ) {
         // Currently, everything a workspace sets on a Tile is the same across all workspaces of a
         // monitor. So we can use any workspace, not necessarily the exact target workspace.
-        let tile = self.workspaces[0].make_tile(window);
+        let tile = self.workspaces[0].make_tile(containers, window);
 
         self.add_tile(containers, tile, target, activate, true, is_floating, None);
     }
@@ -1945,7 +1945,7 @@ impl<W: LayoutElement> Monitor<W> {
                         let ws = &self.workspaces[idx];
                         if let Some(mut area) = ws.insert_hint_area(containers, &hint.position) {
                             let scale = ws.scale().fractional_scale();
-                            let view_size = ws.view_size();
+                            let view_size = ws.view_size(containers);
 
                             // Make sure the hint is at least partially visible.
                             if matches!(&hint.position, InsertPosition::RootStart) {
@@ -3282,16 +3282,16 @@ impl<W: LayoutElement> Monitor<W> {
                 self.scale().fractional_scale(),
                 workspace.scale().fractional_scale()
             );
-            assert_eq!(self.view_size, workspace.view_size());
+            assert_eq!(self.view_size, workspace.view_size(containers));
 
             // Not the monitor's own working area: a named workspace can carry its own struts,
             // and then it reserves a different part of the same output. What must hold is that
             // it reserved it from that output, with the struts it actually has.
             assert_eq!(
-                workspace.working_area(),
+                workspace.working_area(containers),
                 compute_working_area(
                     &self.output,
-                    workspace.struts(),
+                    workspace.struts(containers),
                     self.scale().fractional_scale()
                 ),
                 "a workspace's working area must be the output's, inset by its own struts"
