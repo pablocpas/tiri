@@ -335,6 +335,12 @@ impl<W: LayoutElement> ContainerArena<W> {
             self.pending_layouts
                 .retain(|pending| !superseded.contains(&pending.branch));
             self.pending_relayout.remove(&workspace);
+            // The caller's transaction leaves with this pass, the same as it would at the
+            // bottom. An emptied workspace has nobody left to resize, so holding the clone
+            // here only keeps the transaction from completing — and the one waiting on it is
+            // the close animation of the window that just emptied the workspace, which then
+            // sat still until the deadline while every earlier close had been instant.
+            self.pending_transaction = None;
             self.debug_layout_state(workspace, "layout_atomic_empty");
             return;
         }

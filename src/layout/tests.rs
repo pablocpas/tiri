@@ -11,6 +11,8 @@ use tiri_config::{
     WorkspaceReference,
 };
 
+use smithay::wayland::compositor::{Blocker as _, BlockerState};
+
 use super::container::Layout as ContainerLayout;
 use super::*;
 
@@ -3842,3 +3844,33 @@ fn swapping_a_resized_window_out_of_floating_forgets_its_resize() {
     ]);
 }
 
+/// Removing a window must not keep the caller's transaction alive.
+///
+/// The close animation of the window that just left is what waits on that transaction: it
+/// starts when the windows growing into the freed space have answered, so that the two are
+/// seen in one frame. When the window was the last one there is nobody to answer, and holding
+/// the clone anyway meant the animation only started at the transaction's deadline — every
+/// close instant except the one that emptied the workspace.
+#[test]
+fn removing_the_last_window_releases_the_close_transaction() {
+    for window_count in 1..=3 {
+        let mut layout = Layout::default();
+        check_ops_on_layout(
+            &mut layout,
+            (1..=window_count).map(|id| Op::AddWindow {
+                params: TestWindowParams::new(id),
+            }),
+        );
+
+        for id in 1..=window_count {
+            let transaction = Transaction::new();
+            let blocker = transaction.blocker();
+            layout.remove_window(&id, transaction);
+            assert_eq!(
+                blocker.state(),
+                BlockerState::Released,
+                "closing window {id} of {window_count} left its transaction held",
+            );
+        }
+    }
+}
