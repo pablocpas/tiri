@@ -122,7 +122,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Insert a parked subtree at root level.
     pub(in crate::layout) fn insert_subtree_at_root(
         &mut self,
-        workspace: NodeKey,
+        destination: NodeKey,
         index: usize,
         subtree: NodeKey,
         focus: bool,
@@ -130,13 +130,13 @@ impl<W: LayoutElement> ContainerArena<W> {
         // A pending arrange of the destination predates this entire branch. Waiting for it
         // would leave the transferred container (including its tab bar) absent until another
         // commit or command invalidated the layout.
-        self.discard_layout_superseded_by_transfer(workspace);
-        assert!(self.adopt_parked_subtree(workspace, subtree));
+        self.discard_layout_superseded_by_transfer(destination);
+        assert!(self.adopt_parked_subtree(destination, subtree));
         let node_key = subtree;
-        if self.unwrap_into_empty_workspace(workspace, node_key, focus) {
+        if self.unwrap_into_empty_workspace(destination, node_key, focus) {
             return;
         }
-        self.insert_key_at_root(workspace, index, node_key, focus);
+        self.insert_key_at_root(destination, index, node_key, focus);
     }
 
     /// A container arriving at an empty workspace becomes the workspace.
@@ -153,13 +153,13 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// moment they split something there.
     fn unwrap_into_empty_workspace(
         &mut self,
-        workspace: NodeKey,
+        destination: NodeKey,
         node_key: NodeKey,
         focus: bool,
     ) -> bool {
         if self
-            .get_container(workspace)
-            .is_none_or(|workspace| workspace.child_count() != 0)
+            .get_container(destination)
+            .is_none_or(|destination| destination.child_count() != 0)
         {
             return false;
         }
@@ -172,14 +172,14 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         let layout = container.layout();
         let children: Vec<NodeKey> = container.children().to_vec();
-        if let Some(workspace) = self.get_container_mut(workspace) {
-            workspace.set_layout(layout);
+        if let Some(destination) = self.get_container_mut(destination) {
+            destination.set_layout(layout);
         }
         for (idx, child) in children.iter().enumerate() {
-            if let Some(workspace) = self.get_container_mut(workspace) {
-                workspace.insert_child(idx, *child);
+            if let Some(destination) = self.get_container_mut(destination) {
+                destination.insert_child(idx, *child);
             }
-            self.set_parent(*child, Some(workspace));
+            self.set_parent(*child, Some(destination));
         }
         // Its children have already left, so the wrapper goes on its own — this is
         // `container_reap_empty` on a container nothing is left inside.
@@ -192,7 +192,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         // The seat has to be told where the focus went: the node it was pointing at no
         // longer exists, and the children arrived without anything focusing them.
         if let Some(&first) = children.first() {
-            self.settle_focus_after_insert(workspace, first, focus);
+            self.settle_focus_after_insert(destination, first, focus);
         }
         true
     }
@@ -290,17 +290,17 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     pub(super) fn insert_key_at_root(
         &mut self,
-        workspace: NodeKey,
+        destination: NodeKey,
         index: usize,
         node_key: NodeKey,
         focus: bool,
     ) {
-        self.insert_key_into_branch(workspace, workspace, index, node_key, focus);
+        self.insert_key_into_branch(destination, destination, index, node_key, focus);
     }
 
     pub(super) fn insert_key_into_branch(
         &mut self,
-        workspace: NodeKey,
+        destination: NodeKey,
         branch_root: NodeKey,
         index: usize,
         node_key: NodeKey,
@@ -326,6 +326,6 @@ impl<W: LayoutElement> ContainerArena<W> {
             }
         }
 
-        self.settle_focus_after_insert(workspace, node_key, focus);
+        self.settle_focus_after_insert(destination, node_key, focus);
     }
 }

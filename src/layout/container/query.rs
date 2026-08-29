@@ -144,6 +144,23 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// though the workspace holds it in `floating_roots` rather than among its children, so
     /// there is no second rule for the floating side. `None` only for a node the arena does not
     /// hold, or one detached and not yet reattached.
+    /// The workspace a node is in, read off the tree rather than taken on trust.
+    ///
+    /// This is the answer, so an operation that already has a node in the tree does not also
+    /// take a `workspace` beside it: two ways to say the same thing is two ways to disagree,
+    /// and which one a call site used was up to whoever wrote it.
+    ///
+    /// It returns `None` for a node with no path to a workspace, and that is what the
+    /// operations which still name one are for. They come in two kinds, and the parameter is
+    /// named for which:
+    ///
+    /// - `destination`: the node is arriving and is not attached yet, so there is nothing to
+    ///   climb. Every `insert_*`, `adopt_parked_subtree`, `register_floating_root`.
+    /// - `workspace`: the workspace is what the operation searches, and the node is the
+    ///   needle rather than something in it. `floating_root_index` is the only one, and the
+    ///   filter carries weight: `window_key` finds a window wherever it is, so answering
+    ///   `None` for one on another workspace is how `FloatingSpace::contains` comes to mean
+    ///   "on mine".
     pub(in crate::layout) fn workspace_of(&self, key: NodeKey) -> Option<NodeKey> {
         let mut current = key;
         loop {

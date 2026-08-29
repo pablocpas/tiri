@@ -362,14 +362,14 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     /// Hand a parked subtree to a workspace and adopt that workspace's tile configuration.
-    pub(super) fn adopt_parked_subtree(&mut self, workspace: NodeKey, key: NodeKey) -> bool {
+    pub(super) fn adopt_parked_subtree(&mut self, destination: NodeKey, key: NodeKey) -> bool {
         if !self.parked_roots.remove(&key) {
             return false;
         }
 
-        let view_size = self.view_size(workspace);
-        let scale = self.scale(workspace);
-        let options = self.options(workspace).clone();
+        let view_size = self.view_size(destination);
+        let scale = self.scale(destination);
+        let options = self.options(destination).clone();
         for leaf in self.leaf_keys_under(key) {
             if let Some(tile) = self.get_tile_mut(leaf) {
                 tile.update_config(view_size, scale, options.clone());
@@ -406,16 +406,16 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// rather than at each of the routes that lead here.
     pub(super) fn insert_node_with_key(
         &mut self,
-        workspace: NodeKey,
+        destination: NodeKey,
         key: NodeKey,
         mut node: NodeData<W>,
     ) {
         if let NodeData::Container(container) = &mut node {
             if let Some(tile) = container.tile_mut() {
                 tile.update_config(
-                    self.view_size(workspace),
-                    self.scale(workspace),
-                    self.options(workspace).clone(),
+                    self.view_size(destination),
+                    self.scale(destination),
+                    self.options(destination).clone(),
                 );
             }
         }

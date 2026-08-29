@@ -242,13 +242,13 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// opened there lands beside that child rather than at the end of the row.
     pub(super) fn insert_key_as_focus_sibling(
         &mut self,
-        workspace: NodeKey,
+        destination: NodeKey,
         branch_root: NodeKey,
         node_key: NodeKey,
         focus: bool,
     ) {
         let sibling_key = self
-            .view_map_target(workspace)
+            .view_map_target(destination)
             .filter(|key| self.branch_root(*key) == branch_root);
 
         let insert_target = sibling_key
@@ -265,7 +265,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         if let Some(parent_container) = self.get_container_mut(parent_key) {
             parent_container.insert_child(insert_idx, node_key);
             self.set_parent(node_key, Some(parent_key));
-            self.settle_focus_after_insert(workspace, node_key, focus);
+            self.settle_focus_after_insert(destination, node_key, focus);
         }
     }
 
@@ -522,20 +522,20 @@ impl<W: LayoutElement> ContainerArena<W> {
     #[cfg(test)]
     pub(in crate::layout) fn insert_subtree_with_parent_info(
         &mut self,
-        workspace: NodeKey,
+        destination: NodeKey,
         info: &InsertParentInfo,
         subtree: NodeKey,
         focus: bool,
     ) -> bool {
-        assert!(self.adopt_parked_subtree(workspace, subtree));
+        assert!(self.adopt_parked_subtree(destination, subtree));
         let node_key = subtree;
-        self.insert_key_with_parent_info(workspace, workspace, info, node_key, focus)
+        self.insert_key_with_parent_info(destination, destination, info, node_key, focus)
     }
 
     /// Insert an already-materialized node at the container described by `info`.
     fn insert_key_with_parent_info(
         &mut self,
-        workspace: NodeKey,
+        destination: NodeKey,
         branch_root: NodeKey,
         info: &InsertParentInfo,
         node_key: NodeKey,
@@ -546,12 +546,12 @@ impl<W: LayoutElement> ContainerArena<W> {
         // container at all: the node goes at the end of the branch, which is where the
         // remembered position has stopped meaning anything.
         let container_key = self
-            .ensure_container_at_path(workspace, branch_root, &info.parent_path, info.layout)
+            .ensure_container_at_path(destination, branch_root, &info.parent_path, info.layout)
             .filter(|key| self.get_container(*key).is_some());
 
         let Some(container_key) = container_key else {
             let end = self.branch_children_len(branch_root);
-            self.insert_key_into_branch(workspace, branch_root, end, node_key, focus);
+            self.insert_key_into_branch(destination, branch_root, end, node_key, focus);
             return true;
         };
 
@@ -560,7 +560,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             .insert_child(info.insert_idx, node_key);
         self.set_parent(node_key, Some(container_key));
 
-        self.settle_focus_after_insert(workspace, node_key, focus);
+        self.settle_focus_after_insert(destination, node_key, focus);
 
         true
     }

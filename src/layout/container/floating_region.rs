@@ -400,7 +400,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     fn register_floating_root(
         &mut self,
-        workspace: NodeKey,
+        destination: NodeKey,
         key: NodeKey,
         area: Rectangle<f64, Logical>,
         stack_index: usize,
@@ -408,7 +408,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     ) {
         assert!(
             !self.is_workspace(key),
-            "a workspace node cannot become floating"
+            "a destination node cannot become floating"
         );
         assert_eq!(
             self.parent_of(key),
@@ -427,17 +427,17 @@ impl<W: LayoutElement> ContainerArena<W> {
             id: self.next_floating_root_id,
             key,
             kind,
-            geometry: FloatingGeometry::new(self.working_area(workspace), area),
+            geometry: FloatingGeometry::new(self.working_area(destination), area),
         };
         self.next_floating_root_id += 1;
-        let slots = self.floating_slots_in(workspace);
+        let slots = self.floating_slots_in(destination);
         let slot = slots.get(stack_index).copied().unwrap_or_else(|| {
             slots
                 .last()
                 .map_or(self.floating_roots.len(), |last| last + 1)
         });
         self.floating_roots.insert(slot, root);
-        self.set_parent(key, Some(workspace));
+        self.set_parent(key, Some(destination));
     }
 
     /// Move a subtree from the tiled side to the floating side, keeping its identity.
