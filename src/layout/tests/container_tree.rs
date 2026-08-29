@@ -84,6 +84,27 @@ impl TreeHarness {
         self.tree.workspace_root()
     }
 
+    /// Add a second workspace to the same arena, laid out in the same box.
+    pub(super) fn add_workspace(&mut self) -> super::super::container::NodeKey {
+        self.tree.add_workspace(
+            ContainerLayout::SplitH,
+            self.view_size,
+            Rectangle::from_size(self.view_size),
+            self.scale,
+            self.options.clone(),
+        )
+    }
+
+    /// Put a window into a named workspace of this arena.
+    pub(super) fn add_window_to(
+        &mut self,
+        workspace: super::super::container::NodeKey,
+        id: usize,
+    ) {
+        let view = self.detached_view(TestWindowParams::new(id));
+        self.tree.append_leaf(workspace, view, false);
+    }
+
     /// A view node that no arena owns, the way one arrives from a scratchpad or a drag.
     pub(super) fn detached_view(&self, params: TestWindowParams) -> DetachedView<TestWindow> {
         DetachedView::new(Tile::new(
@@ -193,6 +214,80 @@ fn a_refused_replacement_hands_the_view_back() {
         arriving_key,
         "a refusal must hand the window back, not drop it",
     );
+}
+
+#[test]
+fn one_arena_holds_two_workspaces_without_them_seeing_each_other() {
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+    harness.add_window(2);
+    let first = harness.ws();
+    let second = harness.add_workspace();
+    harness.add_window_to(second, 3);
+    harness.add_window_to(second, 4);
+    harness.tree.layout(first);
+    harness.tree.layout(second);
+    harness.tree.verify_all_invariants();
+
+    // The walks that mean "every node this arena holds" mean both workspaces. This is the
+    // answer that would have gone on compiling while quietly losing half its windows.
+    let mut ids = harness.tree.all_window_ids();
+    ids.sort();
+    assert_eq!(ids, vec![1, 2, 3, 4]);
+    assert_eq!(harness.tree.window_count(), 4);
+    assert_eq!(harness.tree.dfs_leaf_keys().len(), 4);
+    assert!(!harness.tree.is_empty());
+
+    // Every node names its own workspace, and no node names the other's.
+    for (id, expected) in [(1, first), (2, first), (3, second), (4, second)] {
+        let key = harness.tree.window_key(&id).expect("window in the arena");
+        assert_eq!(
+            harness.tree.workspace_of(key),
+            Some(expected),
+            "window {id} should belong to its own workspace",
+        );
+        assert_eq!(harness.tree.branch_root(key), expected);
+    }
+    assert_eq!(harness.tree.window_count_in_branch(first), 2);
+    assert_eq!(harness.tree.window_count_in_branch(second), 2);
+
+    // An operation on one is an operation on one. `split v` on the first workspace must not
+    // reshape the second, which is the whole point of the operations naming their workspace.
+    assert!(harness
+        .tree
+        .set_root_container_layout(first, ContainerLayout::SplitV));
+    assert_eq!(harness.tree.root_container_layout(first), ContainerLayout::SplitV);
+    assert_eq!(
+        harness.tree.root_container_layout(second),
+        ContainerLayout::SplitH,
+        "the other workspace keeps the layout it had",
+    );
+    harness.tree.layout(first);
+    harness.tree.layout(second);
+    harness.tree.verify_all_invariants();
+}
+
+#[test]
+fn removing_a_workspace_takes_its_windows_and_leaves_the_rest() {
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+    let first = harness.ws();
+    let second = harness.add_workspace();
+    harness.add_window_to(second, 2);
+    harness.add_window_to(second, 3);
+    harness.tree.layout(second);
+
+    assert!(harness.tree.remove_workspace(second));
+    harness.tree.layout(first);
+    assert_eq!(harness.tree.all_window_ids(), vec![1]);
+    assert_eq!(harness.tree.window_count(), 1);
+    assert_eq!(harness.tree.window_key(&2), None);
+    assert!(!harness.tree.holds_node(second));
+    assert_eq!(harness.tree.workspace_root(), first);
+    harness.tree.verify_all_invariants();
+
+    // The last one stays: an arena without a workspace has no root to insert into.
+    assert!(!harness.tree.remove_workspace(first));
 }
 
 #[test]

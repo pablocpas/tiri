@@ -14,6 +14,11 @@ use super::{ContainerArena, ContainerData, LayoutElement, NodeKey, TabBarInfo};
 use crate::layout::tile::Tile;
 
 impl<W: LayoutElement> ContainerArena<W> {
+    /// Every workspace this arena holds.
+    pub(in crate::layout) fn workspace_keys(&self) -> Vec<NodeKey> {
+        self.workspaces.clone()
+    }
+
     /// The one workspace this arena holds.
     ///
     /// The list is never empty and has one entry, so this is total and unambiguous — for now.

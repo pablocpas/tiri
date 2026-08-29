@@ -58,53 +58,39 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.verify_node(workspace, None, &mut visited, &mut leaves);
         // The floating groups have the workspace as semantic parent, but live in its separate
         // floating list rather than its tiled child list.
-        for floating_root in self.floating_roots().collect::<Vec<_>>() {
+        for floating_root in self.floating_roots_in(workspace) {
             self.verify_node(floating_root, Some(workspace), &mut visited, &mut leaves);
         }
 
-        assert_eq!(
-            visited.len(),
-            self.nodes.len(),
-            "every node must be reachable from the workspace root or from a floating root"
-        );
-
-        for key in self.nodes.keys() {
-            assert!(
-                visited.contains(&key),
-                "node {key:?} exists in the workspace store but is unreachable"
-            );
-        }
+        // Reachability is a claim about the arena, not about this workspace, so it is made in
+        // `verify_all_invariants` where every workspace has been walked. Asserting it here was
+        // right only while an arena held one workspace, and would have read a second
+        // workspace's nodes as unreachable garbage.
 
         if let Some(fullscreen_key) = self.fullscreen_key {
             assert!(
-                visited.contains(&fullscreen_key),
-                "workspace fullscreen node must be reachable"
+                self.holds_node(fullscreen_key),
+                "workspace fullscreen node must still be in the arena"
             );
         }
 
-        match self.focused_key() {
-            Some(key) => {
-                assert!(
-                    leaves.contains(&key),
-                    "focused_key must point to a leaf in the tree"
-                );
-            }
-            None => {
-                assert!(
-                    leaves.is_empty(),
-                    "non-empty tree with leaves must have a focused leaf"
-                );
-            }
-        }
+        // The seat is the arena's and holds one focused leaf for every workspace it has, so
+        // where that leaf points is checked in `verify_all_invariants`. From here, a leaf
+        // focused in another workspace is indistinguishable from a dangling one.
 
-        if let Some(key) = self.selected_key() {
-            assert!(
-                visited.contains(&key),
-                "selected_key must point to a node in the tree"
-            );
-        }
+        // The layout caches are the arena's, keyed by leaf identity across every workspace, so
+        // they are checked against the union of the leaves in `verify_all_invariants`. Checking
+        // them here would read another workspace's cached leaf as an entry pointing at nothing.
 
-        self.verify_leaf_layout_cache(&self.leaf_layouts, &leaves, "leaf_layouts");
+        assert!(
+            self.get_container(workspace).is_some(),
+            "the workspace must be a container"
+        );
+    }
+
+    /// The arena's layout caches describe leaves the arena actually holds.
+    fn verify_leaf_layout_caches(&self, leaves: &HashSet<NodeKey>) {
+        self.verify_leaf_layout_cache(&self.leaf_layouts, leaves, "leaf_layouts");
         for info in self.leaf_layouts.values() {
             let geometry = self
                 .node_geometry(info.key)
@@ -117,7 +103,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         for pending in &self.pending_layouts {
             self.verify_leaf_layout_cache(
                 &pending.data.leaf_layouts,
-                &leaves,
+                leaves,
                 "pending leaf_layouts",
             );
             for info in pending.data.leaf_layouts.values() {
@@ -132,11 +118,6 @@ impl<W: LayoutElement> ContainerArena<W> {
                 );
             }
         }
-
-        assert!(
-            self.get_container(workspace).is_some(),
-            "the workspace must be a container"
-        );
     }
 
     fn verify_node(
@@ -222,6 +203,51 @@ impl<W: LayoutElement> ContainerArena<W> {
                     self.verify_node(*child, Some(key), visited, leaves);
                 }
             }
+        }
+    }
+
+    /// No node is left in the store that no root owns.
+    ///
+    /// A node reachable from nothing is a window that exists and cannot be found: not a crash,
+    /// and not visible from any single workspace's checks.
+    pub(super) fn verify_every_node_is_under_a_root(&self) {
+        let mut visited = HashSet::new();
+        let mut leaves = HashSet::new();
+        for workspace in self.workspace_keys() {
+            self.verify_node(workspace, None, &mut visited, &mut leaves);
+            for floating_root in self.floating_roots_in(workspace) {
+                self.verify_node(floating_root, Some(workspace), &mut visited, &mut leaves);
+            }
+        }
+        assert_eq!(
+            visited.len(),
+            self.nodes.len(),
+            "every node must be reachable from a workspace root or from a floating root"
+        );
+        for key in self.nodes.keys() {
+            assert!(
+                visited.contains(&key),
+                "node {key:?} exists in the arena but is unreachable"
+            );
+        }
+        self.verify_leaf_layout_caches(&leaves);
+
+        match self.focused_key() {
+            Some(key) => assert!(
+                leaves.contains(&key),
+                "focused_key must point to a leaf the arena holds"
+            ),
+            None => assert!(
+                leaves.is_empty(),
+                "an arena with leaves must have a focused leaf"
+            ),
+        }
+
+        if let Some(key) = self.selected_key() {
+            assert!(
+                visited.contains(&key),
+                "selected_key must point to a node the arena holds"
+            );
         }
     }
 

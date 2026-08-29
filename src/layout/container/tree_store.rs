@@ -373,15 +373,19 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     /// Remove a node from this workspace store (and recursively all its children).
     pub(super) fn remove_node_recursive(&mut self, key: NodeKey) -> Option<NodeData<W>> {
+        // Read the children before the node leaves: a workspace lays out children exactly as a
+        // split container does, and matching on `NodeData::Container` alone walked past that —
+        // removing a workspace node would have left its whole subtree in the store, findable by
+        // `window_key` and owned by nothing. Nothing removed a workspace until now, which is
+        // why it never showed.
+        let children = self
+            .get_container(key)
+            .map(|container| container.children.clone())
+            .unwrap_or_default();
         let node = self.remove_node_from_store(key)?;
-
-        // If it's a container, recursively remove all children
-        if let NodeData::Container(ref container) = node {
-            for &child_key in &container.children {
-                self.remove_node_recursive(child_key);
-            }
+        for child_key in children {
+            self.remove_node_recursive(child_key);
         }
-
         Some(node)
     }
 

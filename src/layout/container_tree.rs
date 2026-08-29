@@ -1085,7 +1085,10 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     pub fn verify_invariants(&self) {
-        self.arena.verify_invariants(self.workspace);
+        // Every workspace, and then the arena: the checks that are about the arena rather than
+        // about one workspace — reachability, the seat's focused leaf, the layout caches — can
+        // only be made where every root has been walked.
+        self.arena.verify_all_invariants();
 
         // The same check the floating side makes on its own tiles. A tiled tile on a foreign
         // options handle is invisible until something floats it, so the two sides ask it.

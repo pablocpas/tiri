@@ -1003,6 +1003,90 @@ impl<W: LayoutElement> ContainerArena<W> {
             generation: 0,
         }
     }
+
+    /// Add a workspace to this arena and return its node.
+    ///
+    /// A workspace root is a node with no parent, like the one the arena is created with and
+    /// like a floating root before it is registered. Nothing else distinguishes it: the walks
+    /// iterate `workspaces`, `workspace_of` finds it by climbing to the parentless ancestor,
+    /// and every operation is already told which one it acts on.
+    ///
+    /// It carries its own box and config because those are the workspace's — a second
+    /// workspace on the same output can be parked, or override the layout its monitor handed
+    /// down, and then the two differ while sharing an arena.
+    ///
+    /// Test-only until the arena moves to `Monitor`, which is what will create these. Gating it
+    /// says which of the two this commit is: the arena can hold several workspaces and is
+    /// checked doing so; nothing in production yet asks it to.
+    #[cfg(test)]
+    pub(in crate::layout) fn add_workspace(
+        &mut self,
+        layout: Layout,
+        view_size: Size<f64, Logical>,
+        working_area: Rectangle<f64, Logical>,
+        scale: f64,
+        options: Rc<Options>,
+    ) -> NodeKey {
+        let key = NodeKey::next();
+        self.nodes.insert(
+            key,
+            NodeData::Workspace(WorkspaceData::new(
+                layout,
+                view_size,
+                working_area,
+                scale,
+                options,
+            )),
+        );
+        self.parents.insert(key, None);
+        self.seat.register(key);
+        self.workspaces.push(key);
+        key
+    }
+
+    /// Drop a workspace and everything under it.
+    ///
+    /// Refuses the last one: an arena without a workspace has no root for anything to be
+    /// inserted into, and every caller that would reach that state means to drop the arena.
+    #[cfg(test)]
+    pub(in crate::layout) fn remove_workspace(&mut self, workspace: NodeKey) -> bool {
+        if self.workspaces.len() <= 1 {
+            return false;
+        }
+        let Some(idx) = self.workspaces.iter().position(|key| *key == workspace) else {
+            return false;
+        };
+
+        for root in self.floating_roots_in(workspace) {
+            self.forget_floating_root(root);
+        }
+        self.remove_node_recursive(workspace);
+        self.workspaces.remove(idx);
+        self.prune_focus_order();
+        self.prune_leaf_layouts(self.workspaces[0]);
+        true
+    }
+
+    /// The floating roots belonging to one workspace.
+    pub(in crate::layout) fn floating_roots_in(&self, workspace: NodeKey) -> Vec<NodeKey> {
+        self.floating_roots()
+            .filter(|root| self.workspace_of(*root) == Some(workspace))
+            .collect()
+    }
+
+    /// Check every workspace this arena holds, and then the arena itself.
+    ///
+    /// Reachability belongs here rather than in [`Self::verify_invariants`]: "every node is
+    /// under a root" is a claim about the arena, and a per-workspace check can only see one
+    /// root's worth of nodes. So does where the seat's focused leaf points, and what the layout
+    /// caches describe — all three are the arena's, and all three read a second workspace's
+    /// perfectly good state as garbage when asked from the first.
+    pub(in crate::layout) fn verify_all_invariants(&self) {
+        for workspace in &self.workspaces {
+            self.verify_invariants(*workspace);
+        }
+        self.verify_every_node_is_under_a_root();
+    }
 }
 
 // ============================================================================
