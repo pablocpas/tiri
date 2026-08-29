@@ -94,15 +94,18 @@ impl<W: LayoutElement> ContainerArena<W> {
     where
         W::Id: std::fmt::Display,
     {
-        self.debug_branch(workspace, workspace)
+        self.debug_branch(workspace)
     }
 
     /// One branch's shape, addressed from its own root.
     #[cfg(test)]
-    pub(crate) fn debug_branch(&self, workspace: NodeKey, branch_root: NodeKey) -> String
+    pub(crate) fn debug_branch(&self, branch_root: NodeKey) -> String
     where
         W::Id: std::fmt::Display,
     {
+        let Some(workspace) = self.workspace_of(branch_root) else {
+            return String::new();
+        };
         let mut out = String::new();
         if self.branch_is_empty(branch_root) {
             out.push_str("(empty)\n");

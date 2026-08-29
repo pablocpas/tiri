@@ -1193,24 +1193,19 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let root = self.root(containers, idx);
         if containers.arena_mut().selected_container_key() == Some(root) {
             let insert_idx = containers.arena_mut().branch_children_len(root);
-            let workspace = self.workspace;
             containers
                 .arena_mut()
-                .insert_leaf_into_branch(workspace, root, insert_idx, tile, activate);
+                .insert_leaf_into_branch(root, insert_idx, tile, activate);
         } else {
-            let workspace = self.workspace;
             containers
                 .arena_mut()
-                .insert_window_into_branch(workspace, root, tile, activate);
+                .insert_window_into_branch(root, tile, activate);
         }
         // Sway's view-map path arranges the new view's parent, not the workspace. That is
         // observable when this group contains workspace fullscreen: a workspace arrange
         // stops at the fullscreen owner, while `arrange_container(root)` still lays out the
         // complete floating group in its ordinary box.
-        let workspace = self.workspace;
-        containers
-            .arena_mut()
-            .layout_container_subtree(workspace, root);
+        containers.arena_mut().layout_container_subtree(root);
 
         if activate {
             self.activate_window(containers, &win_id);
@@ -1231,14 +1226,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let (win_id, _) = Self::prepare_tile_for_floating(&config, tile.tile_mut());
 
         let root = self.root(containers, idx);
-        let workspace = self.workspace;
         let _ = containers
             .arena_mut()
-            .insert_leaf_with_parent_info(workspace, root, info, tile, activate);
-        let workspace = self.workspace;
-        containers
-            .arena_mut()
-            .layout_container_subtree(workspace, root);
+            .insert_leaf_with_parent_info(root, info, tile, activate);
+        containers.arena_mut().layout_container_subtree(root);
 
         if activate {
             self.activate_window(containers, &win_id);
@@ -1380,10 +1371,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 .arena_mut()
                 .float_whole_workspace(workspace, area, 0)
         } else {
-            let workspace = self.workspace;
-            containers
-                .arena_mut()
-                .float_as_group(workspace, key, area, 0, kind)
+            containers.arena_mut().float_as_group(key, area, 0, kind)
         };
         let Some(root) = root else {
             return false;
@@ -1485,17 +1473,14 @@ impl<W: LayoutElement> FloatingSpace<W> {
         for tile in containers.arena_mut().tiles_in_branch_mut(root) {
             Self::store_floating_size_for_restore(tile);
         }
-        let workspace = self.workspace;
         let changed = if as_workspace {
-            containers.arena_mut().unfloat_as_workspace(workspace, root)
+            containers.arena_mut().unfloat_as_workspace(root)
         } else if let Some(reference) = reference {
             containers
                 .arena_mut()
-                .unfloat_with_tiling_reference(workspace, root, reference)
+                .unfloat_with_tiling_reference(root, reference)
         } else {
-            containers
-                .arena_mut()
-                .unfloat_into_workspace(workspace, root)
+            containers.arena_mut().unfloat_into_workspace(root)
         };
         if !changed {
             return false;
@@ -1527,11 +1512,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             tile.floating_pos = Some(pos);
             tile.set_scratchpad(false);
         }
-        let workspace = self.workspace;
-        let Some(group_empty) = containers
-            .arena_mut()
-            .unfloat_node(workspace, key, reference)
-        else {
+        let Some(group_empty) = containers.arena_mut().unfloat_node(key, reference) else {
             return false;
         };
         let _ = group_empty;
@@ -1921,10 +1902,9 @@ impl<W: LayoutElement> FloatingSpace<W> {
             self.set_container_logical_pos(containers, idx, centered_pos);
         }
         let area = self.container_area(containers, idx);
-        let workspace = self.workspace;
         containers
             .arena_mut()
-            .layout_container_subtree_in(workspace, root, area);
+            .layout_container_subtree_in(root, area);
     }
 
     fn resize_container_around_center(
@@ -2005,8 +1985,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         {
             let _ = animate;
             let root = self.root(containers, idx);
-            let workspace = self.workspace;
-            containers.arena_mut().layout_branch(workspace, root);
+            containers.arena_mut().layout_branch(root);
         }
     }
 
@@ -2094,10 +2073,9 @@ impl<W: LayoutElement> FloatingSpace<W> {
         self.set_container_size(containers, idx, size);
         self.set_container_logical_pos(containers, idx, pos);
         let area = self.container_area(containers, idx);
-        let workspace = self.workspace;
         containers
             .arena_mut()
-            .layout_container_subtree_in(workspace, root, area);
+            .layout_container_subtree_in(root, area);
     }
 
     pub fn set_window_height(
@@ -2162,8 +2140,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         {
             let _ = animate;
             let root = self.root(containers, idx);
-            let workspace = self.workspace;
-            containers.arena_mut().layout_branch(workspace, root);
+            containers.arena_mut().layout_branch(root);
         }
     }
 
@@ -2222,8 +2199,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         } else if containers.branch_root_is_lone_window(self.workspace, root) {
             containers.arena_mut().focus_node(root);
         } else {
-            let workspace = self.workspace;
-            containers.arena_mut().select_container(workspace, root);
+            containers.arena_mut().select_container(root);
         }
         true
     }
@@ -2366,13 +2342,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return false;
         };
         let branch_root = self.root(containers, idx);
-        let workspace = self.workspace;
-        if containers.arena_mut().focus_in_direction_in_branch(
-            workspace,
-            branch_root,
-            direction,
-            allow_wrap,
-        ) {
+        if containers
+            .arena_mut()
+            .focus_in_direction_in_branch(branch_root, direction, allow_wrap)
+        {
             return true;
         }
 
@@ -2648,8 +2621,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         // One step, not a walk: `select_parent_in` stops at the branch root, so there is
         // never a second ancestor to consider inside the group.
-        let workspace = self.workspace;
-        if containers.arena_mut().select_parent_in(workspace, root) {
+        if containers.arena_mut().select_parent_in(root) {
             return true;
         }
 
@@ -2869,8 +2841,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
 
         let root = self.root(containers, idx);
-        let workspace = self.workspace;
-        containers.arena_mut().layout_branch(workspace, root);
+        containers.arena_mut().layout_branch(root);
 
         self.interactive_resize_end(None);
     }
@@ -3469,8 +3440,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             {
                 self.set_container_logical_pos(containers, idx, original_pos + move_pos);
                 let root = self.root(containers, idx);
-                let workspace = self.workspace;
-                containers.arena_mut().layout_branch(workspace, root);
+                containers.arena_mut().layout_branch(root);
             }
         }
 
@@ -3728,8 +3698,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     {
         let tree = containers.arena();
         let idx = self.idx_of(containers, id)?;
-        let workspace = self.workspace;
-        Some(tree.debug_branch(workspace, self.root(containers, idx)))
+        Some(tree.debug_branch(self.root(containers, idx)))
     }
 
     pub fn verify_invariants(&self, containers: &ContainerTree<W>) {

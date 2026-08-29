@@ -192,7 +192,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         // The seat has to be told where the focus went: the node it was pointing at no
         // longer exists, and the children arrived without anything focusing them.
         if let Some(&first) = children.first() {
-            self.settle_focus_after_insert(destination, first, focus);
+            self.settle_focus_after_insert(first, focus);
         }
         true
     }
@@ -272,20 +272,22 @@ impl<W: LayoutElement> ContainerArena<W> {
         tile: DetachedView<W>,
         focus: bool,
     ) {
-        self.insert_leaf_into_branch(workspace, workspace, index, tile, focus);
+        self.insert_leaf_into_branch(workspace, index, tile, focus);
     }
 
     /// Insert a leaf as a direct child of one branch's root.
     pub(in crate::layout) fn insert_leaf_into_branch(
         &mut self,
-        workspace: NodeKey,
         branch_root: NodeKey,
         index: usize,
         tile: DetachedView<W>,
         focus: bool,
     ) {
+        let Some(workspace) = self.workspace_of(branch_root) else {
+            return;
+        };
         let tile_key = self.insert_view(workspace, tile);
-        self.insert_key_into_branch(workspace, branch_root, index, tile_key, focus);
+        self.insert_key_into_branch(branch_root, index, tile_key, focus);
     }
 
     pub(super) fn insert_key_at_root(
@@ -295,12 +297,11 @@ impl<W: LayoutElement> ContainerArena<W> {
         node_key: NodeKey,
         focus: bool,
     ) {
-        self.insert_key_into_branch(destination, destination, index, node_key, focus);
+        self.insert_key_into_branch(destination, index, node_key, focus);
     }
 
     pub(super) fn insert_key_into_branch(
         &mut self,
-        destination: NodeKey,
         branch_root: NodeKey,
         index: usize,
         node_key: NodeKey,
@@ -326,6 +327,6 @@ impl<W: LayoutElement> ContainerArena<W> {
             }
         }
 
-        self.settle_focus_after_insert(destination, node_key, focus);
+        self.settle_focus_after_insert(node_key, focus);
     }
 }

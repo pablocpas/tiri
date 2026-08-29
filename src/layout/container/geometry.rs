@@ -10,7 +10,7 @@ use crate::layout::tab_bar::tab_bar_row_height;
 use crate::layout::tile::Tile;
 use crate::utils::transaction::{Transaction, TransactionBlocker};
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(in crate::layout) struct LayoutData {
     pub(in crate::layout) leaf_layouts: HashMap<NodeKey, LeafLayoutInfo>,
     /// The candidate pending box for every node this arrange visited.
@@ -99,11 +99,11 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     /// sway's `arrange_container`: arrange one real container against the pending box it is
     /// currently holding, without applying the workspace fullscreen branch first.
-    pub(in crate::layout) fn layout_container_subtree(&mut self, workspace: NodeKey, key: NodeKey) {
+    pub(in crate::layout) fn layout_container_subtree(&mut self, key: NodeKey) {
         let Some(area) = self.node_geometry(key) else {
             return;
         };
-        self.layout_container_subtree_in(workspace, key, area);
+        self.layout_container_subtree_in(key, area);
     }
 
     /// sway's `arrange_container` after its caller has just edited the pending box.
@@ -112,10 +112,12 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// The edited box, not a fresh fullscreen workspace arrange, is then observable in IPC.
     pub(in crate::layout) fn layout_container_subtree_in(
         &mut self,
-        workspace: NodeKey,
         key: NodeKey,
         area: Rectangle<f64, Logical>,
     ) {
+        let Some(workspace) = self.workspace_of(key) else {
+            return;
+        };
         if self.get_node(key).is_none() || self.is_workspace(key) {
             return;
         }
@@ -375,7 +377,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         let arrangements = match subtree {
             Some((key, area)) => vec![(
                 self.branch_root(key),
-                self.collect_branch_layout_data(workspace, key, area),
+                self.collect_branch_layout_data(key, area),
             )],
             None => self.arrange_each_branch(workspace),
         };
@@ -442,15 +444,12 @@ impl<W: LayoutElement> ContainerArena<W> {
             .filter(|key| self.nodes.contains_key(*key))
         {
             let branch = self.branch_root(fullscreen_key);
-            return vec![(
-                branch,
-                self.collect_fullscreen_layout_data(workspace, fullscreen_key),
-            )];
+            return vec![(branch, self.collect_fullscreen_layout_data(fullscreen_key))];
         }
 
         let mut out = vec![(workspace, self.collect_layout_data(workspace))];
         for (root, area) in self.floating_roots_with_areas(workspace) {
-            out.push((root, self.collect_branch_layout_data(workspace, root, area)));
+            out.push((root, self.collect_branch_layout_data(root, area)));
         }
         out
     }
@@ -776,17 +775,16 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// still sized through its client fullscreen request, so it keeps its ordinary slot here
     /// until that configure commits; a container has no such protocol state and must receive
     /// the output box directly.
-    fn collect_fullscreen_layout_data(
-        &self,
-        workspace: NodeKey,
-        fullscreen_key: NodeKey,
-    ) -> LayoutData {
+    fn collect_fullscreen_layout_data(&self, fullscreen_key: NodeKey) -> LayoutData {
+        let Some(workspace) = self.workspace_of(fullscreen_key) else {
+            return LayoutData::default();
+        };
         let area = if self.get_container(fullscreen_key).is_some() {
             Rectangle::from_size(self.view_size(workspace))
         } else {
             self.layout_area(workspace)
         };
-        let mut data = self.collect_branch_layout_data(workspace, fullscreen_key, area);
+        let mut data = self.collect_branch_layout_data(fullscreen_key, area);
         if self.get_tile(fullscreen_key).is_some() {
             if let Some(info) = data.leaf_layouts.get_mut(&fullscreen_key) {
                 info.workspace_fullscreen = true;
@@ -807,10 +805,12 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// this node the box and do not descend anything else.
     pub(in crate::layout) fn collect_branch_layout_data(
         &self,
-        workspace: NodeKey,
         branch_root: NodeKey,
         area: Rectangle<f64, Logical>,
     ) -> LayoutData {
+        let Some(workspace) = self.workspace_of(branch_root) else {
+            return LayoutData::default();
+        };
         let mut data = LayoutData {
             leaf_layouts: HashMap::new(),
             node_geometries: HashMap::new(),

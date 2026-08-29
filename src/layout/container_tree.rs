@@ -291,7 +291,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             .and_then(|key| self.arena.parent_of(key));
 
         if let Some(parent) = parent.filter(|parent| *parent != root) {
-            self.arena.layout_container_subtree(workspace, parent);
+            self.arena.layout_container_subtree(parent);
         } else {
             self.arena.layout(workspace);
         }
@@ -427,7 +427,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             if parent == workspace {
                 self.arena.layout(workspace);
             } else {
-                self.arena.layout_container_subtree(workspace, parent);
+                self.arena.layout_container_subtree(parent);
             }
         };
         if let Some(parent) = current_parent {
@@ -446,7 +446,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let Some(selected) = self.arena.selected_node_key(workspace) else {
             return false;
         };
-        if !self.arena.swap_nodes(workspace, selected, target) {
+        if !self.arena.swap_nodes(selected, target) {
             return false;
         }
         self.arrange_swapped_parents(workspace, selected, target);
@@ -457,10 +457,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let Some(selected) = self.arena.selected_node_key(workspace) else {
             return false;
         };
-        if !self
-            .arena
-            .swap_nodes_at_floating_boundary(workspace, selected, target)
-        {
+        if !self.arena.swap_nodes_at_floating_boundary(selected, target) {
             return false;
         }
         self.arrange_swapped_parents(workspace, selected, target);
@@ -823,7 +820,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         layout: Layout,
     ) -> bool {
         let target = self.arena.command_target_in(branch);
-        let changed = self.arena.split_target(workspace, layout, target);
+        let changed = self.arena.split_target(layout, target);
         if changed {
             self.arena.layout(workspace);
         }
@@ -836,7 +833,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         branch: NodeKey,
     ) -> Option<NodeKey> {
         let target = self.arena.command_target_in(branch);
-        let root = self.arena.unsplit_target(workspace, target)?;
+        let root = self.arena.unsplit_target(target)?;
         self.arena.layout(workspace);
         Some(root)
     }
@@ -851,7 +848,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         }
         let target = self.arena.command_target_in(branch);
-        let changed = self.arena.set_layout_for_target(workspace, layout, target);
+        let changed = self.arena.set_layout_for_target(layout, target);
         if changed {
             self.arena.layout(workspace);
         }
@@ -863,7 +860,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         }
         let target = self.arena.command_target_in(branch);
-        let changed = self.arena.toggle_split_for_target(workspace, target);
+        let changed = self.arena.toggle_split_for_target(target);
         if changed {
             self.arena.layout(workspace);
         }
@@ -879,7 +876,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         }
         let target = self.arena.command_target_in(branch);
-        let changed = self.arena.toggle_layout_all_for_target(workspace, target);
+        let changed = self.arena.toggle_layout_all_for_target(target);
         if changed {
             self.arena.layout(workspace);
         }
@@ -895,7 +892,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         }
         let target = self.arena.command_target_in(branch);
-        let changed = self.arena.set_default_layout_for_target(workspace, target);
+        let changed = self.arena.set_default_layout_for_target(target);
         if changed {
             self.arena.layout(workspace);
         }
@@ -912,9 +909,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         }
         let target = self.arena.command_target_in(branch);
-        let changed = self
-            .arena
-            .toggle_layout_cycle_for_target(workspace, target, cycle);
+        let changed = self.arena.toggle_layout_cycle_for_target(target, cycle);
         if changed {
             self.arena.layout(workspace);
         }
@@ -2101,7 +2096,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             // as a blanket no-op also blocked `focus parent` after a fullscreen leaf had
             // been wrapped by `split`.
             if self.arena.command_position_is_in(fullscreen_key) {
-                return self.arena.select_parent_in(workspace, fullscreen_key);
+                return self.arena.select_parent_in(fullscreen_key);
             }
             if self.focus_parent_is_obstructed_by_fullscreen(workspace) {
                 return false;
@@ -2150,7 +2145,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         if !self.arena.command_position_is_in(fullscreen) {
             return false;
         }
-        let _ = self.arena.select_parent_in(workspace, fullscreen);
+        let _ = self.arena.select_parent_in(fullscreen);
         true
     }
 
@@ -2201,8 +2196,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.arena.active_floating_window_id(workspace)
     }
 
-    pub(super) fn focus_inactive_tiling_key(&mut self, workspace: NodeKey, key: NodeKey) -> bool {
-        self.arena.focus_inactive_tiling_key(workspace, key)
+    pub(super) fn focus_inactive_tiling_key(&mut self, key: NodeKey) -> bool {
+        self.arena.focus_inactive_tiling_key(key)
     }
 
     pub(super) fn window_for_inactive_tiling_key(&self, key: NodeKey) -> Option<&W> {
@@ -2231,7 +2226,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     ) -> bool {
         let target = self.arena.command_target_in(branch);
         self.mutate_tree(workspace, |tree| {
-            tree.move_target_in_direction(workspace, direction, target)
+            tree.move_target_in_direction(direction, target)
         })
     }
 
@@ -2364,7 +2359,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub fn set_workspace_default_layout(&mut self, workspace: NodeKey) {
         self.mutate_tree(workspace, |tree| {
             let root = workspace;
-            tree.set_default_layout_for_target(workspace, root)
+            tree.set_default_layout_for_target(root)
         });
     }
 
@@ -2379,7 +2374,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     ) {
         self.mutate_tree(workspace, |tree| {
             let root = workspace;
-            tree.toggle_layout_cycle_for_target(workspace, root, cycle)
+            tree.toggle_layout_cycle_for_target(root, cycle)
         });
     }
 
@@ -3102,8 +3097,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     pub fn insert_subtree_with_focus(&mut self, workspace: NodeKey, subtree: NodeKey, focus: bool) {
-        self.arena
-            .insert_subtree_with_focus(workspace, subtree, focus);
+        self.arena.insert_subtree_with_focus(subtree, focus);
         self.sync_fullscreen_window(workspace);
         self.arena.layout(workspace);
     }
@@ -3126,7 +3120,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         if !self.is_tiling_leaf(workspace, key) {
             return Err(tile);
         }
-        self.arena.replace_leaf(workspace, key, tile)
+        self.arena.replace_leaf(key, tile)
     }
 
     pub(super) fn is_tiling_leaf(&self, workspace: NodeKey, key: NodeKey) -> bool {
@@ -3143,7 +3137,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let root = workspace;
         if self
             .arena
-            .insert_leaf_with_parent_info(workspace, root, info, tile, activate)
+            .insert_leaf_with_parent_info(root, info, tile, activate)
         {
             self.sync_fullscreen_window(workspace);
             self.arena.layout(workspace);
@@ -3167,7 +3161,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
         if self
             .arena
-            .insert_leaf_split(workspace, target, direction, tile, activate)
+            .insert_leaf_split(target, direction, tile, activate)
         {
             self.sync_fullscreen_window(workspace);
             self.arena.layout(workspace);
@@ -3751,7 +3745,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             if parent_key == workspace {
                 self.arena.layout(workspace);
             } else {
-                self.arena.layout_container_subtree(workspace, parent_key);
+                self.arena.layout_container_subtree(parent_key);
             }
         }
     }
@@ -3792,7 +3786,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             self.arena.set_fullscreen_key(workspace, Some(key));
             self.arena.layout(workspace);
             if let Some(selected_key) = selected_container {
-                self.arena.select_container(workspace, selected_key);
+                self.arena.select_container(selected_key);
             }
             true
         } else {
@@ -3822,7 +3816,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             }
             self.arena.layout(workspace);
             if let Some(selected_key) = selected_container {
-                self.arena.select_container(workspace, selected_key);
+                self.arena.select_container(selected_key);
             }
             true
         }

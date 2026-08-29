@@ -165,14 +165,13 @@ fn replacing_a_leaf_gives_the_arriving_view_the_slot_it_took() {
     assert!(harness.tree.focus_window_by_id(harness.ws(), &2));
     harness.tree.layout(harness.ws());
 
-    let workspace = harness.ws();
     let target = harness.tree.window_key(&2).expect("the tab being shown");
     let arriving = harness.detached_view(TestWindowParams::new(3));
     let arriving_key = arriving.key();
 
     let displaced = harness
         .tree
-        .replace_leaf(workspace, target, arriving)
+        .replace_leaf(target, arriving)
         .expect("a tiling leaf can be replaced");
     assert_eq!(
         displaced.key(),
@@ -215,7 +214,6 @@ fn a_refused_replacement_hands_the_view_back() {
     harness.tree.layout(harness.ws());
 
     // The tabbed container is a split, not a leaf: there is no slot to replace.
-    let workspace = harness.ws();
     let split = harness
         .tree
         .parent_of(harness.tree.window_key(&1).expect("leaf"))
@@ -225,7 +223,7 @@ fn a_refused_replacement_hands_the_view_back() {
 
     let returned = harness
         .tree
-        .replace_leaf(workspace, split, arriving)
+        .replace_leaf(split, arriving)
         .expect_err("a split cannot be replaced by a view");
     assert_eq!(
         returned.key(),
@@ -383,19 +381,13 @@ fn extracting_parent_of_fullscreen_leaf_clears_workspace_pointer() {
     let key = harness.tree.window_key(&1).expect("fullscreen leaf");
     let wrapper = harness
         .tree
-        .wrap_child_in_new_container(
-            harness.ws(),
-            root,
-            key,
-            ContainerData::new(ContainerLayout::SplitV),
-        )
+        .wrap_child_in_new_container(root, key, ContainerData::new(ContainerLayout::SplitV))
         .expect("wrapper");
     assert!(harness.tree.set_fullscreen_key(harness.ws(), Some(key)));
 
-    let workspace = harness.ws();
     harness
         .tree
-        .take_subtree_at(workspace, wrapper)
+        .take_subtree_at(wrapper)
         .expect("detached fullscreen subtree");
     assert_eq!(
         harness.tree.fullscreen_key(harness.ws()),
@@ -418,12 +410,7 @@ fn wrapping_fullscreen_leaf_transfers_workspace_pointer_to_wrapper() {
 
     let wrapper = harness
         .tree
-        .wrap_child_in_new_container(
-            harness.ws(),
-            root,
-            leaf,
-            ContainerData::new(ContainerLayout::SplitV),
-        )
+        .wrap_child_in_new_container(root, leaf, ContainerData::new(ContainerLayout::SplitV))
         .expect("wrapper");
 
     assert_eq!(harness.tree.fullscreen_key(harness.ws()), Some(wrapper));
@@ -448,12 +435,7 @@ fn reaping_empty_fullscreen_wrapper_clears_workspace_pointer() {
     let leaf = harness.tree.window_key(&1).expect("leaf");
     let wrapper = harness
         .tree
-        .wrap_child_in_new_container(
-            harness.ws(),
-            root,
-            leaf,
-            ContainerData::new(ContainerLayout::SplitV),
-        )
+        .wrap_child_in_new_container(root, leaf, ContainerData::new(ContainerLayout::SplitV))
         .expect("wrapper");
     assert!(harness.tree.set_fullscreen_key(harness.ws(), Some(wrapper)));
 
@@ -533,12 +515,7 @@ fn moving_a_subtree_between_workspaces_keeps_every_identity() {
     let first = harness.tree.window_key(&1).expect("first leaf");
     let container = harness
         .tree
-        .wrap_child_in_new_container(
-            source,
-            source,
-            first,
-            ContainerData::new(ContainerLayout::SplitV),
-        )
+        .wrap_child_in_new_container(source, first, ContainerData::new(ContainerLayout::SplitV))
         .expect("moved container");
 
     let idx = harness.tree.focused_root_index(source).expect("root child");
@@ -572,12 +549,7 @@ fn moving_a_container_to_an_empty_workspace_unwraps_it() {
     let second = harness.tree.window_key(&2).expect("second leaf");
     let container = harness
         .tree
-        .wrap_child_in_new_container(
-            source,
-            source,
-            first,
-            ContainerData::new(ContainerLayout::SplitV),
-        )
+        .wrap_child_in_new_container(source, first, ContainerData::new(ContainerLayout::SplitV))
         .expect("container");
     assert_eq!(harness.tree.parent_of(first), Some(container));
 
@@ -623,21 +595,11 @@ fn replacing_a_container_hands_its_parent_share_to_the_replacement() {
     let leaf = harness.tree.window_key(&1).expect("first leaf");
     let inner = harness
         .tree
-        .wrap_child_in_new_container(
-            harness.ws(),
-            root,
-            leaf,
-            ContainerData::new(ContainerLayout::SplitV),
-        )
+        .wrap_child_in_new_container(root, leaf, ContainerData::new(ContainerLayout::SplitV))
         .expect("inner wrapper");
     let outer = harness
         .tree
-        .wrap_child_in_new_container(
-            harness.ws(),
-            root,
-            inner,
-            ContainerData::new(ContainerLayout::SplitH),
-        )
+        .wrap_child_in_new_container(root, inner, ContainerData::new(ContainerLayout::SplitH))
         .expect("outer wrapper");
     assert!(harness
         .tree
@@ -651,10 +613,9 @@ fn replacing_a_container_hands_its_parent_share_to_the_replacement() {
     // `cmd_layout` flattens the inner wrapper with `container_replace` before discovering
     // that the surviving outer wrapper already has the requested layout. There is therefore
     // no arrange pass to hide a missing fraction transfer.
-    let workspace = harness.ws();
     assert!(!harness
         .tree
-        .set_layout_for_target(workspace, ContainerLayout::SplitH, leaf));
+        .set_layout_for_target(ContainerLayout::SplitH, leaf));
     assert_eq!(harness.tree.parent_of(leaf), Some(outer));
     let leaf_share = harness.tree.debug_node_sizing(leaf).unwrap();
     assert_eq!(
@@ -1669,7 +1630,7 @@ fn detached_snapshot_does_not_relabel_fractions_after_parent_axis_change() {
         .set_child_percent(root, 1, ContainerLayout::SplitH, 0.6));
 
     let key = harness.tree.window_key(&2).unwrap();
-    let (subtree, info) = harness.tree.take_subtree_at(harness.ws(), key).unwrap();
+    let (subtree, info) = harness.tree.take_subtree_at(key).unwrap();
     let info = info.expect("a root child has insertion metadata");
 
     let workspace = harness.ws();
@@ -2362,11 +2323,9 @@ fn floating_a_subtree_keeps_its_identity() {
 
     assert!(!harness.tree.is_in_floating_branch(key));
     let box_of_its_own = Rectangle::new(Point::from((100.0, 50.0)), Size::from((300.0, 200.0)));
-    let workspace = harness.ws();
     let floating_root = harness
         .tree
         .float_as_group(
-            workspace,
             key,
             box_of_its_own,
             0,
@@ -2435,11 +2394,9 @@ fn a_floating_branch_is_arranged_in_its_own_rectangle() {
         .window_key(&1)
         .expect("window 1 is in the tree");
     let box_of_its_own = Rectangle::new(Point::from((100.0, 50.0)), Size::from((300.0, 200.0)));
-    let workspace = harness.ws();
     let floating_root = harness
         .tree
         .float_as_group(
-            workspace,
             key,
             box_of_its_own,
             0,
@@ -2448,10 +2405,9 @@ fn a_floating_branch_is_arranged_in_its_own_rectangle() {
         .expect("the window should become a floating group");
     harness.tree.layout(harness.ws());
 
-    let workspace = harness.ws();
     let data = harness
         .tree
-        .collect_branch_layout_data(workspace, floating_root, box_of_its_own);
+        .collect_branch_layout_data(floating_root, box_of_its_own);
 
     let laid_out = data
         .leaf_layouts
@@ -2479,11 +2435,9 @@ fn one_pass_arranges_the_tiled_side_and_the_floating_side() {
         .window_key(&1)
         .expect("window 1 is in the tree");
     let box_of_its_own = Rectangle::new(Point::from((120.0, 60.0)), Size::from((240.0, 180.0)));
-    let workspace = harness.ws();
     harness
         .tree
         .float_as_group(
-            workspace,
             floated_leaf,
             box_of_its_own,
             0,
@@ -2527,16 +2481,9 @@ fn a_branch_answers_for_itself_and_the_leaf_sweep_answers_for_both() {
         .window_key(&1)
         .expect("window 1 is in the tree");
     let area = Rectangle::new(Point::from((0.0, 0.0)), Size::from((200.0, 200.0)));
-    let workspace = harness.ws();
     let floating_root = harness
         .tree
-        .float_as_group(
-            workspace,
-            floated_leaf,
-            area,
-            0,
-            FloatingRootKind::ImplicitWindowGroup,
-        )
+        .float_as_group(floated_leaf, area, 0, FloatingRootKind::ImplicitWindowGroup)
         .expect("the window should become a floating group");
     harness.tree.layout(harness.ws());
 

@@ -172,24 +172,21 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// and while a fullscreen is up there is no next arrange to correct it.
     pub(in crate::layout) fn wrap_child_in_new_container(
         &mut self,
-        workspace: NodeKey,
         parent_key: NodeKey,
         child_key: NodeKey,
         wrapper: ContainerData<W>,
     ) -> Option<NodeKey> {
-        self.wrap_child_in_new_container_with_fullscreen(
-            workspace, parent_key, child_key, wrapper, true,
-        )
+        self.wrap_child_in_new_container_with_fullscreen(parent_key, child_key, wrapper, true)
     }
 
     fn wrap_child_in_new_container_with_fullscreen(
         &mut self,
-        workspace: NodeKey,
         parent_key: NodeKey,
         child_key: NodeKey,
         mut wrapper: ContainerData<W>,
         transfer_fullscreen: bool,
     ) -> Option<NodeKey> {
+        let workspace = self.workspace_of(parent_key)?;
         if wrapper.child_count() != 0 {
             return None;
         }

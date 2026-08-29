@@ -110,11 +110,8 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     /// Find a node by key and return path to it.
-    pub(super) fn find_node_path(
-        &self,
-        workspace: NodeKey,
-        target_key: NodeKey,
-    ) -> Option<Vec<usize>> {
+    pub(super) fn find_node_path(&self, target_key: NodeKey) -> Option<Vec<usize>> {
+        let workspace = self.workspace_of(target_key)?;
         if target_key == workspace {
             return Some(Vec::new());
         }

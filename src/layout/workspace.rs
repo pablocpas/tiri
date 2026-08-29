@@ -1558,7 +1558,7 @@ impl<W: LayoutElement> Workspace<W> {
         containers: &mut ContainerTree<W>,
         key: super::container::NodeKey,
     ) -> bool {
-        let focused = containers.focus_inactive_tiling_key(self.workspace, key);
+        let focused = containers.focus_inactive_tiling_key(key);
         if focused {
             self.floating_is_active = FloatingActive::No;
             self.activate_tiling_content(containers);

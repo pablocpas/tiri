@@ -453,12 +453,14 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// container root gives every floating group one authoritative geometry field.
     pub(in crate::layout) fn float_subtree(
         &mut self,
-        workspace: NodeKey,
         key: NodeKey,
         area: Rectangle<f64, Logical>,
         stack_index: usize,
         kind: FloatingRootKind,
     ) -> bool {
+        let Some(workspace) = self.workspace_of(key) else {
+            return false;
+        };
         if self.is_workspace(key)
             || !matches!(self.get_node(key), Some(NodeData::Container(_)))
             || self.is_in_floating_branch(key)
@@ -483,7 +485,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             self.seat.raw_focus(key);
         }
         if let Some(old_parent) = old_parent {
-            self.reap_empty(workspace, old_parent);
+            self.reap_empty(old_parent);
         }
         true
     }
@@ -545,7 +547,6 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// is untouched either way, which is the whole point of the crossing being a move.
     pub(in crate::layout) fn float_as_group(
         &mut self,
-        workspace: NodeKey,
         key: NodeKey,
         area: Rectangle<f64, Logical>,
         stack_index: usize,
@@ -557,7 +558,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         // A view floats as itself. sway's `ws->floating` holds whatever was floated, a view
         // included, so there is no wrapper to build and no extra level for a layout command
         // to hit.
-        self.float_subtree(workspace, key, area, stack_index, kind)
+        self.float_subtree(key, area, stack_index, kind)
             .then_some(key)
     }
 
@@ -696,18 +697,18 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Returns whether the floating group became empty and was removed.
     pub(in crate::layout) fn unfloat_node(
         &mut self,
-        workspace: NodeKey,
         key: NodeKey,
         reference: Option<&InactiveTilingReference>,
     ) -> Option<bool> {
+        let workspace = self.workspace_of(key)?;
         if !self.is_in_floating_branch(key) {
             return None;
         }
         let group = self.branch_root(key);
         if key == group {
             let changed = match reference {
-                Some(reference) => self.unfloat_with_tiling_reference(workspace, group, reference),
-                None => self.unfloat_into_workspace(workspace, group),
+                Some(reference) => self.unfloat_with_tiling_reference(group, reference),
+                None => self.unfloat_into_workspace(group),
             };
             return changed.then_some(true);
         }
@@ -715,7 +716,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         let old_parent = self.parent_of(key)?;
         self.detach_child(key);
         self.set_parent(key, None);
-        self.reap_empty(workspace, old_parent);
+        self.reap_empty(old_parent);
 
         let group_empty = self.branch_is_empty(group);
         if group_empty {
@@ -726,7 +727,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         let (parent, index) = reference
             .and_then(|reference| self.tiling_insertion_point(reference))
             .unwrap_or_else(|| (workspace, self.branch_children_len(workspace)));
-        self.insert_key_into_branch(workspace, parent, index, key, false);
+        self.insert_key_into_branch(parent, index, key, false);
         self.unset_node_fractions(key);
         self.refresh_focus_visibility();
         Some(group_empty)
@@ -761,9 +762,8 @@ impl<W: LayoutElement> ContainerArena<W> {
         // `cmd_floating` explicitly focuses the wrapper it just made before handing it to
         // `container_set_floating`. This is the one transfer whose target did not exist when
         // command focus was resolved, so it cannot rely on the common focus-preserving move.
-        self.select_container(workspace, wrapper);
+        self.select_container(wrapper);
         self.float_subtree(
-            workspace,
             wrapper,
             area,
             stack_index,
@@ -775,7 +775,6 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Put a floating group back beside or inside the exact tiling node selected by the seat.
     pub(in crate::layout) fn unfloat_with_tiling_reference(
         &mut self,
-        workspace: NodeKey,
         group: NodeKey,
         reference: &InactiveTilingReference,
     ) -> bool {
@@ -786,16 +785,15 @@ impl<W: LayoutElement> ContainerArena<W> {
                 }
                 self.place_unfloated(group, parent, index)
             }
-            None => self.unfloat_into_workspace(workspace, group),
+            None => self.unfloat_into_workspace(group),
         }
     }
 
     /// Put a floating group back at the end of the workspace's own children.
-    pub(in crate::layout) fn unfloat_into_workspace(
-        &mut self,
-        workspace: NodeKey,
-        group: NodeKey,
-    ) -> bool {
+    pub(in crate::layout) fn unfloat_into_workspace(&mut self, group: NodeKey) -> bool {
+        let Some(workspace) = self.workspace_of(group) else {
+            return false;
+        };
         if let Some(size) = self.node_geometry(workspace).map(|rect| rect.size) {
             self.seed_unfloated_size(group, size);
         }
@@ -807,11 +805,10 @@ impl<W: LayoutElement> ContainerArena<W> {
     ///
     /// Sway creates this container in `workspace_wrap_children` and disabling floating moves
     /// that same container back. It remains addressable even with one child.
-    pub(in crate::layout) fn unfloat_as_workspace(
-        &mut self,
-        workspace: NodeKey,
-        group: NodeKey,
-    ) -> bool {
+    pub(in crate::layout) fn unfloat_as_workspace(&mut self, group: NodeKey) -> bool {
+        let Some(workspace) = self.workspace_of(group) else {
+            return false;
+        };
         if let Some(size) = self.node_geometry(workspace).map(|rect| rect.size) {
             self.seed_unfloated_size(group, size);
         }

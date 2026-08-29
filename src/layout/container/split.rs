@@ -10,11 +10,8 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// single-child container ancestors but never through the workspace.
     ///
     /// The returned key is the branch root after the operation.
-    pub(in crate::layout) fn unsplit_target(
-        &mut self,
-        workspace: NodeKey,
-        target_key: NodeKey,
-    ) -> Option<NodeKey> {
+    pub(in crate::layout) fn unsplit_target(&mut self, target_key: NodeKey) -> Option<NodeKey> {
+        let workspace = self.workspace_of(target_key)?;
         if self.is_workspace(target_key) || self.get_node(target_key).is_none() {
             return None;
         }
@@ -100,7 +97,6 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     pub(super) fn set_layout_for_container_target(
         &mut self,
-        workspace: NodeKey,
         container_key: NodeKey,
         layout: Layout,
     ) -> bool {
@@ -114,7 +110,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             return false;
         }
 
-        self.set_layout_of_parent_of(workspace, container_key, layout)
+        self.set_layout_of_parent_of(container_key, layout)
     }
 
     /// Hand a branch's root container a layout.
@@ -163,20 +159,17 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     pub(in crate::layout) fn set_layout_for_target(
         &mut self,
-        workspace: NodeKey,
         layout: Layout,
         target: NodeKey,
     ) -> bool {
         self.flatten_layout_parent_once(target);
-        self.set_layout_for_prepared_target(workspace, layout, target)
+        self.set_layout_for_prepared_target(layout, target)
     }
 
-    fn set_layout_for_prepared_target(
-        &mut self,
-        workspace: NodeKey,
-        layout: Layout,
-        target: NodeKey,
-    ) -> bool {
+    fn set_layout_for_prepared_target(&mut self, layout: Layout, target: NodeKey) -> bool {
+        let Some(workspace) = self.workspace_of(target) else {
+            return false;
+        };
         if self.is_workspace(target) {
             // The workspace itself is selected, so it takes the layout. No container is
             // built: the workspace is the container, and it remembers the split it was on
@@ -185,10 +178,8 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
         match self.get_node(target) {
             Some(NodeData::Workspace(_)) => false,
-            Some(node) if node.is_view() => self.set_layout_of_parent_of(workspace, target, layout),
-            Some(NodeData::Container(_)) => {
-                self.set_layout_for_container_target(workspace, target, layout)
-            }
+            Some(node) if node.is_view() => self.set_layout_of_parent_of(target, layout),
+            Some(NodeData::Container(_)) => self.set_layout_for_container_target(target, layout),
             None => false,
         }
     }
@@ -312,11 +303,11 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// `split` leaves it selected, the others only care that it worked.
     pub(in crate::layout) fn wrap_branch_children(
         &mut self,
-        workspace: NodeKey,
         branch_root: NodeKey,
         wrapper_layout: Layout,
         root_layout: Layout,
     ) -> Option<NodeKey> {
+        let workspace = self.workspace_of(branch_root)?;
         let root_key = branch_root;
 
         let old_children = {
@@ -356,12 +347,11 @@ impl<W: LayoutElement> ContainerArena<W> {
         wrapper_layout: Layout,
         root_layout: Layout,
     ) -> Option<NodeKey> {
-        self.wrap_branch_children(workspace, workspace, wrapper_layout, root_layout)
+        self.wrap_branch_children(workspace, wrapper_layout, root_layout)
     }
 
     pub(super) fn split_selected_container(
         &mut self,
-        workspace: NodeKey,
         selected_key: NodeKey,
         layout: Layout,
     ) -> bool {
@@ -406,7 +396,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         let mut wrapper = ContainerData::new(layout);
         wrapper.mark_user_created();
         if self
-            .wrap_child_in_new_container(workspace, parent_key, selected_key, wrapper)
+            .wrap_child_in_new_container(parent_key, selected_key, wrapper)
             .is_none()
         {
             return false;
@@ -459,7 +449,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                 self.get_real_container_mut(wrapper_key)
                     .expect("workspace split wrapper")
                     .mark_user_created();
-                self.select_container(workspace, wrapper_key);
+                self.select_container(wrapper_key);
                 true
             }
             None => self.set_root_container_layout(workspace, layout),
@@ -467,12 +457,10 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     /// Split an explicit command target.
-    pub(in crate::layout) fn split_target(
-        &mut self,
-        workspace: NodeKey,
-        layout: Layout,
-        target: NodeKey,
-    ) -> bool {
+    pub(in crate::layout) fn split_target(&mut self, layout: Layout, target: NodeKey) -> bool {
+        let Some(workspace) = self.workspace_of(target) else {
+            return false;
+        };
         self.clear_focus_history();
 
         let changed = if self.is_workspace(target) {
@@ -480,10 +468,8 @@ impl<W: LayoutElement> ContainerArena<W> {
         } else {
             match self.get_node(target) {
                 Some(NodeData::Workspace(_)) => false,
-                Some(node) if node.is_view() => self.split_leaf(workspace, target, layout),
-                Some(NodeData::Container(_)) => {
-                    self.split_selected_container(workspace, target, layout)
-                }
+                Some(node) if node.is_view() => self.split_leaf(target, layout),
+                Some(NodeData::Container(_)) => self.split_selected_container(target, layout),
                 None => false,
             }
         };
@@ -528,7 +514,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         let Some(focused_key) = self.effective_focused_key(workspace) else {
             return false;
         };
-        self.split_leaf(workspace, focused_key, layout)
+        self.split_leaf(focused_key, layout)
     }
 
     /// i3's `tree_split` on one node.
@@ -539,7 +525,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// has the requested orientation and regardless of how it got it — tiri used to treat a
     /// parent whose layout had been set explicitly as already-split and do nothing, which the
     /// differential fuzz caught on its first script.
-    pub(super) fn split_leaf(&mut self, workspace: NodeKey, key: NodeKey, layout: Layout) -> bool {
+    pub(super) fn split_leaf(&mut self, key: NodeKey, layout: Layout) -> bool {
         // A floating root never takes the shortcut. `container_split` reads the parent's layout
         // only to decide whether a lone child can be spared a wrapper, and for a floating child
         // it replaces that answer with `L_NONE` before comparing, which matches neither
@@ -580,7 +566,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         let mut wrapper = ContainerData::new(layout);
         wrapper.mark_user_created();
         if self
-            .wrap_child_in_new_container(workspace, parent_key, key, wrapper)
+            .wrap_child_in_new_container(parent_key, key, wrapper)
             .is_none()
         {
             return false;
@@ -604,7 +590,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             return false;
         };
 
-        self.set_layout_of_parent_of(workspace, focused_key, layout)
+        self.set_layout_of_parent_of(focused_key, layout)
     }
 
     /// Give `key`'s parent the layout `layout`.
@@ -617,12 +603,10 @@ impl<W: LayoutElement> ContainerArena<W> {
     ///
     /// Restating the layout the workspace already has is the exception, and does nothing:
     /// there is no orientation to express that is not already expressed.
-    fn set_layout_of_parent_of(
-        &mut self,
-        workspace: NodeKey,
-        key: NodeKey,
-        layout: Layout,
-    ) -> bool {
+    fn set_layout_of_parent_of(&mut self, key: NodeKey, layout: Layout) -> bool {
+        let Some(workspace) = self.workspace_of(key) else {
+            return false;
+        };
         let parent_key = self.parent_of(key);
         let lands_on_workspace = parent_key.is_some_and(|parent| self.is_workspace(parent));
 
@@ -662,44 +646,35 @@ impl<W: LayoutElement> ContainerArena<W> {
     #[cfg(test)]
     pub(in crate::layout) fn toggle_split_layout(&mut self, workspace: NodeKey) -> bool {
         let target = self.command_target_in(workspace);
-        self.toggle_split_for_target(workspace, target)
+        self.toggle_split_for_target(target)
     }
 
-    pub(in crate::layout) fn toggle_split_for_target(
-        &mut self,
-        workspace: NodeKey,
-        target: NodeKey,
-    ) -> bool {
+    pub(in crate::layout) fn toggle_split_for_target(&mut self, target: NodeKey) -> bool {
+        let Some(workspace) = self.workspace_of(target) else {
+            return false;
+        };
         self.flatten_layout_parent_once(target);
-        let Some((source_key, current)) = self.toggle_source(workspace, target) else {
+        let Some((source_key, current)) = self.toggle_source(target) else {
             return false;
         };
 
         let next = self.toggled_split_layout(workspace, current, source_key);
-        self.apply_toggled_layout(workspace, next, source_key, target)
+        self.apply_toggled_layout(next, source_key, target)
     }
 
-    pub(in crate::layout) fn toggle_layout_all_for_target(
-        &mut self,
-        workspace: NodeKey,
-        target: NodeKey,
-    ) -> bool {
+    pub(in crate::layout) fn toggle_layout_all_for_target(&mut self, target: NodeKey) -> bool {
         self.flatten_layout_parent_once(target);
-        let Some((source_key, current)) = self.toggle_source(workspace, target) else {
+        let Some((source_key, current)) = self.toggle_source(target) else {
             return false;
         };
 
-        self.apply_toggled_layout(workspace, current.next_in_cycle(), source_key, target)
+        self.apply_toggled_layout(current.next_in_cycle(), source_key, target)
     }
 
     /// Restore the split remembered by the container targeted by `layout default`.
-    pub(in crate::layout) fn set_default_layout_for_target(
-        &mut self,
-        workspace: NodeKey,
-        target: NodeKey,
-    ) -> bool {
+    pub(in crate::layout) fn set_default_layout_for_target(&mut self, target: NodeKey) -> bool {
         self.flatten_layout_parent_once(target);
-        let Some((source_key, _)) = self.toggle_source(workspace, target) else {
+        let Some((source_key, _)) = self.toggle_source(target) else {
             return false;
         };
         let Some(layout) = source_key
@@ -709,7 +684,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             return false;
         };
 
-        self.apply_toggled_layout(workspace, layout, source_key, target)
+        self.apply_toggled_layout(layout, source_key, target)
     }
 
     /// Sway's explicit `layout toggle <cycle...>`.
@@ -720,16 +695,18 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// parser, just as sway silently discards them.
     pub(in crate::layout) fn toggle_layout_cycle_for_target(
         &mut self,
-        workspace: NodeKey,
         target: NodeKey,
         cycle: &[LayoutCycleEntry],
     ) -> bool {
+        let Some(workspace) = self.workspace_of(target) else {
+            return false;
+        };
         if cycle.is_empty() {
             return false;
         }
 
         self.flatten_layout_parent_once(target);
-        let Some((source_key, current)) = self.toggle_source(workspace, target) else {
+        let Some((source_key, current)) = self.toggle_source(target) else {
             return false;
         };
         let matches_current = |entry: LayoutCycleEntry| match entry {
@@ -749,7 +726,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                 LayoutCycleEntry::Layout(layout) => layout,
             };
             if next != current {
-                return self.apply_toggled_layout(workspace, next, source_key, target);
+                return self.apply_toggled_layout(next, source_key, target);
             }
         }
 
@@ -765,7 +742,6 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Telling those two apart is `set_layout_for_target`'s job, so they go there.
     fn apply_toggled_layout(
         &mut self,
-        workspace: NodeKey,
         layout: Layout,
         source_key: Option<NodeKey>,
         target: NodeKey,
@@ -775,7 +751,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                 .get_real_container_mut(key)
                 .map(|container| container.set_layout_explicit_from_command(layout))
                 .is_some(),
-            _ => self.set_layout_for_prepared_target(workspace, layout, target),
+            _ => self.set_layout_for_prepared_target(layout, target),
         }
     }
 
@@ -814,11 +790,8 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// A leaf sitting directly on the workspace has no container between it and the
     /// workspace, so the toggle reads the workspace's own orientation — and its memory of
     /// the split it used to be, which is the same field on the same node as anywhere else.
-    fn toggle_source(
-        &self,
-        workspace: NodeKey,
-        target: NodeKey,
-    ) -> Option<(Option<NodeKey>, Layout)> {
+    fn toggle_source(&self, target: NodeKey) -> Option<(Option<NodeKey>, Layout)> {
+        let workspace = self.workspace_of(target)?;
         let key = self.layout_container_key_for_target(target);
         match key.and_then(|key| self.get_container(key)) {
             Some(container) => Some((key, container.layout())),

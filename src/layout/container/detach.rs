@@ -46,7 +46,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         let view = container.into_view(node_key)?;
 
         if let Some(cleanup_key) = cleanup_key {
-            self.reap_empty(workspace, cleanup_key);
+            self.reap_empty(cleanup_key);
             self.autotile_squash_lone_children(workspace);
         }
         // A fullscreen container can outlive its last child until its owning floating list
@@ -80,7 +80,6 @@ impl<W: LayoutElement> ContainerArena<W> {
     #[cfg(test)]
     pub(in crate::layout) fn take_subtree_at(
         &mut self,
-        workspace: NodeKey,
         node_key: NodeKey,
     ) -> Option<(NodeKey, Option<InsertParentInfo>)> {
         self.get_node(node_key)?;
@@ -89,7 +88,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             .branch_relative_path(node_key)
             .and_then(|path| self.insert_parent_info_for_path(branch_root, &path));
 
-        let subtree = self.take_tiling_subtree(workspace, node_key)?;
+        let subtree = self.take_tiling_subtree(node_key)?;
         Some((subtree, insert_info))
     }
 
@@ -106,10 +105,11 @@ impl<W: LayoutElement> ContainerArena<W> {
         if self.is_workspace(key) {
             return None;
         }
-        self.take_tiling_subtree(workspace, key)
+        self.take_tiling_subtree(key)
     }
 
-    fn take_tiling_subtree(&mut self, workspace: NodeKey, node_key: NodeKey) -> Option<NodeKey> {
+    fn take_tiling_subtree(&mut self, node_key: NodeKey) -> Option<NodeKey> {
+        let workspace = self.workspace_of(node_key)?;
         self.get_node(node_key)?;
         if self.is_workspace(node_key) || !self.is_in_tiled_branch(node_key) {
             return None;
@@ -149,7 +149,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
         assert!(self.park_subtree(node_key));
         self.drop_subtree_layouts(node_key);
-        self.reap_empty(workspace, parent_key);
+        self.reap_empty(parent_key);
         self.autotile_squash_lone_children(workspace);
         self.prune_leaf_layouts(workspace);
 
@@ -168,6 +168,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         idx: usize,
     ) -> Option<NodeKey> {
         let child = self.get_container(workspace)?.child_key(idx)?;
-        self.take_tiling_subtree(workspace, child)
+        self.take_tiling_subtree(child)
     }
 }
