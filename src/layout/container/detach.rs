@@ -103,7 +103,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// itself is not a container target and therefore cannot be detached here.
     pub(in crate::layout) fn take_command_target_subtree(&mut self) -> Option<DetachedNode<W>> {
         let key = self.command_target_in(self.root);
-        if key == self.root {
+        if self.is_workspace(key) {
             return None;
         }
         self.take_tiling_subtree(key)
@@ -111,7 +111,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     fn take_tiling_subtree(&mut self, node_key: NodeKey) -> Option<DetachedNode<W>> {
         self.get_node(node_key)?;
-        if node_key == self.root || self.branch_root(node_key) != self.root {
+        if self.is_workspace(node_key) || !self.is_in_tiled_branch(node_key) {
             return None;
         }
 

@@ -140,6 +140,14 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Both, deliberately. This is what the transaction machinery compares its snapshot
     /// against, and a floating window that the comparison cannot see is a window whose
     /// configure gets computed from a tree that does not contain it.
+    /// Whether `key` is a workspace node.
+    ///
+    /// Asked of the node rather than compared against the arena's root, so that the answer
+    /// stays right when an arena holds more than one workspace.
+    pub(in crate::layout) fn is_workspace(&self, key: NodeKey) -> bool {
+        matches!(self.get_node(key), Some(NodeData::Workspace(_)))
+    }
+
     pub(in crate::layout) fn dfs_leaf_keys(&self) -> Vec<NodeKey> {
         let mut keys = Vec::new();
         self.collect_leaf_keys(self.root, &mut keys);
@@ -179,7 +187,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     pub(in crate::layout) fn contains_layout(&self, layout: Layout) -> bool {
         self.nodes.iter().any(|(key, node)| match node {
             NodeData::Container(container) if !container.is_view() => {
-                key != self.root && container.layout() == layout
+                !self.is_workspace(key) && container.layout() == layout
             }
             NodeData::Workspace(_) | NodeData::Container(_) => false,
         })

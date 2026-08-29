@@ -15,7 +15,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     ///
     /// The returned key is the branch root after the operation.
     pub(in crate::layout) fn unsplit_target(&mut self, target_key: NodeKey) -> Option<NodeKey> {
-        if target_key == self.root || self.get_node(target_key).is_none() {
+        if self.is_workspace(target_key) || self.get_node(target_key).is_none() {
             return None;
         }
 
@@ -79,7 +79,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
             // The workspace is the structural boundary. sway's top-level container has no
             // container parent, so `container_flatten` stops here rather than flattening it.
-            if parent_key == self.root {
+            if self.is_workspace(parent_key) {
                 break self.root;
             }
             if self
@@ -160,7 +160,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     fn set_layout_for_prepared_target(&mut self, layout: Layout, target: NodeKey) -> bool {
-        if target == self.root {
+        if self.is_workspace(target) {
             // The workspace itself is selected, so it takes the layout. No container is
             // built: the workspace is the container, and it remembers the split it was on
             // the way out like any other.
@@ -226,7 +226,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     pub(super) fn layout_container_key_for_target(&self, target: NodeKey) -> Option<NodeKey> {
-        if target == self.root {
+        if self.is_workspace(target) {
             return None;
         }
         if self.branch_root(target) == target && self.branch_is_addressable(target) {
@@ -446,7 +446,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     pub(in crate::layout) fn split_target(&mut self, layout: Layout, target: NodeKey) -> bool {
         self.clear_focus_history();
 
-        let changed = if target == self.root {
+        let changed = if self.is_workspace(target) {
             self.split_workspace_container(layout)
         } else {
             match self.get_node(target) {
@@ -535,7 +535,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         let is_lone_child = parent.child_count() == 1;
 
         if matches!(parent_layout, Layout::SplitH | Layout::SplitV) && is_lone_child {
-            if parent_key == self.root {
+            if self.is_workspace(parent_key) {
                 if let Some(workspace) = self.get_container_mut(parent_key) {
                     workspace.set_layout(layout);
                 }

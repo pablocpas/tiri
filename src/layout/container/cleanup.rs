@@ -27,7 +27,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     pub(super) fn reap_empty(&mut self, key: NodeKey) {
         let mut current = Some(key);
         while let Some(container_key) = current {
-            if container_key == self.root
+            if self.is_workspace(container_key)
                 || (self.branch_root(container_key) == container_key
                     && self.branch_is_addressable(container_key))
             {
@@ -80,7 +80,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         // child. The mode dissolves the same levels — see `autotile_squash_lone_children` —
         // but in place, replacing the level with its child and leaving every arity alone.
         // Two names for one job, so only one of them runs.
-        if self.options().layout.autotile && self.branch_root(branch_root) == self.root {
+        if self.options().layout.autotile && self.is_in_tiled_branch(branch_root) {
             return;
         }
 

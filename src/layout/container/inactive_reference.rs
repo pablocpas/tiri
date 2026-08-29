@@ -10,9 +10,9 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// which is exactly the state sway reads through `seat_get_focus_inactive_tiling`.
     pub(in crate::layout) fn inactive_tiling_key(&self) -> Option<NodeKey> {
         self.seat.order().iter().copied().find(|key| {
-            *key != self.root
+            !self.is_workspace(*key)
                 && self.get_node(*key).is_some()
-                && self.branch_root(*key) == self.root
+                && self.is_in_tiled_branch(*key)
                 && matches!(self.get_node(*key), Some(NodeData::Container(_)))
         })
     }
@@ -29,7 +29,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         reference: &InactiveTilingReference,
     ) -> Option<(NodeKey, usize)> {
         let key = reference.key();
-        if self.get_node(key).is_none() || self.branch_root(key) != self.root {
+        if self.get_node(key).is_none() || !self.is_in_tiled_branch(key) {
             return None;
         }
 
@@ -48,7 +48,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     pub(in crate::layout) fn focus_inactive_tiling_key(&mut self, key: NodeKey) -> bool {
-        if key == self.root || self.get_node(key).is_none() || self.branch_root(key) != self.root {
+        if self.is_workspace(key) || self.get_node(key).is_none() || !self.is_in_tiled_branch(key) {
             return false;
         }
         self.focus_node_key(key);
@@ -57,7 +57,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     pub(in crate::layout) fn window_for_inactive_tiling_key(&self, key: NodeKey) -> Option<&W> {
-        if self.get_node(key).is_none() || self.branch_root(key) != self.root {
+        if self.get_node(key).is_none() || !self.is_in_tiled_branch(key) {
             return None;
         }
         self.get_tile(key).map(|tile| tile.window())

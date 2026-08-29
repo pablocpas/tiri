@@ -193,7 +193,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                     .expect("workspace and container nodes are layout parents");
                 let child_count = container.child_count();
                 assert!(
-                    child_count > 0 || key == self.root,
+                    child_count > 0 || self.is_workspace(key),
                     "container nodes other than the workspace must not be empty"
                 );
                 let mut child_set = HashSet::with_capacity(child_count);

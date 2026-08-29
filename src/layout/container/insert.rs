@@ -66,7 +66,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// and you get a five-way row.
     fn autotile_presplit(&mut self, branch_root: NodeKey) {
         // Floating groups have no row to dwindle into; their nodes carry their own boxes.
-        if branch_root != self.root {
+        if !self.is_workspace(branch_root) {
             return;
         }
 
@@ -101,7 +101,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         if !self.options().layout.autotile {
             return None;
         }
-        if self.branch_root(key) != self.root {
+        if !self.is_in_tiled_branch(key) {
             return None;
         }
         if self.parent_is_switcher(key) {
@@ -205,7 +205,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         // The workspace holding a single container is the ordinary shape of a split tree, and
         // `split none` is defined never to climb through it. A one-tab switcher is a switcher
         // the user asked for.
-        if key != self.root
+        if !self.is_workspace(key)
             && is_real_container
             && children.len() == 1
             && matches!(
@@ -282,7 +282,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// sway/tree/view.c:802-824
     pub(in crate::layout) fn view_map_target(&self) -> Option<NodeKey> {
         let inactive = self.seat.order().iter().copied().find(|key| {
-            *key != self.root
+            !self.is_workspace(*key)
                 && self.get_node(*key).is_some()
                 && self.is_descendant(*key, self.root)
         })?;
@@ -309,7 +309,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     ) {
         let slot = self
             .window_key(window_id)
-            .filter(|key| self.branch_root(*key) == self.root)
+            .filter(|key| self.is_in_tiled_branch(*key))
             .and_then(|current_key| {
                 let parent_key = self.parent_of(current_key)?;
                 let current_idx = self.child_index(parent_key, current_key)?;

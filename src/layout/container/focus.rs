@@ -98,7 +98,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// was whatever window had been focused before, and every later descent answered with it.
     fn select_node(&mut self, key: NodeKey) {
         let chain = self.focus_chain(key);
-        let leaf = if key == self.root {
+        let leaf = if self.is_workspace(key) {
             self.focused_key()
                 .filter(|focused| self.get_node(*focused).is_some_and(|node| node.is_view()))
                 .or_else(|| self.focus_inactive_anywhere())
@@ -433,7 +433,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             // A workspace is the owner of the tiling branch, not a node *under* that
             // branch.  sway's seat_get_focus_inactive_tiling() therefore skips it and can
             // recover the last real tiling container after focus moved to floating.
-            *candidate != self.root
+            !self.is_workspace(*candidate)
                 && self.get_node(*candidate).is_some()
                 && self.branch_root(*candidate) == branch_root
         })
@@ -735,7 +735,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     pub(in crate::layout) fn active_tiling_child(&self, parent: NodeKey) -> Option<NodeKey> {
         self.seat.order().iter().copied().find(|key| {
             self.parent_of(*key) == Some(parent)
-                && (parent != self.root || self.branch_root(*key) == self.root)
+                && (!self.is_workspace(parent) || self.is_in_tiled_branch(*key))
         })
     }
 
@@ -752,7 +752,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                 .children()
                 .iter()
                 .copied()
-                .find(|key| parent != self.root || self.branch_root(*key) == self.root)
+                .find(|key| !self.is_workspace(parent) || self.is_in_tiled_branch(*key))
         })
     }
 

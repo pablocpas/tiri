@@ -110,7 +110,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         key: NodeKey,
         area: Rectangle<f64, Logical>,
     ) {
-        if self.get_node(key).is_none() || key == self.root {
+        if self.get_node(key).is_none() || self.is_workspace(key) {
             return;
         }
         self.generation = self.generation.wrapping_add(1);
@@ -195,7 +195,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// before arranging. The workspace node is not a fullscreen target; every other live
     /// node can be one.
     pub(in crate::layout) fn set_fullscreen_key(&mut self, key: Option<NodeKey>) -> bool {
-        if key.is_some_and(|key| key == self.root || !self.holds_node(key)) {
+        if key.is_some_and(|key| self.is_workspace(key) || !self.holds_node(key)) {
             return false;
         }
         if self.fullscreen_key == key {

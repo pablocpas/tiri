@@ -89,7 +89,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Resolve the command target into the node to move, and whether it is a container whose
     /// selection should survive the move.
     fn resolve_move_source(&mut self, target: NodeKey) -> Option<(NodeKey, bool)> {
-        if target == self.root {
+        if self.is_workspace(target) {
             return None;
         }
         let preserve_selected_container = match self.get_node(target) {

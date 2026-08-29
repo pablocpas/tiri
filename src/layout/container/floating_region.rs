@@ -292,7 +292,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     pub(in crate::layout) fn branch_root(&self, key: NodeKey) -> NodeKey {
         let mut current = key;
         while let Some(parent) = self.parent_of(current) {
-            if parent == self.root {
+            if self.is_workspace(parent) {
                 return if self.is_floating_root(current) {
                     current
                 } else {
@@ -302,6 +302,17 @@ impl<W: LayoutElement> ContainerArena<W> {
             current = parent;
         }
         current
+    }
+
+    /// Whether `key` sits on a workspace's tiled side rather than inside a floating group.
+    ///
+    /// Asked of the node, not of the arena. `branch_root(key) == self.root` answered the same
+    /// question only while an arena held exactly one workspace, and read as a comparison
+    /// against a field rather than as the property of `key` that it is.
+    ///
+    /// A key the arena does not hold is in no branch and answers false, as the comparison did.
+    pub(in crate::layout) fn is_in_tiled_branch(&self, key: NodeKey) -> bool {
+        self.holds_node(key) && !self.is_floating_root(self.branch_root(key))
     }
 
     fn register_floating_root(
@@ -355,7 +366,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         stack_index: usize,
         kind: FloatingRootKind,
     ) -> bool {
-        if key == self.root
+        if self.is_workspace(key)
             || !matches!(self.get_node(key), Some(NodeData::Container(_)))
             || self.is_in_floating_branch(key)
         {
@@ -392,8 +403,12 @@ impl<W: LayoutElement> ContainerArena<W> {
         parent: NodeKey,
         index: usize,
     ) -> bool {
-        if key == self.root || self.parent_of(key) != Some(self.root) || !self.is_floating_root(key)
-        {
+        // A floating root is a direct child of the workspace that holds it, and that is the
+        // property being checked — not equality with one particular workspace.
+        let hangs_off_a_workspace = self
+            .parent_of(key)
+            .is_some_and(|parent| self.is_workspace(parent));
+        if self.is_workspace(key) || !hangs_off_a_workspace || !self.is_floating_root(key) {
             return false;
         }
         if self.get_container(parent).is_none() {
@@ -442,7 +457,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         stack_index: usize,
         kind: FloatingRootKind,
     ) -> Option<NodeKey> {
-        if key == self.root {
+        if self.is_workspace(key) {
             return None;
         }
         // A view floats as itself. sway's `ws->floating` holds whatever was floated, a view
