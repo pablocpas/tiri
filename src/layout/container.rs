@@ -12,6 +12,24 @@
 //! ownership form of sway moving the same `sway_container` through `container_detach` and
 //! `workspace_add_tiling`/`workspace_add_floating`.
 //!
+//! # Every operation names its workspace
+//!
+//! An arena holds one workspace today, and its root is that workspace's node. That is not
+//! written into the operations: anything that acts on a workspace takes it as a `workspace:
+//! NodeKey` first argument rather than reading a field, and `ContainerTree` — the per-workspace
+//! handle — is what supplies it.
+//!
+//! The point is not ceremony. `self.root` is a correct answer to "which workspace?" only
+//! because there is exactly one, and an assumption that is right by arithmetic reads exactly
+//! like one that is right by design. Naming the workspace makes the two distinguishable, and
+//! leaves the arena free to hold several — which is what a single tree, with the workspaces as
+//! its roots, needs.
+//!
+//! What is left saying `self.root` is therefore an inventory rather than an oversight: the
+//! arena's own identity (`workspace_root`, `get_workspace`), and the walks that mean *every*
+//! node it holds (`all_windows`, `all_tiles`, `dfs_leaf_keys`, `window_count`, `is_empty`).
+//! Those become a loop over the workspaces, not a parameter.
+//!
 //! sway/tree/workspace.c:797-852
 
 use std::collections::hash_map::Entry;
@@ -21,12 +39,12 @@ use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
 use smithay::utils::{Logical, Point, Rectangle, Size};
+use tiri_config::BlockOutFrom;
 
 use super::tile::Tile;
 use super::{LayoutElement, Options, SizeFrac};
 use crate::utils::id::IdCounter;
 use crate::utils::transaction::Transaction;
-use tiri_config::BlockOutFrom;
 
 mod branch;
 mod cleanup;
@@ -930,7 +948,6 @@ impl<W: LayoutElement> DetachedView<W> {
         self.marks.retain(|candidate| candidate != mark);
     }
 }
-
 
 // ============================================================================
 // ContainerArena Implementation

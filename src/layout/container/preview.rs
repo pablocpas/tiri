@@ -1,13 +1,8 @@
 //! Preview geometry for insert hints (drag-and-drop and open-placement previews).
 
-use smithay::utils::Logical;
-use smithay::utils::Rectangle;
+use smithay::utils::{Logical, Rectangle};
 
-use super::ContainerArena;
-use super::Layout;
-use super::LayoutElement;
-use super::NodeKey;
-use super::PreviewLeafGeometry;
+use super::{ContainerArena, Layout, LayoutElement, NodeKey, PreviewLeafGeometry};
 
 /// The container a preview is being taken inside: everything `child_rects_for_layout` needs
 /// to lay its children out, which is what the preview is asking about.
@@ -20,21 +15,23 @@ pub(super) struct PreviewContainer<'a> {
 }
 
 impl<W: LayoutElement> ContainerArena<W> {
-    pub(in crate::layout) fn preview_new_leaf_geometry(&self) -> Option<PreviewLeafGeometry> {
+    pub(in crate::layout) fn preview_new_leaf_geometry(
+        &self,
+        workspace: NodeKey,
+    ) -> Option<PreviewLeafGeometry> {
         let root_rect = self.layout_area();
-        let root_key = self.root;
 
         // Nothing in the workspace yet: the window arriving gets it all, laid out by the
         // workspace's own orientation.
         if self.is_empty() {
-            let layout = self.root_container_layout();
+            let layout = self.root_container_layout(workspace);
             let (rect, tab_bar_offset) = self.preview_child_rect(
                 PreviewContainer {
                     layout,
                     rect: root_rect,
                     child_count: 1,
                     percents: &[1.0],
-                    gap: self.gap_in(root_key),
+                    gap: self.gap_in(workspace),
                 },
                 0,
                 true,
@@ -45,7 +42,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             });
         }
 
-        let focus_path = self.selected_path();
+        let focus_path = self.selected_path(workspace);
         let (parent_path, insert_idx) = if focus_path.is_empty() {
             (Vec::new(), None)
         } else {
@@ -55,11 +52,11 @@ impl<W: LayoutElement> ContainerArena<W> {
         };
 
         let parent_key = if parent_path.is_empty() {
-            root_key
+            workspace
         } else {
-            self.get_node_key_at_path(&parent_path)?
+            self.get_node_key_at_path(workspace, &parent_path)?
         };
-        let parent_rect = self.preview_rect_for_path(root_key, root_rect, &parent_path)?;
+        let parent_rect = self.preview_rect_for_path(workspace, root_rect, &parent_path)?;
         let parent = self.get_container(parent_key)?;
         let child_count = parent.child_count();
         let insert_idx = insert_idx.unwrap_or(child_count).min(child_count);

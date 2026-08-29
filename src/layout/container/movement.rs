@@ -10,11 +10,7 @@
 //! workspace's children by hand at the top level. Each disagreed with sway somewhere, and
 //! the disagreements did not share a cause, which is what made them look like eight bugs.
 
-use super::ContainerArena;
-use super::Direction;
-use super::LayoutElement;
-use super::NodeData;
-use super::NodeKey;
+use super::{ContainerArena, Direction, LayoutElement, NodeData, NodeKey};
 
 /// What a reparent does to the shares of the node it moves.
 ///
@@ -42,9 +38,12 @@ enum ReparentFractions {
 impl<W: LayoutElement> ContainerArena<W> {
     /// Move the current command target in a direction.
     #[cfg(test)]
-    pub(in crate::layout) fn move_in_direction(&mut self, direction: Direction) -> bool {
-        let root = self.root;
-        self.move_target_in_direction(direction, self.command_target_in(root))
+    pub(in crate::layout) fn move_in_direction(
+        &mut self,
+        workspace: NodeKey,
+        direction: Direction,
+    ) -> bool {
+        self.move_target_in_direction(workspace, direction, self.command_target_in(workspace))
     }
 
     /// Move an explicit command target in a direction.
@@ -53,6 +52,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// if the node was the last thing in it.
     pub(in crate::layout) fn move_target_in_direction(
         &mut self,
+        workspace: NodeKey,
         direction: Direction,
         target: NodeKey,
     ) -> bool {
@@ -67,14 +67,14 @@ impl<W: LayoutElement> ContainerArena<W> {
         let old_parent_key = self.parent_of(node_key);
         let leaf_key = self.leaf_under_key(node_key);
 
-        if !self.move_node(node_key, direction) {
+        if !self.move_node(workspace, node_key, direction) {
             return false;
         }
 
         if let Some(old_parent_key) = old_parent_key {
-            self.reap_empty(old_parent_key);
+            self.reap_empty(workspace, old_parent_key);
         }
-        self.autotile_squash_lone_children();
+        self.autotile_squash_lone_children(workspace);
         if let Some(leaf_key) = leaf_key {
             // Not `focus_node_key`: that raises the leaf's branch in every ancestor switcher
             // on the way to the root, which is the one thing `cmd_move` is careful not to do.
@@ -111,7 +111,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// neighbour on that side the node moves in with it; if there is not, the node is
     /// promoted to sit beside that ancestor. A workspace facing the wrong way is turned on
     /// the way up, its children moving under one container that keeps the old orientation.
-    fn move_node(&mut self, node_key: NodeKey, direction: Direction) -> bool {
+    fn move_node(&mut self, workspace: NodeKey, node_key: NodeKey, direction: Direction) -> bool {
         let mut current = node_key;
         let mut wrapped = false;
 
@@ -166,7 +166,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             if let Some(target_key) = target_key {
                 // Either the node's own neighbour or a cousin found further up, and the same
                 // thing happens to both: swap with it, or move in with it.
-                self.move_into_from_direction(node_key, target_key, direction);
+                self.move_into_from_direction(workspace, node_key, target_key, direction);
                 return true;
             }
 
@@ -210,14 +210,16 @@ impl<W: LayoutElement> ContainerArena<W> {
         // sibling above. The node is still inside `ancestor_key` while it is split, and the
         // reparent below takes it out into the wrapper the split just built.
         let after = !direction.is_leading();
-        let (parent_key, insert_at) = self.autotile_pair_slot(ancestor_key, after).unwrap_or((
-            ancestor_parent_key,
-            if after {
-                ancestor_idx + 1
-            } else {
-                ancestor_idx
-            },
-        ));
+        let (parent_key, insert_at) = self
+            .autotile_pair_slot(workspace, ancestor_key, after)
+            .unwrap_or((
+                ancestor_parent_key,
+                if after {
+                    ancestor_idx + 1
+                } else {
+                    ancestor_idx
+                },
+            ));
         self.reparent(
             node_key,
             parent_key,
@@ -226,8 +228,8 @@ impl<W: LayoutElement> ContainerArena<W> {
         );
 
         let branch_root = self.branch_root(ancestor_parent_key);
-        self.reap_empty(node_parent_key);
-        self.squash_branch(branch_root);
+        self.reap_empty(workspace, node_parent_key);
+        self.squash_branch(workspace, branch_root);
         true
     }
 
@@ -235,6 +237,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// `destination_key` from `direction` says it belongs.
     fn move_into_from_direction(
         &mut self,
+        workspace: NodeKey,
         node_key: NodeKey,
         destination_key: NodeKey,
         direction: Direction,
@@ -268,10 +271,10 @@ impl<W: LayoutElement> ContainerArena<W> {
             let branch_root = self.branch_root(destination_parent_key);
             // Autotiling pairs the arrival with the cousin instead of making its list a trio.
             let (parent_key, insert_at) = self
-                .autotile_pair_slot(destination_key, after)
+                .autotile_pair_slot(workspace, destination_key, after)
                 .unwrap_or((destination_parent_key, destination_idx + usize::from(after)));
             self.reparent(node_key, parent_key, insert_at, ReparentFractions::Unset);
-            self.squash_branch(branch_root);
+            self.squash_branch(workspace, branch_root);
             return;
         }
 
@@ -294,10 +297,10 @@ impl<W: LayoutElement> ContainerArena<W> {
             let edge_child =
                 edge_idx.and_then(|idx| self.get_container(destination_key)?.child_key(idx));
             let (parent_key, insert_at) = edge_child
-                .and_then(|edge| self.autotile_pair_slot(edge, after))
+                .and_then(|edge| self.autotile_pair_slot(workspace, edge, after))
                 .unwrap_or((destination_key, if after { child_count } else { 0 }));
             self.reparent(node_key, parent_key, insert_at, ReparentFractions::Unset);
-            self.squash_branch(branch_root);
+            self.squash_branch(workspace, branch_root);
             return;
         }
 
@@ -307,7 +310,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         let Some(child_key) = self.active_child(destination_key) else {
             return;
         };
-        self.move_into_from_direction(node_key, child_key, direction);
+        self.move_into_from_direction(workspace, node_key, child_key, direction);
     }
 
     /// Take a node out of its parent's child list and put it in `parent_key` at `insert_at`.

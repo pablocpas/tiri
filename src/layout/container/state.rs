@@ -3,17 +3,11 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use smithay::utils::Logical;
-use smithay::utils::Rectangle;
-use smithay::utils::Size;
+use smithay::utils::{Logical, Rectangle, Size};
 
-use super::ContainerArena;
-use super::Layout;
-use super::LayoutElement;
-use super::LeafLayoutInfo;
-use super::NodeData;
-use super::NodeKey;
-use super::WorkspaceData;
+use super::{
+    ContainerArena, Layout, LayoutElement, LeafLayoutInfo, NodeData, NodeKey, WorkspaceData,
+};
 use crate::layout::tile::Tile;
 use crate::layout::Options;
 use crate::utils::transaction::Transaction;
@@ -151,12 +145,12 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.pending_transaction = Some(transaction);
     }
 
-    pub(super) fn prune_leaf_layouts(&mut self) {
+    pub(super) fn prune_leaf_layouts(&mut self, workspace: NodeKey) {
         if self
             .focused_key()
             .is_some_and(|key| !self.get_node(key).is_some_and(|node| node.is_view()))
         {
-            let first = self.first_leaf_key();
+            let first = self.first_leaf_key(workspace);
             self.seat.redirect_focused_leaf(first);
         }
 
@@ -182,8 +176,10 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     /// Focused tile (if any).
-    pub(in crate::layout) fn focused_tile(&self) -> Option<&Tile<W>> {
-        let key = self.focused_key().or_else(|| self.first_leaf_key())?;
+    pub(in crate::layout) fn focused_tile(&self, workspace: NodeKey) -> Option<&Tile<W>> {
+        let key = self
+            .focused_key()
+            .or_else(|| self.first_leaf_key(workspace))?;
         self.get_tile(key)
     }
 
@@ -192,13 +188,13 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// The workspace node carries it, empty workspace included, so there is nothing to
     /// remember on the side and nothing to reconcile: a `split` on an empty workspace is a
     /// `split` on the workspace node, and the first window arriving reads the same field.
-    pub(in crate::layout) fn workspace_layout(&self) -> Layout {
-        self.root_container_layout()
+    pub(in crate::layout) fn workspace_layout(&self, workspace: NodeKey) -> Layout {
+        self.root_container_layout(workspace)
     }
 
     /// The layout carried by the workspace node.
-    pub(in crate::layout) fn root_container_layout(&self) -> Layout {
-        self.get_container(self.root)
+    pub(in crate::layout) fn root_container_layout(&self, workspace: NodeKey) -> Layout {
+        self.get_container(workspace)
             .expect("workspace node must provide child-layout data")
             .layout()
     }

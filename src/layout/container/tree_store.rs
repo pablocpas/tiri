@@ -2,15 +2,10 @@
 
 use smithay::utils::{Logical, Point, Rectangle};
 
-use super::ContainerArena;
-use super::ContainerData;
-use super::DetachedView;
-use super::Layout;
-use super::LayoutElement;
-use super::LayoutParentData;
-use super::NodeData;
-use super::NodeKey;
-use super::WorkspaceData;
+use super::{
+    ContainerArena, ContainerData, DetachedView, Layout, LayoutElement, LayoutParentData, NodeData,
+    NodeKey, WorkspaceData,
+};
 use crate::layout::tile::Tile;
 
 impl<W: LayoutElement> ContainerArena<W> {
@@ -395,7 +390,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// container that has just been emptied can still be hanging off it when this is called.
     /// Every caller means "is there a window here".
     pub(in crate::layout) fn is_empty(&self) -> bool {
-        self.first_leaf_key().is_none()
+        self.first_leaf_key(self.root).is_none()
     }
 
     #[cfg(test)]

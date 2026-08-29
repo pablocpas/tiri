@@ -1,50 +1,47 @@
 //! Focus and selection: state, queries and directional navigation.
 
-use super::ContainerArena;
-use super::Direction;
-use super::LayoutElement;
-use super::NodeData;
-use super::NodeKey;
+use super::{ContainerArena, Direction, LayoutElement, NodeData, NodeKey};
 
 impl<W: LayoutElement> ContainerArena<W> {
     /// The leaf that is effectively focused.
     ///
     /// Falls back to the first leaf when nothing is focused or the focused key went stale,
     /// so callers see the same node [`Self::focus_path`] resolves to.
-    pub(in crate::layout) fn effective_focused_key(&self) -> Option<NodeKey> {
+    pub(in crate::layout) fn effective_focused_key(&self, workspace: NodeKey) -> Option<NodeKey> {
         match self.focused_key() {
             Some(key) if self.get_node(key).is_some() => Some(key),
-            _ => self.first_leaf_key(),
+            _ => self.first_leaf_key(workspace),
         }
     }
 
     /// Current focus path, derived for legacy inspection APIs.
-    pub(in crate::layout) fn focus_path(&self) -> Vec<usize> {
-        self.effective_focused_key()
-            .and_then(|key| self.find_node_path(key))
+    pub(in crate::layout) fn focus_path(&self, workspace: NodeKey) -> Vec<usize> {
+        self.effective_focused_key(workspace)
+            .and_then(|key| self.find_node_path(workspace, key))
             .unwrap_or_default()
     }
 
-    pub(in crate::layout) fn selected_path(&self) -> Vec<usize> {
+    pub(in crate::layout) fn selected_path(&self, workspace: NodeKey) -> Vec<usize> {
         if let Some(key) = self.selected_key() {
-            if let Some(path) = self.find_node_path(key) {
+            if let Some(path) = self.find_node_path(workspace, key) {
                 return path;
             }
         }
-        self.focus_path()
+        self.focus_path(workspace)
     }
 
-    pub(in crate::layout) fn selected_node_key(&self) -> Option<NodeKey> {
+    pub(in crate::layout) fn selected_node_key(&self, workspace: NodeKey) -> Option<NodeKey> {
         if let Some(key) = self.selected_key() {
             if self.get_node(key).is_some() {
                 return Some(key);
             }
         }
-        self.focused_key().or_else(|| self.first_leaf_key())
+        self.focused_key()
+            .or_else(|| self.first_leaf_key(workspace))
     }
 
-    pub(in crate::layout) fn workspace_is_selected(&self) -> bool {
-        self.selected_key() == Some(self.root)
+    pub(in crate::layout) fn workspace_is_selected(&self, workspace: NodeKey) -> bool {
+        self.selected_key() == Some(workspace)
             || (self.is_empty() && self.floating_roots().next().is_none())
     }
 
@@ -52,8 +49,8 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.focused_key()
     }
 
-    pub(in crate::layout) fn root_node_key(&self) -> Option<NodeKey> {
-        Some(self.root)
+    pub(in crate::layout) fn root_node_key(&self, workspace: NodeKey) -> Option<NodeKey> {
+        Some(workspace)
     }
 
     pub(in crate::layout) fn selected_container_key(&self) -> Option<NodeKey> {
@@ -96,12 +93,12 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// "selected" notion, it just focuses a node that happens to be a container. Recording the
     /// selection without raising it left the order thinking the last thing focused in there
     /// was whatever window had been focused before, and every later descent answered with it.
-    fn select_node(&mut self, key: NodeKey) {
+    fn select_node(&mut self, workspace: NodeKey, key: NodeKey) {
         let chain = self.focus_chain(key);
         let leaf = if self.is_workspace(key) {
             self.focused_key()
                 .filter(|focused| self.get_node(*focused).is_some_and(|node| node.is_view()))
-                .or_else(|| self.focus_inactive_anywhere())
+                .or_else(|| self.focus_inactive_anywhere(workspace))
         } else {
             self.leaf_under_key(key)
         };
@@ -110,9 +107,9 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     /// Select the container at `key` as the command target.
-    pub(in crate::layout) fn select_container(&mut self, key: NodeKey) -> bool {
+    pub(in crate::layout) fn select_container(&mut self, workspace: NodeKey, key: NodeKey) -> bool {
         if matches!(self.get_node(key), Some(NodeData::Container(_))) {
-            self.select_node(key);
+            self.select_node(workspace, key);
             true
         } else {
             false
@@ -128,28 +125,27 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.seat.redirect_selection(None);
     }
 
-    pub(in crate::layout) fn select_root_container(&mut self) -> bool {
-        let root_key = self.root;
-        if matches!(self.get_node(root_key), Some(NodeData::Workspace(_))) {
-            self.select_node(root_key);
+    pub(in crate::layout) fn select_root_container(&mut self, workspace: NodeKey) -> bool {
+        if matches!(self.get_node(workspace), Some(NodeData::Workspace(_))) {
+            self.select_node(workspace, workspace);
             true
         } else {
             false
         }
     }
 
-    pub(in crate::layout) fn select_parent(&mut self) -> bool {
+    pub(in crate::layout) fn select_parent(&mut self, workspace: NodeKey) -> bool {
         let base_key = self
             .selected_key()
             .or(self.focused_key())
-            .or_else(|| self.first_leaf_key());
+            .or_else(|| self.first_leaf_key(workspace));
         let Some(base_key) = base_key else {
             return false;
         };
         let Some(parent_key) = self.parent_of(base_key) else {
             return false;
         };
-        self.select_node(parent_key);
+        self.select_node(workspace, parent_key);
         true
     }
 
@@ -172,7 +168,11 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// This accepts both a whole layout branch and a nested workspace-fullscreen scope. Using
     /// `branch_position` here discarded a valid selected descendant of the latter because its
     /// owning branch is still the workspace rather than the fullscreen node.
-    pub(in crate::layout) fn select_parent_in(&mut self, scope_root: NodeKey) -> bool {
+    pub(in crate::layout) fn select_parent_in(
+        &mut self,
+        workspace: NodeKey,
+        scope_root: NodeKey,
+    ) -> bool {
         let in_scope = |key| self.is_descendant(key, scope_root);
         let Some(base_key) = self
             .selected_key()
@@ -188,11 +188,11 @@ impl<W: LayoutElement> ContainerArena<W> {
         if !self.is_descendant(parent_key, scope_root) {
             return false;
         }
-        self.select_node(parent_key);
+        self.select_node(workspace, parent_key);
         true
     }
 
-    pub(in crate::layout) fn select_child(&mut self) -> bool {
+    pub(in crate::layout) fn select_child(&mut self, workspace: NodeKey) -> bool {
         let Some(selected_key) = self.selected_key() else {
             return false;
         };
@@ -202,18 +202,26 @@ impl<W: LayoutElement> ContainerArena<W> {
         let Some(child_key) = self.active_child(selected_key) else {
             return false;
         };
-        self.select_node(child_key);
+        self.select_node(workspace, child_key);
         true
     }
 
     /// Move focus in a direction
-    pub(in crate::layout) fn focus_in_direction(&mut self, direction: Direction) -> bool {
-        self.focus_in_direction_internal(direction, true)
+    pub(in crate::layout) fn focus_in_direction(
+        &mut self,
+        workspace: NodeKey,
+        direction: Direction,
+    ) -> bool {
+        self.focus_in_direction_internal(workspace, direction, true)
     }
 
     /// Move focus in a direction without wrapping at container boundaries.
-    pub(in crate::layout) fn focus_in_direction_no_wrap(&mut self, direction: Direction) -> bool {
-        self.focus_in_direction_internal(direction, false)
+    pub(in crate::layout) fn focus_in_direction_no_wrap(
+        &mut self,
+        workspace: NodeKey,
+        direction: Direction,
+    ) -> bool {
+        self.focus_in_direction_internal(workspace, direction, false)
     }
 
     /// sway's `focus next|prev`: the direction is whichever way the parent lays its children
@@ -222,8 +230,13 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// `sibling` stops a direct step descending into the container it lands on. Sway's wrap
     /// fallback is deliberately different: it always resolves the wrapped-to container's
     /// inactive view, so wrapping descends even for `next|prev sibling`.
-    pub(in crate::layout) fn focus_along_parent(&mut self, forward: bool, descend: bool) -> bool {
-        let Some(selected_key) = self.selected_node_key() else {
+    pub(in crate::layout) fn focus_along_parent(
+        &mut self,
+        workspace: NodeKey,
+        forward: bool,
+        descend: bool,
+    ) -> bool {
+        let Some(selected_key) = self.selected_node_key(workspace) else {
             return false;
         };
         let Some(direction) = self.direction_along_parent(selected_key, forward) else {
@@ -231,7 +244,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         };
 
         self.clear_focus_history();
-        self.focus_in_direction_from_until(selected_key, direction, true, descend, None)
+        self.focus_in_direction_from_until(workspace, selected_key, direction, true, descend, None)
     }
 
     fn direction_along_parent(&self, key: NodeKey, forward: bool) -> Option<Direction> {
@@ -248,28 +261,31 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     pub(super) fn focus_in_direction_internal(
         &mut self,
+        workspace: NodeKey,
         direction: Direction,
         allow_wrap: bool,
     ) -> bool {
-        self.focus_in_direction_with(direction, allow_wrap, true)
+        self.focus_in_direction_with(workspace, direction, allow_wrap, true)
     }
 
     fn focus_in_direction_with(
         &mut self,
+        workspace: NodeKey,
         direction: Direction,
         allow_wrap: bool,
         descend: bool,
     ) -> bool {
         self.clear_focus_history();
-        let Some(selected_key) = self.selected_node_key() else {
+        let Some(selected_key) = self.selected_node_key(workspace) else {
             return false;
         };
-        self.focus_in_direction_from(selected_key, direction, allow_wrap, descend)
+        self.focus_in_direction_from(workspace, selected_key, direction, allow_wrap, descend)
     }
 
     /// The same, inside one branch: the walk stops at its root, so focus never leaves it.
     pub(in crate::layout) fn focus_in_direction_in_branch(
         &mut self,
+        workspace: NodeKey,
         branch_root: NodeKey,
         direction: Direction,
         allow_wrap: bool,
@@ -278,21 +294,37 @@ impl<W: LayoutElement> ContainerArena<W> {
         let Some(start) = self.branch_position(branch_root) else {
             return false;
         };
-        self.focus_in_direction_from_until(start, direction, allow_wrap, true, Some(branch_root))
+        self.focus_in_direction_from_until(
+            workspace,
+            start,
+            direction,
+            allow_wrap,
+            true,
+            Some(branch_root),
+        )
     }
 
     fn focus_in_direction_from(
         &mut self,
+        workspace: NodeKey,
         selected_key: NodeKey,
         direction: Direction,
         allow_wrap: bool,
         descend: bool,
     ) -> bool {
-        self.focus_in_direction_from_until(selected_key, direction, allow_wrap, descend, None)
+        self.focus_in_direction_from_until(
+            workspace,
+            selected_key,
+            direction,
+            allow_wrap,
+            descend,
+            None,
+        )
     }
 
     fn focus_in_direction_from_until(
         &mut self,
+        workspace: NodeKey,
         selected_key: NodeKey,
         direction: Direction,
         allow_wrap: bool,
@@ -354,7 +386,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             // First try direct movement without wrapping.
             if let Some(new_idx) = direction.sibling_index(current_idx, child_count) {
                 if let Some(target_key) = container.child_key(new_idx) {
-                    self.focus_landing_on(target_key, descend);
+                    self.focus_landing_on(workspace, target_key, descend);
                     return true;
                 }
             }
@@ -367,7 +399,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                 .get_container(container_key)
                 .and_then(|container| container.child_key(wrap_idx))
             {
-                self.focus_landing_on(target_key, true);
+                self.focus_landing_on(workspace, target_key, true);
                 return true;
             }
         }
@@ -377,9 +409,9 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     /// Land on `key`: on the window inside it, or on the container itself when the focus was
     /// told not to descend.
-    fn focus_landing_on(&mut self, key: NodeKey, descend: bool) {
+    fn focus_landing_on(&mut self, workspace: NodeKey, key: NodeKey, descend: bool) {
         if !descend && matches!(self.get_node(key), Some(NodeData::Container(_))) {
-            self.select_node(key);
+            self.select_node(workspace, key);
             return;
         }
         // sway descends with `seat_get_focus_inactive_view`, not by position: the window a
@@ -452,7 +484,12 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// the workspace and the previous focus (`sway/input/seat.c:261-324`). Keyboard focus does
     /// not move, but the promoted sibling becomes the answer inside its branch. Omitting this
     /// is why a later wrapped `focus next sibling` descended to an older view.
-    pub(super) fn unregister_unfocused_node(&mut self, key: NodeKey, surviving_parent: NodeKey) {
+    pub(super) fn unregister_unfocused_node(
+        &mut self,
+        workspace: NodeKey,
+        key: NodeKey,
+        surviving_parent: NodeKey,
+    ) {
         let restore = self.seat.node();
         let was_focused = restore.is_some_and(|focused| {
             focused == key || (self.nodes.contains_key(focused) && self.is_descendant(focused, key))
@@ -465,7 +502,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         let next = self.focus_inactive_view_from_order(surviving_parent);
         if let Some(next) = next {
             self.seat.raw_focus(next);
-            self.seat.raw_focus(self.root);
+            self.seat.raw_focus(workspace);
             if let Some(restore) = restore.filter(|node| self.nodes.contains_key(*node)) {
                 self.seat.raw_focus(restore);
             }
@@ -534,6 +571,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// destroy one or more of them before tiri settles focus.
     pub(super) fn reconcile_focus_after_change(
         &mut self,
+        workspace: NodeKey,
         focused_removed: bool,
         former_ancestors: &[NodeKey],
         selection_was_below_fullscreen: bool,
@@ -566,7 +604,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         // The last-workspace fallback still covers both lists: a floating window that was
         // focused more recently than anything tiled is what focus falls to once no surviving
         // ancestor of the removed node can answer.
-        match nearest_surviving.or_else(|| self.focus_inactive_anywhere()) {
+        match nearest_surviving.or_else(|| self.focus_inactive_anywhere(workspace)) {
             Some(key)
                 if self.selected_key().is_some_and(|selected| {
                     matches!(self.get_node(selected), Some(NodeData::Container(_)))
@@ -596,13 +634,12 @@ impl<W: LayoutElement> ContainerArena<W> {
                 self.seat.redirect_focused_leaf(Some(key));
             }
             Some(key) => self.focus_node_key(key),
-            None => self.focus_first_leaf(),
+            None => self.focus_first_leaf(workspace),
         }
     }
 
     /// The most recently focused window anywhere in the workspace, either side.
-    pub(in crate::layout) fn focus_inactive_anywhere(&self) -> Option<NodeKey> {
-        let root = self.root;
+    pub(in crate::layout) fn focus_inactive_anywhere(&self, workspace: NodeKey) -> Option<NodeKey> {
         self.seat
             .order()
             .iter()
@@ -611,10 +648,10 @@ impl<W: LayoutElement> ContainerArena<W> {
                 self.get_node(*candidate).is_some_and(|node| node.is_view())
                     && self.nodes.contains_key(*candidate)
             })
-            .or_else(|| self.focus_inactive_view(root))
+            .or_else(|| self.focus_inactive_view(workspace))
             // The seat's order is emptied by an insert before the new window is placed, so
             // when the workspace's only window is floating there is nothing in it to find and
-            // nothing under the tiled root either. A floating window is still a window this
+            // nothing under the tiled workspace either. A floating window is still a window this
             // workspace can answer with.
             .or_else(|| self.dfs_leaf_keys().first().copied())
     }
@@ -660,9 +697,9 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// there are two sides.
     ///
     /// sway/input/seat.c:1415
-    pub(super) fn focus_first_leaf(&mut self) {
+    pub(super) fn focus_first_leaf(&mut self, workspace: NodeKey) {
         let key = self
-            .first_leaf_key()
+            .first_leaf_key(workspace)
             .or_else(|| self.dfs_leaf_keys().first().copied());
         if let Some(key) = key {
             self.focus_node_key(key);
@@ -673,11 +710,16 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     /// Settle focus after inserting `key`: focus it when requested, otherwise keep the
     /// current focus chain intact (falling back to the first leaf if nothing is focused).
-    pub(super) fn settle_focus_after_insert(&mut self, key: NodeKey, focus: bool) {
+    pub(super) fn settle_focus_after_insert(
+        &mut self,
+        workspace: NodeKey,
+        key: NodeKey,
+        focus: bool,
+    ) {
         if focus {
             self.focus_node_key(key);
         } else {
-            self.resync_focus();
+            self.resync_focus(workspace);
         }
     }
 
@@ -691,13 +733,13 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// and an empty tiling tree really did mean an empty workspace. One arena, one answer.
     ///
     /// sway/input/seat.c:1415
-    pub(super) fn resync_focus(&mut self) {
+    pub(super) fn resync_focus(&mut self, workspace: NodeKey) {
         if self.focused_key().is_some() {
             return;
         }
-        match self.focus_inactive_anywhere() {
+        match self.focus_inactive_anywhere(workspace) {
             Some(key) => self.focus_node_key(key),
-            None => self.focus_first_leaf(),
+            None => self.focus_first_leaf(workspace),
         }
     }
 }

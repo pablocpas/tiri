@@ -317,6 +317,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     fn register_floating_root(
         &mut self,
+        workspace: NodeKey,
         key: NodeKey,
         area: Rectangle<f64, Logical>,
         stack_index: usize,
@@ -348,7 +349,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.next_floating_root_id += 1;
         self.floating_roots
             .insert(stack_index.min(self.floating_roots.len()), root);
-        self.set_parent(key, Some(self.root));
+        self.set_parent(key, Some(workspace));
     }
 
     /// Move a subtree from the tiled side to the floating side, keeping its identity.
@@ -364,6 +365,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// container root gives every floating group one authoritative geometry field.
     pub(in crate::layout) fn float_subtree(
         &mut self,
+        workspace: NodeKey,
         key: NodeKey,
         area: Rectangle<f64, Logical>,
         stack_index: usize,
@@ -381,7 +383,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             .then_some(old_parent)
             .flatten();
         self.detach_child(key);
-        self.register_floating_root(key, area, stack_index, kind);
+        self.register_floating_root(workspace, key, area, stack_index, kind);
         if let Some(old_parent) = restore_raw_focus {
             // A focused container keeps focus when it changes workspace lists. Sway does not
             // focus its new ancestry: it raises the old parent and then the moved node with
@@ -393,7 +395,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             self.seat.raw_focus(key);
         }
         if let Some(old_parent) = old_parent {
-            self.reap_empty(old_parent);
+            self.reap_empty(workspace, old_parent);
         }
         true
     }
@@ -455,6 +457,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// is untouched either way, which is the whole point of the crossing being a move.
     pub(in crate::layout) fn float_as_group(
         &mut self,
+        workspace: NodeKey,
         key: NodeKey,
         area: Rectangle<f64, Logical>,
         stack_index: usize,
@@ -466,7 +469,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         // A view floats as itself. sway's `ws->floating` holds whatever was floated, a view
         // included, so there is no wrapper to build and no extra level for a layout command
         // to hit.
-        self.float_subtree(key, area, stack_index, kind)
+        self.float_subtree(workspace, key, area, stack_index, kind)
             .then_some(key)
     }
 
@@ -522,6 +525,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Returns the floating root and the view, which are now the same node.
     pub(in crate::layout) fn float_new_group(
         &mut self,
+        workspace: NodeKey,
         tile: DetachedView<W>,
         area: Rectangle<f64, Logical>,
         stack_index: usize,
@@ -534,6 +538,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.discard_layout_superseded_by_transfer();
         let leaf = self.insert_view(tile);
         self.register_floating_root(
+            workspace,
             leaf,
             area,
             stack_index,
@@ -604,6 +609,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Returns whether the floating group became empty and was removed.
     pub(in crate::layout) fn unfloat_node(
         &mut self,
+        workspace: NodeKey,
         key: NodeKey,
         reference: Option<&InactiveTilingReference>,
     ) -> Option<bool> {
@@ -613,8 +619,8 @@ impl<W: LayoutElement> ContainerArena<W> {
         let group = self.branch_root(key);
         if key == group {
             let changed = match reference {
-                Some(reference) => self.unfloat_with_tiling_reference(group, reference),
-                None => self.unfloat_into_workspace(group),
+                Some(reference) => self.unfloat_with_tiling_reference(workspace, group, reference),
+                None => self.unfloat_into_workspace(workspace, group),
             };
             return changed.then_some(true);
         }
@@ -622,7 +628,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         let old_parent = self.parent_of(key)?;
         self.detach_child(key);
         self.set_parent(key, None);
-        self.reap_empty(old_parent);
+        self.reap_empty(workspace, old_parent);
 
         let group_empty = self.branch_is_empty(group);
         if group_empty {
@@ -630,11 +636,10 @@ impl<W: LayoutElement> ContainerArena<W> {
             self.remove_node_from_store(group);
         }
 
-        let workspace = self.root;
         let (parent, index) = reference
             .and_then(|reference| self.tiling_insertion_point(reference))
             .unwrap_or_else(|| (workspace, self.branch_children_len(workspace)));
-        self.insert_key_into_branch(parent, index, key, false);
+        self.insert_key_into_branch(workspace, parent, index, key, false);
         self.unset_node_fractions(key);
         self.refresh_focus_visibility();
         Some(group_empty)
@@ -648,28 +653,30 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// its layout out and pours it back in on the way home.
     pub(in crate::layout) fn float_whole_workspace(
         &mut self,
+        workspace: NodeKey,
         area: Rectangle<f64, Logical>,
         stack_index: usize,
     ) -> Option<NodeKey> {
-        self.first_leaf_key()?;
-        let layout = self.root_container_layout();
+        self.first_leaf_key(workspace)?;
+        let layout = self.root_container_layout(workspace);
         let prev_split_layout = self
-            .get_container(self.root)
+            .get_container(workspace)
             .and_then(|workspace| workspace.prev_split_layout());
         // `cmd_floating` first lets `workspace_wrap_children` copy the current workspace
         // layout onto the new container, then resets the now-empty workspace to `L_HORIZ`.
         // The two values are deliberately different when tabs/stacks or a vertical split
         // were selected: the wrapper carries that layout into floating while the workspace
         // goes back to its canonical horizontal orientation.
-        let wrapper = self.wrap_workspace_children(layout, Layout::SplitH)?;
+        let wrapper = self.wrap_workspace_children(workspace, layout, Layout::SplitH)?;
         if let Some(container) = self.get_container_mut(wrapper) {
             container.prev_split_layout = prev_split_layout;
         }
         // `cmd_floating` explicitly focuses the wrapper it just made before handing it to
         // `container_set_floating`. This is the one transfer whose target did not exist when
         // command focus was resolved, so it cannot rely on the common focus-preserving move.
-        self.select_container(wrapper);
+        self.select_container(workspace, wrapper);
         self.float_subtree(
+            workspace,
             wrapper,
             area,
             stack_index,
@@ -681,6 +688,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Put a floating group back beside or inside the exact tiling node selected by the seat.
     pub(in crate::layout) fn unfloat_with_tiling_reference(
         &mut self,
+        workspace: NodeKey,
         group: NodeKey,
         reference: &InactiveTilingReference,
     ) -> bool {
@@ -691,30 +699,36 @@ impl<W: LayoutElement> ContainerArena<W> {
                 }
                 self.place_unfloated(group, parent, index)
             }
-            None => self.unfloat_into_workspace(group),
+            None => self.unfloat_into_workspace(workspace, group),
         }
     }
 
     /// Put a floating group back at the end of the workspace's own children.
-    pub(in crate::layout) fn unfloat_into_workspace(&mut self, group: NodeKey) -> bool {
-        let root = self.root;
-        if let Some(size) = self.node_geometry(root).map(|rect| rect.size) {
+    pub(in crate::layout) fn unfloat_into_workspace(
+        &mut self,
+        workspace: NodeKey,
+        group: NodeKey,
+    ) -> bool {
+        if let Some(size) = self.node_geometry(workspace).map(|rect| rect.size) {
             self.seed_unfloated_size(group, size);
         }
-        let end = self.branch_children_len(root);
-        self.place_unfloated(group, root, end)
+        let end = self.branch_children_len(workspace);
+        self.place_unfloated(group, workspace, end)
     }
 
     /// Put back the wrapper that was built when the workspace itself was floated.
     ///
     /// Sway creates this container in `workspace_wrap_children` and disabling floating moves
     /// that same container back. It remains addressable even with one child.
-    pub(in crate::layout) fn unfloat_as_workspace(&mut self, group: NodeKey) -> bool {
-        let root = self.root;
-        if let Some(size) = self.node_geometry(root).map(|rect| rect.size) {
+    pub(in crate::layout) fn unfloat_as_workspace(
+        &mut self,
+        workspace: NodeKey,
+        group: NodeKey,
+    ) -> bool {
+        if let Some(size) = self.node_geometry(workspace).map(|rect| rect.size) {
             self.seed_unfloated_size(group, size);
         }
-        if !self.unfloat_subtree(group, root, 0) {
+        if !self.unfloat_subtree(group, workspace, 0) {
             return false;
         }
         // The wrapper and every descendant kept their NodeKeys. `container_set_floating(false)`

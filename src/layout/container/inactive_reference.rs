@@ -47,12 +47,16 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
     }
 
-    pub(in crate::layout) fn focus_inactive_tiling_key(&mut self, key: NodeKey) -> bool {
+    pub(in crate::layout) fn focus_inactive_tiling_key(
+        &mut self,
+        workspace: NodeKey,
+        key: NodeKey,
+    ) -> bool {
         if self.is_workspace(key) || self.get_node(key).is_none() || !self.is_in_tiled_branch(key) {
             return false;
         }
         self.focus_node_key(key);
-        self.layout();
+        self.layout(workspace);
         true
     }
 

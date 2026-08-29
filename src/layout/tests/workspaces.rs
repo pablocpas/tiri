@@ -199,7 +199,10 @@ fn assert_moving_window_out_of_workspace_group_moves_one(
     assert!(!source.has_window(&2));
     assert!(!target.has_window(&1));
 
-    let tab_bars = source.container_tree().arena().tab_bar_layouts();
+    let tab_bars = source
+        .container_tree()
+        .arena()
+        .tab_bar_layouts(source.container_tree().arena().workspace_root());
     assert_eq!(
         tab_bars.len(),
         1,

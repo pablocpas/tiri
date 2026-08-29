@@ -1,15 +1,15 @@
 //! Translation between tree paths, node keys and windows.
 
-use super::ContainerArena;
-use super::LayoutElement;
-use super::NodeData;
-use super::NodeKey;
+use super::{ContainerArena, LayoutElement, NodeData, NodeKey};
 
 impl<W: LayoutElement> ContainerArena<W> {
     /// Helper: get node key at path
-    pub(super) fn get_node_key_at_path(&self, path: &[usize]) -> Option<NodeKey> {
-        let root_key = self.root;
-        self.node_at_branch_path(root_key, path)
+    pub(super) fn get_node_key_at_path(
+        &self,
+        workspace: NodeKey,
+        path: &[usize],
+    ) -> Option<NodeKey> {
+        self.node_at_branch_path(workspace, path)
     }
 
     /// Resolve a path read from a branch's own root — the addressing sway's `get_tree`
@@ -47,9 +47,8 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
     }
 
-    pub(super) fn first_leaf_key(&self) -> Option<NodeKey> {
-        let root_key = self.root;
-        self.leaf_under_key(root_key)
+    pub(super) fn first_leaf_key(&self, workspace: NodeKey) -> Option<NodeKey> {
+        self.leaf_under_key(workspace)
     }
 
     /// The first leaf of one branch.
@@ -111,15 +110,18 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     /// Find a node by key and return path to it.
-    pub(super) fn find_node_path(&self, target_key: NodeKey) -> Option<Vec<usize>> {
-        let root_key = self.root;
-        if target_key == root_key {
+    pub(super) fn find_node_path(
+        &self,
+        workspace: NodeKey,
+        target_key: NodeKey,
+    ) -> Option<Vec<usize>> {
+        if target_key == workspace {
             return Some(Vec::new());
         }
 
         let mut path_rev = Vec::new();
         let mut current = target_key;
-        while current != root_key {
+        while current != workspace {
             let parent = self.parent_of(current)?;
             let idx = self.child_index(parent, current)?;
             path_rev.push(idx);

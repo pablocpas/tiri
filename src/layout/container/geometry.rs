@@ -67,38 +67,43 @@ struct LayoutRequest {
 
 impl<W: LayoutElement> ContainerArena<W> {
     /// Calculate and apply layout to the tree.
-    pub(in crate::layout) fn layout(&mut self) {
-        self.layout_with_resize_animation(true);
+    pub(in crate::layout) fn layout(&mut self, workspace: NodeKey) {
+        self.layout_with_resize_animation(workspace, true);
     }
 
     /// Calculate and apply layout to the tree, with control over resize animation.
-    pub(in crate::layout) fn layout_with_resize_animation(&mut self, animate_resize: bool) {
+    pub(in crate::layout) fn layout_with_resize_animation(
+        &mut self,
+        workspace: NodeKey,
+        animate_resize: bool,
+    ) {
         let animate = !self.options().animations.off;
-        self.layout_with_animations(animate, animate_resize);
+        self.layout_with_animations(workspace, animate, animate_resize);
     }
 
     /// Calculate and apply layout to the tree with explicit animation flags.
     pub(in crate::layout) fn layout_with_animation_flags(
         &mut self,
+        workspace: NodeKey,
         animate: bool,
         animate_resize: bool,
     ) {
-        self.layout_with_animations(animate, animate_resize);
+        self.layout_with_animations(workspace, animate, animate_resize);
     }
 
-    fn layout_with_animations(&mut self, animate: bool, animate_resize: bool) {
+    fn layout_with_animations(&mut self, workspace: NodeKey, animate: bool, animate_resize: bool) {
         self.generation = self.generation.wrapping_add(1);
         let _ = animate;
-        self.layout_atomic(animate_resize, None);
+        self.layout_atomic(workspace, animate_resize, None);
     }
 
     /// sway's `arrange_container`: arrange one real container against the pending box it is
     /// currently holding, without applying the workspace fullscreen branch first.
-    pub(in crate::layout) fn layout_container_subtree(&mut self, key: NodeKey) {
+    pub(in crate::layout) fn layout_container_subtree(&mut self, workspace: NodeKey, key: NodeKey) {
         let Some(area) = self.node_geometry(key) else {
             return;
         };
-        self.layout_container_subtree_in(key, area);
+        self.layout_container_subtree_in(workspace, key, area);
     }
 
     /// sway's `arrange_container` after its caller has just edited the pending box.
@@ -107,6 +112,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// The edited box, not a fresh fullscreen workspace arrange, is then observable in IPC.
     pub(in crate::layout) fn layout_container_subtree_in(
         &mut self,
+        workspace: NodeKey,
         key: NodeKey,
         area: Rectangle<f64, Logical>,
     ) {
@@ -114,7 +120,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             return;
         }
         self.generation = self.generation.wrapping_add(1);
-        self.layout_atomic(true, Some((key, area)));
+        self.layout_atomic(workspace, true, Some((key, area)));
     }
 
     pub(in crate::layout) fn layout_area(&self) -> Rectangle<f64, Logical> {
@@ -262,6 +268,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     fn layout_atomic(
         &mut self,
+        workspace: NodeKey,
         animate_resize: bool,
         subtree: Option<(NodeKey, Rectangle<f64, Logical>)>,
     ) {
@@ -280,7 +287,6 @@ impl<W: LayoutElement> ContainerArena<W> {
             self.pending_relayout = false;
         }
 
-        let root_key = self.root;
         if self.is_empty() && self.floating_roots().next().is_none() {
             self.leaf_layouts.clear();
             self.pending_layouts.clear();
@@ -304,7 +310,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             .collect();
         let resolve_roots = subtree.map_or_else(
             || {
-                std::iter::once(root_key)
+                std::iter::once(workspace)
                     .chain(self.floating_roots().collect::<Vec<_>>())
                     .collect::<Vec<_>>()
             },
@@ -320,9 +326,9 @@ impl<W: LayoutElement> ContainerArena<W> {
         let arrangements = match subtree {
             Some((key, area)) => vec![(
                 self.branch_root(key),
-                self.collect_branch_layout_data(key, area),
+                self.collect_branch_layout_data(workspace, key, area),
             )],
-            None => self.arrange_each_branch(),
+            None => self.arrange_each_branch(workspace),
         };
         for (branch, data) in arrangements {
             if waiting.contains(&branch) {
@@ -341,7 +347,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             // The caller's transaction, when there is one, belongs to the tiled side: every
             // caller that sets one is removing a tiled window, and its close animation has to
             // stay in step with the windows that grow into the space.
-            let transaction = if branch == root_key {
+            let transaction = if branch == workspace {
                 self.pending_transaction.take()
             } else {
                 None
@@ -381,19 +387,21 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// it falls out rather than being arranged for.
     ///
     /// sway/tree/arrange.c:264-322
-    fn arrange_each_branch(&mut self) -> Vec<(NodeKey, LayoutData)> {
-        let root_key = self.root;
+    fn arrange_each_branch(&mut self, workspace: NodeKey) -> Vec<(NodeKey, LayoutData)> {
         if let Some(fullscreen_key) = self
             .fullscreen_key
             .filter(|key| self.nodes.contains_key(*key))
         {
             let branch = self.branch_root(fullscreen_key);
-            return vec![(branch, self.collect_fullscreen_layout_data(fullscreen_key))];
+            return vec![(
+                branch,
+                self.collect_fullscreen_layout_data(workspace, fullscreen_key),
+            )];
         }
 
-        let mut out = vec![(root_key, self.collect_layout_data(root_key))];
+        let mut out = vec![(workspace, self.collect_layout_data(workspace))];
         for (root, area) in self.floating_roots_with_areas() {
-            out.push((root, self.collect_branch_layout_data(root, area)));
+            out.push((root, self.collect_branch_layout_data(workspace, root, area)));
         }
         out
     }
@@ -668,13 +676,17 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// still sized through its client fullscreen request, so it keeps its ordinary slot here
     /// until that configure commits; a container has no such protocol state and must receive
     /// the output box directly.
-    fn collect_fullscreen_layout_data(&self, fullscreen_key: NodeKey) -> LayoutData {
+    fn collect_fullscreen_layout_data(
+        &self,
+        workspace: NodeKey,
+        fullscreen_key: NodeKey,
+    ) -> LayoutData {
         let area = if self.get_container(fullscreen_key).is_some() {
             Rectangle::from_size(self.view_size())
         } else {
             self.layout_area()
         };
-        let mut data = self.collect_branch_layout_data(fullscreen_key, area);
+        let mut data = self.collect_branch_layout_data(workspace, fullscreen_key, area);
         if self.get_tile(fullscreen_key).is_some() {
             if let Some(info) = data.leaf_layouts.get_mut(&fullscreen_key) {
                 info.workspace_fullscreen = true;
@@ -695,6 +707,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// this node the box and do not descend anything else.
     pub(in crate::layout) fn collect_branch_layout_data(
         &self,
+        workspace: NodeKey,
         branch_root: NodeKey,
         area: Rectangle<f64, Logical>,
     ) -> LayoutData {
@@ -707,7 +720,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         // workspace. This matters when fullscreen names a descendant of a floating group: the
         // subtree keeps its NodeKey authority but is arranged against the output.
         if !self.holds_node(branch_root) {
-            return self.collect_layout_data(self.root);
+            return self.collect_layout_data(workspace);
         }
         let mut walk = LayoutWalk {
             gap: self.gap_in(branch_root),

@@ -6,7 +6,10 @@ use std::time::Duration;
 use smithay::backend::renderer::element::utils::{
     CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement,
 };
+use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::input::pointer::CursorIcon;
 use smithay::output::Output;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 use tiri_config::{CornerRadius, LayoutPart};
 
@@ -34,9 +37,6 @@ use crate::utils::transaction::{Transaction, TransactionBlocker};
 use crate::utils::{
     output_size, round_logical_in_physical, round_logical_in_physical_max1, ResizeEdge,
 };
-use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::input::pointer::CursorIcon;
-use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 
 /// Amount of touchpad movement to scroll the height of one workspace.
 const WORKSPACE_GESTURE_MOVEMENT: f64 = 300.;
@@ -542,7 +542,7 @@ impl<W: LayoutElement> Monitor<W> {
             let key = self
                 .sticky_containers
                 .arena()
-                .selected_node_key()
+                .selected_node_key(self.sticky_containers.arena().workspace_root())
                 .unwrap_or_else(|| self.sticky_containers.arena().workspace_root());
             return (key != self.sticky_containers.arena().workspace_root()).then_some(key);
         }

@@ -3,25 +3,23 @@ use std::collections::{HashMap, HashSet};
 use super::{ContainerArena, Layout, LayoutElement, LeafLayoutInfo, NodeData, NodeKey};
 
 impl<W: LayoutElement> ContainerArena<W> {
-    pub(in crate::layout) fn verify_invariants(&self) {
-        let root_key = self.root;
-
+    pub(in crate::layout) fn verify_invariants(&self, workspace: NodeKey) {
         assert!(
-            self.nodes.contains_key(root_key),
+            self.nodes.contains_key(workspace),
             "root key must point to an existing node"
         );
         assert!(
-            matches!(self.get_node(root_key), Some(NodeData::Workspace(_))),
+            matches!(self.get_node(workspace), Some(NodeData::Workspace(_))),
             "workspace root must be a workspace node"
         );
         assert_eq!(
-            self.parents.get(root_key).copied().flatten(),
+            self.parents.get(workspace).copied().flatten(),
             None,
             "root parent must be None"
         );
         if let Some(fullscreen_key) = self.fullscreen_key {
             assert_ne!(
-                fullscreen_key, root_key,
+                fullscreen_key, workspace,
                 "the workspace node cannot own fullscreen"
             );
             assert!(
@@ -29,7 +27,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                 "workspace fullscreen must point to one live node"
             );
         }
-        self.verify_floating_region();
+        self.verify_floating_region(workspace);
         self.verify_seat_order();
 
         if self.is_empty() && self.floating_roots().next().is_none() {
@@ -45,7 +43,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                 "empty tree must not retain focused_key"
             );
             assert!(
-                self.selected_key().is_none_or(|key| key == root_key),
+                self.selected_key().is_none_or(|key| key == workspace),
                 "empty tree must not retain a selected_key below the workspace"
             );
             assert!(
@@ -57,11 +55,11 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         let mut visited = HashSet::new();
         let mut leaves = HashSet::new();
-        self.verify_node(root_key, None, &mut visited, &mut leaves);
+        self.verify_node(workspace, None, &mut visited, &mut leaves);
         // The floating groups have the workspace as semantic parent, but live in its separate
         // floating list rather than its tiled child list.
         for floating_root in self.floating_roots().collect::<Vec<_>>() {
-            self.verify_node(floating_root, Some(root_key), &mut visited, &mut leaves);
+            self.verify_node(floating_root, Some(workspace), &mut visited, &mut leaves);
         }
 
         assert_eq!(
@@ -136,7 +134,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
 
         assert!(
-            self.get_container(root_key).is_some(),
+            self.get_container(workspace).is_some(),
             "the workspace must be a container"
         );
     }
@@ -302,7 +300,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// holding both sides here is that a node keeps its key when it crosses, so a stale entry
     /// would be worse than the two-tree model it replaces: a key that still resolves, still
     /// answers, and belongs to a branch nobody can reach.
-    fn verify_floating_region(&self) {
+    fn verify_floating_region(&self, workspace: NodeKey) {
         let mut seen = HashSet::new();
         let mut seen_ids = HashSet::new();
         for root in &self.floating_roots {
@@ -313,11 +311,11 @@ impl<W: LayoutElement> ContainerArena<W> {
             );
             assert_eq!(
                 self.parents.get(key).copied().flatten(),
-                Some(self.root),
+                Some(workspace),
                 "a floating root must have the workspace as semantic parent"
             );
             assert_ne!(
-                key, self.root,
+                key, workspace,
                 "the workspace cannot be one of its own floating groups"
             );
             assert!(

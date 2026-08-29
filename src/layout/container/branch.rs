@@ -50,11 +50,11 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// `arrange_floating` branch separately inside the pass; unchanged leaves do not receive a
     /// request. The branch argument makes the caller's ownership explicit and rejects a stale
     /// root, while the shared pass keeps the commit atomic.
-    pub(in crate::layout) fn layout_branch(&mut self, branch_root: NodeKey) {
+    pub(in crate::layout) fn layout_branch(&mut self, workspace: NodeKey, branch_root: NodeKey) {
         if self.floating_area(branch_root).is_none() {
             return;
         }
-        self.layout();
+        self.layout(workspace);
     }
 
     /// How many windows a branch holds.

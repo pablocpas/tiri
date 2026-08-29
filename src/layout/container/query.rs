@@ -2,15 +2,9 @@
 
 use std::collections::HashMap;
 
-use smithay::utils::Logical;
-use smithay::utils::Rectangle;
+use smithay::utils::{Logical, Rectangle};
 
-use super::ContainerArena;
-use super::Layout;
-use super::LayoutElement;
-use super::NodeData;
-use super::NodeKey;
-use super::ResizeReach;
+use super::{ContainerArena, Layout, LayoutElement, NodeData, NodeKey, ResizeReach};
 use crate::layout::tile::Tile;
 
 impl<W: LayoutElement> ContainerArena<W> {
@@ -340,7 +334,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     pub(in crate::layout) fn leaf_paths_under(&self, prefix: &[usize]) -> Vec<Vec<usize>> {
         let mut results = Vec::new();
         let mut path = prefix.to_vec();
-        if let Some(node_key) = self.get_node_key_at_path(prefix) {
+        if let Some(node_key) = self.get_node_key_at_path(self.root, prefix) {
             self.collect_leaf_paths_from_node(node_key, &mut path, &mut results);
         }
         results

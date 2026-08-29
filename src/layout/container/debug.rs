@@ -2,12 +2,11 @@
 
 #[cfg(test)]
 use super::layout_label;
-use super::ContainerArena;
-use super::LayoutElement;
 #[cfg(test)]
 use super::NodeData;
 #[cfg(test)]
 use super::NodeKey;
+use super::{ContainerArena, LayoutElement};
 
 impl<W: LayoutElement> ContainerArena<W> {
     /// Log a diagnostic dump when the layout state looks inconsistent. Quiet otherwise, so
@@ -93,17 +92,16 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     #[cfg(test)]
-    pub(crate) fn debug_tree(&self) -> String
+    pub(crate) fn debug_tree(&self, workspace: NodeKey) -> String
     where
         W::Id: std::fmt::Display,
     {
-        let root_key = self.root;
-        self.debug_branch(root_key)
+        self.debug_branch(workspace, workspace)
     }
 
     /// One branch's shape, addressed from its own root.
     #[cfg(test)]
-    pub(crate) fn debug_branch(&self, branch_root: NodeKey) -> String
+    pub(crate) fn debug_branch(&self, workspace: NodeKey, branch_root: NodeKey) -> String
     where
         W::Id: std::fmt::Display,
     {
@@ -115,7 +113,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         let mut path = Vec::new();
         let focused_path = self
-            .effective_focused_key()
+            .effective_focused_key(workspace)
             .and_then(|key| self.branch_relative_path(key))
             .unwrap_or_default();
         self.debug_tree_node(branch_root, &mut path, &mut out, &focused_path);

@@ -1,20 +1,17 @@
 //! Detaching and reattaching subtrees (window removal, float/unfloat surgery).
 
-use super::ContainerArena;
-use super::ContainerData;
-use super::DetachedNode;
-use super::DetachedSplit;
-use super::DetachedView;
 #[cfg(test)]
 use super::InsertParentInfo;
-use super::LayoutElement;
-use super::NodeData;
-use super::NodeKey;
+use super::{
+    ContainerArena, ContainerData, DetachedNode, DetachedSplit, DetachedView, LayoutElement,
+    NodeData, NodeKey,
+};
 
 impl<W: LayoutElement> ContainerArena<W> {
     /// Remove a view node by window ID without discarding its semantic state.
     pub(in crate::layout) fn remove_window(
         &mut self,
+        workspace: NodeKey,
         window_id: &W::Id,
     ) -> Option<DetachedView<W>> {
         let node_key = self.window_key(window_id)?;
@@ -51,8 +48,8 @@ impl<W: LayoutElement> ContainerArena<W> {
         let view = container.into_view(node_key)?;
 
         if let Some(cleanup_key) = cleanup_key {
-            self.reap_empty(cleanup_key);
-            self.autotile_squash_lone_children();
+            self.reap_empty(workspace, cleanup_key);
+            self.autotile_squash_lone_children(workspace);
         }
         // A fullscreen container can outlive its last child until its owning floating list
         // drops the now-empty root. The workspace pointer must stop naming it before this
@@ -65,16 +62,17 @@ impl<W: LayoutElement> ContainerArena<W> {
         {
             self.fullscreen_key = None;
         }
-        self.prune_leaf_layouts();
+        self.prune_leaf_layouts(workspace);
 
         self.prune_selected_key();
         self.reconcile_focus_after_change(
+            workspace,
             was_focused,
             &former_ancestors,
             selection_was_below_fullscreen,
         );
 
-        self.layout();
+        self.layout(workspace);
 
         Some(view)
     }
@@ -84,6 +82,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     #[cfg(test)]
     pub(in crate::layout) fn take_subtree_at(
         &mut self,
+        workspace: NodeKey,
         node_key: NodeKey,
     ) -> Option<(DetachedNode<W>, Option<InsertParentInfo>)> {
         self.get_node(node_key)?;
@@ -92,7 +91,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             .branch_relative_path(node_key)
             .and_then(|path| self.insert_parent_info_for_path(branch_root, &path));
 
-        let subtree = self.take_tiling_subtree(node_key)?;
+        let subtree = self.take_tiling_subtree(workspace, node_key)?;
         Some((subtree, insert_info))
     }
 
@@ -101,15 +100,22 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// With no selected parent this is the focused leaf, including under tabbed/stacked. A
     /// parent selected through `focus parent` is intentionally moved as a group. The workspace
     /// itself is not a container target and therefore cannot be detached here.
-    pub(in crate::layout) fn take_command_target_subtree(&mut self) -> Option<DetachedNode<W>> {
-        let key = self.command_target_in(self.root);
+    pub(in crate::layout) fn take_command_target_subtree(
+        &mut self,
+        workspace: NodeKey,
+    ) -> Option<DetachedNode<W>> {
+        let key = self.command_target_in(workspace);
         if self.is_workspace(key) {
             return None;
         }
-        self.take_tiling_subtree(key)
+        self.take_tiling_subtree(workspace, key)
     }
 
-    fn take_tiling_subtree(&mut self, node_key: NodeKey) -> Option<DetachedNode<W>> {
+    fn take_tiling_subtree(
+        &mut self,
+        workspace: NodeKey,
+        node_key: NodeKey,
+    ) -> Option<DetachedNode<W>> {
         self.get_node(node_key)?;
         if self.is_workspace(node_key) || !self.is_in_tiled_branch(node_key) {
             return None;
@@ -142,14 +148,14 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.set_parent(node_key, None);
 
         let subtree = self.extract_subtree(node_key);
-        self.reap_empty(parent_key);
-        self.autotile_squash_lone_children();
-        self.prune_leaf_layouts();
+        self.reap_empty(workspace, parent_key);
+        self.autotile_squash_lone_children(workspace);
+        self.prune_leaf_layouts(workspace);
 
         self.prune_selected_key();
-        self.reconcile_focus_after_change(focused_in_subtree, &former_ancestors, false);
+        self.reconcile_focus_after_change(workspace, focused_in_subtree, &former_ancestors, false);
 
-        self.layout();
+        self.layout(workspace);
 
         Some(subtree)
     }
@@ -275,31 +281,30 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Remove and return the root-level child at the given index as a detached subtree.
     pub(in crate::layout) fn take_root_child_subtree(
         &mut self,
+        workspace: NodeKey,
         idx: usize,
     ) -> Option<DetachedNode<W>> {
-        let root_key = self.root;
-
-        match self.get_node(root_key) {
+        match self.get_node(workspace) {
             Some(node) if node.is_view() => None,
             Some(NodeData::Workspace(_)) => {
                 let child_key = {
-                    let container = self.get_container(root_key)?;
+                    let container = self.get_container(workspace)?;
                     if idx >= container.children.len() {
                         return None;
                     }
                     container.child_key(idx)?
                 };
 
-                if let Some(container) = self.get_container_mut(root_key) {
+                if let Some(container) = self.get_container_mut(workspace) {
                     container.remove_child(idx);
                 }
                 self.set_parent(child_key, None);
 
-                let remaining = self.get_container(root_key)?.children.len();
+                let remaining = self.get_container(workspace)?.children.len();
 
-                self.prune_leaf_layouts();
+                self.prune_leaf_layouts(workspace);
 
-                match self.get_node(root_key) {
+                match self.get_node(workspace) {
                     Some(NodeData::Workspace(root_container)) => {
                         if remaining > 0 {
                             let new_idx = idx.min(root_container.children.len().saturating_sub(1));
@@ -307,16 +312,16 @@ impl<W: LayoutElement> ContainerArena<W> {
                             if let Some(child_key) = child_key {
                                 self.focus_node_key(child_key);
                             } else {
-                                self.focus_first_leaf();
+                                self.focus_first_leaf(workspace);
                             }
                         } else {
-                            self.focus_first_leaf();
+                            self.focus_first_leaf(workspace);
                         }
                     }
                     Some(node) if node.is_split() => {
                         unreachable!("root must be a workspace")
                     }
-                    _ => self.focus_first_leaf(),
+                    _ => self.focus_first_leaf(workspace),
                 }
 
                 let subtree = self.extract_subtree(child_key);

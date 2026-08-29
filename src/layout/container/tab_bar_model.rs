@@ -1,20 +1,14 @@
 //! Tab-bar model: per-container tab layout data for rendering and hit-testing.
 
-use super::ContainerArena;
-use super::Layout;
-use super::LayoutElement;
-use super::NodeData;
-use super::NodeKey;
-use super::TabBarInfo;
-use super::TabBarTab;
 use tiri_config::BlockOutFrom;
 
-impl<W: LayoutElement> ContainerArena<W> {
-    pub(in crate::layout) fn tab_bar_layouts(&self) -> Vec<TabBarInfo> {
-        let mut out = Vec::new();
-        let root_key = self.root;
+use super::{ContainerArena, Layout, LayoutElement, NodeData, NodeKey, TabBarInfo, TabBarTab};
 
-        self.collect_tab_bar_layouts(root_key, &mut out, true);
+impl<W: LayoutElement> ContainerArena<W> {
+    pub(in crate::layout) fn tab_bar_layouts(&self, workspace: NodeKey) -> Vec<TabBarInfo> {
+        let mut out = Vec::new();
+
+        self.collect_tab_bar_layouts(workspace, &mut out, true);
         out
     }
 

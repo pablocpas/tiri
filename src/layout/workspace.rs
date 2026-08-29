@@ -802,10 +802,11 @@ impl<W: LayoutElement> Workspace<W> {
     /// The one node commands address. Branch and node kind are properties of this key, never
     /// parallel routing state.
     fn command_target_key(&self) -> NodeKey {
+        let workspace = self.containers.arena().workspace_root();
         self.containers
             .arena()
-            .selected_node_key()
-            .unwrap_or_else(|| self.containers.arena().workspace_root())
+            .selected_node_key(workspace)
+            .unwrap_or(workspace)
     }
 
     pub(super) fn mark_target_key(&self) -> Option<NodeKey> {
@@ -1197,7 +1198,10 @@ impl<W: LayoutElement> Workspace<W> {
         let floating_active = self.floating_is_active.get();
         let command_target = self.command_target_key();
         let workspace_command_context = command_target == self.containers.arena().workspace_root();
-        let map_target = self.containers.arena().view_map_target();
+        let map_target = self
+            .containers
+            .arena()
+            .view_map_target(self.containers.workspace());
         let map_targets_floating =
             map_target.is_some_and(|target| self.containers.arena().is_in_floating_branch(target));
         // A group root occupies the `ws->floating` slot and is not an insertion parent for a

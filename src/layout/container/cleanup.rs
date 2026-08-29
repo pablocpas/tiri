@@ -6,12 +6,7 @@
 //! `workspace_squash` only after a directional move. A container left holding one child by
 //! a `close` therefore stays, and the identical shape reached by a `move` does not.
 
-use super::ContainerArena;
-use super::ContainerData;
-use super::Layout;
-use super::LayoutElement;
-use super::NodeData;
-use super::NodeKey;
+use super::{ContainerArena, ContainerData, Layout, LayoutElement, NodeData, NodeKey};
 
 impl<W: LayoutElement> ContainerArena<W> {
     /// sway's `container_reap_empty`: destroy a container the command has emptied, and any
@@ -24,7 +19,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// empty workspace is an empty workspace rather than a container to be got rid of. An
     /// emptied floating root is not reaped either: the floating side owns that list, and it
     /// drops the group when the last window leaves it.
-    pub(super) fn reap_empty(&mut self, key: NodeKey) {
+    pub(super) fn reap_empty(&mut self, workspace: NodeKey, key: NodeKey) {
         let mut current = Some(key);
         while let Some(container_key) = current {
             if self.is_workspace(container_key)
@@ -57,7 +52,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                     // Ordinary destruction does not make a selected node's parent inherit
                     // focus. The shared unregister path also preserves Sway's raw focus-order
                     // side effect when this container was not selected.
-                    self.unregister_unfocused_node(container_key, parent_key);
+                    self.unregister_unfocused_node(workspace, container_key, parent_key);
                 }
             }
             self.detach_child(container_key);
@@ -73,7 +68,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// alone, and the difference is measurable: a `split` builds a container holding one
     /// window and it stays, a `close` down to one child keeps both levels, and the same
     /// shape reached by a `move` collapses.
-    pub(super) fn squash_branch(&mut self, branch_root: NodeKey) {
+    pub(super) fn squash_branch(&mut self, workspace: NodeKey, branch_root: NodeKey) {
         // Autotiling wants the opposite of what this does. The squash exists to keep i3's
         // rows flat: it dissolves a redundant level by splicing its children into the
         // grandparent, which turns a pair into a trio whenever the level held more than one
@@ -84,21 +79,21 @@ impl<W: LayoutElement> ContainerArena<W> {
             return;
         }
 
-        self.squash_children(branch_root);
+        self.squash_children(workspace, branch_root);
     }
 
     /// Squash every child of `key`, walking the list as it changes underneath: a squashed
     /// child is replaced by however many grandchildren it had.
-    fn squash_children(&mut self, key: NodeKey) {
+    fn squash_children(&mut self, workspace: NodeKey, key: NodeKey) {
         let mut idx = 0;
         while let Some(child_key) = self.get_container(key).and_then(|c| c.child_key(idx)) {
-            idx += self.squash_container(child_key) + 1;
+            idx += self.squash_container(workspace, child_key) + 1;
         }
     }
 
     /// sway's `container_squash`. Returns how many extra slots the container now occupies in
     /// its parent's child list — zero unless it was spliced away.
-    fn squash_container(&mut self, key: NodeKey) -> usize {
+    fn squash_container(&mut self, workspace: NodeKey, key: NodeKey) -> usize {
         let child_key = match self.get_container(key) {
             Some(container) if container.child_count() == 1 => container.child_key(0),
             // A leaf, or a container with a real arrangement of its own to look inside.
@@ -106,12 +101,12 @@ impl<W: LayoutElement> ContainerArena<W> {
         };
         let Some(child_key) = child_key.filter(|child| self.is_squashable(key, *child)) else {
             if matches!(self.get_node(key), Some(NodeData::Container(_))) {
-                self.squash_children(key);
+                self.squash_children(workspace, key);
             }
             return 0;
         };
 
-        self.splice_squashed_pair(key, child_key)
+        self.splice_squashed_pair(workspace, key, child_key)
     }
 
     /// Destroy a redundant pair, the way sway destroys it.
@@ -127,7 +122,12 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// average of the rest. Dividing the pair's share among its children instead, which is
     /// what this did while only half the rule existed, is what left the workspace lopsided
     /// where sway had levelled it.
-    fn splice_squashed_pair(&mut self, con_key: NodeKey, child_key: NodeKey) -> usize {
+    fn splice_squashed_pair(
+        &mut self,
+        workspace: NodeKey,
+        con_key: NodeKey,
+        child_key: NodeKey,
+    ) -> usize {
         let Some(parent_key) = self.parent_of(con_key) else {
             return 0;
         };
@@ -176,7 +176,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
 
         for key in [child_key, con_key] {
-            self.unregister_unfocused_node(key, parent_key);
+            self.unregister_unfocused_node(workspace, key, parent_key);
             self.remove_node_from_store(key);
         }
         self.prune_focus_order();

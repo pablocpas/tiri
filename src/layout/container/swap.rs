@@ -12,18 +12,14 @@
 //! [`LayoutParentData::swap_child_slots`]. Two commands, two rules, and the difference is
 //! observable the moment the two slots are not the same size.
 
-use super::ContainerArena;
-use super::FloatingRootKind;
-use super::Layout;
-use super::LayoutElement;
-use super::NodeKey;
+use super::{ContainerArena, FloatingRootKind, Layout, LayoutElement, NodeKey};
 
 impl<W: LayoutElement> ContainerArena<W> {
-    fn focus_swap_node(&mut self, key: NodeKey) {
+    fn focus_swap_node(&mut self, workspace: NodeKey, key: NodeKey) {
         if self.get_node(key).is_some_and(|node| node.is_view()) {
             self.focus_node_key(key);
         } else {
-            self.select_container(key);
+            self.select_container(workspace, key);
         }
     }
 
@@ -32,7 +28,13 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// sway's `swap_focus` always focuses the same node again. When that node arrived from a
     /// tabbed/stacked parent, it first focuses the other swapped node so both switchers'
     /// active-child entries are updated in the same order as sway's global focus stack.
-    fn restore_swap_focus(&mut self, a: NodeKey, b: NodeKey, focused: Option<NodeKey>) {
+    fn restore_swap_focus(
+        &mut self,
+        workspace: NodeKey,
+        a: NodeKey,
+        b: NodeKey,
+        focused: Option<NodeKey>,
+    ) {
         let Some(focused) = focused.filter(|key| self.holds_node(*key)) else {
             return;
         };
@@ -43,9 +45,9 @@ impl<W: LayoutElement> ContainerArena<W> {
         };
 
         if focused == a && parent_is_switcher(self, b) {
-            self.focus_swap_node(b);
+            self.focus_swap_node(workspace, b);
         } else if focused == b && parent_is_switcher(self, a) {
-            self.focus_swap_node(a);
+            self.focus_swap_node(workspace, a);
         }
 
         // `seat_set_focus` returns early when the node it is given is already the focused
@@ -55,7 +57,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         // decided by where the nodes *were*, so the branch that held the focused window is
         // still the one on top, now holding whatever the swap put into it.
         if self.seat.node() != Some(focused) {
-            self.focus_swap_node(focused);
+            self.focus_swap_node(workspace, focused);
         }
     }
 
@@ -81,7 +83,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
     }
 
-    fn swap_fullscreen_slot(&mut self, a: NodeKey, b: NodeKey) {
+    fn swap_fullscreen_slot(&mut self, workspace: NodeKey, a: NodeKey, b: NodeKey) {
         let replacement = if self.fullscreen_key() == Some(a) {
             self.transfer_fullscreen_to_replacement(a, b);
             Some(b)
@@ -106,7 +108,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         {
             self.focus_node_key(replacement);
         } else {
-            self.select_container(replacement);
+            self.select_container(workspace, replacement);
         }
     }
 
@@ -114,8 +116,8 @@ impl<W: LayoutElement> ContainerArena<W> {
     ///
     /// Returns whether anything moved. The refusals are sway's, plus one of tiri's own:
     ///
-    /// - a node with itself, and a node with its own ancestor or descendant — sway rejects
-    ///   both in `cmd_swap` before it calls this;
+    /// - a node with itself, and a node with its own ancestor or descendant — sway rejects both in
+    ///   `cmd_swap` before it calls this;
     /// - the workspace root, which has no slot to trade;
     ///
     /// A child below a floating wrapper can swap with a tiled child: the two parent slots
@@ -123,7 +125,12 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// arriving subtree simply occupies its place. A floating root itself has no parent and
     /// is rejected by the ordinary root rule below; swapping roots requires coordinating the
     /// floating stack, not pretending the root has a parent slot.
-    pub(in crate::layout) fn swap_nodes(&mut self, a: NodeKey, b: NodeKey) -> bool {
+    pub(in crate::layout) fn swap_nodes(
+        &mut self,
+        workspace: NodeKey,
+        a: NodeKey,
+        b: NodeKey,
+    ) -> bool {
         if a == b || self.get_node(a).is_none() || self.get_node(b).is_none() {
             return false;
         }
@@ -165,8 +172,8 @@ impl<W: LayoutElement> ContainerArena<W> {
             self.set_parent(b, Some(parent_a));
         }
 
-        self.restore_swap_focus(a, b, focused);
-        self.swap_fullscreen_slot(a, b);
+        self.restore_swap_focus(workspace, a, b, focused);
+        self.swap_fullscreen_slot(workspace, a, b);
 
         true
     }
@@ -179,6 +186,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// identity and slot geometry change atomically.
     pub(in crate::layout) fn swap_nodes_at_floating_boundary(
         &mut self,
+        workspace: NodeKey,
         a: NodeKey,
         b: NodeKey,
     ) -> bool {
@@ -217,8 +225,8 @@ impl<W: LayoutElement> ContainerArena<W> {
                 self.floating_roots[b_idx].id = a_id;
                 self.floating_roots[b_idx].kind = a_kind;
                 self.swap_node_fractions(a, b);
-                self.restore_swap_focus(a, b, focused);
-                self.swap_fullscreen_slot(a, b);
+                self.restore_swap_focus(workspace, a, b, focused);
+                self.swap_fullscreen_slot(workspace, a, b);
                 true
             }
             _ => {
@@ -240,15 +248,15 @@ impl<W: LayoutElement> ContainerArena<W> {
                 };
                 parent_data.children[idx] = root;
                 self.set_parent(root, Some(parent));
-                self.set_parent(node, Some(self.root));
+                self.set_parent(node, Some(workspace));
                 self.floating_roots[root_idx].key = node;
                 self.floating_roots[root_idx].kind = if self.is_leaf(node) {
                     FloatingRootKind::ImplicitWindowGroup
                 } else {
                     FloatingRootKind::FloatedContainer
                 };
-                self.restore_swap_focus(root, node, focused);
-                self.swap_fullscreen_slot(root, node);
+                self.restore_swap_focus(workspace, root, node, focused);
+                self.swap_fullscreen_slot(workspace, root, node);
 
                 true
             }
