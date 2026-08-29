@@ -339,11 +339,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
             .is_some_and(|idx| self.selected_is_container_in(containers, idx));
         let scale = containers.scale(self.workspace);
         let floating_has_focus = containers.side_is_active(self.workspace, true);
-        let applied = containers.arena_mut().apply_pending_layouts_if_ready();
-        if applied && containers.arena_mut().take_pending_relayout(self.workspace) {
-            let workspace = self.workspace;
-            containers.arena_mut().layout(workspace);
-        }
+        let workspace = self.workspace;
+        containers
+            .arena_mut()
+            .apply_pending_layouts_and_deferred_relayout(workspace);
         let mut layouts = std::mem::take(&mut self.render_layout_scratch);
         let roots: Vec<_> = containers.arena().floating_roots(self.workspace).collect();
         for root in roots {

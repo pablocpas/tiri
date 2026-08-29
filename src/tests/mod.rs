@@ -5,6 +5,7 @@ mod fixture;
 mod server;
 
 mod animations;
+mod closing;
 mod containers;
 mod decorations;
 mod floating;

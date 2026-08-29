@@ -295,7 +295,11 @@ impl<W: LayoutElement> ContainerArena<W> {
         subtree: Option<(NodeKey, Rectangle<f64, Logical>)>,
     ) {
         self.apply_pending_layouts_if_ready();
-        if !self.pending_layouts.is_empty() {
+        // This workspace's own branches, not the arena's. A configure outstanding on the
+        // workspace next door says nothing about whether this one may arrange, and noting a
+        // deferred relayout it does not need leaves it re-arranging every frame until the
+        // neighbour's client answers.
+        if self.has_pending_layouts(workspace) {
             // A branch still waiting is not re-arranged: this call only records that another
             // layout is wanted. It is not one of sway's `arrange_workspace` passes, so it must
             // not resolve fractions yet. Doing that here normalized the same list again while
@@ -605,6 +609,27 @@ impl<W: LayoutElement> ContainerArena<W> {
             .filter(|key| self.branch_root(*key) == pending.branch)
             .collect();
         snapshot == current
+    }
+
+    /// Commit whatever is ready, then run the arrange `workspace` deferred while it waited.
+    ///
+    /// The two halves answer different questions and only one of them is about this
+    /// workspace. Committing is the arena's: it walks every branch whose windows have
+    /// answered, wherever they live. Whether this workspace still owes itself an arrange is
+    /// its own, and reading it off the commit pass's "something happened" is what stranded
+    /// it: the frame visits every workspace in turn, the first one to call this consumed the
+    /// answer, and the workspace the deferred arrange belonged to was told nothing had
+    /// happened and kept its old boxes until the next command arranged it by hand.
+    pub(in crate::layout) fn apply_pending_layouts_and_deferred_relayout(
+        &mut self,
+        workspace: NodeKey,
+    ) {
+        self.apply_pending_layouts_if_ready();
+        // Nothing outstanding here any more, so a deferred arrange can finally run. Asking
+        // per workspace also means a neighbour still waiting cannot hold this one back.
+        if !self.has_pending_layouts(workspace) && self.take_pending_relayout(workspace) {
+            self.layout(workspace);
+        }
     }
 
     /// Commit every branch whose windows have answered. A branch still waiting keeps its

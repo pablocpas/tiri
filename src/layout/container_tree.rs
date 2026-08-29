@@ -1685,10 +1685,8 @@ impl<W: LayoutElement> ContainerTree<W> {
             .tab_bar_cache
             .borrow_mut()
             .retain(|key, _| self.arena.holds_node(*key));
-        let applied = self.arena.apply_pending_layouts_if_ready();
-        if applied && self.arena.take_pending_relayout(workspace) {
-            self.arena.layout(workspace);
-        }
+        self.arena
+            .apply_pending_layouts_and_deferred_relayout(workspace);
         let has_pending = self.arena.has_pending_layouts(workspace);
         let mut state_layouts = std::mem::take(&mut self.render.state_layout_scratch);
         state_layouts.clear();
@@ -4005,10 +4003,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         is_focused: bool,
     ) {
         let _span = tracy_client::span!("ContainerTree::refresh");
-        let applied = self.arena.apply_pending_layouts_if_ready();
-        if applied && self.arena.take_pending_relayout(workspace) {
-            self.arena.layout(workspace);
-        }
+        self.arena
+            .apply_pending_layouts_and_deferred_relayout(workspace);
         let has_pending = self.arena.has_pending_layouts(workspace);
         let mut layouts = std::mem::take(&mut self.render.state_layout_scratch);
         layouts.clear();
