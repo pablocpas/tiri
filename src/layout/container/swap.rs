@@ -84,10 +84,10 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     fn swap_fullscreen_slot(&mut self, workspace: NodeKey, a: NodeKey, b: NodeKey) {
-        let replacement = if self.fullscreen_key() == Some(a) {
+        let replacement = if self.fullscreen_key(workspace) == Some(a) {
             self.transfer_fullscreen_to_replacement(a, b);
             Some(b)
-        } else if self.fullscreen_key() == Some(b) {
+        } else if self.fullscreen_key(workspace) == Some(b) {
             self.transfer_fullscreen_to_replacement(b, a);
             Some(a)
         } else {
@@ -208,10 +208,10 @@ impl<W: LayoutElement> ContainerArena<W> {
                 // `swap_places` pair. `FloatingGeometry` below transfers the target slot;
                 // this exchanges the independently observable pending boxes.
                 self.swap_node_geometries(a, b);
-                let Some(a_idx) = self.floating_root_index(a) else {
+                let Some(a_idx) = self.floating_slot_of(a) else {
                     return false;
                 };
-                let Some(b_idx) = self.floating_root_index(b) else {
+                let Some(b_idx) = self.floating_slot_of(b) else {
                     return false;
                 };
                 let (a_id, a_kind) = (
@@ -237,7 +237,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                 let Some(idx) = self.child_index(parent, node) else {
                     return false;
                 };
-                let Some(root_idx) = self.floating_root_index(root) else {
+                let Some(root_idx) = self.floating_slot_of(root) else {
                     return false;
                 };
 

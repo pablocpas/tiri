@@ -31,20 +31,23 @@ fn scratchpad_show_hides_focused_window() {
     layout.move_window_to_scratchpad(None);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.has_window(&id1));
-    assert!(!workspace.has_window(&id2));
+    assert!(workspace.has_window(&layout.containers, &id1));
+    assert!(!workspace.has_window(&layout.containers, &id2));
 
     layout.scratchpad_show();
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.has_window(&id2));
-    assert!(workspace.is_floating(&id2));
-    assert_eq!(workspace.active_window().unwrap().id(), &id2);
+    assert!(workspace.has_window(&layout.containers, &id2));
+    assert!(workspace.is_floating(&layout.containers, &id2));
+    assert_eq!(
+        workspace.active_window(&layout.containers).unwrap().id(),
+        &id2
+    );
 
     layout.scratchpad_show();
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(!workspace.has_window(&id2));
+    assert!(!workspace.has_window(&layout.containers, &id2));
 }
 #[test]
 fn scratchpad_show_moves_visible_between_outputs() {
@@ -70,15 +73,15 @@ fn scratchpad_show_moves_visible_between_outputs() {
     layout.scratchpad_show();
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.has_window(&id1));
-    assert!(workspace.is_floating(&id1));
+    assert!(workspace.has_window(&layout.containers, &id1));
+    assert!(workspace.is_floating(&layout.containers, &id1));
 
     layout.focus_output(&output_b);
     layout.scratchpad_show();
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.has_window(&id1));
-    assert!(workspace.is_floating(&id1));
+    assert!(workspace.has_window(&layout.containers, &id1));
+    assert!(workspace.is_floating(&layout.containers, &id1));
 }
 #[test]
 fn scratchpad_multiple_windows_round_robin() {
@@ -120,29 +123,39 @@ fn scratchpad_multiple_windows_round_robin() {
     );
 
     // Move all 3 windows to scratchpad
-    let workspace = layout.active_workspace_mut().expect("active workspace");
-    assert!(workspace.focus_window_by_id(&id1));
+    let (workspace, containers) = layout
+        .active_workspace_and_containers_mut()
+        .expect("active workspace");
+    assert!(workspace.focus_window_by_id(containers, &id1));
     layout.move_window_to_scratchpad(None);
 
-    let workspace = layout.active_workspace_mut().expect("active workspace");
-    assert!(workspace.focus_window_by_id(&id2));
+    let (workspace, containers) = layout
+        .active_workspace_and_containers_mut()
+        .expect("active workspace");
+    assert!(workspace.focus_window_by_id(containers, &id2));
     layout.move_window_to_scratchpad(None);
 
-    let workspace = layout.active_workspace_mut().expect("active workspace");
-    assert!(workspace.focus_window_by_id(&id3));
+    let (workspace, containers) = layout
+        .active_workspace_and_containers_mut()
+        .expect("active workspace");
+    assert!(workspace.focus_window_by_id(containers, &id3));
     layout.move_window_to_scratchpad(None);
 
     // No windows visible in workspace
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(!workspace.has_window(&id1));
-    assert!(!workspace.has_window(&id2));
-    assert!(!workspace.has_window(&id3));
+    assert!(!workspace.has_window(&layout.containers, &id1));
+    assert!(!workspace.has_window(&layout.containers, &id2));
+    assert!(!workspace.has_window(&layout.containers, &id3));
 
     // Show scratchpad - first window should appear (round robin order depends on implementation)
     layout.scratchpad_show();
     let workspace = layout.active_workspace().expect("active workspace");
     // At least one window should be visible
-    assert!(workspace.has_window(&id1) || workspace.has_window(&id2) || workspace.has_window(&id3));
+    assert!(
+        workspace.has_window(&layout.containers, &id1)
+            || workspace.has_window(&layout.containers, &id2)
+            || workspace.has_window(&layout.containers, &id3)
+    );
 }
 #[test]
 fn scratchpad_from_floating_preserves_floating() {
@@ -167,20 +180,20 @@ fn scratchpad_from_floating_preserves_floating() {
     layout.set_window_floating(Some(&id), true);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.is_floating(&id));
+    assert!(workspace.is_floating(&layout.containers, &id));
 
     // Move to scratchpad
     layout.move_window_to_scratchpad(None);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(!workspace.has_window(&id));
+    assert!(!workspace.has_window(&layout.containers, &id));
 
     // Show from scratchpad - should appear as floating
     layout.scratchpad_show();
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.has_window(&id));
-    assert!(workspace.is_floating(&id));
+    assert!(workspace.has_window(&layout.containers, &id));
+    assert!(workspace.is_floating(&layout.containers, &id));
 }
 #[test]
 fn scratchpad_from_tiling_becomes_floating() {
@@ -202,7 +215,7 @@ fn scratchpad_from_tiling_becomes_floating() {
     );
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(!workspace.is_floating(&id));
+    assert!(!workspace.is_floating(&layout.containers, &id));
 
     // Move to scratchpad
     layout.move_window_to_scratchpad(None);
@@ -211,8 +224,8 @@ fn scratchpad_from_tiling_becomes_floating() {
     layout.scratchpad_show();
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.has_window(&id));
-    assert!(workspace.is_floating(&id));
+    assert!(workspace.has_window(&layout.containers, &id));
+    assert!(workspace.is_floating(&layout.containers, &id));
 }
 #[test]
 fn scratchpad_move_without_outputs_cleans_up_empty_workspace() {
@@ -247,7 +260,7 @@ fn move_window_to_workspace_ignores_hidden_scratchpad_window() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(!workspace.has_window(&5));
+    assert!(!workspace.has_window(&layout.containers, &5));
 }
 #[test]
 fn scratchpad_show_keeps_empty_workspace_tail() {
@@ -266,7 +279,11 @@ fn scratchpad_show_keeps_empty_workspace_tail() {
     };
 
     let monitor = monitors.into_iter().next().unwrap();
-    assert!(!monitor.workspaces.last().unwrap().has_windows());
+    assert!(!monitor
+        .workspaces
+        .last()
+        .unwrap()
+        .has_windows(&layout.containers));
 }
 #[test]
 fn scratchpad_show_after_move_to_workspace_cleans_empty_non_active_workspace() {
@@ -289,7 +306,7 @@ fn scratchpad_show_after_move_to_workspace_cleans_empty_non_active_workspace() {
     for (idx, ws) in monitor.workspaces.iter().enumerate().skip(1) {
         if idx != monitor.active_workspace_idx && idx != monitor.workspaces.len() - 1 {
             assert!(
-                ws.has_windows() || ws.name().is_some(),
+                ws.has_windows(&layout.containers) || ws.name().is_some(),
                 "workspace {idx} should not be left empty and unnamed"
             );
         }
@@ -316,7 +333,9 @@ fn move_window_to_scratchpad_during_interactive_move_doesnt_panic_on_refresh() {
         Op::Refresh { is_active: false },
     ]);
 
-    assert!(layout.workspaces().all(|(_, _, ws)| !ws.has_window(&3)));
+    assert!(layout
+        .workspaces()
+        .all(|(_, _, ws)| !ws.has_window(&layout.containers, &3)));
 }
 #[test]
 fn move_window_to_scratchpad_during_interactive_move_update_doesnt_panic() {
@@ -344,7 +363,9 @@ fn move_window_to_scratchpad_during_interactive_move_update_doesnt_panic() {
         },
     ]);
 
-    assert!(layout.workspaces().all(|(_, _, ws)| !ws.has_window(&2)));
+    assert!(layout
+        .workspaces()
+        .all(|(_, _, ws)| !ws.has_window(&layout.containers, &2)));
 }
 #[test]
 fn move_to_scratchpad_cleans_empty_non_active_workspace() {
@@ -366,7 +387,7 @@ fn move_to_scratchpad_cleans_empty_non_active_workspace() {
     let last_idx = monitor.workspaces.len() - 1;
     for (idx, workspace) in monitor.workspaces.iter().enumerate() {
         if idx != monitor.active_workspace_idx && idx != last_idx {
-            assert!(workspace.has_windows_or_persistent_identity());
+            assert!(workspace.has_windows_or_persistent_identity(&layout.containers));
         }
     }
 }
@@ -391,7 +412,7 @@ fn sticky_toggle_requires_floating() {
     layout.toggle_window_sticky(None);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.has_window(&id));
+    assert!(workspace.has_window(&layout.containers, &id));
     assert!(!window_layout(&layout, id).is_sticky);
 }
 #[test]
@@ -416,7 +437,7 @@ fn sticky_moves_across_workspaces_on_output() {
     layout.toggle_window_sticky(None);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(!workspace.has_window(&id));
+    assert!(!workspace.has_window(&layout.containers, &id));
     assert!(window_layout(&layout, id).is_sticky);
 
     layout.switch_workspace(1);
@@ -435,7 +456,7 @@ fn sticky_moves_across_workspaces_on_output() {
 
     layout.toggle_window_sticky(Some(&id));
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.has_window(&id));
+    assert!(workspace.has_window(&layout.containers, &id));
     assert!(!window_layout(&layout, id).is_sticky);
 }
 #[test]
@@ -468,25 +489,33 @@ fn scratchpad_show_hides_visible_then_shows_next() {
     );
 
     // Move both to scratchpad
-    let workspace = layout.active_workspace_mut().expect("active workspace");
-    assert!(workspace.focus_window_by_id(&id1));
+    let (workspace, containers) = layout
+        .active_workspace_and_containers_mut()
+        .expect("active workspace");
+    assert!(workspace.focus_window_by_id(containers, &id1));
     layout.move_window_to_scratchpad(None);
 
-    let workspace = layout.active_workspace_mut().expect("active workspace");
-    assert!(workspace.focus_window_by_id(&id2));
+    let (workspace, containers) = layout
+        .active_workspace_and_containers_mut()
+        .expect("active workspace");
+    assert!(workspace.focus_window_by_id(containers, &id2));
     layout.move_window_to_scratchpad(None);
 
     // Show first scratchpad window
     layout.scratchpad_show();
     let workspace = layout.active_workspace().expect("active workspace");
-    let first_visible = if workspace.has_window(&id1) { id1 } else { id2 };
-    assert!(workspace.has_window(&first_visible));
+    let first_visible = if workspace.has_window(&layout.containers, &id1) {
+        id1
+    } else {
+        id2
+    };
+    assert!(workspace.has_window(&layout.containers, &first_visible));
 
     // Call scratchpad_show again - should hide current and show the other
     layout.scratchpad_show();
     let workspace = layout.active_workspace().expect("active workspace");
     // First window should be hidden now
-    assert!(!workspace.has_window(&first_visible));
+    assert!(!workspace.has_window(&layout.containers, &first_visible));
 }
 #[test]
 fn scratchpad_fullscreen_to_scratchpad() {
@@ -514,14 +543,14 @@ fn scratchpad_fullscreen_to_scratchpad() {
     layout.move_window_to_scratchpad(None);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(!workspace.has_window(&id));
+    assert!(!workspace.has_window(&layout.containers, &id));
 
     // Show from scratchpad - should appear as floating
     layout.scratchpad_show();
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.has_window(&id));
-    assert!(workspace.is_floating(&id));
+    assert!(workspace.has_window(&layout.containers, &id));
+    assert!(workspace.is_floating(&layout.containers, &id));
 }
 
 /// Sending a tiled window to the scratchpad leaves the workspace with one fewer window, and
@@ -570,14 +599,14 @@ fn moving_a_tiled_window_to_the_scratchpad_resizes_the_survivors() {
 fn tiled_window_rects(
     layout: &Layout<TestWindow>,
 ) -> Vec<smithay::utils::Rectangle<f64, smithay::utils::Logical>> {
-    let arena = layout
+    let view = layout
         .active_workspace()
         .expect("active workspace")
-        .container_tree()
-        .arena();
-    let root = arena.workspace_root();
+        .container_tree(&layout.containers);
+    let arena = view.arena();
+    let root = view.workspace();
     arena
-        .leaf_layouts()
+        .leaf_layouts_in(root)
         .filter(|info| arena.branch_root(info.key) == root)
         .map(|info| info.rect)
         .collect()
@@ -632,7 +661,7 @@ fn a_scratchpad_round_trip_leaves_the_tiling_laid_out() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert!(
-        workspace.is_floating(&3),
+        workspace.is_floating(&layout.containers, &3),
         "a shown scratchpad window floats"
     );
 
@@ -667,7 +696,7 @@ fn a_shown_scratchpad_window_has_a_size() {
     layout.update_render_elements(None);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().arena();
+    let tree = workspace.container_tree(&layout.containers).arena();
     let key = tree
         .window_key(&3)
         .expect("the scratchpad window is mapped");
@@ -704,11 +733,11 @@ fn a_hidden_scratchpad_window_is_laid_out_while_it_is_hidden() {
 
     let scratchpad = layout.scratchpad_for_test();
     assert!(
-        scratchpad.has_window(&2),
+        scratchpad.has_window(&layout.containers, &2),
         "the hidden window is on the scratchpad workspace"
     );
 
-    let tree = scratchpad.container_tree().arena();
+    let tree = scratchpad.container_tree(&layout.containers).arena();
     let key = tree.window_key(&2).expect("hidden window is in the arena");
     let root = tree.branch_root(key);
     let area = tree
@@ -743,9 +772,12 @@ fn hiding_a_tiled_window_gives_it_half_the_width_and_three_quarters_of_the_heigh
     layout.update_render_elements(None);
 
     let scratchpad = layout.scratchpad_for_test();
-    let working_area = scratchpad.container_tree().parent_area().size;
+    let working_area = scratchpad
+        .container_tree(&layout.containers)
+        .parent_area()
+        .size;
     let tile = scratchpad
-        .tiles()
+        .tiles(&layout.containers)
         .find(|tile| tile.window().id() == &2)
         .expect("the hidden window");
     let size = tile
@@ -782,7 +814,7 @@ fn hiding_a_floating_window_leaves_its_size_alone() {
     let before = layout
         .active_workspace()
         .expect("active workspace")
-        .tiles()
+        .tiles(&layout.containers)
         .find(|tile| tile.window().id() == &1)
         .and_then(|tile| tile.window().expected_size())
         .expect("a floating window has a size");
@@ -792,7 +824,7 @@ fn hiding_a_floating_window_leaves_its_size_alone() {
 
     let after = layout
         .scratchpad_for_test()
-        .tiles()
+        .tiles(&layout.containers)
         .find(|tile| tile.window().id() == &1)
         .and_then(|tile| tile.window().expected_size())
         .expect("the hidden window");
@@ -827,7 +859,7 @@ fn hiding_a_window_takes_it_out_of_fullscreen() {
 
     let scratchpad = layout.scratchpad_for_test();
     let hidden = scratchpad
-        .tiles()
+        .tiles(&layout.containers)
         .find(|tile| tile.window().id() == &2)
         .expect("the hidden window");
     assert!(
@@ -835,7 +867,9 @@ fn hiding_a_window_takes_it_out_of_fullscreen() {
         "a window put away stops asking for fullscreen"
     );
     assert!(
-        scratchpad.fullscreen_window_ids().is_empty(),
+        scratchpad
+            .fullscreen_window_ids(&layout.containers)
+            .is_empty(),
         "and it takes the fullscreen pointer with it"
     );
 }
@@ -862,17 +896,19 @@ fn hiding_a_visible_scratchpad_window_again_takes_it_out_of_fullscreen() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert!(
-        !workspace.has_window(&2),
+        !workspace.has_window(&layout.containers, &2),
         "the window went back into hiding"
     );
     assert!(
-        workspace.fullscreen_window_ids().is_empty(),
+        workspace
+            .fullscreen_window_ids(&layout.containers)
+            .is_empty(),
         "and it left the workspace's fullscreen pointer behind"
     );
 
     let hidden = layout
         .scratchpad_for_test()
-        .tiles()
+        .tiles(&layout.containers)
         .find(|tile| tile.window().id() == &2)
         .expect("the hidden window");
     assert!(
@@ -900,9 +936,14 @@ fn showing_a_scratchpad_window_takes_the_workspace_out_of_fullscreen() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.has_window(&2), "the scratchpad window came out");
     assert!(
-        workspace.fullscreen_window_ids().is_empty(),
+        workspace.has_window(&layout.containers, &2),
+        "the scratchpad window came out"
+    );
+    assert!(
+        workspace
+            .fullscreen_window_ids(&layout.containers)
+            .is_empty(),
         "and window 1 is no longer fullscreen"
     );
 }

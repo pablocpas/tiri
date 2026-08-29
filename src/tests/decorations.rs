@@ -82,11 +82,13 @@ fn add_window(f: &mut Fixture, id: ClientId, surfaces: &mut Vec<WlSurface>) -> u
     surfaces.push(surface);
     settle(f, id, surfaces);
 
-    f.niri()
+    let (workspace, containers) = f
+        .niri()
         .layout
-        .active_workspace()
-        .expect("active workspace")
-        .active_window()
+        .active_workspace_and_containers()
+        .expect("active workspace");
+    workspace
+        .active_window(containers)
         .expect("active window")
         .id()
         .get()
@@ -141,9 +143,9 @@ fn border_color(
     let (pos, tile_size) = f
         .niri()
         .layout
-        .active_workspace()
+        .active_workspace_and_containers()
+        .map(|(workspace, containers)| workspace.tiles_with_render_positions(containers))
         .expect("active workspace")
-        .tiles_with_render_positions()
         .find_map(|(tile, pos, visible)| {
             (visible && tile.window().id().get() == window_id).then(|| (pos, tile.tile_size()))
         })
@@ -263,9 +265,9 @@ fn visible_tile_other_than(
 ) -> (Point<f64, Logical>, Size<f64, Logical>) {
     f.niri()
         .layout
-        .active_workspace()
+        .active_workspace_and_containers()
+        .map(|(workspace, containers)| workspace.tiles_with_render_positions(containers))
         .expect("active workspace")
-        .tiles_with_render_positions()
         .find_map(|(tile, pos, visible)| {
             (visible && tile.window().id().get() != skip).then(|| (pos, tile.tile_size()))
         })

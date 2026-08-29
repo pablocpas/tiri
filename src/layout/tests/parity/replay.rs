@@ -120,10 +120,10 @@ fn observe(layout: &Layout<TestWindow>) -> Workspace {
         width: area.size.w,
         height: area.size.h,
     };
-    let workspace_layout = model_layout(workspace.debug_workspace_layout());
+    let workspace_layout = model_layout(workspace.debug_workspace_layout(&layout.containers));
     // The tree has no node for "the workspace is what focus parent selected" when its only
     // child is a window, so the workspace answers that separately.
-    let workspace_selected = workspace.tiling_targets_workspace();
+    let workspace_selected = workspace.tiling_targets_workspace(&layout.containers);
 
     // TestWindow ids are the order the script opened them, which is exactly the identity the
     // model wants, so the map is the identity over the windows that exist.

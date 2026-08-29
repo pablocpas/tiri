@@ -8,7 +8,7 @@ use super::*;
 fn format_tiles(layout: &Layout<TestWindow>) -> String {
     let mut buf = String::new();
     let ws = layout.active_workspace().unwrap();
-    let mut tiles: Vec<_> = ws.tiles_with_render_positions().collect();
+    let mut tiles: Vec<_> = ws.tiles_with_render_positions(&layout.containers).collect();
 
     // We sort by id since that gives us a consistent order (from first opened to last), but we
     // don't print the id since it's nondeterministic (the id is a global counter across all

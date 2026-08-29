@@ -19,13 +19,14 @@ impl<W: LayoutElement> ContainerArena<W> {
         &self,
         workspace: NodeKey,
     ) -> Option<PreviewLeafGeometry> {
-        let root_rect = self.layout_area();
+        let root_rect = self.layout_area(workspace);
 
         // Nothing in the workspace yet: the window arriving gets it all, laid out by the
         // workspace's own orientation.
-        if self.is_empty() {
+        if self.workspace_is_empty(workspace) {
             let layout = self.root_container_layout(workspace);
             let (rect, tab_bar_offset) = self.preview_child_rect(
+                workspace,
                 PreviewContainer {
                     layout,
                     rect: root_rect,
@@ -63,6 +64,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         let current = self.child_percents(parent_key);
         let percents = self.preview_inserted_child_percents(&current, child_count, insert_idx);
         let (rect, tab_bar_offset) = self.preview_child_rect(
+            workspace,
             PreviewContainer {
                 layout: parent.layout(),
                 rect: parent_rect,
@@ -86,6 +88,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         root_rect: Rectangle<f64, Logical>,
         path: &[usize],
     ) -> Option<Rectangle<f64, Logical>> {
+        let workspace = self.workspace_of(root_key)?;
         let mut rect = root_rect;
         let mut node_key = root_key;
         for &idx in path {
@@ -94,6 +97,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             let child_is_leaf = self.get_node(child_key).is_some_and(|node| node.is_view());
             let percents = self.get_normalized_child_percents(node_key, container.child_count());
             let (child_rect, _) = self.preview_child_rect(
+                workspace,
                 PreviewContainer {
                     layout: container.layout(),
                     rect,
@@ -168,6 +172,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     pub(super) fn preview_child_rect(
         &self,
+        workspace: NodeKey,
         container: PreviewContainer<'_>,
         child_idx: usize,
         child_is_leaf: bool,
@@ -180,13 +185,13 @@ impl<W: LayoutElement> ContainerArena<W> {
             gap,
         } = container;
         let (child_rects, _) =
-            self.child_rects_for_layout(layout, rect, child_count, percents, gap);
+            self.child_rects_for_layout(workspace, layout, rect, child_count, percents, gap);
         match layout {
             Layout::SplitH | Layout::SplitV => {
                 let Some(child_rect) = child_rects.get(child_idx).copied() else {
                     return (rect, 0.0);
                 };
-                let split_bar_height = self.split_title_bar_height();
+                let split_bar_height = self.split_title_bar_height(workspace);
                 let tab_bar_offset = if child_is_leaf && split_bar_height > 0.0 {
                     split_bar_height
                 } else {

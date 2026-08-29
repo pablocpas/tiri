@@ -7,10 +7,21 @@ impl<W: LayoutElement> ContainerArena<W> {
     ///
     /// Falls back to the first leaf when nothing is focused or the focused key went stale,
     /// so callers see the same node [`Self::focus_path`] resolves to.
+    /// What this workspace's focus is, whether or not the seat's focus is in it.
+    ///
+    /// One seat serves every workspace, so the raw focused key is only this workspace's
+    /// answer when it is one of its nodes. Otherwise this is `seat_get_focus_inactive` for
+    /// the workspace: the node it would return to when the focus comes back.
     pub(in crate::layout) fn effective_focused_key(&self, workspace: NodeKey) -> Option<NodeKey> {
         match self.focused_key() {
-            Some(key) if self.get_node(key).is_some() => Some(key),
-            _ => self.first_leaf_key(workspace),
+            Some(key)
+                if self.get_node(key).is_some() && self.workspace_of(key) == Some(workspace) =>
+            {
+                Some(key)
+            }
+            _ => self
+                .focus_inactive_view_in_branch(workspace)
+                .or_else(|| self.first_leaf_key(workspace)),
         }
     }
 
@@ -30,19 +41,28 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.focus_path(workspace)
     }
 
+    /// What a command aimed at this workspace acts on, and what IPC reads as its focus.
+    ///
+    /// The seat's selection and focus serve every workspace, so they are this workspace's
+    /// answer only when they are in it; otherwise it answers with its own focus-inactive
+    /// node, the way `seat_get_focus_inactive` does for a workspace that is not the focused
+    /// one.
     pub(in crate::layout) fn selected_node_key(&self, workspace: NodeKey) -> Option<NodeKey> {
         if let Some(key) = self.selected_key() {
-            if self.get_node(key).is_some() {
+            if self.get_node(key).is_some() && self.workspace_of(key) == Some(workspace) {
                 return Some(key);
             }
         }
         self.focused_key()
+            .filter(|key| self.workspace_of(*key) == Some(workspace))
+            .or_else(|| self.focus_inactive_view_in_branch(workspace))
             .or_else(|| self.first_leaf_key(workspace))
     }
 
     pub(in crate::layout) fn workspace_is_selected(&self, workspace: NodeKey) -> bool {
         self.selected_key() == Some(workspace)
-            || (self.is_empty() && self.floating_roots().next().is_none())
+            || (self.first_leaf_key(workspace).is_none()
+                && self.floating_roots(workspace).next().is_none())
     }
 
     pub(in crate::layout) fn focused_node_key(&self) -> Option<NodeKey> {
@@ -347,7 +367,11 @@ impl<W: LayoutElement> ContainerArena<W> {
             // like any other node: `node_get_in_direction_tiling` reaches a fullscreen
             // floating root through `pending.parent` and leaves for the next output from
             // there, discarding the wrap candidate a child had recorded on the way up.
-            if self.fullscreen_key == Some(current) {
+            if self
+                .workspace_of(current)
+                .and_then(|workspace| self.fullscreen_key(workspace))
+                == Some(current)
+            {
                 return false;
             }
             if boundary == Some(current) {
@@ -510,11 +534,22 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     /// Focus window by its ID if present.
-    pub(in crate::layout) fn focus_window_by_id(&mut self, window_id: &W::Id) -> bool {
-        self.clear_focus_history();
+    /// Focus a window of `workspace`, and say whether it was one.
+    ///
+    /// The store holds every workspace, so the id alone is not enough: a caller asking each
+    /// workspace in turn would get a yes from the first one it asked.
+    pub(in crate::layout) fn focus_window_by_id(
+        &mut self,
+        workspace: NodeKey,
+        window_id: &W::Id,
+    ) -> bool {
         let Some(key) = self.window_key(window_id) else {
             return false;
         };
+        if self.workspace_of(key) != Some(workspace) {
+            return false;
+        }
+        self.clear_focus_history();
         self.focus_node_key(key);
         true
     }
@@ -580,10 +615,21 @@ impl<W: LayoutElement> ContainerArena<W> {
         // was in.
         self.prune_focus_order();
 
-        // Both sides: the seat belongs to the workspace, and a workspace with a floating
-        // window in it is not one where nothing is focused.
-        if self.dfs_leaf_keys().is_empty() {
-            self.seat.clear();
+        // Both sides: a workspace with a floating window in it is not one where nothing is
+        // focused. When the workspace does empty, the seat is not emptied with it — it serves
+        // every workspace — so the focused leaf falls back to the most recent one that is
+        // still somewhere in the arena, and only an arena with no leaves at all clears it.
+        if self.leaf_keys_in_workspace(workspace).is_empty() {
+            let survivor = self
+                .seat
+                .order()
+                .iter()
+                .copied()
+                .find(|key| self.get_node(*key).is_some_and(|node| node.is_view()));
+            match survivor {
+                Some(key) => self.seat.redirect_focused_leaf(Some(key)),
+                None => self.seat.clear(),
+            }
             return;
         }
 
@@ -653,7 +699,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             // when the workspace's only window is floating there is nothing in it to find and
             // nothing under the tiled workspace either. A floating window is still a window this
             // workspace can answer with.
-            .or_else(|| self.dfs_leaf_keys().first().copied())
+            .or_else(|| self.leaf_keys_in_workspace(workspace).first().copied())
     }
 
     /// The most recently focused floating window in this workspace.
@@ -661,9 +707,12 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// This is another filtered read of the one seat order, not a floating-side MRU. A mode
     /// switch must not need the layout-wide focus history to rediscover state already owned
     /// by the workspace.
-    pub(in crate::layout) fn inactive_floating_window_id(&self) -> Option<W::Id> {
+    pub(in crate::layout) fn inactive_floating_window_id(
+        &self,
+        workspace: NodeKey,
+    ) -> Option<W::Id> {
         self.seat.order().iter().find_map(|key| {
-            self.is_in_floating_branch(*key)
+            (self.is_in_floating_branch(*key) && self.workspace_of(*key) == Some(workspace))
                 .then(|| self.get_tile(*key))
                 .flatten()
                 .map(|tile| tile.window().id().clone())
@@ -676,12 +725,14 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// `follow_without_raising`: focus and stacking are deliberately independent. When tiling is
     /// active, filter the same seat order to recover the most recently focused floating view.
     /// There is no floating-side focus cache to reconcile with either answer.
-    pub(in crate::layout) fn active_floating_window_id(&self) -> Option<W::Id> {
+    pub(in crate::layout) fn active_floating_window_id(&self, workspace: NodeKey) -> Option<W::Id> {
         self.focused_key()
-            .filter(|key| self.is_in_floating_branch(*key))
+            .filter(|key| {
+                self.is_in_floating_branch(*key) && self.workspace_of(*key) == Some(workspace)
+            })
             .and_then(|key| self.get_tile(key))
             .map(|tile| tile.window().id().clone())
-            .or_else(|| self.inactive_floating_window_id())
+            .or_else(|| self.inactive_floating_window_id(workspace))
     }
 
     /// Focus what this workspace answers with when nothing has said otherwise.
@@ -700,7 +751,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     pub(super) fn focus_first_leaf(&mut self, workspace: NodeKey) {
         let key = self
             .first_leaf_key(workspace)
-            .or_else(|| self.dfs_leaf_keys().first().copied());
+            .or_else(|| self.leaf_keys_in_workspace(workspace).first().copied());
         if let Some(key) = key {
             self.focus_node_key(key);
         } else {

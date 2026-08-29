@@ -170,9 +170,10 @@ impl TouchOverviewGrab {
                 if self.window.is_some() || self.workspace_matched_narrow {
                     // When activating a window, we want to activate the window's current
                     // workspace. Otherwise, find the workspace that we tapped on.
+                    let containers = layout.containers();
                     let ws_matches = |ws: &Workspace<Mapped>| {
                         if let Some(window) = &self.window {
-                            ws.has_window(window)
+                            ws.has_window(containers, window)
                         } else if let Some(ws_id) = self.workspace_id {
                             ws.id() == ws_id
                         } else {

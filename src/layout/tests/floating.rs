@@ -12,20 +12,32 @@ fn floating_roundtrip_keeps_the_window_node_key() {
     let key = layout
         .active_workspace()
         .expect("active workspace")
-        .container_tree()
+        .container_tree(&layout.containers)
         .arena()
         .window_key(&1)
         .expect("mapped window");
 
     check_ops_on_layout(&mut layout, [Op::ToggleWindowFloating { id: Some(1) }]);
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.is_floating(&1));
-    assert_eq!(workspace.container_tree().arena().window_key(&1), Some(key));
+    assert!(workspace.is_floating(&layout.containers, &1));
+    assert_eq!(
+        workspace
+            .container_tree(&layout.containers)
+            .arena()
+            .window_key(&1),
+        Some(key)
+    );
 
     check_ops_on_layout(&mut layout, [Op::ToggleWindowFloating { id: Some(1) }]);
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(!workspace.is_floating(&1));
-    assert_eq!(workspace.container_tree().arena().window_key(&1), Some(key));
+    assert!(!workspace.is_floating(&layout.containers, &1));
+    assert_eq!(
+        workspace
+            .container_tree(&layout.containers)
+            .arena()
+            .window_key(&1),
+        Some(key)
+    );
 }
 
 #[test]
@@ -46,7 +58,7 @@ fn unfloat_uses_the_container_preserved_in_the_seat_order() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().arena();
+    let tree = workspace.container_tree(&layout.containers).arena();
     let first = tree.window_key(&1).expect("first window");
     let second = tree.window_key(&2).expect("second window");
     let inner = tree.parent_of(first).expect("vertical wrapper");
@@ -77,7 +89,7 @@ fn auto_add_window_does_not_inherit_floating_from_focused_window() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(!workspace.is_floating(&2));
+    assert!(!workspace.is_floating(&layout.containers, &2));
     assert!(window_layout(&layout, 2).pos_in_tiling_layout.is_some());
 }
 
@@ -190,7 +202,7 @@ fn add_window_next_to_floating_does_not_inherit_floating() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(!workspace.is_floating(&2));
+    assert!(!workspace.is_floating(&layout.containers, &2));
     assert!(window_layout(&layout, 2).pos_in_tiling_layout.is_some());
 }
 #[test]
@@ -214,7 +226,7 @@ fn add_window_next_to_floating_keeps_explicit_floating() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.is_floating(&2));
+    assert!(workspace.is_floating(&layout.containers, &2));
 }
 #[test]
 fn auto_add_window_inherits_grouped_floating_after_split() {
@@ -235,14 +247,18 @@ fn auto_add_window_inherits_grouped_floating_after_split() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.is_floating(&1));
-    assert!(workspace.is_floating(&2));
+    assert!(workspace.is_floating(&layout.containers, &1));
+    assert!(workspace.is_floating(&layout.containers, &2));
     assert_eq!(
-        workspace.floating().root_layout_for_window(&1),
+        workspace
+            .floating(&layout.containers)
+            .root_layout_for_window(&1),
         Some(ContainerLayout::SplitV)
     );
     assert_eq!(
-        workspace.floating().root_layout_for_window(&2),
+        workspace
+            .floating(&layout.containers)
+            .root_layout_for_window(&2),
         Some(ContainerLayout::SplitV)
     );
 }
@@ -266,10 +282,10 @@ fn auto_add_window_joins_an_inner_split_of_a_floated_workspace() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.is_floating(&1));
-    assert!(workspace.is_floating(&2));
-    assert!(workspace.is_floating(&3));
-    assert_eq!(workspace.floating().tiles().count(), 3);
+    assert!(workspace.is_floating(&layout.containers, &1));
+    assert!(workspace.is_floating(&layout.containers, &2));
+    assert!(workspace.is_floating(&layout.containers, &3));
+    assert_eq!(workspace.floating(&layout.containers).tiles().count(), 3);
 }
 
 #[test]
@@ -292,9 +308,9 @@ fn auto_add_window_does_not_join_a_tiled_container_floated_as_a_group() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.is_floating(&1));
-    assert!(workspace.is_floating(&2));
-    assert!(!workspace.is_floating(&3));
+    assert!(workspace.is_floating(&layout.containers, &1));
+    assert!(workspace.is_floating(&layout.containers, &2));
+    assert!(!workspace.is_floating(&layout.containers, &3));
     assert_eq!(layout.focus().map(|win| *win.id()), Some(3));
 }
 
@@ -314,8 +330,8 @@ fn auto_add_window_does_not_join_a_selected_floating_wrapper() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.is_floating(&1));
-    assert!(!workspace.is_floating(&2));
+    assert!(workspace.is_floating(&layout.containers, &1));
+    assert!(!workspace.is_floating(&layout.containers, &2));
     assert_eq!(layout.focus().map(|window| *window.id()), Some(2));
 }
 
@@ -336,8 +352,8 @@ fn auto_add_window_joins_below_a_selected_inner_floating_container() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.is_floating(&1));
-    assert!(workspace.is_floating(&2));
+    assert!(workspace.is_floating(&layout.containers, &1));
+    assert!(workspace.is_floating(&layout.containers, &2));
     assert_eq!(layout.focus().map(|window| *window.id()), Some(2));
 }
 
@@ -379,7 +395,7 @@ fn floating_ipc_order_is_the_reverse_of_the_render_stack() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     let render_order: Vec<_> = workspace
-        .floating()
+        .floating(&layout.containers)
         .tiles()
         .map(|tile| *tile.window().id())
         .collect();
@@ -526,9 +542,10 @@ fn unfloat_workspace_wrapper_preserves_selected_descendant() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().arena();
+    let view = workspace.container_tree(&layout.containers);
+    let tree = view.arena();
     let selected = tree.selected_container_key().expect("selected descendant");
-    assert_ne!(tree.parent_of(selected), Some(tree.workspace_root()));
+    assert_ne!(tree.parent_of(selected), Some(view.workspace()));
 }
 
 #[test]
@@ -669,7 +686,7 @@ fn directional_move_on_leaf_inside_floating_wrapper_does_not_translate_group() {
     let before = layout
         .active_workspace()
         .expect("active workspace")
-        .floating_container_pos(&1)
+        .floating_container_pos(&layout.containers, &1)
         .expect("floating group position");
 
     check_ops_on_layout(&mut layout, [Op::MoveColumnRight]);
@@ -677,7 +694,7 @@ fn directional_move_on_leaf_inside_floating_wrapper_does_not_translate_group() {
     let after = layout
         .active_workspace()
         .expect("active workspace")
-        .floating_container_pos(&1)
+        .floating_container_pos(&layout.containers, &1)
         .expect("floating group position");
     assert_eq!(
         after, before,
@@ -698,7 +715,7 @@ fn directional_move_on_floating_root_translates_group() {
     let before = layout
         .active_workspace()
         .expect("active workspace")
-        .floating_container_pos(&1)
+        .floating_container_pos(&layout.containers, &1)
         .expect("floating group position");
 
     check_ops_on_layout(&mut layout, [Op::MoveColumnRight]);
@@ -706,7 +723,7 @@ fn directional_move_on_floating_root_translates_group() {
     let after = layout
         .active_workspace()
         .expect("active workspace")
-        .floating_container_pos(&1)
+        .floating_container_pos(&layout.containers, &1)
         .expect("floating group position");
     assert_eq!(after.x, before.x + 10.0);
     assert_eq!(after.y, before.y);
@@ -726,11 +743,13 @@ fn directional_move_on_selected_floating_wrapper_translates_group() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert!(
-        workspace.floating().wrapper_selected_for_window(&1),
+        workspace
+            .floating(&layout.containers)
+            .wrapper_selected_for_window(&1),
         "test precondition: the floating root itself must be selected"
     );
     let before = workspace
-        .floating_container_pos(&1)
+        .floating_container_pos(&layout.containers, &1)
         .expect("floating group position");
 
     check_ops_on_layout(&mut layout, [Op::MoveColumnRight]);
@@ -738,7 +757,7 @@ fn directional_move_on_selected_floating_wrapper_translates_group() {
     let after = layout
         .active_workspace()
         .expect("active workspace")
-        .floating_container_pos(&1)
+        .floating_container_pos(&layout.containers, &1)
         .expect("floating group position");
     assert_eq!(after.x, before.x + 10.0);
     assert_eq!(after.y, before.y);
@@ -761,20 +780,20 @@ fn directional_move_reorders_children_inside_floating_wrapper() {
     let before_pos = layout
         .active_workspace()
         .expect("active workspace")
-        .floating_container_pos(&1)
+        .floating_container_pos(&layout.containers, &1)
         .expect("floating group position");
 
     check_ops_on_layout(&mut layout, [Op::MoveWindowUp]);
 
     let workspace = layout.active_workspace().expect("active workspace");
     let order: Vec<_> = workspace
-        .floating()
+        .floating(&layout.containers)
         .tiles()
         .map(|tile| *tile.window().id())
         .collect();
     assert_eq!(order, [2, 1]);
     assert_eq!(
-        workspace.floating_container_pos(&1),
+        workspace.floating_container_pos(&layout.containers, &1),
         Some(before_pos),
         "reordering children must not translate their floating root"
     );
@@ -799,30 +818,36 @@ fn horizontal_move_container_actions_reorder_children_inside_floating_wrapper() 
     let before_pos = layout
         .active_workspace()
         .expect("active workspace")
-        .floating_container_pos(&1)
+        .floating_container_pos(&layout.containers, &1)
         .expect("floating group position");
 
     layout.move_container_left();
 
     let workspace = layout.active_workspace().expect("active workspace");
     let order: Vec<_> = workspace
-        .floating()
+        .floating(&layout.containers)
         .tiles()
         .map(|tile| *tile.window().id())
         .collect();
     assert_eq!(order, [2, 1]);
-    assert_eq!(workspace.floating_container_pos(&1), Some(before_pos));
+    assert_eq!(
+        workspace.floating_container_pos(&layout.containers, &1),
+        Some(before_pos)
+    );
 
     layout.move_container_right();
 
     let workspace = layout.active_workspace().expect("active workspace");
     let order: Vec<_> = workspace
-        .floating()
+        .floating(&layout.containers)
         .tiles()
         .map(|tile| *tile.window().id())
         .collect();
     assert_eq!(order, [1, 2]);
-    assert_eq!(workspace.floating_container_pos(&1), Some(before_pos));
+    assert_eq!(
+        workspace.floating_container_pos(&layout.containers, &1),
+        Some(before_pos)
+    );
 }
 
 #[test]
@@ -845,14 +870,18 @@ fn add_window_next_to_grouped_floating_inherits_group() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.is_floating(&1));
-    assert!(workspace.is_floating(&2));
+    assert!(workspace.is_floating(&layout.containers, &1));
+    assert!(workspace.is_floating(&layout.containers, &2));
     assert_eq!(
-        workspace.floating().root_layout_for_window(&1),
+        workspace
+            .floating(&layout.containers)
+            .root_layout_for_window(&1),
         Some(ContainerLayout::SplitV)
     );
     assert_eq!(
-        workspace.floating().root_layout_for_window(&2),
+        workspace
+            .floating(&layout.containers)
+            .root_layout_for_window(&2),
         Some(ContainerLayout::SplitV)
     );
 }
@@ -875,14 +904,21 @@ fn open_window_joins_grouped_floating_even_when_tiling_is_empty() {
     {
         let workspace = layout.active_workspace().expect("active workspace");
         assert!(workspace.floating_is_active());
-        assert_eq!(workspace.container_tree().tiles().count(), 0);
-        assert_eq!(workspace.floating().tiles().count(), 2);
         assert_eq!(
-            workspace.floating().root_layout_for_window(&1),
+            workspace.container_tree(&layout.containers).tiles().count(),
+            0
+        );
+        assert_eq!(workspace.floating(&layout.containers).tiles().count(), 2);
+        assert_eq!(
+            workspace
+                .floating(&layout.containers)
+                .root_layout_for_window(&1),
             Some(ContainerLayout::SplitV)
         );
         assert_eq!(
-            workspace.floating().root_layout_for_window(&2),
+            workspace
+                .floating(&layout.containers)
+                .root_layout_for_window(&2),
             Some(ContainerLayout::SplitV)
         );
     }
@@ -894,8 +930,11 @@ fn open_window_joins_grouped_floating_even_when_tiling_is_empty() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert!(!workspace.floating_is_active());
-    assert_eq!(workspace.floating().tiles().count(), 0);
-    assert_eq!(workspace.container_tree().tiles().count(), 2);
+    assert_eq!(workspace.floating(&layout.containers).tiles().count(), 0);
+    assert_eq!(
+        workspace.container_tree(&layout.containers).tiles().count(),
+        2
+    );
 }
 #[test]
 fn floating_split_after_refocus_targets_refocused_window() {
@@ -932,7 +971,7 @@ fn floating_split_after_refocus_targets_refocused_window() {
     );
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.is_floating(&4));
+    assert!(workspace.is_floating(&layout.containers, &4));
 
     let r1 = tile_rect(&layout, 1);
     let r2 = tile_rect(&layout, 2);
@@ -1090,7 +1129,9 @@ fn floating_toggle_single_selected_container_moves_to_tiling() {
             .map(|window| *window.id())
             .expect("focused window");
         assert!(
-            workspace.floating().selected_is_container(Some(&focus_id)),
+            workspace
+                .floating(&layout.containers)
+                .selected_is_container(Some(&focus_id)),
             "test precondition: expected floating container selection before toggle"
         );
     }
@@ -1102,8 +1143,11 @@ fn floating_toggle_single_selected_container_moves_to_tiling() {
         !workspace.floating_is_active(),
         "toggle_floating on a single-window floating container selection should switch to tiling"
     );
-    assert_eq!(workspace.floating().tiles().count(), 0);
-    assert_eq!(workspace.container_tree().tiles().count(), 1);
+    assert_eq!(workspace.floating(&layout.containers).tiles().count(), 0);
+    assert_eq!(
+        workspace.container_tree(&layout.containers).tiles().count(),
+        1
+    );
 }
 #[test]
 fn floating_toggle_multi_window_selected_container_moves_to_tiling() {
@@ -1141,7 +1185,9 @@ fn floating_toggle_multi_window_selected_container_moves_to_tiling() {
             .map(|window| *window.id())
             .expect("focused window");
         assert!(
-            workspace.floating().selected_is_container(Some(&focus_id)),
+            workspace
+                .floating(&layout.containers)
+                .selected_is_container(Some(&focus_id)),
             "test precondition: expected floating container selection before toggle"
         );
     }
@@ -1155,7 +1201,7 @@ fn floating_toggle_multi_window_selected_container_moves_to_tiling() {
     );
     for id in selected_ids {
         assert!(
-            !workspace.is_floating(&id),
+            !workspace.is_floating(&layout.containers, &id),
             "window {id} should be restored to tiling when toggling selected floating container",
         );
     }
@@ -1218,7 +1264,7 @@ fn floating_toggle_selected_tiling_container_roundtrips_as_the_same_node() {
     let tree_before = layout
         .active_workspace()
         .expect("active workspace")
-        .container_tree()
+        .container_tree(&layout.containers)
         .debug_tree()
         .replace(" *", "");
     let selected_ids = layout.close_window_ids_for_active_selection();
@@ -1233,11 +1279,14 @@ fn floating_toggle_selected_tiling_container_roundtrips_as_the_same_node() {
     {
         let workspace = layout.active_workspace().expect("active workspace");
         assert!(workspace.floating_is_active());
-        assert_eq!(workspace.container_tree().tiles().count(), 2);
-        assert_eq!(workspace.floating().tiles().count(), 2);
+        assert_eq!(
+            workspace.container_tree(&layout.containers).tiles().count(),
+            2
+        );
+        assert_eq!(workspace.floating(&layout.containers).tiles().count(), 2);
         for id in &selected_ids {
             assert!(
-                workspace.is_floating(id),
+                workspace.is_floating(&layout.containers, id),
                 "window {id} should move into the floating container during the first toggle",
             );
         }
@@ -1246,20 +1295,26 @@ fn floating_toggle_selected_tiling_container_roundtrips_as_the_same_node() {
     check_ops_on_layout(&mut layout, [Op::ToggleWindowFloating { id: None }]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree_after = workspace.container_tree().debug_tree().replace(" *", "");
+    let tree_after = workspace
+        .container_tree(&layout.containers)
+        .debug_tree()
+        .replace(" *", "");
     assert!(
         !workspace.floating_is_active(),
         "toggling the selected floating node should restore that same node to tiling",
     );
-    assert_eq!(workspace.floating().tiles().count(), 0);
-    assert_eq!(workspace.container_tree().tiles().count(), 4);
+    assert_eq!(workspace.floating(&layout.containers).tiles().count(), 0);
+    assert_eq!(
+        workspace.container_tree(&layout.containers).tiles().count(),
+        4
+    );
     assert_eq!(
         tree_after, tree_before,
         "the restored tiling tree should match the original subtree layout after the full roundtrip",
     );
     for id in selected_ids {
         assert!(
-            !workspace.is_floating(&id),
+            !workspace.is_floating(&layout.containers, &id),
             "window {id} should return to tiling after the second toggle",
         );
     }
@@ -1295,11 +1350,14 @@ fn floating_toggle_workspace_subtree_returns_all_windows_inside_the_sway_wrapper
     {
         let workspace = layout.active_workspace().expect("active workspace");
         assert!(workspace.floating_is_active());
-        assert_eq!(workspace.container_tree().tiles().count(), 0);
-        assert_eq!(workspace.floating().tiles().count(), 3);
+        assert_eq!(
+            workspace.container_tree(&layout.containers).tiles().count(),
+            0
+        );
+        assert_eq!(workspace.floating(&layout.containers).tiles().count(), 3);
         for id in &selected_ids {
             assert!(
-                workspace.is_floating(id),
+                workspace.is_floating(&layout.containers, id),
                 "window {id} should move into the floating workspace subtree during the first toggle",
             );
         }
@@ -1308,20 +1366,26 @@ fn floating_toggle_workspace_subtree_returns_all_windows_inside_the_sway_wrapper
     check_ops_on_layout(&mut layout, [Op::ToggleWindowFloating { id: None }]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree_after = workspace.container_tree().debug_tree().replace(" *", "");
+    let tree_after = workspace
+        .container_tree(&layout.containers)
+        .debug_tree()
+        .replace(" *", "");
     assert!(
         !workspace.floating_is_active(),
         "unfloating an all-windows workspace subtree should return focus mode to tiling",
     );
-    assert_eq!(workspace.floating().tiles().count(), 0);
-    assert_eq!(workspace.container_tree().tiles().count(), 3);
+    assert_eq!(workspace.floating(&layout.containers).tiles().count(), 0);
+    assert_eq!(
+        workspace.container_tree(&layout.containers).tiles().count(),
+        3
+    );
     assert_eq!(
         tree_after, "SplitH\n  SplitH\n    Window 1\n    SplitV\n      Window 2\n      Window 3\n",
         "sway moves the workspace wrapper back into tiling instead of dissolving it",
     );
     for id in selected_ids {
         assert!(
-            !workspace.is_floating(&id),
+            !workspace.is_floating(&layout.containers, &id),
             "window {id} should return to tiling after restoring the whole workspace subtree",
         );
     }
@@ -1354,7 +1418,10 @@ fn floating_workspace_roundtrip_keeps_wrapper_selected_for_layout_toggle() {
     // remembered splitv becomes an intermediate wrapper below the splith workspace.
     // Measured in workspace-floating-roundtrip-layout-toggle.parity.
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree().replace(" *", "");
+    let tree = workspace
+        .container_tree(&layout.containers)
+        .debug_tree()
+        .replace(" *", "");
     assert!(
         tree.starts_with("SplitH\n  SplitV\n    Tabbed\n"),
         "the restored wrapper must remain selected so layout toggle wraps it like sway:\n{tree}",
@@ -1378,7 +1445,10 @@ fn floating_workspace_keeps_layout_on_wrapper_and_resets_workspace_to_splith() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert_eq!(workspace.debug_workspace_layout(), ContainerLayout::SplitH);
+    assert_eq!(
+        workspace.debug_workspace_layout(&layout.containers),
+        ContainerLayout::SplitH
+    );
     let tree = layout.layout_tree();
     let floating = tree.floating.first().expect("floating workspace wrapper");
     assert_eq!(floating.layout, Some(tiri_ipc::LayoutTreeLayout::Stacked));
@@ -1406,11 +1476,14 @@ fn floating_single_window_roundtrip_does_not_reintroduce_implicit_split_wrapper(
     {
         let workspace = layout.active_workspace().expect("active workspace");
         assert!(!workspace.floating_is_active());
-        assert_eq!(workspace.floating().tiles().count(), 0);
-        assert_eq!(workspace.container_tree().tiles().count(), 1);
-        let tree = workspace.container_tree().debug_tree();
+        assert_eq!(workspace.floating(&layout.containers).tiles().count(), 0);
+        assert_eq!(
+            workspace.container_tree(&layout.containers).tiles().count(),
+            1
+        );
+        let tree = workspace.container_tree(&layout.containers).debug_tree();
         assert!(
-            !workspace.container_tree().has_containers(),
+            !workspace.container_tree(&layout.containers).has_containers(),
             "floating->tiling roundtrip for a single implicit container should restore a leaf root:\n{tree}",
         );
     }
@@ -1419,8 +1492,11 @@ fn floating_single_window_roundtrip_does_not_reintroduce_implicit_split_wrapper(
     layout.toggle_window_floating(None);
     let workspace = layout.active_workspace().expect("active workspace");
     assert!(workspace.floating_is_active());
-    assert_eq!(workspace.floating().tiles().count(), 1);
-    assert_eq!(workspace.container_tree().tiles().count(), 0);
+    assert_eq!(workspace.floating(&layout.containers).tiles().count(), 1);
+    assert_eq!(
+        workspace.container_tree(&layout.containers).tiles().count(),
+        0
+    );
 }
 #[test]
 fn workspace_split_selects_the_new_tiling_wrapper_like_sway() {
@@ -1444,10 +1520,13 @@ fn workspace_split_selects_the_new_tiling_wrapper_like_sway() {
             "precondition: floating mode must be active"
         );
         assert!(
-            workspace.debug_floating_workspace_context(),
+            workspace.debug_floating_workspace_context(&layout.containers),
             "precondition: focus_parent on floating leaf should put us in workspace context",
         );
-        assert_eq!(workspace.container_tree().tiles().count(), 1);
+        assert_eq!(
+            workspace.container_tree(&layout.containers).tiles().count(),
+            1
+        );
     }
 
     layout.split_horizontal();
@@ -1458,7 +1537,7 @@ fn workspace_split_selects_the_new_tiling_wrapper_like_sway() {
         "the wrapper created around tiled children becomes the active side",
     );
     assert_eq!(
-        workspace.debug_command_target(),
+        workspace.debug_command_target(&layout.containers),
         "tiling_container",
         "workspace split should select the real wrapper node Sway reports as @0",
     );
@@ -1475,9 +1554,13 @@ fn floating_focus_parent_ignores_redundant_single_child_wrapper() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.is_floating(&1));
-    assert!(!workspace.floating().wrapper_selected_for_window(&1));
-    assert!(!workspace.floating().selected_is_container(Some(&1)));
+    assert!(workspace.is_floating(&layout.containers, &1));
+    assert!(!workspace
+        .floating(&layout.containers)
+        .wrapper_selected_for_window(&1));
+    assert!(!workspace
+        .floating(&layout.containers)
+        .selected_is_container(Some(&1)));
     assert!(workspace.floating_is_active());
 }
 #[test]
@@ -1499,8 +1582,8 @@ fn floating_focus_parent_at_wrapper_keeps_floating_mode() {
     {
         let workspace = layout.active_workspace().expect("active workspace");
         assert!(workspace.floating_is_active());
-        assert!(workspace.is_floating(&2));
-        assert!(!workspace.is_floating(&1));
+        assert!(workspace.is_floating(&layout.containers, &2));
+        assert!(!workspace.is_floating(&layout.containers, &1));
     }
 
     check_ops_on_layout(&mut layout, [Op::FocusParent]);
@@ -1531,8 +1614,11 @@ fn floating_explicit_split_returns_to_tiling_as_container() {
     );
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(!workspace.is_floating(&2));
-    let tree_after_return = workspace.container_tree().debug_tree().replace(" *", "");
+    assert!(!workspace.is_floating(&layout.containers, &2));
+    let tree_after_return = workspace
+        .container_tree(&layout.containers)
+        .debug_tree()
+        .replace(" *", "");
     assert!(
         tree_after_return.contains("SplitH\n  Window 1\n  SplitH\n    Window 2"),
         "floating split should return as nested tiling container:\n{tree_after_return}"
@@ -1546,7 +1632,10 @@ fn floating_explicit_split_returns_to_tiling_as_container() {
     );
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree_after_insert = workspace.container_tree().debug_tree().replace(" *", "");
+    let tree_after_insert = workspace
+        .container_tree(&layout.containers)
+        .debug_tree()
+        .replace(" *", "");
     assert!(
         tree_after_insert.contains("SplitH\n  Window 1\n  SplitH\n    Window 2\n    Window 3")
             || tree_after_insert
@@ -1569,13 +1658,15 @@ fn workspace_split_wrapper_survives_a_floating_roundtrip() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(!workspace.is_floating(&1));
+    assert!(!workspace.is_floating(&layout.containers, &1));
     assert!(
-        workspace.container_tree().selected_is_container(),
+        workspace
+            .container_tree(&layout.containers)
+            .selected_is_container(),
         "the same explicit split container must remain selected after returning to tiling"
     );
     assert_eq!(
-        workspace.container_tree().debug_tree(),
+        workspace.container_tree(&layout.containers).debug_tree(),
         "SplitH\n  SplitH\n    Window 1 *\n"
     );
 }
@@ -1595,11 +1686,18 @@ fn opening_tiled_after_workspace_selection_focuses_the_new_window() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.is_floating(&1));
-    assert!(!workspace.is_floating(&2));
-    assert_eq!(workspace.container_tree().focused_window_id(), Some(2));
+    assert!(workspace.is_floating(&layout.containers, &1));
+    assert!(!workspace.is_floating(&layout.containers, &2));
+    assert_eq!(
+        workspace
+            .container_tree(&layout.containers)
+            .focused_window_id(),
+        Some(2)
+    );
     assert!(
-        !workspace.container_tree().selected_is_container(),
+        !workspace
+            .container_tree(&layout.containers)
+            .selected_is_container(),
         "focusing a newly mapped view must clear the previous workspace selection"
     );
 }
@@ -1624,7 +1722,12 @@ fn focus_prev_between_floating_roots_focuses_and_raises_the_target() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert_eq!(workspace.container_tree().focused_window_id(), Some(1));
+    assert_eq!(
+        workspace
+            .container_tree(&layout.containers)
+            .focused_window_id(),
+        Some(1)
+    );
     assert_eq!(
         layout
             .layout_tree()
@@ -1655,25 +1758,25 @@ fn floating_to_tiling_restore_uses_leaf_reference_as_sibling() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(!workspace.is_floating(&3));
+    assert!(!workspace.is_floating(&layout.containers, &3));
 
     layout.activate_window(&1);
     let idx1 = layout
         .active_workspace()
         .expect("active workspace")
-        .container_tree()
+        .container_tree(&layout.containers)
         .focus_path();
     layout.activate_window(&3);
     let idx3 = layout
         .active_workspace()
         .expect("active workspace")
-        .container_tree()
+        .container_tree(&layout.containers)
         .focus_path();
     layout.activate_window(&2);
     let idx2 = layout
         .active_workspace()
         .expect("active workspace")
-        .container_tree()
+        .container_tree(&layout.containers)
         .focus_path();
 
     assert_eq!(
@@ -1756,25 +1859,25 @@ fn floating_to_tiling_restore_uses_container_reference_as_child() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(!workspace.is_floating(&3));
+    assert!(!workspace.is_floating(&layout.containers, &3));
 
     layout.activate_window(&1);
     let path1 = layout
         .active_workspace()
         .expect("active workspace")
-        .container_tree()
+        .container_tree(&layout.containers)
         .focus_path();
     layout.activate_window(&4);
     let path4 = layout
         .active_workspace()
         .expect("active workspace")
-        .container_tree()
+        .container_tree(&layout.containers)
         .focus_path();
     layout.activate_window(&3);
     let path3 = layout
         .active_workspace()
         .expect("active workspace")
-        .container_tree()
+        .container_tree(&layout.containers)
         .focus_path();
 
     assert!(
@@ -1820,9 +1923,12 @@ fn floating_stacked_then_split_roundtrip_preserves_container() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(!workspace.is_floating(&2));
-    assert!(!workspace.is_floating(&3));
-    let tree = workspace.container_tree().debug_tree().replace(" *", "");
+    assert!(!workspace.is_floating(&layout.containers, &2));
+    assert!(!workspace.is_floating(&layout.containers, &3));
+    let tree = workspace
+        .container_tree(&layout.containers)
+        .debug_tree()
+        .replace(" *", "");
     assert!(
         tree.contains("SplitH\n  Window 1\n  SplitH\n    Window 2\n    Window 3")
             || tree.contains("SplitH\n  Window 1\n  SplitH\n    Window 3\n    Window 2"),
@@ -1864,18 +1970,21 @@ fn floating_toggle_after_split_marks_container_as_grouped() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     let floating_id = *workspace
-        .floating()
+        .floating(&layout.containers)
         .active_window()
         .expect("floating window should stay active")
         .id();
-    assert!(workspace.is_floating(&floating_id));
+    assert!(workspace.is_floating(&layout.containers, &floating_id));
     assert!(
-        workspace.floating_container_allows_splits(&floating_id),
+        workspace.floating_container_allows_splits(&layout.containers, &floating_id),
         "floating explicit split should be considered grouped for toggle back"
     );
     check_ops_on_layout(&mut layout, [Op::ToggleWindowFloating { id: None }]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree().replace(" *", "");
+    let tree = workspace
+        .container_tree(&layout.containers)
+        .debug_tree()
+        .replace(" *", "");
     let has_single_leaf_split = tree.contains("\n  SplitH\n    Window ");
     assert!(
         has_single_leaf_split,
@@ -1905,13 +2014,17 @@ fn floating_focus_parent_reaches_wrapper_after_root_in_nested_tree() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.is_floating(&1));
-    assert!(!workspace.floating().wrapper_selected_for_window(&1));
+    assert!(workspace.is_floating(&layout.containers, &1));
+    assert!(!workspace
+        .floating(&layout.containers)
+        .wrapper_selected_for_window(&1));
 
     let mut layout = layout;
     check_ops_on_layout(&mut layout, [Op::FocusParent]);
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.floating().wrapper_selected_for_window(&1));
+    assert!(workspace
+        .floating(&layout.containers)
+        .wrapper_selected_for_window(&1));
 }
 #[test]
 fn floating_focus_child_exits_wrapper_selection() {
@@ -1927,8 +2040,10 @@ fn floating_focus_child_exits_wrapper_selection() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.is_floating(&1));
-    assert!(!workspace.floating().wrapper_selected_for_window(&1));
+    assert!(workspace.is_floating(&layout.containers, &1));
+    assert!(!workspace
+        .floating(&layout.containers)
+        .wrapper_selected_for_window(&1));
 }
 #[test]
 fn floating_split_on_selected_workspace_does_not_retarget_wrapper() {
@@ -1950,10 +2065,12 @@ fn floating_split_on_selected_workspace_does_not_retarget_wrapper() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.is_floating(&1));
-    assert!(workspace.is_floating(&2));
+    assert!(workspace.is_floating(&layout.containers, &1));
+    assert!(workspace.is_floating(&layout.containers, &2));
     assert_eq!(
-        workspace.floating().root_layout_for_window(&1),
+        workspace
+            .floating(&layout.containers)
+            .root_layout_for_window(&1),
         Some(ContainerLayout::SplitV)
     );
 }
@@ -1976,13 +2093,18 @@ fn floating_set_layout_mode_on_wrapper_is_noop_like_sway() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.is_floating(&1));
-    assert!(workspace.is_floating(&2));
+    assert!(workspace.is_floating(&layout.containers, &1));
+    assert!(workspace.is_floating(&layout.containers, &2));
     assert_eq!(
-        workspace.floating().root_layout_for_window(&1),
+        workspace
+            .floating(&layout.containers)
+            .root_layout_for_window(&1),
         Some(ContainerLayout::SplitV)
     );
-    assert_eq!(workspace.debug_workspace_layout(), ContainerLayout::Tabbed);
+    assert_eq!(
+        workspace.debug_workspace_layout(&layout.containers),
+        ContainerLayout::Tabbed
+    );
 }
 #[test]
 fn floating_consume_into_column_uses_floating_tree() {
@@ -1996,9 +2118,11 @@ fn floating_consume_into_column_uses_floating_tree() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.is_floating(&1));
+    assert!(workspace.is_floating(&layout.containers, &1));
     assert_eq!(
-        workspace.floating().root_layout_for_window(&1),
+        workspace
+            .floating(&layout.containers)
+            .root_layout_for_window(&1),
         Some(ContainerLayout::SplitV)
     );
 }
@@ -2014,9 +2138,11 @@ fn floating_expel_from_column_uses_floating_tree() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.is_floating(&1));
+    assert!(workspace.is_floating(&layout.containers, &1));
     assert_eq!(
-        workspace.floating().root_layout_for_window(&1),
+        workspace
+            .floating(&layout.containers)
+            .root_layout_for_window(&1),
         Some(ContainerLayout::SplitH)
     );
 }
@@ -2035,10 +2161,12 @@ fn consume_or_expel_targeting_floating_window_does_not_use_tiling_tree() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.is_floating(&1));
-    assert!(!workspace.is_floating(&2));
+    assert!(workspace.is_floating(&layout.containers, &1));
+    assert!(!workspace.is_floating(&layout.containers, &2));
     assert_eq!(
-        workspace.floating().root_layout_for_window(&1),
+        workspace
+            .floating(&layout.containers)
+            .root_layout_for_window(&1),
         Some(ContainerLayout::SplitV)
     );
     assert!(window_layout(&layout, 2).pos_in_tiling_layout.is_some());
@@ -2056,9 +2184,11 @@ fn floating_toggle_column_tabbed_display_changes_floating_layout() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.is_floating(&1));
+    assert!(workspace.is_floating(&layout.containers, &1));
     assert_eq!(
-        workspace.floating().root_layout_for_window(&1),
+        workspace
+            .floating(&layout.containers)
+            .root_layout_for_window(&1),
         Some(ContainerLayout::Tabbed)
     );
 }
@@ -2088,10 +2218,12 @@ fn floating_tab_bar_hit_does_not_report_resize_edges() {
 
     {
         let workspace = layout.active_workspace().expect("active workspace");
-        assert!(workspace.is_floating(&1));
-        assert!(workspace.is_floating(&2));
+        assert!(workspace.is_floating(&layout.containers, &1));
+        assert!(workspace.is_floating(&layout.containers, &2));
         assert_eq!(
-            workspace.floating().root_layout_for_window(&1),
+            workspace
+                .floating(&layout.containers)
+                .root_layout_for_window(&1),
             Some(ContainerLayout::Tabbed)
         );
     }
@@ -2273,13 +2405,18 @@ fn interactive_move_floating_window_stays_out_of_active_grouped_floating_contain
     {
         let workspace = layout.active_workspace().expect("active workspace");
         let window2_tree = workspace
-            .floating()
+            .floating(&layout.containers)
             .debug_tree_for_window(&2)
             .expect("window 2 floating tree");
-        assert_eq!(workspace.container_tree().tiles().count(), 0);
-        assert_eq!(workspace.floating().tiles().count(), 4);
         assert_eq!(
-            workspace.floating().root_layout_for_window(&1),
+            workspace.container_tree(&layout.containers).tiles().count(),
+            0
+        );
+        assert_eq!(workspace.floating(&layout.containers).tiles().count(), 4);
+        assert_eq!(
+            workspace
+                .floating(&layout.containers)
+                .root_layout_for_window(&1),
             Some(ContainerLayout::SplitV)
         );
         assert_eq!(
@@ -2312,13 +2449,18 @@ fn interactive_move_floating_window_stays_out_of_active_grouped_floating_contain
 
     let workspace = layout.active_workspace().expect("active workspace");
     let window2_tree = workspace
-        .floating()
+        .floating(&layout.containers)
         .debug_tree_for_window(&2)
         .expect("window 2 floating tree");
-    assert_eq!(workspace.container_tree().tiles().count(), 0);
-    assert_eq!(workspace.floating().tiles().count(), 4);
     assert_eq!(
-        workspace.floating().root_layout_for_window(&1),
+        workspace.container_tree(&layout.containers).tiles().count(),
+        0
+    );
+    assert_eq!(workspace.floating(&layout.containers).tiles().count(), 4);
+    assert_eq!(
+        workspace
+            .floating(&layout.containers)
+            .root_layout_for_window(&1),
         Some(ContainerLayout::SplitV)
     );
     assert_eq!(
@@ -2354,18 +2496,21 @@ fn interactive_move_floating_window_stays_out_of_toggled_floating_subtree() {
     {
         let workspace = layout.active_workspace().expect("active workspace");
         let window1_tree = workspace
-            .floating()
+            .floating(&layout.containers)
             .debug_tree_for_window(&1)
             .expect("window 1 floating tree");
-        assert_eq!(workspace.container_tree().tiles().count(), 1);
-        assert_eq!(workspace.floating().tiles().count(), 3);
+        assert_eq!(
+            workspace.container_tree(&layout.containers).tiles().count(),
+            1
+        );
+        assert_eq!(workspace.floating(&layout.containers).tiles().count(), 3);
         assert_eq!(
             window1_tree.matches("Window ").count(),
             1,
             "precondition: window 1 should start in its own floating container:\n{window1_tree}",
         );
         let window4_tree = workspace
-            .floating()
+            .floating(&layout.containers)
             .debug_tree_for_window(&4)
             .expect("window 4 floating tree");
         assert!(
@@ -2397,11 +2542,14 @@ fn interactive_move_floating_window_stays_out_of_toggled_floating_subtree() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     let window1_tree = workspace
-        .floating()
+        .floating(&layout.containers)
         .debug_tree_for_window(&1)
         .expect("window 1 floating tree");
-    assert_eq!(workspace.container_tree().tiles().count(), 1);
-    assert_eq!(workspace.floating().tiles().count(), 3);
+    assert_eq!(
+        workspace.container_tree(&layout.containers).tiles().count(),
+        1
+    );
+    assert_eq!(workspace.floating(&layout.containers).tiles().count(), 3);
     assert_eq!(
         window1_tree.matches("Window ").count(),
         1,
@@ -2473,7 +2621,7 @@ fn floating_interactive_resize_then_unfloat_clears_resize_state() {
     let layout = check_ops(ops);
     let workspace = layout.active_workspace().unwrap();
 
-    assert!(!workspace.is_floating(&5));
+    assert!(!workspace.is_floating(&layout.containers, &5));
 }
 #[test]
 fn kill_selected_floating_container_does_not_close_other_windows() {
@@ -2502,10 +2650,13 @@ fn kill_selected_floating_container_does_not_close_other_windows() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert!(workspace.floating_is_active());
-    assert_eq!(workspace.container_tree().tiles().count(), 1);
-    assert_eq!(workspace.floating().tiles().count(), 3);
+    assert_eq!(
+        workspace.container_tree(&layout.containers).tiles().count(),
+        1
+    );
+    assert_eq!(workspace.floating(&layout.containers).tiles().count(), 3);
     assert!(
-        workspace.debug_command_target() == "floating_container",
+        workspace.debug_command_target(&layout.containers) == "floating_container",
         "precondition: expected floating container selection",
     );
 
@@ -2538,11 +2689,16 @@ fn focusing_floating_leaf_clears_container_selection_and_restores_leaf_navigatio
     {
         let workspace = layout.active_workspace().expect("active workspace");
         assert!(workspace.floating_is_active());
-        assert_eq!(workspace.debug_command_target(), "floating_window");
-        assert!(!workspace.debug_floating_workspace_context());
-        assert!(!workspace.debug_active_floating_wrapper_selected());
+        assert_eq!(
+            workspace.debug_command_target(&layout.containers),
+            "floating_window"
+        );
+        assert!(!workspace.debug_floating_workspace_context(&layout.containers));
+        assert!(!workspace.debug_active_floating_wrapper_selected(&layout.containers));
         assert!(
-            !workspace.floating().selected_is_container(Some(&2)),
+            !workspace
+                .floating(&layout.containers)
+                .selected_is_container(Some(&2)),
             "explicitly focusing a floating leaf should clear floating container selection",
         );
     }
@@ -2557,14 +2713,20 @@ fn focusing_floating_leaf_clears_container_selection_and_restores_leaf_navigatio
     layout.focus_parent();
     {
         let workspace = layout.active_workspace().expect("active workspace");
-        assert_eq!(workspace.debug_command_target(), "floating_container");
+        assert_eq!(
+            workspace.debug_command_target(&layout.containers),
+            "floating_container"
+        );
     }
 
     layout.toggle_window_floating(None);
     let workspace = layout.active_workspace().expect("active workspace");
     assert!(!workspace.floating_is_active());
-    assert_eq!(workspace.floating().tiles().count(), 0);
-    assert_eq!(workspace.container_tree().tiles().count(), 3);
+    assert_eq!(workspace.floating(&layout.containers).tiles().count(), 0);
+    assert_eq!(
+        workspace.container_tree(&layout.containers).tiles().count(),
+        3
+    );
 }
 #[test]
 fn floating_toggle_on_selected_workspace_with_only_floating_is_noop_like_sway() {
@@ -2582,9 +2744,15 @@ fn floating_toggle_on_selected_workspace_with_only_floating_is_noop_like_sway() 
     {
         let workspace = layout.active_workspace().expect("active workspace");
         assert!(workspace.floating_is_active());
-        assert!(workspace.debug_floating_workspace_context());
-        assert_eq!(workspace.debug_command_context(), "workspace");
-        assert_eq!(workspace.debug_command_target(), "workspace");
+        assert!(workspace.debug_floating_workspace_context(&layout.containers));
+        assert_eq!(
+            workspace.debug_command_context(&layout.containers),
+            "workspace"
+        );
+        assert_eq!(
+            workspace.debug_command_target(&layout.containers),
+            "workspace"
+        );
     }
 
     layout.toggle_window_floating(None);
@@ -2594,8 +2762,11 @@ fn floating_toggle_on_selected_workspace_with_only_floating_is_noop_like_sway() 
         workspace.floating_is_active(),
         "the selected workspace has no tiled node that floating toggle could move",
     );
-    assert_eq!(workspace.floating().tiles().count(), 1);
-    assert_eq!(workspace.container_tree().tiles().count(), 0);
+    assert_eq!(workspace.floating(&layout.containers).tiles().count(), 1);
+    assert_eq!(
+        workspace.container_tree(&layout.containers).tiles().count(),
+        0
+    );
 }
 #[test]
 fn layout_focus_history_keeps_workspace_scope_and_workspace_restores_floating_node() {
@@ -2624,7 +2795,7 @@ fn layout_focus_history_keeps_workspace_scope_and_workspace_restores_floating_no
     assert!(
         layout
             .active_workspace()
-            .and_then(|workspace| workspace.active_window())
+            .and_then(|workspace| workspace.active_window(&layout.containers))
             .is_some_and(|window| *window.id() == 1),
         "the workspace seat must restore its own floating target",
     );
@@ -2655,7 +2826,10 @@ fn floating_active_window_is_filtered_from_workspace_seat_mru() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert_eq!(
-        workspace.floating().active_window().map(LayoutElement::id),
+        workspace
+            .floating(&layout.containers)
+            .active_window()
+            .map(LayoutElement::id),
         Some(&2),
         "while tiling has focus, floating must use the same seat's filtered MRU"
     );
@@ -2663,7 +2837,10 @@ fn floating_active_window_is_filtered_from_workspace_seat_mru() {
     check_ops_on_layout(&mut layout, [Op::CloseWindow(2)]);
     let workspace = layout.active_workspace().expect("active workspace");
     assert_eq!(
-        workspace.floating().active_window().map(LayoutElement::id),
+        workspace
+            .floating(&layout.containers)
+            .active_window()
+            .map(LayoutElement::id),
         Some(&3),
         "removing the inactive MRU must reveal the next live seat entry, not a stale cache"
     );
@@ -2684,15 +2861,18 @@ fn floating_workspace_context_layout_all_preserves_context_like_split_toggle() {
 
     {
         let workspace = layout.active_workspace().expect("active workspace");
-        assert!(workspace.debug_floating_workspace_context());
-        assert_eq!(workspace.debug_command_context(), "workspace");
+        assert!(workspace.debug_floating_workspace_context(&layout.containers));
+        assert_eq!(
+            workspace.debug_command_context(&layout.containers),
+            "workspace"
+        );
     }
 
     layout.toggle_layout_all();
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert!(
-        workspace.debug_floating_workspace_context(),
+        workspace.debug_floating_workspace_context(&layout.containers),
         "layout toggle all must preserve the floating workspace context and route to the \
          selected floating container, matching layout toggle split",
     );
@@ -2715,7 +2895,7 @@ fn the_two_sides_of_a_workspace_do_not_overwrite_each_other_s_focus() {
     layout.update_render_elements(None);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let containers = workspace.container_tree();
+    let containers = workspace.container_tree(&layout.containers);
     assert!(
         containers.side_is_active(false),
         "the tiled side holds the focus, so it must render as active"
@@ -2729,7 +2909,7 @@ fn the_two_sides_of_a_workspace_do_not_overwrite_each_other_s_focus() {
     layout.update_render_elements(None);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let containers = workspace.container_tree();
+    let containers = workspace.container_tree(&layout.containers);
     assert!(
         containers.side_is_active(true),
         "the window floated, so the floating side holds the focus"
@@ -2770,17 +2950,20 @@ fn a_floating_window_arriving_fullscreen_yields_to_the_one_already_there() {
 
     let (_, _, workspace) = layout
         .workspaces()
-        .find(|(_, _, ws)| ws.has_window(&2))
+        .find(|(_, _, ws)| ws.has_window(&layout.containers, &2))
         .expect("the destination workspace");
-    assert!(workspace.has_window(&1), "window 1 moved here");
+    assert!(
+        workspace.has_window(&layout.containers, &1),
+        "window 1 moved here"
+    );
     assert_eq!(
-        workspace.fullscreen_window_ids(),
+        workspace.fullscreen_window_ids(&layout.containers),
         vec![2],
         "window 2 keeps the workspace's one fullscreen pointer"
     );
     assert!(
         !workspace
-            .windows()
+            .windows(&layout.containers)
             .find(|win| win.id() == &1)
             .expect("window 1")
             .pending_sizing_mode()

@@ -20,12 +20,13 @@ impl<W: LayoutElement> ContainerArena<W> {
         // Not "was the closed window inside the fullscreen scope": what decides whether the
         // workspace inherits the selection is where the *selection* was. See
         // `reconcile_focus_after_change`.
-        let selection_was_below_fullscreen = match (self.selected_key(), self.fullscreen_key) {
-            (Some(selected), Some(scope)) => {
-                selected != scope && self.is_descendant(selected, scope)
-            }
-            _ => false,
-        };
+        let selection_was_below_fullscreen =
+            match (self.selected_key(), self.fullscreen_key(workspace)) {
+                (Some(selected), Some(scope)) => {
+                    selected != scope && self.is_descendant(selected, scope)
+                }
+                _ => false,
+            };
         let former_ancestors = cleanup_key
             .map(|parent| self.focus_chain(parent))
             .unwrap_or_default();
@@ -57,10 +58,10 @@ impl<W: LayoutElement> ContainerArena<W> {
         // destroying the last view, then exposes the tiled branch that had been held at 0x0.
         // Keeping the empty scope for even this arrange skips every surviving branch.
         if self
-            .fullscreen_key
+            .fullscreen_key(workspace)
             .is_some_and(|scope| self.branch_is_empty(scope))
         {
-            self.fullscreen_key = None;
+            self.fullscreen_keys.remove(&workspace);
         }
         self.prune_leaf_layouts(workspace);
 
@@ -123,7 +124,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         // Any outstanding layout describes a branch that still contains the node being
         // transferred. It cannot govern either the source after detachment or the destination.
-        self.discard_layout_superseded_by_transfer();
+        self.discard_layout_superseded_by_transfer(workspace);
 
         let focused_in_subtree = self
             .focused_key()
@@ -223,10 +224,14 @@ impl<W: LayoutElement> ContainerArena<W> {
         })
     }
 
-    /// Insert a detached subtree into this tree, returning the new root key.
-    pub(super) fn insert_subtree(&mut self, subtree: DetachedNode<W>) -> NodeKey {
+    /// Insert a detached subtree into a workspace of this arena, returning the new root key.
+    pub(super) fn insert_subtree(
+        &mut self,
+        workspace: NodeKey,
+        subtree: DetachedNode<W>,
+    ) -> NodeKey {
         let split = match subtree {
-            DetachedNode::View(view) => return self.insert_view(*view),
+            DetachedNode::View(view) => return self.insert_view(workspace, *view),
             DetachedNode::Split(split) => split,
         };
         let DetachedSplit {
@@ -242,11 +247,11 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         let mut node = ContainerData::new(layout);
         node.marks = marks;
-        self.insert_node_with_key(container_key, NodeData::Container(node));
+        self.insert_node_with_key(workspace, container_key, NodeData::Container(node));
 
         let mut child_keys = Vec::new();
         for child in children {
-            let child_key = self.insert_subtree(child);
+            let child_key = self.insert_subtree(workspace, child);
             self.set_parent(child_key, Some(container_key));
             child_keys.push(child_key);
         }

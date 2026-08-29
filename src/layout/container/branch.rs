@@ -19,16 +19,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.workspaces.clone()
     }
 
-    /// The one workspace this arena holds.
-    ///
-    /// The list is never empty and has one entry, so this is total and unambiguous — for now.
-    /// It is the last thing standing between this arena and several workspaces: every caller
-    /// of it is a place that has not yet been told which one it means, and `ContainerTree`
-    /// already knows, which is why most of them ask it instead.
-    pub(in crate::layout) fn workspace_root(&self) -> NodeKey {
-        self.workspaces[0]
-    }
-
     /// Whether a branch holds no windows.
     pub(in crate::layout) fn branch_is_empty(&self, branch_root: NodeKey) -> bool {
         self.first_leaf_in_branch(branch_root).is_none()

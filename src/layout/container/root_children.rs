@@ -15,8 +15,8 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
     }
 
-    pub(in crate::layout) fn root_container(&self) -> Option<&WorkspaceData> {
-        self.get_workspace()
+    pub(in crate::layout) fn root_container(&self, workspace: NodeKey) -> Option<&WorkspaceData> {
+        self.get_workspace(workspace)
     }
 
     /// Index of currently focused root child, if any.
@@ -132,8 +132,8 @@ impl<W: LayoutElement> ContainerArena<W> {
         // A pending arrange of the destination predates this entire branch. Waiting for it
         // would leave the transferred container (including its tab bar) absent until another
         // commit or command invalidated the layout.
-        self.discard_layout_superseded_by_transfer();
-        let node_key = self.insert_subtree(subtree);
+        self.discard_layout_superseded_by_transfer(workspace);
+        let node_key = self.insert_subtree(workspace, subtree);
         if self.unwrap_into_empty_workspace(workspace, node_key, focus) {
             return;
         }
@@ -285,7 +285,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         tile: DetachedView<W>,
         focus: bool,
     ) {
-        let tile_key = self.insert_view(tile);
+        let tile_key = self.insert_view(workspace, tile);
         self.insert_key_into_branch(workspace, branch_root, index, tile_key, focus);
     }
 

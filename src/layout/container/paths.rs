@@ -47,7 +47,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
     }
 
-    pub(super) fn first_leaf_key(&self, workspace: NodeKey) -> Option<NodeKey> {
+    pub(in crate::layout) fn first_leaf_key(&self, workspace: NodeKey) -> Option<NodeKey> {
         self.leaf_under_key(workspace)
     }
 

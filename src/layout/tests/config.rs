@@ -347,7 +347,10 @@ fn a_config_reload_re_derives_the_working_area_from_the_new_struts() {
         layout.active_workspace().unwrap().working_area().size.h,
         620.
     );
-    assert_eq!(layout.active_workspace().unwrap().working_area().loc.y, 100.);
+    assert_eq!(
+        layout.active_workspace().unwrap().working_area().loc.y,
+        100.
+    );
 
     layout.verify_invariants();
 }
@@ -376,7 +379,6 @@ fn struts_survive_a_workspace_being_parked_without_outputs() {
     layout.verify_invariants();
 }
 
-
 #[test]
 fn the_two_answers_to_every_tile_in_a_workspace_agree() {
     let ops = [
@@ -403,16 +405,16 @@ fn the_two_answers_to_every_tile_in_a_workspace_agree() {
     ];
 
     let mut layout = check_ops(ops);
-    let ws = layout.active_workspace_mut().unwrap();
+    let (ws, containers) = layout.active_workspace_and_containers_mut().unwrap();
 
     // Same tiles and same order, both sides of the workspace included. They are one walk now,
     // and the point of the test is to notice if they stop being one.
     let read: Vec<_> = ws
-        .tiles()
+        .tiles(containers)
         .map(|tile| *tile.window().id())
         .collect();
     let written: Vec<_> = ws
-        .tiles_mut()
+        .tiles_mut(containers)
         .map(|tile| *tile.window().id())
         .collect();
 

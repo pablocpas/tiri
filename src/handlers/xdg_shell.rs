@@ -441,7 +441,7 @@ impl XdgShellHandler for State {
                 }
 
                 let mon = self.niri.layout.monitor_for_output(output).unwrap();
-                if !mon.render_above_top_layer()
+                if !mon.render_above_top_layer(self.niri.layout.containers())
                     && layers.layers_on(Layer::Top).any(|l| {
                         (l.cached_state().keyboard_interactivity
                             == wlr_layer::KeyboardInteractivity::Exclusive
@@ -586,7 +586,14 @@ impl XdgShellHandler for State {
                         toplevel.with_pending_state(|state| {
                             state.states.set(xdg_toplevel::State::Fullscreen);
                         });
-                        ws.configure_new_window(&unmapped.window, None, None, false, rules);
+                        ws.configure_new_window(
+                            layout.containers(),
+                            &unmapped.window,
+                            None,
+                            None,
+                            false,
+                            rules,
+                        );
                     }
 
                     // We already sent the initial configure, so we need to reconfigure.
@@ -655,6 +662,7 @@ impl XdgShellHandler for State {
                             *height
                         };
                         ws.configure_new_window(
+                            layout.containers(),
                             &unmapped.window,
                             configure_width,
                             configure_height,
@@ -1007,6 +1015,7 @@ impl State {
             let configure_width = if is_floating { floating_width } else { width };
             let configure_height = if is_floating { floating_height } else { height };
             ws.configure_new_window(
+                self.niri.layout.containers(),
                 window,
                 configure_width,
                 configure_height,

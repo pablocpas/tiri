@@ -54,16 +54,16 @@ fn fullscreen_binding_accepts_a_selected_floating_container() {
     f.niri_state()
         .do_action(tiri_config::Action::FullscreenWindow, false);
 
-    let workspace = f
+    let (workspace, containers) = f
         .niri()
         .layout
-        .active_workspace()
+        .active_workspace_and_containers()
         .expect("active workspace");
-    assert_eq!(workspace.fullscreen_window_ids().len(), 1);
-    assert!(workspace.render_above_top_layer());
+    assert_eq!(workspace.fullscreen_window_ids(containers).len(), 1);
+    assert!(workspace.render_above_top_layer(containers));
     assert_eq!(
         workspace
-            .tiles_with_render_positions()
+            .tiles_with_render_positions(containers)
             .filter(|(_, _, visible)| *visible)
             .count(),
         2,
@@ -350,7 +350,6 @@ fn unfullscreen_before_the_fullscreen_ack_sends_no_configures() {
         f.roundtrip(id);
         f.niri_complete_animations();
     }
-
 }
 
 #[test]
@@ -400,12 +399,12 @@ fn a_maximize_request_is_answered_and_ignored() {
     let (mut f, id, surface) = set_up();
     let _ = f.client(id).window(&surface).recent_configures();
 
-    let size_before = f
-        .niri()
-        .layout
-        .workspaces()
-        .find_map(|(_, _, ws)| ws.windows().next().map(|w| w.size()))
-        .unwrap();
+    let size_before = {
+        let (mut workspaces, containers) = f.niri().layout.workspaces_and_containers();
+        workspaces
+            .find_map(|(_, _, ws)| ws.windows(containers).next().map(|w| w.size()))
+            .unwrap()
+    };
 
     f.client(id).window(&surface).set_maximized();
     f.double_roundtrip(id);
@@ -424,12 +423,12 @@ fn a_maximize_request_is_answered_and_ignored() {
         @"size: 1904 × 1064, bounds: 1904 × 1064, states: [Activated]"
     );
 
-    let size_after = f
-        .niri()
-        .layout
-        .workspaces()
-        .find_map(|(_, _, ws)| ws.windows().next().map(|w| w.size()))
-        .unwrap();
+    let size_after = {
+        let (mut workspaces, containers) = f.niri().layout.workspaces_and_containers();
+        workspaces
+            .find_map(|(_, _, ws)| ws.windows(containers).next().map(|w| w.size()))
+            .unwrap()
+    };
     assert_eq!(
         size_before, size_after,
         "the request must not resize anything"

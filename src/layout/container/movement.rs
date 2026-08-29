@@ -122,7 +122,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             // check dissolved a fullscreen wrapper when a leaf tried to move across it.
             //
             // sway/commands/move.c:324-328
-            if self.fullscreen_key == Some(current) || self.is_floating_root(current) {
+            if self.fullscreen_key(workspace) == Some(current) || self.is_floating_root(current) {
                 return false;
             }
             let Some(parent_key) = self.parent_of(current) else {
@@ -141,9 +141,12 @@ impl<W: LayoutElement> ContainerArena<W> {
                     continue;
                 }
                 // Nothing anywhere faces the right way, so the branch's root turns to face it.
-                let Some(wrapper_key) =
-                    self.wrap_branch_children(parent_key, parent_layout, direction.split_layout())
-                else {
+                let Some(wrapper_key) = self.wrap_branch_children(
+                    workspace,
+                    parent_key,
+                    parent_layout,
+                    direction.split_layout(),
+                ) else {
                     return false;
                 };
                 // `container->pending.height = container->pending.width = 0;` — sway

@@ -30,20 +30,22 @@ fn add_window(f: &mut Fixture, id: ClientId, size: (u16, u16)) -> WlSurface {
 }
 
 fn active_workspace_window_count(f: &mut Fixture) -> usize {
-    f.niri()
+    let (workspace, containers) = f
+        .niri()
         .layout
-        .active_workspace()
-        .expect("active workspace")
-        .windows()
-        .count()
+        .active_workspace_and_containers()
+        .expect("active workspace");
+    workspace.windows(containers).count()
 }
 
 fn active_window_id(f: &mut Fixture) -> u64 {
-    f.niri()
+    let (workspace, containers) = f
+        .niri()
         .layout
-        .active_workspace()
-        .expect("active workspace")
-        .active_window()
+        .active_workspace_and_containers()
+        .expect("active workspace");
+    workspace
+        .active_window(containers)
         .expect("active window")
         .id()
         .get()

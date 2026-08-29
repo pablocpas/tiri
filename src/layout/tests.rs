@@ -1002,14 +1002,12 @@ impl Op {
                 layout_config,
             } => {
                 let ws_name = format!("ws{ws_name}");
-                let Some(ws) = layout
-                    .workspaces_mut()
-                    .find(|ws| ws.name() == Some(&ws_name))
-                else {
+                let (mut workspaces, containers) = layout.workspaces_and_containers_mut();
+                let Some(ws) = workspaces.find(|ws| ws.name() == Some(&ws_name)) else {
                     return;
                 };
 
-                ws.update_layout_config(layout_config.map(|x| *x));
+                ws.update_layout_config(containers, layout_config.map(|x| *x));
             }
             Op::SetWorkspaceName {
                 new_ws_name,
@@ -1067,7 +1065,7 @@ impl Op {
                     MonitorSet::Normal { monitors, .. } => {
                         for mon in monitors {
                             for ws in &mut mon.workspaces {
-                                for win in ws.windows() {
+                                for win in ws.windows(&layout.containers) {
                                     if win.0.id == next_to_id {
                                         found_next_to = true;
                                     }
@@ -1077,7 +1075,7 @@ impl Op {
                     }
                     MonitorSet::NoOutputs { workspaces, .. } => {
                         for ws in workspaces {
-                            for win in ws.windows() {
+                            for win in ws.windows(&layout.containers) {
                                 if win.0.id == next_to_id {
                                     found_next_to = true;
                                 }
@@ -1530,7 +1528,7 @@ impl Op {
                     MonitorSet::Normal { monitors, .. } => {
                         'outer: for mon in monitors {
                             for ws in &mut mon.workspaces {
-                                for win in ws.windows() {
+                                for win in ws.windows(&layout.containers) {
                                     if win.0.id == id {
                                         win.0.parent_id.set(new_parent_id);
                                         update = true;
@@ -1542,7 +1540,7 @@ impl Op {
                     }
                     MonitorSet::NoOutputs { workspaces, .. } => {
                         'outer: for ws in workspaces {
-                            for win in ws.windows() {
+                            for win in ws.windows(&layout.containers) {
                                 if win.0.id == id {
                                     win.0.parent_id.set(new_parent_id);
                                     update = true;
@@ -1588,7 +1586,7 @@ impl Op {
                     MonitorSet::Normal { monitors, .. } => {
                         'outer: for mon in monitors {
                             for ws in &mut mon.workspaces {
-                                for win in ws.windows() {
+                                for win in ws.windows(&layout.containers) {
                                     if win.0.id == id {
                                         if win.communicate() {
                                             update = true;
@@ -1601,7 +1599,7 @@ impl Op {
                     }
                     MonitorSet::NoOutputs { workspaces, .. } => {
                         'outer: for ws in workspaces {
-                            for win in ws.windows() {
+                            for win in ws.windows(&layout.containers) {
                                 if win.0.id == id {
                                     if win.communicate() {
                                         update = true;
@@ -1777,7 +1775,10 @@ impl Op {
 fn marks_for(layout: &Layout<TestWindow>, id: usize) -> Vec<String> {
     layout
         .workspaces()
-        .find_map(|(_, _, ws)| ws.has_window(&id).then(|| ws.marks_for_window(&id)))
+        .find_map(|(_, _, ws)| {
+            ws.has_window(&layout.containers, &id)
+                .then(|| ws.marks_for_window(&layout.containers, &id))
+        })
         .unwrap_or_default()
 }
 
@@ -1818,7 +1819,7 @@ fn requested_size(layout: &Layout<TestWindow>, id: usize) -> Size<i32, Logical> 
 
 fn tile_rect(layout: &Layout<TestWindow>, id: usize) -> Rectangle<f64, Logical> {
     for (_, _, ws) in layout.workspaces() {
-        for (tile, pos, _visible) in ws.tiles_with_render_positions() {
+        for (tile, pos, _visible) in ws.tiles_with_render_positions(&layout.containers) {
             if *tile.window().id() == id {
                 return Rectangle::new(pos, tile.tile_size());
             }
@@ -1831,7 +1832,7 @@ fn tile_rect(layout: &Layout<TestWindow>, id: usize) -> Rectangle<f64, Logical> 
 fn assert_no_internal_vertical_seams(layout: &Layout<TestWindow>, ids: &[usize]) {
     let mut rects = Vec::new();
     for (_, _, ws) in layout.workspaces() {
-        for (tile, pos, visible) in ws.tiles_with_render_positions() {
+        for (tile, pos, visible) in ws.tiles_with_render_positions(&layout.containers) {
             if !visible {
                 continue;
             }
@@ -2146,7 +2147,10 @@ fn single_leaf_stacked_layout_wraps_immediately() {
     // workspace keeps its orientation. The workspace is not what becomes stacked — only a
     // command aimed at the workspace itself does that.
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree().replace(" *", "");
+    let tree = workspace
+        .container_tree(&layout.containers)
+        .debug_tree()
+        .replace(" *", "");
     assert_eq!(
         tree.trim_end(),
         "SplitH\n  Stacked\n    Window 1",
@@ -2175,7 +2179,10 @@ fn repeated_layout_split_on_nested_single_child_split_is_noop() {
     // Measured against sway 1.11: one splitv container under the workspace, no matter how
     // many times the layout is restated. Repeating a layout never nests.
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree().replace(" *", "");
+    let tree = workspace
+        .container_tree(&layout.containers)
+        .debug_tree()
+        .replace(" *", "");
     assert_eq!(
         tree.trim_end(),
         "SplitH\n  SplitV\n    Window 1",
@@ -2206,7 +2213,10 @@ fn layout_splith_on_single_child_preserved_split_stays_flat() {
 
     {
         let workspace = layout.active_workspace().expect("active workspace");
-        let tree = workspace.container_tree().debug_tree().replace(" *", "");
+        let tree = workspace
+            .container_tree(&layout.containers)
+            .debug_tree()
+            .replace(" *", "");
         assert_eq!(
             tree.trim_end(),
             "SplitH\n  Window 1\n  SplitH\n    Window 2",
@@ -2217,7 +2227,10 @@ fn layout_splith_on_single_child_preserved_split_stays_flat() {
     layout.set_layout_mode(ContainerLayout::SplitH);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree().replace(" *", "");
+    let tree = workspace
+        .container_tree(&layout.containers)
+        .debug_tree()
+        .replace(" *", "");
     assert_eq!(
         tree.trim_end(),
         "SplitH\n  Window 1\n  SplitH\n    Window 2",
@@ -2248,9 +2261,9 @@ fn closing_tab_in_nested_tabbed_container_keeps_tabbed_parent() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(!workspace.is_floating(&1));
-    assert!(!workspace.is_floating(&2));
-    assert!(!workspace.is_floating(&3));
+    assert!(!workspace.is_floating(&layout.containers, &1));
+    assert!(!workspace.is_floating(&layout.containers, &2));
+    assert!(!workspace.is_floating(&layout.containers, &3));
 
     let r1 = tile_rect(&layout, 1);
     let r2 = tile_rect(&layout, 2);
@@ -2356,7 +2369,10 @@ fn tiling_focus_parent_on_root_inserts_new_window_as_sibling() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree().replace(" *", "");
+    let tree = workspace
+        .container_tree(&layout.containers)
+        .debug_tree()
+        .replace(" *", "");
     assert!(
         tree.contains("SplitH\n  Stacked\n    Window 1\n    Window 2\n    Window 3\n  Window 4")
             || tree.contains(
@@ -2389,7 +2405,7 @@ fn focus_left_wraps_within_split_container_like_sway() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_eq!(layout.focus().map(|win| *win.id()), Some(3));
     assert!(
         tree.contains("Window 3 *"),
@@ -3326,12 +3342,12 @@ fn command_target_and_domain_follow_the_selected_node() {
         let workspace = layout.active_workspace().expect("active workspace");
 
         assert_eq!(
-            workspace.debug_command_target(),
+            workspace.debug_command_target(&layout.containers),
             expected.handler,
             "case={name}: unexpected command_target",
         );
         assert_eq!(
-            workspace.debug_command_context(),
+            workspace.debug_command_context(&layout.containers),
             expected.command,
             "case={name}: unexpected command_context",
         );
@@ -3366,7 +3382,7 @@ fn insert_position_with_window_on_top_edge() {
 
     // Position at top edge should indicate SplitRoot with Up direction
     let pos = Point::from((100.0, 0.0));
-    let insert_pos = workspace.tiling_insert_position(pos);
+    let insert_pos = workspace.tiling_insert_position(&layout.containers, pos);
 
     // Should be SplitRoot { direction: Up, ... }
     match insert_pos {
@@ -3403,7 +3419,7 @@ fn insert_position_with_window_on_bottom_edge() {
     // Position at bottom edge should indicate SplitRoot with Down direction
     // Use a very large Y to be at the bottom
     let pos = Point::from((100.0, 10000.0));
-    let insert_pos = workspace.tiling_insert_position(pos);
+    let insert_pos = workspace.tiling_insert_position(&layout.containers, pos);
 
     // Should be SplitRoot { direction: Down, ... }
     match insert_pos {
@@ -3439,7 +3455,7 @@ fn insert_position_center_of_window() {
     // Position in the center of the window area should result in Swap or Split
     // (depending on exact position relative to the window)
     let pos = Point::from((640.0, 360.0)); // center of 1280x720
-    let insert_pos = workspace.tiling_insert_position(pos);
+    let insert_pos = workspace.tiling_insert_position(&layout.containers, pos);
 
     // Should be either Swap or Split (both are valid for center area)
     assert!(
@@ -3474,7 +3490,7 @@ fn insert_hint_does_not_retarget_after_its_leaf_is_removed() {
     let insert_pos = layout
         .active_workspace()
         .expect("active workspace")
-        .tiling_insert_position(pos);
+        .tiling_insert_position(&layout.containers, pos);
     assert!(matches!(
         insert_pos,
         InsertPosition::Swap { .. } | InsertPosition::Split { .. }
@@ -3486,7 +3502,7 @@ fn insert_hint_does_not_retarget_after_its_leaf_is_removed() {
         layout
             .active_workspace()
             .expect("active workspace")
-            .insert_hint_area(&insert_pos)
+            .insert_hint_area(&layout.containers, &insert_pos)
             .is_none(),
         "a hint must not silently retarget the window that shifted into the old path",
     );
@@ -3634,8 +3650,9 @@ fn a_floating_window_moved_between_workspaces_animates_like_a_tiled_one() {
 
         check_ops_on_layout(&mut layout, [Op::MoveWindowToWorkspaceDown(true)]);
 
-        let moving = layout.workspaces_mut().any(|ws| {
-            ws.tiles_with_render_positions_mut(false)
+        let (mut workspaces, containers) = layout.workspaces_and_containers_mut();
+        let moving = workspaces.any(|ws| {
+            ws.tiles_with_render_positions_mut(containers, false)
                 .any(|(tile, _)| tile.window().id() == &1 && tile.is_moving_between_workspaces())
         });
         assert!(

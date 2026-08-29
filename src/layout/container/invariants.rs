@@ -17,7 +17,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             None,
             "root parent must be None"
         );
-        if let Some(fullscreen_key) = self.fullscreen_key {
+        if let Some(fullscreen_key) = self.fullscreen_key(workspace) {
             assert_ne!(
                 fullscreen_key, workspace,
                 "the workspace node cannot own fullscreen"
@@ -30,25 +30,21 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.verify_floating_region(workspace);
         self.verify_seat_order();
 
-        if self.is_empty() && self.floating_roots().next().is_none() {
+        if self.count_windows_in_node(workspace) == 0
+            && self.floating_roots_in(workspace).is_empty()
+        {
             // The workspace itself stays: an empty workspace is a container with no
             // children, holding the orientation the next window will be laid out by.
-            assert_eq!(
-                self.nodes.len(),
-                1,
-                "empty tree must retain the workspace and nothing else"
+            assert_eq!(self.root_children_len(workspace), 0);
+            assert!(
+                self.selected_key().is_none_or(|key| {
+                    key == workspace || self.workspace_of(key) != Some(workspace)
+                }),
+                "an empty workspace must not retain a selection below itself"
             );
             assert!(
-                self.focused_key().is_none(),
-                "empty tree must not retain focused_key"
-            );
-            assert!(
-                self.selected_key().is_none_or(|key| key == workspace),
-                "empty tree must not retain a selected_key below the workspace"
-            );
-            assert!(
-                self.leaf_layouts.is_empty(),
-                "empty tree must not retain leaf layout cache"
+                self.leaf_layouts_in(workspace).next().is_none(),
+                "an empty workspace must not retain a leaf layout cache"
             );
             return;
         }
@@ -67,7 +63,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         // right only while an arena held one workspace, and would have read a second
         // workspace's nodes as unreachable garbage.
 
-        if let Some(fullscreen_key) = self.fullscreen_key {
+        if let Some(fullscreen_key) = self.fullscreen_key(workspace) {
             assert!(
                 self.holds_node(fullscreen_key),
                 "workspace fullscreen node must still be in the arena"
@@ -330,8 +326,12 @@ impl<W: LayoutElement> ContainerArena<W> {
     fn verify_floating_region(&self, workspace: NodeKey) {
         let mut seen = HashSet::new();
         let mut seen_ids = HashSet::new();
-        for root in &self.floating_roots {
-            let key = root.key;
+        for key in self.floating_roots_in(workspace) {
+            let root = self
+                .floating_roots
+                .iter()
+                .find(|root| root.key == key)
+                .expect("a listed floating root is in the stack");
             assert!(
                 self.nodes.contains_key(key),
                 "a floating root must point to an existing node"

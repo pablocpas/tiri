@@ -36,7 +36,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         // is not attached to anything yet.
         self.autotile_presplit(workspace, branch_root);
 
-        let tile_key = self.insert_view(tile);
+        let tile_key = self.insert_view(workspace, tile);
         self.insert_key_as_focus_sibling(workspace, branch_root, tile_key, focus);
     }
 
@@ -93,7 +93,8 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// side, its parent is a switcher — where "beside" already means another tab — or it has
     /// no box to measure yet.
     pub(super) fn autotile_layout_for(&self, key: NodeKey) -> Option<Layout> {
-        if !self.options().layout.autotile {
+        let workspace = self.workspace_of(key)?;
+        if !self.options(workspace).layout.autotile {
             return None;
         }
         if !self.is_in_tiled_branch(key) {
@@ -108,7 +109,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             return None;
         }
 
-        let ratio = self.options().layout.autotile_ratio;
+        let ratio = self.options(workspace).layout.autotile_ratio;
         Some(if rect.size.w >= rect.size.h * ratio {
             Layout::SplitH
         } else {
@@ -174,7 +175,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// that ends up holding a single child is not always the one the caller was holding a key
     /// to when it started.
     pub(super) fn autotile_squash_lone_children(&mut self, workspace: NodeKey) {
-        if !self.options().layout.autotile {
+        if !self.options(workspace).layout.autotile {
             return;
         }
 
@@ -226,7 +227,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     ) {
         self.clear_focus_history();
 
-        let node_key = self.insert_subtree(subtree);
+        let node_key = self.insert_subtree(workspace, subtree);
         self.insert_key_as_focus_sibling(workspace, workspace, node_key, focus);
     }
 
@@ -319,7 +320,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             return;
         };
 
-        let tile_key = self.insert_view(tile);
+        let tile_key = self.insert_view(workspace, tile);
         self.get_container_mut(parent_key)
             .expect("child_index resolved this parent as a layout parent")
             .insert_child(insert_idx, tile_key);
@@ -355,6 +356,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             // Wrap the root leaf child in a vertical container so tiles can stack inside it.
             let Some(_) = self.wrap_child_in_new_container(
                 workspace,
+                workspace,
                 root_child_key,
                 ContainerData::new(Layout::SplitV),
             ) else {
@@ -378,7 +380,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         let insert_at = tile_idx.unwrap_or(root_child_container.children.len());
         let insert_at = insert_at.min(root_child_container.children.len());
 
-        let tile_key = self.insert_view(tile);
+        let tile_key = self.insert_view(workspace, tile);
 
         if let Some(root_child_container) = self.get_container_mut(root_child_key) {
             root_child_container.insert_child(insert_at, tile_key);
@@ -479,7 +481,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             .into_view(key)
             .expect("a view container must hold its tile");
 
-        let replacement = self.insert_view(view);
+        let replacement = self.insert_view(workspace, view);
         self.get_container_mut(parent)
             .expect("child_index resolved this parent as a layout parent")
             .children[idx] = replacement;
@@ -512,7 +514,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         tile: DetachedView<W>,
         focus: bool,
     ) -> bool {
-        let tile_key = self.insert_view(tile);
+        let tile_key = self.insert_view(workspace, tile);
         self.insert_key_with_parent_info(workspace, branch_root, info, tile_key, focus)
     }
 
@@ -524,7 +526,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         subtree: DetachedNode<W>,
         focus: bool,
     ) -> bool {
-        let node_key = self.insert_subtree(subtree);
+        let node_key = self.insert_subtree(workspace, subtree);
         self.insert_key_with_parent_info(workspace, workspace, info, node_key, focus)
     }
 
@@ -542,7 +544,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         // container at all: the node goes at the end of the branch, which is where the
         // remembered position has stopped meaning anything.
         let container_key = self
-            .ensure_container_at_path(branch_root, &info.parent_path, info.layout)
+            .ensure_container_at_path(workspace, branch_root, &info.parent_path, info.layout)
             .filter(|key| self.get_container(*key).is_some());
 
         let Some(container_key) = container_key else {
@@ -565,6 +567,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// and `new_key`, ordered so that `new_key` sits on the side `direction` points to.
     fn new_split_pair_container(
         &mut self,
+        workspace: NodeKey,
         existing: NodeKey,
         new_key: NodeKey,
         direction: Direction,
@@ -578,7 +581,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             container.add_child(existing);
             container.add_child(new_key);
         }
-        let container_key = self.insert_node(NodeData::Container(container));
+        let container_key = self.insert_node(workspace, NodeData::Container(container));
         self.set_parent(new_key, Some(container_key));
         self.set_parent(existing, Some(container_key));
         container_key
@@ -592,7 +595,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         tile: DetachedView<W>,
         focus: bool,
     ) -> bool {
-        if self.is_empty() {
+        if self.workspace_is_empty(workspace) {
             self.append_leaf(workspace, tile, focus);
             return true;
         }
@@ -624,7 +627,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             } else {
                 target_idx + 1
             };
-            let tile_key = self.insert_view(tile);
+            let tile_key = self.insert_view(workspace, tile);
 
             let container = self
                 .get_container_mut(parent_key)
@@ -638,8 +641,9 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         // Otherwise wrap the target and the new tile in a fresh split container that
         // replaces the target in its parent.
-        let tile_key = self.insert_view(tile);
-        let new_container_key = self.new_split_pair_container(target_key, tile_key, direction);
+        let tile_key = self.insert_view(workspace, tile);
+        let new_container_key =
+            self.new_split_pair_container(workspace, target_key, tile_key, direction);
 
         self.replace_child_node(parent_key, target_key, new_container_key);
 
@@ -658,12 +662,12 @@ impl<W: LayoutElement> ContainerArena<W> {
         // The workspace has to face the direction for an edge to mean anything. When it does
         // not, its children move under one container and it turns — the same surgery a move
         // across the workspace does, and the reason it is one call rather than a rule here.
-        if self.root_container_layout(workspace) != direction.split_layout() && !self.is_empty() {
+        if self.root_container_layout(workspace) != direction.split_layout() && !self.workspace_is_empty(workspace) {
             let previous = self.root_container_layout(workspace);
             self.wrap_workspace_children(workspace, previous, direction.split_layout());
         }
 
-        let tile_key = self.insert_view(tile);
+        let tile_key = self.insert_view(workspace, tile);
         let insert_idx = match direction.is_leading() {
             true => 0,
             false => self

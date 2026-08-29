@@ -80,15 +80,14 @@ impl<W: LayoutElement> ContainerArena<W> {
     ///
     /// Always present: the root is a workspace node for the arena's whole life. The `Option`
     /// is for callers that would rather ask than assert.
-    pub(super) fn get_workspace(&self) -> Option<&WorkspaceData> {
-        match self.nodes.get(self.workspace_root())? {
+    pub(super) fn get_workspace(&self, workspace: NodeKey) -> Option<&WorkspaceData> {
+        match self.nodes.get(workspace)? {
             NodeData::Workspace(workspace) => Some(workspace),
             _ => None,
         }
     }
 
-    pub(super) fn get_workspace_mut(&mut self) -> Option<&mut WorkspaceData> {
-        let workspace = self.workspace_root();
+    pub(super) fn get_workspace_mut(&mut self, workspace: NodeKey) -> Option<&mut WorkspaceData> {
         match self.nodes.get_mut(workspace)? {
             NodeData::Workspace(workspace) => Some(workspace),
             _ => None,
@@ -173,15 +172,19 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// and while a fullscreen is up there is no next arrange to correct it.
     pub(in crate::layout) fn wrap_child_in_new_container(
         &mut self,
+        workspace: NodeKey,
         parent_key: NodeKey,
         child_key: NodeKey,
         wrapper: ContainerData<W>,
     ) -> Option<NodeKey> {
-        self.wrap_child_in_new_container_with_fullscreen(parent_key, child_key, wrapper, true)
+        self.wrap_child_in_new_container_with_fullscreen(
+            workspace, parent_key, child_key, wrapper, true,
+        )
     }
 
     fn wrap_child_in_new_container_with_fullscreen(
         &mut self,
+        workspace: NodeKey,
         parent_key: NodeKey,
         child_key: NodeKey,
         mut wrapper: ContainerData<W>,
@@ -194,7 +197,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.child_index(parent_key, child_key)?;
         wrapper.set_geometry(self.node_geometry(child_key)?);
 
-        let wrapper_key = self.insert_node(NodeData::Container(wrapper));
+        let wrapper_key = self.insert_node(workspace, NodeData::Container(wrapper));
         if !self.replace_child_node_with_fullscreen(
             parent_key,
             child_key,
@@ -315,20 +318,20 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     /// Insert a node that has not belonged to a tree before.
-    pub(super) fn insert_node(&mut self, node: NodeData<W>) -> NodeKey {
+    pub(super) fn insert_node(&mut self, workspace: NodeKey, node: NodeData<W>) -> NodeKey {
         assert!(
             !matches!(node, NodeData::Workspace(_)),
             "a workspace node is created with the tree"
         );
         let key = NodeKey::next();
-        self.insert_node_with_key(key, node);
+        self.insert_node_with_key(workspace, key, node);
         key
     }
 
     /// Reattach a view node without changing the identity it carried outside the arena.
-    pub(super) fn insert_view(&mut self, view: DetachedView<W>) -> NodeKey {
+    pub(super) fn insert_view(&mut self, workspace: NodeKey, view: DetachedView<W>) -> NodeKey {
         let (key, container) = ContainerData::new_view(view);
-        self.insert_node_with_key(key, NodeData::Container(container));
+        self.insert_node_with_key(workspace, key, NodeData::Container(container));
         key
     }
 
@@ -340,10 +343,19 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// has its own handle on the options, and a named workspace's `layout_config` makes them
     /// differ in value too, so adoption belongs at the one place a node enters an arena
     /// rather than at each of the routes that lead here.
-    pub(super) fn insert_node_with_key(&mut self, key: NodeKey, mut node: NodeData<W>) {
+    pub(super) fn insert_node_with_key(
+        &mut self,
+        workspace: NodeKey,
+        key: NodeKey,
+        mut node: NodeData<W>,
+    ) {
         if let NodeData::Container(container) = &mut node {
             if let Some(tile) = container.tile_mut() {
-                tile.update_config(self.view_size(), self.scale(), self.options().clone());
+                tile.update_config(
+                    self.view_size(workspace),
+                    self.scale(workspace),
+                    self.options(workspace).clone(),
+                );
             }
         }
         self.nodes.insert(key, node);
@@ -365,9 +377,10 @@ impl<W: LayoutElement> ContainerArena<W> {
         let node = self.nodes.remove(key)?;
         self.parents.remove(key);
         self.seat.unregister(key);
-        if self.fullscreen_key == Some(key) {
-            self.fullscreen_key = None;
-        }
+        // By value, not by asking the node which workspace it is on: a node on its way out of
+        // the arena has usually been unparented already, and would answer with itself.
+        self.fullscreen_keys
+            .retain(|_, fullscreen| *fullscreen != key);
         Some(node)
     }
 
@@ -394,17 +407,12 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Asks for a leaf rather than for the root's children: the root is always there, and a
     /// container that has just been emptied can still be hanging off it when this is called.
     /// Every caller means "is there a window here".
-    pub(in crate::layout) fn is_empty(&self) -> bool {
-        self.workspaces
-            .iter()
-            .all(|workspace| self.first_leaf_key(*workspace).is_none())
-    }
-
-    #[cfg(test)]
-    pub(in crate::layout) fn root_is_workspace_node(&self) -> bool {
-        self.workspaces
-            .iter()
-            .all(|workspace| self.is_workspace(*workspace))
+    /// Whether one workspace's tiled side holds no window.
+    ///
+    /// Named for a workspace rather than for the arena: "empty" was the arena's answer while
+    /// it held exactly one workspace, and every caller of it meant this.
+    pub(in crate::layout) fn workspace_is_empty(&self, workspace: NodeKey) -> bool {
+        self.first_leaf_key(workspace).is_none()
     }
 
     /// Whether `key` is `ancestor` or sits somewhere below it.

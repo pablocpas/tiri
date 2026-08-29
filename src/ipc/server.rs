@@ -638,7 +638,9 @@ impl State {
 
         let visible_workspace_idx = |mon: Option<&crate::layout::monitor::Monitor<Mapped>>,
                                      ws_idx: usize| {
-            mon.map_or(Some(ws_idx + 1), |mon| mon.visible_workspace_idx(ws_idx))
+            mon.map_or(Some(ws_idx + 1), |mon| {
+                mon.visible_workspace_idx(layout.containers(), ws_idx)
+            })
         };
 
         // Check for workspace changes.
@@ -668,7 +670,9 @@ impl State {
                 break;
             }
 
-            let active_window_id = ws.active_window().map(|win| win.id().get());
+            let active_window_id = ws
+                .active_window(layout.containers())
+                .map(|win| win.id().get());
             if ipc_ws.active_window_id != active_window_id {
                 events.push(Event::WorkspaceActiveWindowChanged {
                     workspace_id: id,
@@ -677,7 +681,7 @@ impl State {
             }
 
             // Check if this workspace urgent state changed.
-            let urgent = ws.is_urgent();
+            let urgent = ws.is_urgent(layout.containers());
             if urgent != ipc_ws.is_urgent {
                 events.push(Event::WorkspaceUrgencyChanged { id, urgent });
             }
@@ -714,10 +718,12 @@ impl State {
                         idx: u8::try_from(ipc_idx).unwrap_or(u8::MAX),
                         name: ws.name().cloned(),
                         output: mon.map(|mon| mon.output_name().clone()),
-                        is_urgent: ws.is_urgent(),
+                        is_urgent: ws.is_urgent(layout.containers()),
                         is_active: mon.is_some_and(|mon| mon.active_workspace_idx() == ws_idx),
                         is_focused: Some(id) == focused_ws_id,
-                        active_window_id: ws.active_window().map(|win| win.id().get()),
+                        active_window_id: ws
+                            .active_window(layout.containers())
+                            .map(|win| win.id().get()),
                     })
                 })
                 .collect();

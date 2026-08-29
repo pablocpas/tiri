@@ -503,26 +503,30 @@ window-rule {{
         f.double_roundtrip(id);
     }
 
-    let niri = f.niri();
-    let (mon, ws_idx, ws, mapped) = niri
-        .layout
-        .workspaces()
-        .find_map(|(mon, ws_idx, ws)| {
-            ws.windows().find_map(|win| {
-                if with_toplevel_role(win.toplevel(), |role| {
-                    role.title.as_deref() != Some("parent")
-                }) {
-                    Some((mon, ws_idx, ws, win))
-                } else {
-                    None
-                }
+    let (is_fullscreen, win, mon, ws, ws_idx) = {
+        let niri = f.niri();
+        let (mut workspaces, containers) = niri.layout.workspaces_and_containers();
+        let (mon, ws_idx, ws, mapped) = workspaces
+            .find_map(|(mon, ws_idx, ws)| {
+                ws.windows(containers).find_map(|win| {
+                    if with_toplevel_role(win.toplevel(), |role| {
+                        role.title.as_deref() != Some("parent")
+                    }) {
+                        Some((mon, ws_idx, ws, win))
+                    } else {
+                        None
+                    }
+                })
             })
-        })
-        .unwrap();
-    let is_fullscreen = mapped.sizing_mode().is_fullscreen();
-    let win = mapped.window.clone();
-    let mon = mon.unwrap().output_name().clone();
-    let ws = ws.name().cloned().unwrap_or(String::from("unnamed"));
+            .unwrap();
+        (
+            mapped.sizing_mode().is_fullscreen(),
+            mapped.window.clone(),
+            mon.unwrap().output_name().clone(),
+            ws.name().cloned().unwrap_or(String::from("unnamed")),
+            ws_idx,
+        )
+    };
 
     let window = f.client(id).window(&surface);
     let post_map = window.format_recent_configures();

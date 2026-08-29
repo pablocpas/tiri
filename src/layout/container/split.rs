@@ -43,7 +43,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                 // split alike — the exact reverse of the wrapper `container_split` builds.
                 // Transfer only the root-owned geometry; all subtree state remains on the
                 // child NodeKey.
-                let root_idx = self.floating_root_index(container_key)?;
+                let root_idx = self.floating_slot_of(container_key)?;
                 let working_area = self.floating_roots[root_idx].geometry.working_area;
                 let child_area = self.node_geometry(child_key)?;
                 // The surviving child takes over the root's slot, so it hangs off the same
@@ -312,6 +312,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// `split` leaves it selected, the others only care that it worked.
     pub(in crate::layout) fn wrap_branch_children(
         &mut self,
+        workspace: NodeKey,
         branch_root: NodeKey,
         wrapper_layout: Layout,
         root_layout: Layout,
@@ -336,7 +337,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         // moment there is a fullscreen and the arrange does not descend.
 
         let wrapper_children = wrapper.children.clone();
-        let wrapper_key = self.insert_node(NodeData::Container(wrapper));
+        let wrapper_key = self.insert_node(workspace, NodeData::Container(wrapper));
         for child in wrapper_children {
             self.set_parent(child, Some(wrapper_key));
         }
@@ -355,11 +356,12 @@ impl<W: LayoutElement> ContainerArena<W> {
         wrapper_layout: Layout,
         root_layout: Layout,
     ) -> Option<NodeKey> {
-        self.wrap_branch_children(workspace, wrapper_layout, root_layout)
+        self.wrap_branch_children(workspace, workspace, wrapper_layout, root_layout)
     }
 
     pub(super) fn split_selected_container(
         &mut self,
+        workspace: NodeKey,
         selected_key: NodeKey,
         layout: Layout,
     ) -> bool {
@@ -404,7 +406,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         let mut wrapper = ContainerData::new(layout);
         wrapper.mark_user_created();
         if self
-            .wrap_child_in_new_container(parent_key, selected_key, wrapper)
+            .wrap_child_in_new_container(workspace, parent_key, selected_key, wrapper)
             .is_none()
         {
             return false;
@@ -478,8 +480,10 @@ impl<W: LayoutElement> ContainerArena<W> {
         } else {
             match self.get_node(target) {
                 Some(NodeData::Workspace(_)) => false,
-                Some(node) if node.is_view() => self.split_leaf(target, layout),
-                Some(NodeData::Container(_)) => self.split_selected_container(target, layout),
+                Some(node) if node.is_view() => self.split_leaf(workspace, target, layout),
+                Some(NodeData::Container(_)) => {
+                    self.split_selected_container(workspace, target, layout)
+                }
                 None => false,
             }
         };
@@ -511,7 +515,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     #[cfg(test)]
     pub(in crate::layout) fn split_focused(&mut self, workspace: NodeKey, layout: Layout) -> bool {
         self.clear_focus_history();
-        if self.is_empty() {
+        if self.workspace_is_empty(workspace) {
             // Same rule as the workspace route: a split on an empty workspace only records
             // the orientation. The first window is a plain child of the workspace and gets
             // no wrapper; the orientation materializes when a second window arrives.
@@ -524,7 +528,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         let Some(focused_key) = self.effective_focused_key(workspace) else {
             return false;
         };
-        self.split_leaf(focused_key, layout)
+        self.split_leaf(workspace, focused_key, layout)
     }
 
     /// i3's `tree_split` on one node.
@@ -535,7 +539,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// has the requested orientation and regardless of how it got it — tiri used to treat a
     /// parent whose layout had been set explicitly as already-split and do nothing, which the
     /// differential fuzz caught on its first script.
-    pub(super) fn split_leaf(&mut self, key: NodeKey, layout: Layout) -> bool {
+    pub(super) fn split_leaf(&mut self, workspace: NodeKey, key: NodeKey, layout: Layout) -> bool {
         // A floating root never takes the shortcut. `container_split` reads the parent's layout
         // only to decide whether a lone child can be spared a wrapper, and for a floating child
         // it replaces that answer with `L_NONE` before comparing, which matches neither
@@ -576,7 +580,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         let mut wrapper = ContainerData::new(layout);
         wrapper.mark_user_created();
         if self
-            .wrap_child_in_new_container(parent_key, key, wrapper)
+            .wrap_child_in_new_container(workspace, parent_key, key, wrapper)
             .is_none()
         {
             return false;
@@ -592,7 +596,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         workspace: NodeKey,
         layout: Layout,
     ) -> bool {
-        if self.is_empty() {
+        if self.workspace_is_empty(workspace) {
             return self.set_root_container_layout(workspace, layout);
         }
 
@@ -671,7 +675,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             return false;
         };
 
-        let next = self.toggled_split_layout(current, source_key);
+        let next = self.toggled_split_layout(workspace, current, source_key);
         self.apply_toggled_layout(workspace, next, source_key, target)
     }
 
@@ -739,7 +743,9 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         for offset in 0..cycle.len() {
             let next = match cycle[(start + offset) % cycle.len()] {
-                LayoutCycleEntry::Split => self.toggled_split_layout(current, source_key),
+                LayoutCycleEntry::Split => {
+                    self.toggled_split_layout(workspace, current, source_key)
+                }
                 LayoutCycleEntry::Layout(layout) => layout,
             };
             if next != current {
@@ -781,6 +787,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// once the configured default orientation is out of the picture.
     pub(in crate::layout) fn toggled_split_layout(
         &self,
+        workspace: NodeKey,
         current: Layout,
         container_key: Option<NodeKey>,
     ) -> Layout {
@@ -788,7 +795,8 @@ impl<W: LayoutElement> ContainerArena<W> {
             Layout::SplitH => Layout::SplitV,
             Layout::SplitV => Layout::SplitH,
             Layout::Tabbed | Layout::Stacked => {
-                let along_the_screen = if self.view_size().h > self.view_size().w {
+                let along_the_screen = if self.view_size(workspace).h > self.view_size(workspace).w
+                {
                     Layout::SplitV
                 } else {
                     Layout::SplitH

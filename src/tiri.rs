@@ -1242,7 +1242,7 @@ impl State {
         let monitor = self.niri.layout.monitor_for_output(output).unwrap();
 
         let mut rv = false;
-        let rect = monitor.active_window_visual_rectangle();
+        let rect = monitor.active_window_visual_rectangle(self.niri.layout.containers());
 
         if let Some(rect) = rect {
             let output_geo = self.niri.global_space.output_geometry(output).unwrap();
@@ -1379,7 +1379,7 @@ impl State {
             // Don't refresh cursor focus during transitions.
             if let Some((output, _)) = self.niri.output_under(location) {
                 let monitor = self.niri.layout.monitor_for_output(output).unwrap();
-                if monitor.are_transitions_ongoing() {
+                if monitor.are_transitions_ongoing(self.niri.layout.containers()) {
                     return;
                 }
             }
@@ -1570,7 +1570,7 @@ impl State {
 
             surface = surface.or_else(|| focus_on_layer(Layer::Overlay));
 
-            if mon.render_above_top_layer() {
+            if mon.render_above_top_layer(self.niri.layout.containers()) {
                 surface = surface.or_else(layout_focus);
                 surface = surface.or_else(|| focus_on_layer(Layer::Top));
                 surface = surface.or_else(|| focus_on_layer(Layer::Bottom));
@@ -3628,7 +3628,7 @@ impl Niri {
         }
 
         let mon = self.layout.monitor_for_output(output).unwrap();
-        if mon.render_above_top_layer() {
+        if mon.render_above_top_layer(self.layout.containers()) {
             return false;
         }
 
@@ -3898,7 +3898,7 @@ impl Niri {
 
         // When rendering above the top layer, we put the regular monitor elements first.
         // Otherwise, we will render all layer-shell pop-ups and the top layer on top.
-        if mon.render_above_top_layer() {
+        if mon.render_above_top_layer(self.layout.containers()) {
             under = under
                 .or_else(interactive_moved_window_under)
                 .or_else(window_under)
@@ -5231,13 +5231,15 @@ impl Niri {
 
         // When rendering above the top layer, we put the regular monitor elements first.
         // Otherwise, we will render all layer-shell pop-ups and the top layer on top.
-        if mon.render_above_top_layer() {
+        if mon.render_above_top_layer(self.layout.containers()) {
             self.layout
                 .render_interactive_move_for_output(ctx.r(), output, &mut |elem| push(elem.into()));
 
             mon.render_insert_hint_between_workspaces(ctx.renderer, &mut |elem| push(elem.into()));
 
-            mon.render_workspaces(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
+            mon.render_workspaces(self.layout.containers(), ctx.r(), focus_ring, &mut |elem| {
+                push(elem.into())
+            });
 
             push_popups_from_layer!(Layer::Top);
             push_normal_from_layer!(Layer::Top);
@@ -5278,7 +5280,9 @@ impl Niri {
                 push_popups_from_layer!(Layer::Background, ns, xray_pos, process!(geo));
             }
 
-            mon.render_workspaces(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
+            mon.render_workspaces(self.layout.containers(), ctx.r(), focus_ring, &mut |elem| {
+                push(elem.into())
+            });
 
             for (ws, geo) in mon.workspaces_with_render_geo() {
                 // The render element namespace. This will be set to the workspace index for
@@ -7354,14 +7358,11 @@ impl Niri {
         };
         self.event_loop.remove(pending.token);
 
-        if let Some(window) = self
-            .layout
-            .workspaces_mut()
-            .flat_map(|ws| ws.windows_mut())
-            .find(|w| w.id() == pending.id)
-        {
-            window.set_focus_timestamp(pending.stamp);
-        }
+        self.layout.with_windows_mut(|window, _| {
+            if window.id() == pending.id {
+                window.set_focus_timestamp(pending.stamp);
+            }
+        });
     }
 
     pub fn queue_redraw_mru_output(&mut self) {

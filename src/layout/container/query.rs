@@ -8,15 +8,6 @@ use super::{ContainerArena, Layout, LayoutElement, NodeData, NodeKey, ResizeReac
 use crate::layout::tile::Tile;
 
 impl<W: LayoutElement> ContainerArena<W> {
-    /// Get all windows in the tree (depth-first traversal)
-    pub(in crate::layout) fn all_windows(&self) -> Vec<&W> {
-        let mut windows = Vec::new();
-        for workspace in &self.workspaces {
-            self.collect_windows_from_node(*workspace, &mut windows);
-        }
-        windows
-    }
-
     /// The windows of one branch — the tiled side, or one floating group.
     ///
     /// The unqualified `all_windows` means the tiled side, because that is what every caller
@@ -102,6 +93,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     /// Get all tiles in the tree (depth-first traversal)
+    #[cfg(test)]
     pub(in crate::layout) fn all_tiles(&self) -> Vec<&Tile<W>> {
         let mut tiles = Vec::new();
         for workspace in &self.workspaces {
@@ -170,10 +162,42 @@ impl<W: LayoutElement> ContainerArena<W> {
         for workspace in &self.workspaces {
             self.collect_leaf_keys(*workspace, &mut keys);
         }
-        for floating_root in self.floating_roots().collect::<Vec<_>>() {
+        for floating_root in self.all_floating_roots().collect::<Vec<_>>() {
             self.collect_leaf_keys(floating_root, &mut keys);
         }
         keys
+    }
+
+    /// Every leaf of one workspace: its tiled side first, then its floating groups.
+    ///
+    /// This is the per-workspace [`Self::dfs_leaf_keys`]. A workspace's floating roots are not
+    /// children of its node, so walking the node alone answers with the tiled side only.
+    pub(in crate::layout) fn leaf_keys_in_workspace(&self, workspace: NodeKey) -> Vec<NodeKey> {
+        let mut keys = Vec::new();
+        self.collect_leaf_keys(workspace, &mut keys);
+        for floating_root in self.floating_roots(workspace).collect::<Vec<_>>() {
+            self.collect_leaf_keys(floating_root, &mut keys);
+        }
+        keys
+    }
+
+    /// The windows of one workspace, both sides, in visual order.
+    #[cfg(test)]
+    pub(in crate::layout) fn windows_in_workspace(&self, workspace: NodeKey) -> Vec<&W> {
+        self.leaf_keys_in_workspace(workspace)
+            .into_iter()
+            .filter_map(|key| self.get_tile(key))
+            .map(Tile::window)
+            .collect()
+    }
+
+    /// The window ids of one workspace, both sides, in visual order.
+    #[cfg(test)]
+    pub(in crate::layout) fn window_ids_in_workspace(&self, workspace: NodeKey) -> Vec<W::Id> {
+        self.windows_in_workspace(workspace)
+            .into_iter()
+            .map(|window| window.id().clone())
+            .collect()
     }
 
     fn collect_leaf_keys(&self, node_key: NodeKey, out: &mut Vec<NodeKey>) {
@@ -203,10 +227,13 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// including it would answer "yes" to a question that is asking whether a *container was
     /// built* — which is what every caller wants to know. Its own layout is
     /// [`Self::workspace_layout`].
-    pub(in crate::layout) fn contains_layout(&self, layout: Layout) -> bool {
+    /// Whether one workspace holds a container with this layout, on either side.
+    pub(in crate::layout) fn contains_layout(&self, workspace: NodeKey, layout: Layout) -> bool {
         self.nodes.iter().any(|(key, node)| match node {
             NodeData::Container(container) if !container.is_view() => {
-                !self.is_workspace(key) && container.layout() == layout
+                !self.is_workspace(key)
+                    && self.workspace_of(key) == Some(workspace)
+                    && container.layout() == layout
             }
             NodeData::Workspace(_) | NodeData::Container(_) => false,
         })
@@ -340,10 +367,14 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     /// Collect leaf paths under a given prefix path.
-    pub(in crate::layout) fn leaf_paths_under(&self, prefix: &[usize]) -> Vec<Vec<usize>> {
+    pub(in crate::layout) fn leaf_paths_under(
+        &self,
+        workspace: NodeKey,
+        prefix: &[usize],
+    ) -> Vec<Vec<usize>> {
         let mut results = Vec::new();
         let mut path = prefix.to_vec();
-        if let Some(node_key) = self.get_node_key_at_path(self.workspace_root(), prefix) {
+        if let Some(node_key) = self.get_node_key_at_path(workspace, prefix) {
             self.collect_leaf_paths_from_node(node_key, &mut path, &mut results);
         }
         results

@@ -648,7 +648,8 @@ impl State {
             let output = mapped_output.or_else(|| self.niri.layout.active_output());
             output.and_then(|output| {
                 let monitor = self.niri.layout.monitor_for_output(output)?;
-                let mut rect = monitor.active_window_visual_rectangle()?;
+                let mut rect =
+                    monitor.active_window_visual_rectangle(self.niri.layout.containers())?;
                 let output_geo = self.niri.global_space.output_geometry(output)?;
                 rect.loc += output_geo.loc.to_f64();
                 Some((rect, output))
@@ -1504,11 +1505,12 @@ impl State {
             Action::FocusColumnLeftUnderMouse => {
                 if let Some((output, ws)) = self.niri.workspace_under_cursor(true) {
                     let ws_id = ws.id();
-                    let ws = {
-                        let mut workspaces = self.niri.layout.workspaces_mut();
-                        workspaces.find(|ws| ws.id() == ws_id).unwrap()
-                    };
-                    ws.focus_left();
+                    let (ws, containers) = self
+                        .niri
+                        .layout
+                        .workspace_by_id_and_containers_mut(ws_id)
+                        .unwrap();
+                    ws.focus_left(containers);
                     self.maybe_warp_cursor_to_focus();
                     self.niri.layer_shell_on_demand_focus = None;
                     self.niri.queue_redraw(&output);
@@ -1536,11 +1538,12 @@ impl State {
             Action::FocusColumnRightUnderMouse => {
                 if let Some((output, ws)) = self.niri.workspace_under_cursor(true) {
                     let ws_id = ws.id();
-                    let ws = {
-                        let mut workspaces = self.niri.layout.workspaces_mut();
-                        workspaces.find(|ws| ws.id() == ws_id).unwrap()
-                    };
-                    ws.focus_right();
+                    let (ws, containers) = self
+                        .niri
+                        .layout
+                        .workspace_by_id_and_containers_mut(ws_id)
+                        .unwrap();
+                    ws.focus_right(containers);
                     self.maybe_warp_cursor_to_focus();
                     self.niri.layer_shell_on_demand_focus = None;
                     self.niri.queue_redraw(&output);
@@ -2844,8 +2847,8 @@ impl State {
                 let active_window = self
                     .niri
                     .layout
-                    .active_workspace_mut()
-                    .and_then(|ws| ws.active_window_mut());
+                    .active_workspace_and_containers_mut()
+                    .and_then(|(ws, containers)| ws.active_window_mut(containers));
                 if let Some(window) = active_window {
                     if window.rules().opacity.is_some_and(|o| o != 1.) {
                         window.toggle_ignore_opacity_window_rule();
@@ -2854,24 +2857,27 @@ impl State {
                 }
             }
             Action::ToggleWindowRuleOpacityById(id) => {
-                let window = self
-                    .niri
-                    .layout
-                    .workspaces_mut()
-                    .find_map(|ws| ws.windows_mut().find(|w| w.id().get() == id));
-                if let Some(window) = window {
+                let mut changed = false;
+                self.niri.layout.with_windows_mut(|window, _| {
+                    if window.id().get() != id {
+                        return;
+                    }
                     if window.rules().opacity.is_some_and(|o| o != 1.) {
                         window.toggle_ignore_opacity_window_rule();
-                        self.niri.queue_redraw_window_by_id(id);
+                        changed = true;
                     }
+                });
+                if changed {
+                    self.niri.queue_redraw_window_by_id(id);
                 }
             }
             Action::SetDynamicCastWindow => {
+                let layout = &self.niri.layout;
                 let id = self
                     .niri
                     .layout
                     .active_workspace()
-                    .and_then(|ws| ws.active_window())
+                    .and_then(|ws| ws.active_window(layout.containers()))
                     .map(|mapped| mapped.id().get());
                 if let Some(id) = id {
                     self.set_dynamic_cast_target(CastTarget::Window { id });
@@ -2913,36 +2919,42 @@ impl State {
                 }
             }
             Action::ToggleWindowUrgent(id) => {
-                let window = self
-                    .niri
-                    .layout
-                    .workspaces_mut()
-                    .find_map(|ws| ws.windows_mut().find(|w| w.id().get() == id));
-                if let Some(window) = window {
+                let mut changed = false;
+                self.niri.layout.with_windows_mut(|window, _| {
+                    if window.id().get() != id {
+                        return;
+                    }
                     let urgent = window.is_urgent();
                     window.set_urgent(!urgent);
+                    changed = true;
+                });
+                if changed {
                     self.niri.queue_redraw_window_by_id(id);
                 }
             }
             Action::SetWindowUrgent(id) => {
-                let window = self
-                    .niri
-                    .layout
-                    .workspaces_mut()
-                    .find_map(|ws| ws.windows_mut().find(|w| w.id().get() == id));
-                if let Some(window) = window {
+                let mut changed = false;
+                self.niri.layout.with_windows_mut(|window, _| {
+                    if window.id().get() != id {
+                        return;
+                    }
                     window.set_urgent(true);
+                    changed = true;
+                });
+                if changed {
                     self.niri.queue_redraw_window_by_id(id);
                 }
             }
             Action::UnsetWindowUrgent(id) => {
-                let window = self
-                    .niri
-                    .layout
-                    .workspaces_mut()
-                    .find_map(|ws| ws.windows_mut().find(|w| w.id().get() == id));
-                if let Some(window) = window {
+                let mut changed = false;
+                self.niri.layout.with_windows_mut(|window, _| {
+                    if window.id().get() != id {
+                        return;
+                    }
                     window.set_urgent(false);
+                    changed = true;
+                });
+                if changed {
                     self.niri.queue_redraw_window_by_id(id);
                 }
             }
@@ -5025,8 +5037,7 @@ impl State {
                         location: pos,
                     };
                     let start_data = AnyStartData::Touch(start_data);
-                    if let Some(grab) = MoveGrab::new(self, start_data, window.clone(), None)
-                    {
+                    if let Some(grab) = MoveGrab::new(self, start_data, window.clone(), None) {
                         handle.set_grab(self, grab, serial);
                     }
                 }

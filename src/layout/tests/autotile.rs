@@ -30,7 +30,7 @@ fn tree(layout: &Layout<TestWindow>) -> String {
     layout
         .active_workspace()
         .expect("active workspace")
-        .container_tree()
+        .container_tree(&layout.containers)
         .debug_tree()
 }
 

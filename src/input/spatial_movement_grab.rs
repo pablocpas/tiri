@@ -33,10 +33,7 @@ enum GestureState {
 }
 
 impl SpatialMovementGrab {
-    pub fn new(
-        start_data: PointerGrabStartData<State>,
-        output: Output,
-    ) -> Self {
+    pub fn new(start_data: PointerGrabStartData<State>, output: Output) -> Self {
         let location = start_data.location;
 
         Self {

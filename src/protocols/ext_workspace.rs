@@ -29,6 +29,7 @@ use smithay::reexports::wayland_server::{
 use smithay::wayland::{Dispatch2, GlobalDispatch2};
 use wayland_backend::server::ClientId;
 
+use crate::layout::container_tree::ContainerTree;
 use crate::layout::monitor::Monitor;
 use crate::layout::workspace::{Workspace, WorkspaceId};
 use crate::protocols::EmptyData;
@@ -87,15 +88,20 @@ pub struct ExtWorkspaceGlobalData {
     filter: Box<dyn for<'c> Fn(&'c Client) -> bool + Send + Sync>,
 }
 
-fn visible_workspace_idx(mon: &Monitor<Mapped>, ws_idx: usize) -> Option<usize> {
+fn visible_workspace_idx(
+    containers: &ContainerTree<Mapped>,
+    mon: &Monitor<Mapped>,
+    ws_idx: usize,
+) -> Option<usize> {
     // ext-workspace coordinates are zero-based.
-    mon.visible_workspace_idx(ws_idx)
+    mon.visible_workspace_idx(containers, ws_idx)
         .map(|idx| idx.saturating_sub(1))
 }
 
 pub fn refresh(state: &mut State) {
     let _span = tracy_client::span!("ext_workspace::refresh");
 
+    let containers = state.niri.layout.containers();
     let protocol_state = &mut state.niri.ext_workspace_state;
 
     let mut changed = false;
@@ -103,7 +109,7 @@ pub fn refresh(state: &mut State) {
     // Remove workspaces that no longer exist (sending workspace_leave to workspace groups).
     let mut seen_workspaces = HashMap::new();
     for (mon, ws_idx, ws) in state.niri.layout.workspaces() {
-        if mon.is_some_and(|mon| mon.is_internal_empty_workspace(ws_idx)) {
+        if mon.is_some_and(|mon| mon.is_internal_empty_workspace(containers, ws_idx)) {
             continue;
         }
         let output = mon.map(|mon| mon.output());
@@ -149,7 +155,7 @@ pub fn refresh(state: &mut State) {
     // Update existing workspaces and create new ones.
     for (mon, ws_idx, ws) in state.niri.layout.workspaces() {
         let (visible_idx, is_active) = if let Some(mon) = mon {
-            let Some(visible_idx) = visible_workspace_idx(mon, ws_idx) else {
+            let Some(visible_idx) = visible_workspace_idx(containers, mon, ws_idx) else {
                 continue;
             };
             (visible_idx, mon.active_workspace_idx() == ws_idx)
@@ -157,7 +163,7 @@ pub fn refresh(state: &mut State) {
             (ws_idx, false)
         };
 
-        changed |= refresh_workspace(protocol_state, mon, visible_idx, is_active, ws);
+        changed |= refresh_workspace(containers, protocol_state, mon, visible_idx, is_active, ws);
     }
 
     // Update workspace groups and create new ones, sending workspace_enter events as needed.
@@ -282,6 +288,7 @@ fn build_name(ws: &Workspace<Mapped>, ws_idx: usize) -> String {
 }
 
 fn refresh_workspace(
+    containers: &ContainerTree<Mapped>,
     protocol_state: &mut ExtWorkspaceManagerState,
     mon: Option<&Monitor<Mapped>>,
     ws_idx: usize,
@@ -292,7 +299,7 @@ fn refresh_workspace(
     if is_active {
         state |= ext_workspace_handle_v1::State::Active;
     }
-    if ws.is_urgent() {
+    if ws.is_urgent(containers) {
         state |= ext_workspace_handle_v1::State::Urgent;
     }
 

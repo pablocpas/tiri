@@ -142,6 +142,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                     .and_then(|parent| self.get_container(parent))
                 {
                     let offset = self.switcher_content_offset(
+                        self.workspace_of(node_key)?,
                         container.layout(),
                         container.child_count(),
                         rect.size.h,

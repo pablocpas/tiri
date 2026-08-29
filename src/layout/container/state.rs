@@ -18,30 +18,30 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Every reader goes through here rather than through a field beside the tree, so that the
     /// day a second workspace root joins the arena the question "whose view size?" has one
     /// place to be answered instead of forty.
-    fn workspace_data(&self) -> &WorkspaceData {
-        self.get_workspace()
-            .expect("the arena root is always a workspace node")
+    fn workspace_data(&self, workspace: NodeKey) -> &WorkspaceData {
+        self.get_workspace(workspace)
+            .expect("the requested arena root is a workspace node")
     }
 
-    fn workspace_data_mut(&mut self) -> &mut WorkspaceData {
-        self.get_workspace_mut()
-            .expect("the arena root is always a workspace node")
+    fn workspace_data_mut(&mut self, workspace: NodeKey) -> &mut WorkspaceData {
+        self.get_workspace_mut(workspace)
+            .expect("the requested arena root is a workspace node")
     }
 
-    pub(in crate::layout) fn view_size(&self) -> Size<f64, Logical> {
-        self.workspace_data().view_size
+    pub(in crate::layout) fn view_size(&self, workspace: NodeKey) -> Size<f64, Logical> {
+        self.workspace_data(workspace).view_size
     }
 
-    pub(in crate::layout) fn working_area(&self) -> Rectangle<f64, Logical> {
-        self.workspace_data().working_area
+    pub(in crate::layout) fn working_area(&self, workspace: NodeKey) -> Rectangle<f64, Logical> {
+        self.workspace_data(workspace).working_area
     }
 
-    pub(in crate::layout) fn scale(&self) -> f64 {
-        self.workspace_data().scale
+    pub(in crate::layout) fn scale(&self, workspace: NodeKey) -> f64 {
+        self.workspace_data(workspace).scale
     }
 
-    pub(in crate::layout) fn options(&self) -> &Rc<Options> {
-        &self.workspace_data().options
+    pub(in crate::layout) fn options(&self, workspace: NodeKey) -> &Rc<Options> {
+        &self.workspace_data(workspace).options
     }
 
     /// Get the currently focused window
@@ -53,27 +53,29 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Update view size and working area
     pub(in crate::layout) fn set_view_size(
         &mut self,
+        workspace: NodeKey,
         view_size: Size<f64, Logical>,
         working_area: Rectangle<f64, Logical>,
     ) {
-        let workspace = self.workspace_data_mut();
-        workspace.view_size = view_size;
-        workspace.working_area = working_area;
+        let data = self.workspace_data_mut(workspace);
+        data.view_size = view_size;
+        data.working_area = working_area;
     }
 
     /// Update configuration
     pub(in crate::layout) fn update_config(
         &mut self,
+        workspace: NodeKey,
         view_size: Size<f64, Logical>,
         working_area: Rectangle<f64, Logical>,
         scale: f64,
         options: Rc<Options>,
     ) {
-        let workspace = self.workspace_data_mut();
-        workspace.view_size = view_size;
-        workspace.working_area = working_area;
-        workspace.scale = scale;
-        workspace.options = options;
+        let data = self.workspace_data_mut(workspace);
+        data.view_size = view_size;
+        data.working_area = working_area;
+        data.scale = scale;
+        data.options = options;
     }
 
     /// Count total number of windows in tree
@@ -99,11 +101,12 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
     }
 
-    /// Cached leaf presentations in current tree/render order.
-    pub(in crate::layout) fn leaf_layouts(
+    /// The same, for one workspace: its tiled side and then its floating groups.
+    pub(in crate::layout) fn leaf_layouts_in(
         &self,
+        workspace: NodeKey,
     ) -> impl DoubleEndedIterator<Item = &LeafLayoutInfo> + '_ {
-        self.dfs_leaf_keys()
+        self.leaf_keys_in_workspace(workspace)
             .into_iter()
             .filter_map(|key| self.leaf_layouts.get(&key))
     }
@@ -164,6 +167,14 @@ impl<W: LayoutElement> ContainerArena<W> {
             self.seat.redirect_selection(None);
         }
 
+        self.drop_stale_leaf_layouts();
+    }
+
+    /// Forget every cached presentation whose leaf has left the arena.
+    ///
+    /// Separate from [`Self::prune_leaf_layouts`] because dropping the last workspace has no
+    /// workspace left to redirect focus into, and the caches still have to go.
+    pub(super) fn drop_stale_leaf_layouts(&mut self) {
         let live: HashSet<NodeKey> = self
             .nodes
             .keys()
@@ -202,7 +213,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             .layout()
     }
 
-    pub(in crate::layout) fn take_pending_relayout(&mut self) -> bool {
-        std::mem::take(&mut self.pending_relayout)
+    pub(in crate::layout) fn take_pending_relayout(&mut self, workspace: NodeKey) -> bool {
+        self.pending_relayout.remove(&workspace)
     }
 }

@@ -8,18 +8,24 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Tiling and floating share this arena and this seat order. Floating a subtree removes
     /// it from the tiled branch without disturbing the relative order of the tiled nodes,
     /// which is exactly the state sway reads through `seat_get_focus_inactive_tiling`.
-    pub(in crate::layout) fn inactive_tiling_key(&self) -> Option<NodeKey> {
+    pub(in crate::layout) fn inactive_tiling_key(&self, workspace: NodeKey) -> Option<NodeKey> {
         self.seat.order().iter().copied().find(|key| {
             !self.is_workspace(*key)
                 && self.get_node(*key).is_some()
                 && self.is_in_tiled_branch(*key)
+                && self.workspace_of(*key) == Some(workspace)
                 && matches!(self.get_node(*key), Some(NodeData::Container(_)))
         })
     }
 
     /// Keep the exact tiling node the seat chose as the immediate unfloat context.
-    pub(in crate::layout) fn inactive_tiling_reference(&self) -> Option<InactiveTilingReference> {
-        Some(InactiveTilingReference::new(self.inactive_tiling_key()?))
+    pub(in crate::layout) fn inactive_tiling_reference(
+        &self,
+        workspace: NodeKey,
+    ) -> Option<InactiveTilingReference> {
+        Some(InactiveTilingReference::new(
+            self.inactive_tiling_key(workspace)?,
+        ))
     }
 
     /// Resolve an immediate unfloat reference without projecting it through a tree path.

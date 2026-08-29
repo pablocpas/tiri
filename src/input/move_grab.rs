@@ -1,4 +1,3 @@
-
 use smithay::backend::input::ButtonState;
 use smithay::desktop::Window;
 use smithay::input::pointer::{
@@ -81,7 +80,7 @@ impl MoveGrab {
                 // synchronized workspace animation.
                 if layout.is_overview_open() {
                     let res = layout.workspaces().find_map(|(mon, ws_idx, ws)| {
-                        ws.windows()
+                        ws.windows(layout.containers())
                             .any(|w| w.window == self.window)
                             .then(|| (mon.map(|mon| mon.output().clone()), ws_idx))
                     });

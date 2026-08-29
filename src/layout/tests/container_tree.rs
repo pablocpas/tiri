@@ -25,17 +25,26 @@ fn removing_window_above_preserves_focused_window() {
     // Focus middle window and remove the window above it.
     check_ops_on_layout(&mut layout, [Op::FocusWindow(2)]);
     let workspace = layout.active_workspace().expect("active workspace");
-    assert_eq!(workspace.container_tree().focused_window_id(), Some(2));
+    assert_eq!(
+        workspace
+            .container_tree(&layout.containers)
+            .focused_window_id(),
+        Some(2)
+    );
     check_ops_on_layout(&mut layout, [Op::CloseWindow(1)]);
     let workspace = layout.active_workspace().expect("active workspace");
     assert_eq!(
-        workspace.container_tree().focused_window_id(),
+        workspace
+            .container_tree(&layout.containers)
+            .focused_window_id(),
         Some(2),
         "removing the window above should not move focus",
     );
 }
 pub(super) struct TreeHarness {
     pub(super) tree: ContainerArena<TestWindow>,
+    /// The workspace this harness built first, kept because a test may add a second.
+    workspace: super::super::container::NodeKey,
     options: Rc<Options>,
     clock: Clock,
     view_size: Size<f64, Logical>,
@@ -48,9 +57,17 @@ impl TreeHarness {
         let view_size = Size::from((800.0, 600.0));
         let working_area = Rectangle::from_size(view_size);
         let scale = 1.0;
-        let tree = ContainerArena::new(view_size, working_area, scale, options.clone());
+        let mut tree = ContainerArena::new();
+        let workspace = tree.add_workspace(
+            ContainerLayout::SplitH,
+            view_size,
+            working_area,
+            scale,
+            options.clone(),
+        );
         Self {
             tree,
+            workspace,
             options,
             clock,
             view_size,
@@ -81,7 +98,7 @@ impl TreeHarness {
     /// The arena's operations name their workspace and the tests drive the arena directly, so
     /// without this every call reaches back through the tree for the same key.
     pub(super) fn ws(&self) -> super::super::container::NodeKey {
-        self.tree.workspace_root()
+        self.workspace
     }
 
     /// Add a second workspace to the same arena, laid out in the same box.
@@ -96,11 +113,7 @@ impl TreeHarness {
     }
 
     /// Put a window into a named workspace of this arena.
-    pub(super) fn add_window_to(
-        &mut self,
-        workspace: super::super::container::NodeKey,
-        id: usize,
-    ) {
+    pub(super) fn add_window_to(&mut self, workspace: super::super::container::NodeKey, id: usize) {
         let view = self.detached_view(TestWindowParams::new(id));
         self.tree.append_leaf(workspace, view, false);
     }
@@ -122,6 +135,11 @@ impl TreeHarness {
     /// Called automatically on drop, so every test gets an end-state check even though it
     /// drives the tree directly.
     pub(super) fn verify(&mut self) {
+        // A test may have removed the workspace it built; there is then nothing to arrange.
+        if !self.tree.holds_node(self.workspace) {
+            self.tree.verify_all_invariants();
+            return;
+        }
         self.tree.layout(self.ws());
         self.tree.verify_invariants(self.ws());
     }
@@ -144,7 +162,7 @@ fn replacing_a_leaf_gives_the_arriving_view_the_slot_it_took() {
     assert!(harness
         .tree
         .set_focused_layout(harness.ws(), ContainerLayout::Tabbed));
-    assert!(harness.tree.focus_window_by_id(&2));
+    assert!(harness.tree.focus_window_by_id(harness.ws(), &2));
     harness.tree.layout(harness.ws());
 
     let workspace = harness.ws();
@@ -236,7 +254,7 @@ fn one_arena_holds_two_workspaces_without_them_seeing_each_other() {
     assert_eq!(ids, vec![1, 2, 3, 4]);
     assert_eq!(harness.tree.window_count(), 4);
     assert_eq!(harness.tree.dfs_leaf_keys().len(), 4);
-    assert!(!harness.tree.is_empty());
+    assert!(!harness.tree.workspace_is_empty(harness.ws()));
 
     // Every node names its own workspace, and no node names the other's.
     for (id, expected) in [(1, first), (2, first), (3, second), (4, second)] {
@@ -256,7 +274,10 @@ fn one_arena_holds_two_workspaces_without_them_seeing_each_other() {
     assert!(harness
         .tree
         .set_root_container_layout(first, ContainerLayout::SplitV));
-    assert_eq!(harness.tree.root_container_layout(first), ContainerLayout::SplitV);
+    assert_eq!(
+        harness.tree.root_container_layout(first),
+        ContainerLayout::SplitV
+    );
     assert_eq!(
         harness.tree.root_container_layout(second),
         ContainerLayout::SplitH,
@@ -283,11 +304,12 @@ fn removing_a_workspace_takes_its_windows_and_leaves_the_rest() {
     assert_eq!(harness.tree.window_count(), 1);
     assert_eq!(harness.tree.window_key(&2), None);
     assert!(!harness.tree.holds_node(second));
-    assert_eq!(harness.tree.workspace_root(), first);
+    assert_eq!(harness.ws(), first);
     harness.tree.verify_all_invariants();
 
-    // The last one stays: an arena without a workspace has no root to insert into.
-    assert!(!harness.tree.remove_workspace(first));
+    // The last one goes too: an arena with no workspace is the state a fresh one starts in.
+    assert!(harness.tree.remove_workspace(first));
+    assert_eq!(harness.tree.window_count(), 0);
 }
 
 #[test]
@@ -303,9 +325,7 @@ fn moving_a_leaf_between_workspace_stores_keeps_its_identity() {
         .expect("detached leaf");
     assert_eq!(tile.key(), key);
 
-    target
-        .tree
-        .append_leaf(target.ws(), tile, true);
+    target.tree.append_leaf(target.ws(), tile, true);
     assert_eq!(target.tree.window_key(&1), Some(key));
 }
 
@@ -315,15 +335,15 @@ fn removing_fullscreen_leaf_clears_workspace_pointer() {
     harness.add_window(1);
 
     let key = harness.tree.window_key(&1).expect("fullscreen leaf");
-    assert!(harness.tree.set_fullscreen_key(Some(key)));
-    assert_eq!(harness.tree.fullscreen_key(), Some(key));
+    assert!(harness.tree.set_fullscreen_key(harness.ws(), Some(key)));
+    assert_eq!(harness.tree.fullscreen_key(harness.ws()), Some(key));
 
     harness
         .tree
         .remove_window(harness.ws(), &1)
         .expect("removed leaf");
     assert_eq!(
-        harness.tree.fullscreen_key(),
+        harness.tree.fullscreen_key(harness.ws()),
         None,
         "removing the owning leaf must not leave a stale workspace pointer"
     );
@@ -342,9 +362,14 @@ fn extracting_parent_of_fullscreen_leaf_clears_workspace_pointer() {
     let key = harness.tree.window_key(&1).expect("fullscreen leaf");
     let wrapper = harness
         .tree
-        .wrap_child_in_new_container(root, key, ContainerData::new(ContainerLayout::SplitV))
+        .wrap_child_in_new_container(
+            harness.ws(),
+            root,
+            key,
+            ContainerData::new(ContainerLayout::SplitV),
+        )
         .expect("wrapper");
-    assert!(harness.tree.set_fullscreen_key(Some(key)));
+    assert!(harness.tree.set_fullscreen_key(harness.ws(), Some(key)));
 
     let workspace = harness.ws();
     harness
@@ -352,7 +377,7 @@ fn extracting_parent_of_fullscreen_leaf_clears_workspace_pointer() {
         .take_subtree_at(workspace, wrapper)
         .expect("detached fullscreen subtree");
     assert_eq!(
-        harness.tree.fullscreen_key(),
+        harness.tree.fullscreen_key(harness.ws()),
         None,
         "recursive extraction must clear a fullscreen descendant"
     );
@@ -368,16 +393,26 @@ fn wrapping_fullscreen_leaf_transfers_workspace_pointer_to_wrapper() {
         .root_node_key(harness.ws())
         .expect("workspace root");
     let leaf = harness.tree.window_key(&1).expect("fullscreen leaf");
-    assert!(harness.tree.set_fullscreen_key(Some(leaf)));
+    assert!(harness.tree.set_fullscreen_key(harness.ws(), Some(leaf)));
 
     let wrapper = harness
         .tree
-        .wrap_child_in_new_container(root, leaf, ContainerData::new(ContainerLayout::SplitV))
+        .wrap_child_in_new_container(
+            harness.ws(),
+            root,
+            leaf,
+            ContainerData::new(ContainerLayout::SplitV),
+        )
         .expect("wrapper");
 
-    assert_eq!(harness.tree.fullscreen_key(), Some(wrapper));
-    assert_eq!(harness.tree.fullscreen_representative_window_id(), Some(&1));
-    assert_eq!(harness.tree.fullscreen_leaf_window_id(), None);
+    assert_eq!(harness.tree.fullscreen_key(harness.ws()), Some(wrapper));
+    assert_eq!(
+        harness
+            .tree
+            .fullscreen_representative_window_id(harness.ws()),
+        Some(&1)
+    );
+    assert_eq!(harness.tree.fullscreen_leaf_window_id(harness.ws()), None);
 }
 
 #[test]
@@ -392,16 +427,21 @@ fn reaping_empty_fullscreen_wrapper_clears_workspace_pointer() {
     let leaf = harness.tree.window_key(&1).expect("leaf");
     let wrapper = harness
         .tree
-        .wrap_child_in_new_container(root, leaf, ContainerData::new(ContainerLayout::SplitV))
+        .wrap_child_in_new_container(
+            harness.ws(),
+            root,
+            leaf,
+            ContainerData::new(ContainerLayout::SplitV),
+        )
         .expect("wrapper");
-    assert!(harness.tree.set_fullscreen_key(Some(wrapper)));
+    assert!(harness.tree.set_fullscreen_key(harness.ws(), Some(wrapper)));
 
     harness
         .tree
         .remove_window(harness.ws(), &1)
         .expect("removed leaf");
 
-    assert_eq!(harness.tree.fullscreen_key(), None);
+    assert_eq!(harness.tree.fullscreen_key(harness.ws()), None);
 }
 
 #[test]
@@ -437,9 +477,7 @@ fn moving_a_leaf_between_workspace_stores_carries_its_size_state() {
         .tree
         .remove_window(source.ws(), &2)
         .expect("detached leaf");
-    target
-        .tree
-        .append_leaf(target.ws(), tile, true);
+    target.tree.append_leaf(target.ws(), tile, true);
 
     assert_eq!(target.tree.window_key(&2), Some(key));
     assert_eq!(
@@ -451,7 +489,7 @@ fn moving_a_leaf_between_workspace_stores_carries_its_size_state() {
     let target_size = Size::from((1000.0, 700.0));
     target
         .tree
-        .set_view_size(target_size, Rectangle::from_size(target_size));
+        .set_view_size(target.ws(), target_size, Rectangle::from_size(target_size));
     target.tree.layout(target.ws());
     let after_arrange = target.tree.debug_node_sizing(key).unwrap();
     assert_ne!(
@@ -474,6 +512,7 @@ fn moving_a_subtree_between_workspace_stores_keeps_every_identity() {
     let container = source
         .tree
         .wrap_child_in_new_container(
+            source.ws(),
             source.ws(),
             first,
             ContainerData::new(ContainerLayout::SplitV),
@@ -516,13 +555,14 @@ fn moving_a_container_to_an_empty_workspace_unwraps_it() {
         .tree
         .wrap_child_in_new_container(
             source.ws(),
+            source.ws(),
             first,
             ContainerData::new(ContainerLayout::SplitV),
         )
         .expect("container");
     assert_eq!(source.tree.parent_of(first), Some(container));
 
-    assert!(source.tree.focus_window_by_id(&1));
+    assert!(source.tree.focus_window_by_id(source.ws(), &1));
     let idx = source
         .tree
         .focused_root_index(source.ws())
@@ -568,11 +608,21 @@ fn replacing_a_container_hands_its_parent_share_to_the_replacement() {
     let leaf = harness.tree.window_key(&1).expect("first leaf");
     let inner = harness
         .tree
-        .wrap_child_in_new_container(root, leaf, ContainerData::new(ContainerLayout::SplitV))
+        .wrap_child_in_new_container(
+            harness.ws(),
+            root,
+            leaf,
+            ContainerData::new(ContainerLayout::SplitV),
+        )
         .expect("inner wrapper");
     let outer = harness
         .tree
-        .wrap_child_in_new_container(root, inner, ContainerData::new(ContainerLayout::SplitH))
+        .wrap_child_in_new_container(
+            harness.ws(),
+            root,
+            inner,
+            ContainerData::new(ContainerLayout::SplitH),
+        )
         .expect("outer wrapper");
     assert!(harness
         .tree
@@ -581,7 +631,7 @@ fn replacing_a_container_hands_its_parent_share_to_the_replacement() {
     let replacement_share = harness.tree.debug_node_sizing(inner).unwrap();
     let old_leaf_share = harness.tree.debug_node_sizing(leaf).unwrap();
     assert_ne!(replacement_share.0, old_leaf_share.0);
-    assert!(harness.tree.set_fullscreen_key(Some(inner)));
+    assert!(harness.tree.set_fullscreen_key(harness.ws(), Some(inner)));
 
     // `cmd_layout` flattens the inner wrapper with `container_replace` before discovering
     // that the surviving outer wrapper already has the requested layout. There is therefore
@@ -596,7 +646,7 @@ fn replacing_a_container_hands_its_parent_share_to_the_replacement() {
         (leaf_share.0, leaf_share.1),
         (replacement_share.0, replacement_share.1),
     );
-    assert_eq!(harness.tree.fullscreen_key(), Some(leaf));
+    assert_eq!(harness.tree.fullscreen_key(harness.ws()), Some(leaf));
     assert!(harness
         .tree
         .get_tile(leaf)
@@ -646,9 +696,7 @@ fn apply_tree_random_op_inner(
         }
         TreeRandomOp::RemoveFocused => {
             if let Some(id) = harness.tree.focused_window_id() {
-                let _ = harness
-                    .tree
-                    .remove_window(harness.ws(), &id);
+                let _ = harness.tree.remove_window(harness.ws(), &id);
             }
         }
         TreeRandomOp::SplitH => {
@@ -672,9 +720,7 @@ fn apply_tree_random_op_inner(
                 .set_focused_layout(harness.ws(), ContainerLayout::Stacked);
         }
         TreeRandomOp::ToggleSplit => {
-            harness
-                .tree
-                .toggle_split_layout(harness.ws());
+            harness.tree.toggle_split_layout(harness.ws());
         }
         TreeRandomOp::FocusLeft => {
             harness
@@ -687,9 +733,7 @@ fn apply_tree_random_op_inner(
                 .focus_in_direction(harness.ws(), Direction::Right);
         }
         TreeRandomOp::FocusUp => {
-            harness
-                .tree
-                .focus_in_direction(harness.ws(), Direction::Up);
+            harness.tree.focus_in_direction(harness.ws(), Direction::Up);
         }
         TreeRandomOp::FocusDown => {
             harness
@@ -707,9 +751,7 @@ fn apply_tree_random_op_inner(
                 .move_in_direction(harness.ws(), Direction::Right);
         }
         TreeRandomOp::MoveUp => {
-            harness
-                .tree
-                .move_in_direction(harness.ws(), Direction::Up);
+            harness.tree.move_in_direction(harness.ws(), Direction::Up);
         }
         TreeRandomOp::MoveDown => {
             harness
@@ -805,7 +847,7 @@ fn move_right_enters_container_with_different_layout() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -836,7 +878,7 @@ fn move_right_escapes_to_grandparent_on_layout_mismatch() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -869,7 +911,7 @@ fn focus_descends_into_last_focused_child() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -905,7 +947,7 @@ fn preserve_explicit_same_layout_container_on_cleanup() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -936,9 +978,12 @@ fn a_container_leaves_nothing_behind_when_its_last_window_closes() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert_eq!(workspace.debug_workspace_layout(), ContainerLayout::SplitH);
+    assert_eq!(
+        workspace.debug_workspace_layout(&layout.containers),
+        ContainerLayout::SplitH
+    );
     assert_snapshot!(
-        workspace.container_tree().debug_tree().as_str(),
+        workspace.container_tree(&layout.containers).debug_tree().as_str(),
         @r"
     SplitH
       Window 2 *
@@ -967,7 +1012,7 @@ fn cleanup_preserves_single_explicit_split_for_future_inserts() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -984,19 +1029,19 @@ fn keep_tabbed_container_on_cleanup_with_split_parent() {
     let mut harness = TreeHarness::new();
     harness.add_window(1);
     harness.add_window(2);
-    assert!(harness.tree.focus_window_by_id(&2));
+    assert!(harness.tree.focus_window_by_id(harness.ws(), &2));
     harness
         .tree
         .split_focused(harness.ws(), ContainerLayout::Tabbed);
     harness.add_window(3);
     harness.add_window(4);
-    let _ = harness
-        .tree
-        .remove_window(harness.ws(), &4);
+    let _ = harness.tree.remove_window(harness.ws(), &4);
 
     let tree = harness.tree.debug_tree(harness.ws());
     assert!(
-        harness.tree.contains_layout(ContainerLayout::Tabbed),
+        harness
+            .tree
+            .contains_layout(harness.ws(), ContainerLayout::Tabbed),
         "tabbed container should be preserved on cleanup:\n{tree}"
     );
 }
@@ -1008,19 +1053,19 @@ fn keep_stacked_container_on_cleanup_with_split_parent() {
     assert!(harness
         .tree
         .set_focused_layout(harness.ws(), ContainerLayout::SplitV));
-    assert!(harness.tree.focus_window_by_id(&2));
+    assert!(harness.tree.focus_window_by_id(harness.ws(), &2));
     harness
         .tree
         .split_focused(harness.ws(), ContainerLayout::Stacked);
     harness.add_window(3);
     harness.add_window(4);
-    let _ = harness
-        .tree
-        .remove_window(harness.ws(), &4);
+    let _ = harness.tree.remove_window(harness.ws(), &4);
 
     let tree = harness.tree.debug_tree(harness.ws());
     assert!(
-        harness.tree.contains_layout(ContainerLayout::Stacked),
+        harness
+            .tree
+            .contains_layout(harness.ws(), ContainerLayout::Stacked),
         "stacked container should be preserved on cleanup:\n{tree}"
     );
 }
@@ -1045,7 +1090,7 @@ fn move_left_enters_single_child_container() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1074,7 +1119,7 @@ fn move_right_swaps_with_sibling_in_same_layout() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1104,7 +1149,7 @@ fn move_down_swaps_in_splitv() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1136,7 +1181,7 @@ fn move_down_enters_container_with_different_layout() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1167,7 +1212,7 @@ fn move_left_enters_container_with_different_layout() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1200,7 +1245,7 @@ fn move_up_enters_container_with_different_layout() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1231,7 +1276,7 @@ fn move_up_escapes_to_grandparent_on_layout_mismatch() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1263,7 +1308,7 @@ fn preserve_single_child_container_with_different_layout() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1294,7 +1339,7 @@ fn replace_single_child_container_with_same_layout() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1317,7 +1362,7 @@ fn move_right_enters_tabbed_container() {
         .tree
         .split_focused(harness.ws(), ContainerLayout::Tabbed);
     harness.add_window(3);
-    assert!(harness.tree.focus_window_by_id(&1));
+    assert!(harness.tree.focus_window_by_id(harness.ws(), &1));
     assert!(harness
         .tree
         .move_in_direction(harness.ws(), Direction::Right));
@@ -1352,7 +1397,7 @@ fn move_left_swaps_in_tabbed_layout() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1383,7 +1428,7 @@ fn split_inside_tabbed_creates_nested_split() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1475,7 +1520,7 @@ fn tabbed_context_propagates_to_nested_split_tiles() {
     assert!(harness
         .tree
         .set_focused_layout(harness.ws(), ContainerLayout::Tabbed));
-    assert!(harness.tree.focus_window_by_id(&1));
+    assert!(harness.tree.focus_window_by_id(harness.ws(), &1));
     assert!(harness
         .tree
         .split_focused(harness.ws(), ContainerLayout::SplitV));
@@ -1530,7 +1575,7 @@ fn toggle_split_layout_switches_orientation() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1555,7 +1600,7 @@ fn sway_112_layout_flattens_a_doubly_nested_lone_container_once() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1603,19 +1648,13 @@ fn detached_snapshot_does_not_relabel_fractions_after_parent_axis_change() {
         harness.add_window(id);
     }
 
-    let root = harness
-        .tree
-        .root_node_key(harness.ws())
-        .unwrap();
+    let root = harness.tree.root_node_key(harness.ws()).unwrap();
     assert!(harness
         .tree
         .set_child_percent(root, 1, ContainerLayout::SplitH, 0.6));
 
     let key = harness.tree.window_key(&2).unwrap();
-    let (subtree, info) = harness
-        .tree
-        .take_subtree_at(harness.ws(), key)
-        .unwrap();
+    let (subtree, info) = harness.tree.take_subtree_at(harness.ws(), key).unwrap();
     let info = info.expect("a root child has insertion metadata");
 
     let workspace = harness.ws();
@@ -1718,7 +1757,7 @@ fn toggle_layout_all_cycles_through_all_layouts() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1748,7 +1787,7 @@ fn move_down_swaps_in_stacked_layout() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1772,10 +1811,8 @@ fn move_up_escapes_tabbed_layout() {
         .tree
         .split_focused(harness.ws(), ContainerLayout::Tabbed);
     harness.add_window(3);
-    assert!(harness.tree.focus_window_by_id(&2));
-    assert!(harness
-        .tree
-        .move_in_direction(harness.ws(), Direction::Up));
+    assert!(harness.tree.focus_window_by_id(harness.ws(), &2));
+    assert!(harness.tree.move_in_direction(harness.ws(), Direction::Up));
 
     let tree = harness.tree.debug_tree(harness.ws());
     assert_snapshot!(
@@ -1799,7 +1836,7 @@ fn move_left_escapes_stacked_layout() {
         .tree
         .split_focused(harness.ws(), ContainerLayout::Stacked);
     harness.add_window(3);
-    assert!(harness.tree.focus_window_by_id(&2));
+    assert!(harness.tree.focus_window_by_id(harness.ws(), &2));
     assert!(harness
         .tree
         .move_in_direction(harness.ws(), Direction::Left));
@@ -1831,7 +1868,7 @@ fn move_left_at_edge_is_noop() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1860,7 +1897,7 @@ fn move_up_at_an_edge_crosses_the_workspace() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -1885,7 +1922,7 @@ fn split_on_empty_workspace_applies_to_next_window() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert_snapshot!(
-        workspace.container_tree().debug_tree().as_str(),
+        workspace.container_tree(&layout.containers).debug_tree().as_str(),
         @r"
     SplitV
       Window 1 *
@@ -1902,7 +1939,7 @@ fn split_on_empty_workspace_applies_to_next_window() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert_snapshot!(
-        workspace.container_tree().debug_tree().as_str(),
+        workspace.container_tree(&layout.containers).debug_tree().as_str(),
         @"
     SplitV
       Window 1
@@ -1952,7 +1989,7 @@ fn layout_persists_after_last_window_closed() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert_snapshot!(
-        workspace.container_tree().debug_tree().as_str(),
+        workspace.container_tree(&layout.containers).debug_tree().as_str(),
         @"
     SplitV
       Window 2
@@ -1971,9 +2008,7 @@ fn layout_persists_after_last_window_closed_via_append() {
         .tree
         .split_focused(harness.ws(), ContainerLayout::SplitV));
     harness.append_window(1);
-    let _ = harness
-        .tree
-        .remove_window(harness.ws(), &1);
+    let _ = harness.tree.remove_window(harness.ws(), &1);
     harness.append_window(2);
 
     let tree = harness.tree.debug_tree(harness.ws());
@@ -2003,8 +2038,11 @@ fn split_on_single_window_persists_after_close() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert_eq!(workspace.debug_workspace_layout(), ContainerLayout::SplitV);
-    let tree = workspace.container_tree().debug_tree();
+    assert_eq!(
+        workspace.debug_workspace_layout(&layout.containers),
+        ContainerLayout::SplitV
+    );
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @r"
@@ -2028,7 +2066,7 @@ fn split_parallel_with_siblings_wraps_focused_leaf_horizontal() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -2055,7 +2093,7 @@ fn split_parallel_with_siblings_wraps_focused_leaf_vertical() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -2076,18 +2114,16 @@ fn removing_the_last_sibling_keeps_the_workspace_above_the_container() {
     harness.add_window(1);
     harness.add_window(2);
 
-    assert!(harness.tree.focus_window_by_id(&1));
+    assert!(harness.tree.focus_window_by_id(harness.ws(), &1));
     assert!(harness
         .tree
         .split_focused(harness.ws(), ContainerLayout::Stacked));
-    assert!(harness.tree.focus_window_by_id(&2));
+    assert!(harness.tree.focus_window_by_id(harness.ws(), &2));
     assert!(harness
         .tree
         .split_focused(harness.ws(), ContainerLayout::SplitH));
 
-    let _ = harness
-        .tree
-        .remove_window(harness.ws(), &2);
+    let _ = harness.tree.remove_window(harness.ws(), &2);
 
     let tree = harness.tree.debug_tree(harness.ws());
     assert_snapshot!(
@@ -2123,7 +2159,7 @@ fn move_right_out_of_a_single_child_container_lands_where_it_was() {
         Op::MoveColumnRight,
     ]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -2160,7 +2196,7 @@ fn move_left_out_of_a_single_child_container_lands_where_it_was() {
         Op::MoveColumnLeft,
     ]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -2194,7 +2230,7 @@ fn move_out_of_explicit_parallel_split_preserves_container_for_reentry() {
         Op::MoveColumnRight,
     ]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let after_move_out = workspace.container_tree().debug_tree();
+    let after_move_out = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         after_move_out.as_str(),
         @"
@@ -2208,7 +2244,7 @@ fn move_out_of_explicit_parallel_split_preserves_container_for_reentry() {
     );
     check_ops_on_layout(&mut layout, [Op::MoveColumnLeft]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let after_move_back = workspace.container_tree().debug_tree();
+    let after_move_back = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         after_move_back.as_str(),
         @"
@@ -2251,13 +2287,13 @@ fn focus_parent_child_roundtrip_in_nested_splitv() {
         Op::FocusWindow(3),
     ]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree_before = workspace.container_tree().debug_tree();
+    let tree_before = workspace.container_tree(&layout.containers).debug_tree();
     // Go up to parent (SplitV container)
     check_ops_on_layout(&mut layout, [Op::FocusParent]);
     // Go back down to child (should return to window 3)
     check_ops_on_layout(&mut layout, [Op::FocusChild]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree_after = workspace.container_tree().debug_tree();
+    let tree_after = workspace.container_tree(&layout.containers).debug_tree();
     // Tree should be the same (window 3 still focused)
     assert_eq!(tree_before.as_str(), tree_after.as_str());
 }
@@ -2275,7 +2311,7 @@ fn focus_parent_traverses_hierarchy() {
         .tree
         .split_focused(harness.ws(), ContainerLayout::SplitV);
     harness.add_window(3);
-    assert!(harness.tree.focus_window_by_id(&3));
+    assert!(harness.tree.focus_window_by_id(harness.ws(), &3));
 
     // Count how many times we can go up
     let mut levels = 0;
@@ -2326,9 +2362,7 @@ fn floating_a_subtree_keeps_its_identity() {
     // arrange pass is what resolves them. Checking in between asks the tree to be settled
     // halfway through a command.
     harness.tree.layout(harness.ws());
-    harness
-        .tree
-        .verify_invariants(harness.ws());
+    harness.tree.verify_invariants(harness.ws());
 
     assert!(
         harness.tree.is_in_floating_branch(key),
@@ -2340,7 +2374,10 @@ fn floating_a_subtree_keeps_its_identity() {
         "the same key, because the node was moved and not rebuilt",
     );
     assert_eq!(
-        harness.tree.floating_roots().collect::<Vec<_>>(),
+        harness
+            .tree
+            .floating_roots(harness.ws())
+            .collect::<Vec<_>>(),
         [floating_root]
     );
     assert_eq!(
@@ -2362,11 +2399,9 @@ fn floating_a_subtree_keeps_its_identity() {
         "and the same key on the way back",
     );
     assert!(!harness.tree.is_in_floating_branch(key));
-    assert!(harness.tree.floating_roots().next().is_none());
+    assert!(harness.tree.floating_roots(harness.ws()).next().is_none());
     harness.tree.layout(harness.ws());
-    harness
-        .tree
-        .verify_invariants(harness.ws());
+    harness.tree.verify_invariants(harness.ws());
 }
 
 /// A floating group is laid out in its own rectangle, not the workspace's.
@@ -2441,9 +2476,7 @@ fn one_pass_arranges_the_tiled_side_and_the_floating_side() {
         )
         .expect("the window should become a floating group");
     harness.tree.layout(harness.ws());
-    harness
-        .tree
-        .verify_invariants(harness.ws());
+    harness.tree.verify_invariants(harness.ws());
 
     let rect_of = |key| harness.tree.leaf_layout(key).map(|info| info.rect);
 
@@ -2460,7 +2493,7 @@ fn one_pass_arranges_the_tiled_side_and_the_floating_side() {
     let tiled_rect = rect_of(tiled).expect("the tiled window should have been arranged too");
     assert_eq!(
         tiled_rect.size,
-        harness.tree.layout_area().size,
+        harness.tree.layout_area(harness.ws()).size,
         "and the window left behind takes the whole workspace, the floating one not being in \
          its way",
     );

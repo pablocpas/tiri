@@ -23,7 +23,11 @@ impl<W: LayoutElement> ContainerArena<W> {
         };
 
         if visible && matches!(container.layout, Layout::Tabbed | Layout::Stacked) {
+            let workspace = self
+                .workspace_of(node_key)
+                .expect("a tabbed container belongs to a workspace");
             if let Some((rect, row_height)) = self.tab_bar_rect(
+                workspace,
                 container.layout,
                 container.geometry,
                 container.children.len(),

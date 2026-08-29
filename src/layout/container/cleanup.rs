@@ -37,7 +37,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
             let parent_key = self.parent_of(container_key);
             let inherits_fullscreen_selection = self.selected_key() == Some(container_key)
-                && self.fullscreen_key.is_some_and(|fullscreen| {
+                && self.fullscreen_key(workspace).is_some_and(|fullscreen| {
                     container_key == fullscreen || self.is_descendant(container_key, fullscreen)
                 });
             if let Some(parent_key) = parent_key {
@@ -75,7 +75,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         // child. The mode dissolves the same levels — see `autotile_squash_lone_children` —
         // but in place, replacing the level with its child and leaving every arity alone.
         // Two names for one job, so only one of them runs.
-        if self.options().layout.autotile && self.is_in_tiled_branch(branch_root) {
+        if self.options(workspace).layout.autotile && self.is_in_tiled_branch(branch_root) {
             return;
         }
 
@@ -216,6 +216,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     pub(super) fn ensure_container_at_path(
         &mut self,
+        workspace: NodeKey,
         branch_root: NodeKey,
         path: &[usize],
         layout: Layout,
@@ -238,6 +239,6 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         let mut container = ContainerData::new(layout);
         container.mark_user_created();
-        self.wrap_child_in_new_container(parent_key, key, container)
+        self.wrap_child_in_new_container(workspace, parent_key, key, container)
     }
 }

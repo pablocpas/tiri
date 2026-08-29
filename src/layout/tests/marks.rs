@@ -28,14 +28,18 @@ fn marks_replace_add_toggle() {
         ActivateWindow::Yes,
     );
 
-    let workspace = layout.active_workspace_mut().expect("active workspace");
-    assert!(workspace.focus_window_by_id(&id1));
+    let (workspace, containers) = layout
+        .active_workspace_and_containers_mut()
+        .expect("active workspace");
+    assert!(workspace.focus_window_by_id(containers, &id1));
 
     layout.mark_focused(String::from("one"), MarkMode::Replace);
     assert_eq!(marks_for(&layout, id1), vec![String::from("one")]);
 
-    let workspace = layout.active_workspace_mut().expect("active workspace");
-    assert!(workspace.focus_window_by_id(&id2));
+    let (workspace, containers) = layout
+        .active_workspace_and_containers_mut()
+        .expect("active workspace");
+    assert!(workspace.focus_window_by_id(containers, &id2));
 
     layout.mark_focused(String::from("one"), MarkMode::Add);
     assert!(marks_for(&layout, id1).is_empty());
@@ -103,14 +107,18 @@ fn marks_unique_across_windows() {
     );
 
     // Add mark to window 1
-    let workspace = layout.active_workspace_mut().expect("active workspace");
-    assert!(workspace.focus_window_by_id(&id1));
+    let (workspace, containers) = layout
+        .active_workspace_and_containers_mut()
+        .expect("active workspace");
+    assert!(workspace.focus_window_by_id(containers, &id1));
     layout.mark_focused(String::from("unique_mark"), MarkMode::Replace);
     assert_eq!(marks_for(&layout, id1), vec![String::from("unique_mark")]);
 
     // Focus window 2 and add the same mark - should move from window 1 to window 2
-    let workspace = layout.active_workspace_mut().expect("active workspace");
-    assert!(workspace.focus_window_by_id(&id2));
+    let (workspace, containers) = layout
+        .active_workspace_and_containers_mut()
+        .expect("active workspace");
+    assert!(workspace.focus_window_by_id(containers, &id2));
     layout.mark_focused(String::from("unique_mark"), MarkMode::Replace);
 
     // Mark should now be only on window 2, not on window 1
@@ -167,13 +175,17 @@ fn unmark_takes_a_named_mark_off_its_holder_and_bare_unmark_clears_every_window(
         ActivateWindow::Yes,
     );
 
-    let workspace = layout.active_workspace_mut().expect("active workspace");
-    assert!(workspace.focus_window_by_id(&id1));
+    let (workspace, containers) = layout
+        .active_workspace_and_containers_mut()
+        .expect("active workspace");
+    assert!(workspace.focus_window_by_id(containers, &id1));
     layout.mark_focused(String::from("alpha"), MarkMode::Replace);
     layout.mark_focused(String::from("beta"), MarkMode::Add);
 
-    let workspace = layout.active_workspace_mut().expect("active workspace");
-    assert!(workspace.focus_window_by_id(&id2));
+    let (workspace, containers) = layout
+        .active_workspace_and_containers_mut()
+        .expect("active workspace");
+    assert!(workspace.focus_window_by_id(containers, &id2));
     layout.mark_focused(String::from("gamma"), MarkMode::Replace);
 
     layout.unmark(Some("alpha"));
@@ -183,8 +195,10 @@ fn unmark_takes_a_named_mark_off_its_holder_and_bare_unmark_clears_every_window(
     // Bare `unmark` is i3's sweeping form: every mark in the layout goes, not just the ones
     // on whatever happens to be focused. Recorded in
     // `tiri-parity/fixtures/unmark-one-and-unmark-all.parity`.
-    let workspace = layout.active_workspace_mut().expect("active workspace");
-    assert!(workspace.focus_window_by_id(&id1));
+    let (workspace, containers) = layout
+        .active_workspace_and_containers_mut()
+        .expect("active workspace");
+    assert!(workspace.focus_window_by_id(containers, &id1));
     layout.unmark(None);
 
     assert!(marks_for(&layout, id1).is_empty());
@@ -207,7 +221,7 @@ fn urgent_propagates_to_workspace() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert!(
-        workspace.is_urgent(),
+        workspace.is_urgent(&layout.containers),
         "workspace should reflect urgent child state"
     );
 
@@ -215,7 +229,7 @@ fn urgent_propagates_to_workspace() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert!(
-        !workspace.is_urgent(),
+        !workspace.is_urgent(&layout.containers),
         "workspace urgency should clear when urgent flag is removed",
     );
 }

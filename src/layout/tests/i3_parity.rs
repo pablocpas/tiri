@@ -28,10 +28,15 @@ fn i3_167_workspace_layout_tabbed_groups_second_open() {
     // Recorded: fixtures/layout-tabbed-on-an-empty-workspace.parity. sway makes the
     // *workspace* tabbed and both windows are its tabs; no container is built for them.
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
-    assert_eq!(workspace.debug_workspace_layout(), ContainerLayout::Tabbed);
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
+    assert_eq!(
+        workspace.debug_workspace_layout(&layout.containers),
+        ContainerLayout::Tabbed
+    );
     assert!(
-        !workspace.container_tree().has_containers(),
+        !workspace
+            .container_tree(&layout.containers)
+            .has_containers(),
         "a tabbed workspace holds its windows directly:\n{tree}",
     );
 }
@@ -58,12 +63,17 @@ fn i3_167_workspace_layout_stacked_groups_second_open() {
     );
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert!(
-        !workspace.container_tree().has_containers(),
+        !workspace
+            .container_tree(&layout.containers)
+            .has_containers(),
         "a stacked workspace holds its windows directly:\n{tree}",
     );
-    assert_eq!(workspace.debug_workspace_layout(), ContainerLayout::Stacked);
+    assert_eq!(
+        workspace.debug_workspace_layout(&layout.containers),
+        ContainerLayout::Stacked
+    );
 }
 #[test]
 fn i3_167_workspace_layout_stacked_reinserts_after_floating_roundtrip() {
@@ -90,12 +100,17 @@ fn i3_167_workspace_layout_stacked_reinserts_after_floating_roundtrip() {
     );
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert!(
-        !workspace.container_tree().has_containers(),
+        !workspace
+            .container_tree(&layout.containers)
+            .has_containers(),
         "a stacked workspace holds its windows directly:\n{tree}",
     );
-    assert_eq!(workspace.debug_workspace_layout(), ContainerLayout::Stacked);
+    assert_eq!(
+        workspace.debug_workspace_layout(&layout.containers),
+        ContainerLayout::Stacked
+    );
 }
 #[test]
 fn i3_167_empty_workspace_layout_can_switch_back_to_splith() {
@@ -137,9 +152,9 @@ fn i3_167_empty_workspace_layout_can_switch_back_to_splith() {
     );
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert!(
-        !workspace.container_tree().contains_layout(ContainerLayout::Stacked),
+        !workspace.container_tree(&layout.containers).contains_layout(ContainerLayout::Stacked),
         "after resetting empty workspace layout to splith, new opens should no longer land in stacked:\n{tree}",
     );
 }
@@ -183,14 +198,19 @@ fn i3_167_empty_workspace_layout_can_switch_back_to_splitv() {
     );
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert!(
-        !workspace.container_tree().has_containers(),
+        !workspace
+            .container_tree(&layout.containers)
+            .has_containers(),
         "the workspace carries the orientation itself:\n{tree}",
     );
-    assert_eq!(workspace.debug_workspace_layout(), ContainerLayout::SplitV);
+    assert_eq!(
+        workspace.debug_workspace_layout(&layout.containers),
+        ContainerLayout::SplitV
+    );
     assert!(
-        !workspace.container_tree().contains_layout(ContainerLayout::Tabbed),
+        !workspace.container_tree(&layout.containers).contains_layout(ContainerLayout::Tabbed),
         "after resetting empty workspace layout to splitv, new opens should no longer land in tabbed:\n{tree}",
     );
 }
@@ -306,7 +326,7 @@ fn i3_192_nested_container_layout_transitions() {
         Op::SetLayoutStacked,
     ]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -319,7 +339,7 @@ fn i3_192_nested_container_layout_transitions() {
     );
     check_ops_on_layout(&mut layout, [Op::SetLayoutTabbed]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -332,7 +352,7 @@ fn i3_192_nested_container_layout_transitions() {
     );
     check_ops_on_layout(&mut layout, [Op::ToggleSplitLayout]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -362,7 +382,7 @@ fn i3_192_toggle_layout_all_cycles_nested_container_layouts() {
         Op::ToggleLayoutAll,
     ]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -375,7 +395,7 @@ fn i3_192_toggle_layout_all_cycles_nested_container_layouts() {
     );
     check_ops_on_layout(&mut layout, [Op::ToggleLayoutAll]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -388,7 +408,7 @@ fn i3_192_toggle_layout_all_cycles_nested_container_layouts() {
     );
     check_ops_on_layout(&mut layout, [Op::ToggleLayoutAll]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -420,7 +440,7 @@ fn i3_192_nested_container_layout_sequence_matches_i3() {
         Op::ToggleSplitLayout,
     ]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -433,7 +453,7 @@ fn i3_192_nested_container_layout_sequence_matches_i3() {
     );
     check_ops_on_layout(&mut layout, [Op::ToggleSplitLayout]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -455,10 +475,16 @@ fn i3_122_repeated_split_on_single_window_does_not_nest_wrappers() {
         Op::SplitVertical,
     ]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let before = workspace.container_tree().debug_tree().replace(" *", "");
+    let before = workspace
+        .container_tree(&layout.containers)
+        .debug_tree()
+        .replace(" *", "");
     check_ops_on_layout(&mut layout, [Op::SplitVertical]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let after = workspace.container_tree().debug_tree().replace(" *", "");
+    let after = workspace
+        .container_tree(&layout.containers)
+        .debug_tree()
+        .replace(" *", "");
     assert_eq!(
         after, before,
         "repeating split on a single focused window should not keep nesting redundant wrappers",
@@ -479,7 +505,7 @@ fn i3_122_split_inside_stacked_creates_nested_split() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -510,7 +536,7 @@ fn i3_122_toggle_split_switches_nested_container_orientation() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -539,7 +565,7 @@ fn i3_122_split_workspace_with_multiple_children_wraps_focused_branch() {
         },
     ]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -574,7 +600,10 @@ fn i3_122_repeated_split_stops_once_the_window_is_alone() {
 
     check_ops_on_layout(&mut layout, [Op::SplitVertical]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let wrapped = workspace.container_tree().debug_tree().replace(" *", "");
+    let wrapped = workspace
+        .container_tree(&layout.containers)
+        .debug_tree()
+        .replace(" *", "");
     assert_eq!(
         wrapped.trim_end(),
         "SplitH\n  SplitV\n    Window 1\n    SplitV\n      Window 3\n  Window 2",
@@ -585,7 +614,7 @@ fn i3_122_repeated_split_stops_once_the_window_is_alone() {
     let workspace = layout.active_workspace().expect("active workspace");
     assert_eq!(
         workspace
-            .container_tree()
+            .container_tree(&layout.containers)
             .debug_tree()
             .replace(" *", "")
             .trim_end(),
@@ -609,7 +638,7 @@ fn i3_122_split_on_empty_workspace_applies_to_next_window() {
     {
         let workspace = layout.active_workspace().expect("active workspace");
         assert_snapshot!(
-            workspace.container_tree().debug_tree().as_str(),
+            workspace.container_tree(&layout.containers).debug_tree().as_str(),
             @r"
         SplitV
           Window 1 *
@@ -626,7 +655,7 @@ fn i3_122_split_on_empty_workspace_applies_to_next_window() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert_snapshot!(
-        workspace.container_tree().debug_tree().as_str(),
+        workspace.container_tree(&layout.containers).debug_tree().as_str(),
         @"
     SplitV
       Window 1
@@ -654,7 +683,7 @@ fn i3_122_split_on_single_window_persists_after_close() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert_snapshot!(
-        workspace.container_tree().debug_tree().as_str(),
+        workspace.container_tree(&layout.containers).debug_tree().as_str(),
         @"
     SplitV
       Window 2
@@ -671,7 +700,7 @@ fn i3_124_move_single_window_is_noop() {
         },
     ]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let before = workspace.container_tree().debug_tree();
+    let before = workspace.container_tree(&layout.containers).debug_tree();
     check_ops_on_layout(
         &mut layout,
         [
@@ -684,8 +713,11 @@ fn i3_124_move_single_window_is_noop() {
     // Recorded: fixtures/move-a-lone-window.parity. Nothing shifts — there is nothing to
     // shift past — but the workspace turns to face each move, so the last one decides.
     let workspace = layout.active_workspace().expect("active workspace");
-    let after = workspace.container_tree().debug_tree();
-    assert_eq!(workspace.debug_workspace_layout(), ContainerLayout::SplitV);
+    let after = workspace.container_tree(&layout.containers).debug_tree();
+    assert_eq!(
+        workspace.debug_workspace_layout(&layout.containers),
+        ContainerLayout::SplitV
+    );
     assert_eq!(
         after.replace("SplitV", "SplitH"),
         before,
@@ -711,7 +743,7 @@ fn i3_124_move_window_into_adjacent_split_container() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -742,7 +774,7 @@ fn i3_124_move_window_out_of_split_on_layout_mismatch() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -776,7 +808,7 @@ fn i3_124_move_container_right_moves_focused_leaf_out_of_nested_split() {
     layout.verify_invariants();
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -807,7 +839,7 @@ fn i3_145_move_up_then_right_flattens_back_to_root_siblings() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -843,17 +875,19 @@ fn i3_145_ticket_1053_sequence_flattens_after_second_move() {
         Op::SplitVertical,
     ]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let before = workspace.container_tree().debug_tree();
+    let before = workspace.container_tree(&layout.containers).debug_tree();
     assert_eq!(
-        workspace.container_tree().root_children_len(),
+        workspace.container_tree(&layout.containers).root_children_len(),
         3,
         "precondition: first phase of i3 145 ticket #1053 should still have 3 root children:\n{before}",
     );
     check_ops_on_layout(&mut layout, [Op::FocusColumnRight, Op::MoveColumnLeft]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let after = workspace.container_tree().debug_tree();
+    let after = workspace.container_tree(&layout.containers).debug_tree();
     assert_eq!(
-        workspace.container_tree().root_children_len(),
+        workspace
+            .container_tree(&layout.containers)
+            .root_children_len(),
         2,
         "i3 145 ticket #1053 should flatten redundant wrappers after the second move:\n{after}",
     );
@@ -903,7 +937,7 @@ fn i3_117_workspace_previous_switches_between_mru_workspaces() {
     {
         let workspace = layout.active_workspace().expect("active workspace");
         assert!(
-            workspace.has_window(&1),
+            workspace.has_window(&layout.containers, &1),
             "moving with focus=true should leave us on the destination workspace",
         );
     }
@@ -913,17 +947,17 @@ fn i3_117_workspace_previous_switches_between_mru_workspaces() {
     {
         let workspace = layout.active_workspace().expect("active workspace");
         assert!(
-            workspace.has_window(&2),
+            workspace.has_window(&layout.containers, &2),
             "workspace previous should restore the previously-focused workspace",
         );
-        assert!(!workspace.has_window(&1));
+        assert!(!workspace.has_window(&layout.containers, &1));
     }
 
     check_ops_on_layout(&mut layout, [Op::FocusWorkspacePrevious]);
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert!(
-        workspace.has_window(&1),
+        workspace.has_window(&layout.containers, &1),
         "workspace previous should toggle back to the MRU workspace",
     );
 }
@@ -940,9 +974,12 @@ fn i3_118_open_then_kill_single_window_leaves_workspace_empty() {
     layout.remove_window(&1, Transaction::new());
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert_eq!(workspace.windows().count(), 0);
-    assert_eq!(workspace.container_tree().tiles().count(), 0);
-    assert_eq!(workspace.floating().tiles().count(), 0);
+    assert_eq!(workspace.windows(&layout.containers).count(), 0);
+    assert_eq!(
+        workspace.container_tree(&layout.containers).tiles().count(),
+        0
+    );
+    assert_eq!(workspace.floating(&layout.containers).tiles().count(), 0);
 }
 #[test]
 fn i3_118_kill_unfocused_window_by_id_removes_correct_leaf() {
@@ -960,8 +997,8 @@ fn i3_118_kill_unfocused_window_by_id_removes_correct_leaf() {
     layout.remove_window(&1, Transaction::new());
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(!workspace.has_window(&1));
-    assert!(workspace.has_window(&2));
+    assert!(!workspace.has_window(&layout.containers, &1));
+    assert!(workspace.has_window(&layout.containers, &2));
     assert_eq!(layout.focus().map(|win| *win.id()), Some(2));
 }
 #[test]
@@ -1017,8 +1054,13 @@ fn closing_a_selected_container_does_not_select_its_parent() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert_eq!(layout.focus().map(|window| *window.id()), Some(1));
-    assert_eq!(workspace.debug_command_target(), "tiling_window");
-    assert!(!workspace.container_tree().selected_is_container());
+    assert_eq!(
+        workspace.debug_command_target(&layout.containers),
+        "tiling_window"
+    );
+    assert!(!workspace
+        .container_tree(&layout.containers)
+        .selected_is_container());
 }
 
 #[test]
@@ -1048,9 +1090,12 @@ fn i3_129_kill_workspace_closes_tiling_and_floating_windows() {
     }
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert_eq!(workspace.windows().count(), 0);
-    assert_eq!(workspace.container_tree().tiles().count(), 0);
-    assert_eq!(workspace.floating().tiles().count(), 0);
+    assert_eq!(workspace.windows(&layout.containers).count(), 0);
+    assert_eq!(
+        workspace.container_tree(&layout.containers).tiles().count(),
+        0
+    );
+    assert_eq!(workspace.floating(&layout.containers).tiles().count(), 0);
 }
 #[test]
 fn i3_130_closing_last_children_removes_empty_split_wrapper() {
@@ -1072,7 +1117,7 @@ fn i3_130_closing_last_children_removes_empty_split_wrapper() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @r"
@@ -1102,11 +1147,11 @@ fn i3_130_moving_last_children_away_removes_empty_split_wrapper() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.has_window(&2));
-    assert!(!workspace.has_window(&1));
-    assert!(!workspace.has_window(&3));
+    assert!(workspace.has_window(&layout.containers, &2));
+    assert!(!workspace.has_window(&layout.containers, &1));
+    assert!(!workspace.has_window(&layout.containers, &3));
 
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @r"
@@ -1128,53 +1173,69 @@ fn i3_124_move_left_then_right_swaps_root_siblings_without_extra_changes() {
         Op::MoveColumnLeft,
     ]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let after_left = workspace.container_tree().debug_tree();
+    let after_left = workspace.container_tree(&layout.containers).debug_tree();
     assert_eq!(
-        workspace.container_tree().all_window_ids(),
+        workspace
+            .container_tree(&layout.containers)
+            .all_window_ids(),
         vec![2, 1],
         "moving the second root sibling left should swap it before the first:\n{after_left}",
     );
     assert_eq!(
-        workspace.container_tree().focused_window_id(),
+        workspace
+            .container_tree(&layout.containers)
+            .focused_window_id(),
         Some(2),
         "moving the second root sibling left should swap it before the first:\n{after_left}",
     );
     check_ops_on_layout(&mut layout, [Op::MoveColumnLeft]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let after_second_left = workspace.container_tree().debug_tree();
+    let after_second_left = workspace.container_tree(&layout.containers).debug_tree();
     assert_eq!(
-        workspace.container_tree().all_window_ids(),
+        workspace
+            .container_tree(&layout.containers)
+            .all_window_ids(),
         vec![2, 1],
         "moving left again at the edge should be a no-op:\n{after_second_left}",
     );
     assert_eq!(
-        workspace.container_tree().focused_window_id(),
+        workspace
+            .container_tree(&layout.containers)
+            .focused_window_id(),
         Some(2),
         "moving left again at the edge should be a no-op:\n{after_second_left}",
     );
     check_ops_on_layout(&mut layout, [Op::MoveColumnRight]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let after_right = workspace.container_tree().debug_tree();
+    let after_right = workspace.container_tree(&layout.containers).debug_tree();
     assert_eq!(
-        workspace.container_tree().all_window_ids(),
+        workspace
+            .container_tree(&layout.containers)
+            .all_window_ids(),
         vec![1, 2],
         "moving right should swap the root siblings back:\n{after_right}",
     );
     assert_eq!(
-        workspace.container_tree().focused_window_id(),
+        workspace
+            .container_tree(&layout.containers)
+            .focused_window_id(),
         Some(2),
         "moving right should swap the root siblings back:\n{after_right}",
     );
     check_ops_on_layout(&mut layout, [Op::MoveColumnRight]);
     let workspace = layout.active_workspace().expect("active workspace");
-    let after_second_right = workspace.container_tree().debug_tree();
+    let after_second_right = workspace.container_tree(&layout.containers).debug_tree();
     assert_eq!(
-        workspace.container_tree().all_window_ids(),
+        workspace
+            .container_tree(&layout.containers)
+            .all_window_ids(),
         vec![1, 2],
         "moving right again at the edge should be a no-op:\n{after_second_right}",
     );
     assert_eq!(
-        workspace.container_tree().focused_window_id(),
+        workspace
+            .container_tree(&layout.containers)
+            .focused_window_id(),
         Some(2),
         "moving right again at the edge should be a no-op:\n{after_second_right}",
     );
@@ -1205,12 +1266,14 @@ fn i3_124_moving_all_children_out_of_split_removes_source_container() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
-    let mut ids = workspace.container_tree().all_window_ids();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
+    let mut ids = workspace
+        .container_tree(&layout.containers)
+        .all_window_ids();
     ids.sort_unstable();
 
     assert_eq!(
-        workspace.container_tree().root_children_len(),
+        workspace.container_tree(&layout.containers).root_children_len(),
         1,
         "after moving the last two children out of the left split, the source container should be removed:\n{tree}",
     );
@@ -1244,10 +1307,13 @@ fn i3_127_killing_parent_chain_then_disabling_floating_reinserts_cleanly() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert_eq!(workspace.floating().tiles().count(), 0);
-    assert_eq!(workspace.container_tree().tiles().count(), 1);
+    assert_eq!(workspace.floating(&layout.containers).tiles().count(), 0);
+    assert_eq!(
+        workspace.container_tree(&layout.containers).tiles().count(),
+        1
+    );
     assert_snapshot!(
-        workspace.container_tree().debug_tree().as_str(),
+        workspace.container_tree(&layout.containers).debug_tree().as_str(),
         @r"
     SplitH
       Window 3 *
@@ -1295,8 +1361,8 @@ fn i3_135_killing_unfocused_floating_window_keeps_current_floating_focus() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert_eq!(layout.focus().map(|win| *win.id()), Some(2));
-    assert!(workspace.is_floating(&2));
-    assert!(!workspace.has_window(&3));
+    assert!(workspace.is_floating(&layout.containers, &2));
+    assert!(!workspace.has_window(&layout.containers, &3));
 }
 #[test]
 fn i3_135_killing_focused_floating_window_falls_back_to_next_floating_then_tiling() {
@@ -1413,7 +1479,7 @@ fn i3_135_focusing_floating_window_raises_it_to_front() {
     {
         let workspace = layout.active_workspace().expect("active workspace");
         let order: Vec<_> = workspace
-            .floating()
+            .floating(&layout.containers)
             .tiles()
             .map(|tile| *tile.window().id())
             .collect();
@@ -1428,7 +1494,7 @@ fn i3_135_focusing_floating_window_raises_it_to_front() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     let order: Vec<_> = workspace
-        .floating()
+        .floating(&layout.containers)
         .tiles()
         .map(|tile| *tile.window().id())
         .collect();
@@ -1455,7 +1521,7 @@ fn i3_135_toggle_floating_on_focused_window_from_other_workspace_preserves_focus
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.is_floating(&2));
+    assert!(workspace.is_floating(&layout.containers, &2));
     assert_eq!(
         layout.focus().map(|win| *win.id()),
         Some(2),
@@ -1472,7 +1538,7 @@ fn i3_135_toggle_floating_on_focused_window_from_other_workspace_preserves_focus
     );
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(!workspace.is_floating(&2));
+    assert!(!workspace.is_floating(&layout.containers, &2));
     assert_eq!(
         layout.focus().map(|win| *win.id()),
         Some(2),
@@ -1495,7 +1561,7 @@ fn i3_135_toggle_floating_on_unfocused_window_from_other_workspace_does_not_stea
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.is_floating(&1));
+    assert!(workspace.is_floating(&layout.containers, &1));
     assert_eq!(
         layout.focus().map(|win| *win.id()),
         Some(2),
@@ -1512,7 +1578,7 @@ fn i3_135_toggle_floating_on_unfocused_window_from_other_workspace_does_not_stea
     );
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(!workspace.is_floating(&1));
+    assert!(!workspace.is_floating(&layout.containers, &1));
     assert_eq!(
         layout.focus().map(|win| *win.id()),
         Some(2),
@@ -1539,8 +1605,8 @@ fn i3_135_toggle_floating_on_other_workspace_keeps_focused_floating_window() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.is_floating(&2));
-    assert!(workspace.is_floating(&3));
+    assert!(workspace.is_floating(&layout.containers, &2));
+    assert!(workspace.is_floating(&layout.containers, &3));
     assert_eq!(
         layout.focus().map(|win| *win.id()),
         Some(3),
@@ -1557,8 +1623,8 @@ fn i3_135_toggle_floating_on_other_workspace_keeps_focused_floating_window() {
     );
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.is_floating(&2));
-    assert!(!workspace.is_floating(&3));
+    assert!(workspace.is_floating(&layout.containers, &2));
+    assert!(!workspace.is_floating(&layout.containers, &3));
     assert_eq!(
         layout.focus().map(|win| *win.id()),
         Some(3),
@@ -1585,8 +1651,8 @@ fn i3_135_toggle_unfocused_window_on_other_workspace_keeps_current_floating_focu
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.is_floating(&2));
-    assert!(workspace.is_floating(&3));
+    assert!(workspace.is_floating(&layout.containers, &2));
+    assert!(workspace.is_floating(&layout.containers, &3));
     assert_eq!(
         layout.focus().map(|win| *win.id()),
         Some(3),
@@ -1603,8 +1669,8 @@ fn i3_135_toggle_unfocused_window_on_other_workspace_keeps_current_floating_focu
     );
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(!workspace.is_floating(&2));
-    assert!(workspace.is_floating(&3));
+    assert!(!workspace.is_floating(&layout.containers, &2));
+    assert!(workspace.is_floating(&layout.containers, &3));
     assert_eq!(
         layout.focus().map(|win| *win.id()),
         Some(3),
@@ -1632,7 +1698,7 @@ fn i3_135_toggle_floating_for_nested_window_from_other_workspace_preserves_focus
 
     {
         let workspace = layout.active_workspace().expect("active workspace");
-        assert!(workspace.is_floating(&3));
+        assert!(workspace.is_floating(&layout.containers, &3));
         assert_eq!(
             layout.focus().map(|win| *win.id()),
             Some(3),
@@ -1650,15 +1716,18 @@ fn i3_135_toggle_floating_for_nested_window_from_other_workspace_preserves_focus
     );
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert!(!workspace.is_floating(&3));
+    assert!(!workspace.is_floating(&layout.containers, &3));
     assert_eq!(
         layout.focus().map(|win| *win.id()),
         Some(3),
         "toggling that nested window back to tiling from another workspace should still preserve focus",
     );
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert!(
-        workspace.container_tree().focused_window_id() == Some(3),
+        workspace
+            .container_tree(&layout.containers)
+            .focused_window_id()
+            == Some(3),
         "after the roundtrip, the nested window should still be the focused tiling leaf:\n{tree}",
     );
 }
@@ -1689,7 +1758,7 @@ fn i3_135_deep_floating_roundtrip_from_other_workspace_preserves_focus_chain() {
     let tree_before = layout
         .active_workspace()
         .expect("active workspace")
-        .container_tree()
+        .container_tree(&layout.containers)
         .debug_tree()
         .replace(" *", "");
     assert!(
@@ -1709,15 +1778,18 @@ fn i3_135_deep_floating_roundtrip_from_other_workspace_preserves_focus_chain() {
 
     {
         let workspace = layout.active_workspace().expect("active workspace");
-        assert!(workspace.is_floating(&4));
+        assert!(workspace.is_floating(&layout.containers, &4));
         assert_eq!(
             layout.focus().map(|win| *win.id()),
             Some(5),
             "after floating the deep nested window from another workspace, focus should stay on D-like sibling",
         );
-        let tree = workspace.container_tree().debug_tree().replace(" *", "");
+        let tree = workspace
+            .container_tree(&layout.containers)
+            .debug_tree()
+            .replace(" *", "");
         assert!(
-            workspace.container_tree().windows().any(|win| *win.id() == 5),
+            workspace.container_tree(&layout.containers).windows().any(|win| *win.id() == 5),
             "the tiling tree should keep the sibling that replaced the floated window's slot:\n{tree}",
         );
     }
@@ -1733,15 +1805,15 @@ fn i3_135_deep_floating_roundtrip_from_other_workspace_preserves_focus_chain() {
 
     {
         let workspace = layout.active_workspace().expect("active workspace");
-        assert!(!workspace.is_floating(&4));
+        assert!(!workspace.is_floating(&layout.containers, &4));
         assert_eq!(
             layout.focus().map(|win| *win.id()),
             Some(5),
             "after restoring the deep nested window to tiling from another workspace, focus should stay on the previously-focused sibling",
         );
-        let tree = workspace.container_tree().debug_tree();
+        let tree = workspace.container_tree(&layout.containers).debug_tree();
         assert!(
-            workspace.container_tree().windows().any(|win| *win.id() == 4) && workspace.container_tree().focused_window_id() == Some(5),
+            workspace.container_tree(&layout.containers).windows().any(|win| *win.id() == 4) && workspace.container_tree(&layout.containers).focused_window_id() == Some(5),
             "after the roundtrip both deep siblings should exist and window 5 should still be focused:\n{tree}",
         );
     }
@@ -1807,7 +1879,7 @@ fn i3_135_focus_parent_then_focus_child_roundtrips_from_floating_window() {
     {
         let workspace = layout.active_workspace().expect("active workspace");
         assert!(
-            workspace.debug_floating_workspace_context(),
+            workspace.debug_floating_workspace_context(&layout.containers),
             "focus parent from a floating window should move to workspace context",
         );
     }
@@ -1843,10 +1915,13 @@ fn i3_146_floating_toggle_reinserts_into_previous_split_container() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert_eq!(workspace.floating().tiles().count(), 0);
-    assert_eq!(workspace.container_tree().tiles().count(), 4);
+    assert_eq!(workspace.floating(&layout.containers).tiles().count(), 0);
+    assert_eq!(
+        workspace.container_tree(&layout.containers).tiles().count(),
+        4
+    );
     assert_snapshot!(
-        workspace.container_tree().debug_tree().as_str(),
+        workspace.container_tree(&layout.containers).debug_tree().as_str(),
         @"
     SplitH
       Window 1
@@ -1874,8 +1949,11 @@ fn i3_152_focus_parent_then_toggle_floating_workspace_context_behaves_like_sway(
     {
         let workspace = layout.active_workspace().expect("active workspace");
         assert!(workspace.floating_is_active());
-        assert_eq!(workspace.container_tree().tiles().count(), 0);
-        assert_eq!(workspace.floating().tiles().count(), 1);
+        assert_eq!(
+            workspace.container_tree(&layout.containers).tiles().count(),
+            0
+        );
+        assert_eq!(workspace.floating(&layout.containers).tiles().count(), 1);
     }
 
     check_ops_on_layout(
@@ -1888,8 +1966,11 @@ fn i3_152_focus_parent_then_toggle_floating_workspace_context_behaves_like_sway(
         workspace.floating_is_active(),
         "workspace-context toggle_floating with empty tiling must be a no-op",
     );
-    assert_eq!(workspace.container_tree().tiles().count(), 0);
-    assert_eq!(workspace.floating().tiles().count(), 1);
+    assert_eq!(
+        workspace.container_tree(&layout.containers).tiles().count(),
+        0
+    );
+    assert_eq!(workspace.floating(&layout.containers).tiles().count(), 1);
 }
 #[test]
 fn i3_218_floating_container_cannot_be_split_or_relayouted() {
@@ -1903,7 +1984,7 @@ fn i3_218_floating_container_cannot_be_split_or_relayouted() {
     let before_layout = layout
         .active_workspace()
         .expect("active workspace")
-        .floating()
+        .floating(&layout.containers)
         .root_layout_for_window(&1);
 
     check_ops_on_layout(&mut layout, [Op::SetLayoutStacked]);
@@ -1911,7 +1992,7 @@ fn i3_218_floating_container_cannot_be_split_or_relayouted() {
     let after_layout = layout
         .active_workspace()
         .expect("active workspace")
-        .floating()
+        .floating(&layout.containers)
         .root_layout_for_window(&1);
     assert_eq!(
         after_layout, before_layout,
@@ -1921,9 +2002,11 @@ fn i3_218_floating_container_cannot_be_split_or_relayouted() {
     check_ops_on_layout(&mut layout, [Op::SplitVertical]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert_eq!(workspace.floating().tiles().count(), 1);
+    assert_eq!(workspace.floating(&layout.containers).tiles().count(), 1);
     assert_eq!(
-        workspace.floating().root_layout_for_window(&1),
+        workspace
+            .floating(&layout.containers)
+            .root_layout_for_window(&1),
         Some(ContainerLayout::SplitV),
         "split on floating leaf should create an explicit SplitV wrapper (sway parity)",
     );
@@ -1944,14 +2027,18 @@ fn i3_192_toggle_layout_all_cycles_floating_container_layouts() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert_eq!(
-        workspace.floating().root_layout_for_window(&1),
+        workspace
+            .floating(&layout.containers)
+            .root_layout_for_window(&1),
         Some(ContainerLayout::SplitV),
     );
 
     check_ops_on_layout(&mut layout, [Op::ToggleLayoutAll]);
     let workspace = layout.active_workspace().expect("active workspace");
     assert_eq!(
-        workspace.floating().root_layout_for_window(&1),
+        workspace
+            .floating(&layout.containers)
+            .root_layout_for_window(&1),
         Some(ContainerLayout::Stacked),
         "toggle_layout_all should cycle floating container layout from SplitV to Stacked",
     );
@@ -1959,7 +2046,9 @@ fn i3_192_toggle_layout_all_cycles_floating_container_layouts() {
     check_ops_on_layout(&mut layout, [Op::ToggleLayoutAll]);
     let workspace = layout.active_workspace().expect("active workspace");
     assert_eq!(
-        workspace.floating().root_layout_for_window(&1),
+        workspace
+            .floating(&layout.containers)
+            .root_layout_for_window(&1),
         Some(ContainerLayout::Tabbed),
         "toggle_layout_all should cycle floating container layout from Stacked to Tabbed",
     );
@@ -1967,7 +2056,9 @@ fn i3_192_toggle_layout_all_cycles_floating_container_layouts() {
     check_ops_on_layout(&mut layout, [Op::ToggleLayoutAll]);
     let workspace = layout.active_workspace().expect("active workspace");
     assert_eq!(
-        workspace.floating().root_layout_for_window(&1),
+        workspace
+            .floating(&layout.containers)
+            .root_layout_for_window(&1),
         Some(ContainerLayout::SplitH),
         "toggle_layout_all should cycle floating container layout from Tabbed to SplitH",
     );
@@ -1982,7 +2073,7 @@ fn i3_218_toggle_layout_all_on_floating_leaf_is_noop() {
     let before = layout
         .active_workspace()
         .expect("active workspace")
-        .floating()
+        .floating(&layout.containers)
         .root_layout_for_window(&1);
 
     check_ops_on_layout(&mut layout, [Op::ToggleLayoutAll]);
@@ -1990,7 +2081,7 @@ fn i3_218_toggle_layout_all_on_floating_leaf_is_noop() {
     let after = layout
         .active_workspace()
         .expect("active workspace")
-        .floating()
+        .floating(&layout.containers)
         .root_layout_for_window(&1);
     assert_eq!(
         after, before,
@@ -2013,14 +2104,18 @@ fn i3_192_set_layout_on_floating_container_with_children_retargets_wrapper() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert_eq!(
-        workspace.floating().root_layout_for_window(&1),
+        workspace
+            .floating(&layout.containers)
+            .root_layout_for_window(&1),
         Some(ContainerLayout::SplitV),
     );
 
     check_ops_on_layout(&mut layout, [Op::SetLayoutTabbed]);
     let workspace = layout.active_workspace().expect("active workspace");
     assert_eq!(
-        workspace.floating().root_layout_for_window(&1),
+        workspace
+            .floating(&layout.containers)
+            .root_layout_for_window(&1),
         Some(ContainerLayout::Tabbed),
         "set_layout should retarget the active floating container wrapper",
     );
@@ -2028,7 +2123,9 @@ fn i3_192_set_layout_on_floating_container_with_children_retargets_wrapper() {
     check_ops_on_layout(&mut layout, [Op::SetLayoutStacked]);
     let workspace = layout.active_workspace().expect("active workspace");
     assert_eq!(
-        workspace.floating().root_layout_for_window(&1),
+        workspace
+            .floating(&layout.containers)
+            .root_layout_for_window(&1),
         Some(ContainerLayout::Stacked),
         "set_layout should continue to mutate the same floating container wrapper",
     );
@@ -2099,7 +2196,7 @@ fn i3_510_cross_output_focus_prefers_tiling_over_destination_floating() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert!(
-        !workspace.is_floating(&2),
+        !workspace.is_floating(&layout.containers, &2),
         "cross-output focus should land on the destination tiling leaf, not the floating window",
     );
 }
@@ -2216,7 +2313,7 @@ fn i3_520_cross_output_focus_falls_back_to_existing_floating_window() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert!(
-        workspace.is_floating(&1),
+        workspace.is_floating(&layout.containers, &1),
         "cross-output directional focus should land on the floating container itself",
     );
 }
@@ -2240,8 +2337,11 @@ fn i3_550_repeated_splits_on_a_lone_window_build_no_wrapper() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    assert_eq!(workspace.debug_workspace_layout(), ContainerLayout::SplitV);
-    let tree = workspace.container_tree().debug_tree();
+    assert_eq!(
+        workspace.debug_workspace_layout(&layout.containers),
+        ContainerLayout::SplitV
+    );
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -2263,7 +2363,7 @@ fn i3_550_tabbed_then_stacked_on_single_leaf_keeps_single_wrapper() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -2285,7 +2385,7 @@ fn i3_550_split_inside_tabbed_keeps_single_nested_split_wrapper() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -2310,7 +2410,7 @@ fn i3_550_sway_112_flattens_the_lone_split_before_the_next_layout() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -2337,7 +2437,7 @@ fn i3_550_tabbed_with_two_nodes_inside_other_tabbed_stays_two_level() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -2365,7 +2465,7 @@ fn i3_550_repeat_tabbed_layout_does_not_create_redundant_wrappers() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -2390,7 +2490,7 @@ fn i3_550_layout_tabbed_flattens_the_lone_split_like_sway_112() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree().debug_tree();
+    let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(
         tree.as_str(),
         @"
@@ -2442,7 +2542,7 @@ fn decorations(layout: &Layout<TestWindow>) -> HashMap<usize, Decoration> {
 
     let workspace = layout.active_workspace().expect("active workspace");
     workspace
-        .tiles_with_render_positions()
+        .tiles_with_render_positions(&layout.containers)
         .map(|(tile, _, _)| {
             let color = tile.debug_border_color();
             let state = if matches(color, borders.active_color) {
@@ -2487,7 +2587,7 @@ fn focused_inactive_is_the_focus_head_of_a_non_focused_container() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert_snapshot!(
-        workspace.container_tree().debug_tree().as_str(),
+        workspace.container_tree(&layout.containers).debug_tree().as_str(),
         @"
     SplitH
       SplitV

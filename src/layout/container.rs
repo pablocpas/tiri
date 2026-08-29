@@ -38,7 +38,7 @@
 //! sway/tree/workspace.c:797-852
 
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU64;
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
@@ -598,7 +598,11 @@ pub(super) struct ContainerArena<W: LayoutElement> {
     /// — which tab a switcher shows, which window a descent lands on — was therefore right
     /// for the commands whose authors remembered and wrong for the rest.
     seat: seat::SeatFocus,
-    fullscreen_key: Option<NodeKey>,
+    /// Fullscreen authority per workspace.
+    ///
+    /// Hidden workspaces keep their own fullscreen container, just like sway; a single
+    /// arena-wide slot would make fullscreen on one workspace revoke it on every other one.
+    fullscreen_keys: HashMap<NodeKey, NodeKey>,
     /// Cached presentation by stable leaf identity.
     leaf_layouts: HashMap<NodeKey, LeafLayoutInfo>,
     /// Branches whose arrange is waiting for the windows it asked to resize.
@@ -608,8 +612,11 @@ pub(super) struct ContainerArena<W: LayoutElement> {
     pending_layouts: Vec<PendingLayout>,
     /// Optional transaction to use for the next atomic layout.
     pending_transaction: Option<Transaction>,
-    /// Whether a new layout is requested while a transaction is pending.
-    pending_relayout: bool,
+    /// Workspaces that asked for a layout pass while a transaction was still pending.
+    ///
+    /// Keyed by workspace, not a single flag: two workspaces arrange independently, and one
+    /// consuming the other's retry left that one never arranged again.
+    pending_relayout: HashSet<NodeKey>,
     /// Generation counter for layout invalidation.
     generation: u64,
 }
@@ -964,42 +971,28 @@ impl<W: LayoutElement> DetachedView<W> {
 // ============================================================================
 
 impl<W: LayoutElement> ContainerArena<W> {
-    /// Create a new empty container tree
-    pub(super) fn new(
-        view_size: Size<f64, Logical>,
-        working_area: Rectangle<f64, Logical>,
-        scale: f64,
-        options: Rc<Options>,
-    ) -> Self {
-        let mut nodes = NodeStore::new();
-        let mut parents = ParentStore::new();
-        let root = NodeKey::next();
-        nodes.insert(
-            root,
-            NodeData::Workspace(WorkspaceData::new(
-                Layout::SplitH,
-                view_size,
-                working_area,
-                scale,
-                options,
-            )),
-        );
-        parents.insert(root, None);
-        let mut seat = seat::SeatFocus::default();
-        seat.register(root);
+    /// A new arena with no workspaces in it.
+    ///
+    /// A workspace root only appears through [`Self::add_workspace`], which is what every
+    /// `Workspace` calls when it is built. An arena that fabricated one of its own would hand
+    /// out a root that no workspace owns.
+    pub(super) fn new() -> Self {
+        let nodes = NodeStore::new();
+        let parents = ParentStore::new();
+        let seat = seat::SeatFocus::default();
 
         Self {
             nodes,
             parents,
-            workspaces: vec![root],
+            workspaces: Vec::new(),
             floating_roots: Vec::new(),
             next_floating_root_id: 1,
             seat,
-            fullscreen_key: None,
+            fullscreen_keys: HashMap::new(),
             leaf_layouts: HashMap::new(),
             pending_layouts: Vec::new(),
             pending_transaction: None,
-            pending_relayout: false,
+            pending_relayout: HashSet::new(),
             generation: 0,
         }
     }
@@ -1015,10 +1008,6 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// workspace on the same output can be parked, or override the layout its monitor handed
     /// down, and then the two differ while sharing an arena.
     ///
-    /// Test-only until the arena moves to `Monitor`, which is what will create these. Gating it
-    /// says which of the two this commit is: the arena can hold several workspaces and is
-    /// checked doing so; nothing in production yet asks it to.
-    #[cfg(test)]
     pub(in crate::layout) fn add_workspace(
         &mut self,
         layout: Layout,
@@ -1046,13 +1035,9 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     /// Drop a workspace and everything under it.
     ///
-    /// Refuses the last one: an arena without a workspace has no root for anything to be
-    /// inserted into, and every caller that would reach that state means to drop the arena.
-    #[cfg(test)]
+    /// The last one may go too: an arena with no workspaces is the state a fresh one starts
+    /// in, and nothing reads a root it was not given.
     pub(in crate::layout) fn remove_workspace(&mut self, workspace: NodeKey) -> bool {
-        if self.workspaces.len() <= 1 {
-            return false;
-        }
         let Some(idx) = self.workspaces.iter().position(|key| *key == workspace) else {
             return false;
         };
@@ -1061,17 +1046,19 @@ impl<W: LayoutElement> ContainerArena<W> {
             self.forget_floating_root(root);
         }
         self.remove_node_recursive(workspace);
+        self.fullscreen_keys.remove(&workspace);
         self.workspaces.remove(idx);
         self.prune_focus_order();
-        self.prune_leaf_layouts(self.workspaces[0]);
+        match self.workspaces.first().copied() {
+            Some(remaining) => self.prune_leaf_layouts(remaining),
+            None => self.drop_stale_leaf_layouts(),
+        }
         true
     }
 
     /// The floating roots belonging to one workspace.
     pub(in crate::layout) fn floating_roots_in(&self, workspace: NodeKey) -> Vec<NodeKey> {
-        self.floating_roots()
-            .filter(|root| self.workspace_of(*root) == Some(workspace))
-            .collect()
+        self.floating_roots(workspace).collect()
     }
 
     /// Check every workspace this arena holds, and then the arena itself.

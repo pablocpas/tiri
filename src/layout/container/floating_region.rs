@@ -97,36 +97,88 @@ impl FloatingGeometry {
 }
 
 impl<W: LayoutElement> ContainerArena<W> {
-    /// Floating roots in render order, topmost first.
-    pub(in crate::layout) fn floating_roots(&self) -> impl Iterator<Item = NodeKey> + '_ {
-        self.floating_roots.iter().map(|root| root.key)
+    /// Where one workspace's floating roots sit in the shared stack, in their own order.
+    ///
+    /// The stack is one list for the whole arena because a root's slot travels with it when
+    /// it changes workspace. A workspace's own stack indices — what `ws->floating` means to a
+    /// command and to IPC — are positions in this filtered view, never in the shared list.
+    fn floating_slots_in(&self, workspace: NodeKey) -> Vec<usize> {
+        self.floating_roots
+            .iter()
+            .enumerate()
+            .filter(|(_, root)| self.parent_of(root.key) == Some(workspace))
+            .map(|(index, _)| index)
+            .collect()
     }
 
-    pub(in crate::layout) fn floating_root_count(&self) -> usize {
-        self.floating_roots.len()
-    }
-
-    pub(in crate::layout) fn floating_root_at(&self, index: usize) -> Option<NodeKey> {
-        self.floating_roots.get(index).map(|root| root.key)
-    }
-
-    pub(in crate::layout) fn floating_root_id_at(&self, index: usize) -> Option<u64> {
-        self.floating_roots.get(index).map(|root| root.id)
-    }
-
-    pub(in crate::layout) fn floating_root_index(&self, key: NodeKey) -> Option<usize> {
+    /// Where one root sits in the shared stack, whichever workspace it is on.
+    pub(super) fn floating_slot_of(&self, key: NodeKey) -> Option<usize> {
         self.floating_roots.iter().position(|root| root.key == key)
     }
 
-    pub(in crate::layout) fn floating_root_index_by_id(&self, id: u64) -> Option<usize> {
-        self.floating_roots.iter().position(|root| root.id == id)
+    /// One workspace's floating roots in render order, topmost first.
+    pub(in crate::layout) fn floating_roots(
+        &self,
+        workspace: NodeKey,
+    ) -> impl Iterator<Item = NodeKey> + '_ {
+        self.floating_slots_in(workspace)
+            .into_iter()
+            .map(|slot| self.floating_roots[slot].key)
     }
 
-    pub(in crate::layout) fn floating_root_kind_at(
+    /// Every floating root in the arena, for checks that are about the arena itself.
+    pub(super) fn all_floating_roots(&self) -> impl Iterator<Item = NodeKey> + '_ {
+        self.floating_roots.iter().map(|root| root.key)
+    }
+
+    pub(in crate::layout) fn floating_root_count(&self, workspace: NodeKey) -> usize {
+        self.floating_slots_in(workspace).len()
+    }
+
+    pub(in crate::layout) fn floating_root_at(
         &self,
+        workspace: NodeKey,
         index: usize,
-    ) -> Option<FloatingRootKind> {
-        let root = self.floating_roots.get(index)?;
+    ) -> Option<NodeKey> {
+        let slot = *self.floating_slots_in(workspace).get(index)?;
+        Some(self.floating_roots[slot].key)
+    }
+
+    pub(in crate::layout) fn floating_root_id_at(
+        &self,
+        workspace: NodeKey,
+        index: usize,
+    ) -> Option<u64> {
+        let slot = *self.floating_slots_in(workspace).get(index)?;
+        Some(self.floating_roots[slot].id)
+    }
+
+    pub(in crate::layout) fn floating_root_index(
+        &self,
+        workspace: NodeKey,
+        key: NodeKey,
+    ) -> Option<usize> {
+        self.floating_slots_in(workspace)
+            .into_iter()
+            .position(|slot| self.floating_roots[slot].key == key)
+    }
+
+    pub(in crate::layout) fn floating_root_index_by_id(
+        &self,
+        workspace: NodeKey,
+        id: u64,
+    ) -> Option<usize> {
+        self.floating_slots_in(workspace)
+            .into_iter()
+            .position(|slot| self.floating_roots[slot].id == id)
+    }
+
+    /// What a floating root is, as a command and IPC see it.
+    ///
+    /// A group tiri built around one window reads back as a floated container once the user
+    /// has made it one, because from then on it is a container they asked for.
+    pub(in crate::layout) fn floating_root_kind(&self, key: NodeKey) -> Option<FloatingRootKind> {
+        let root = self.floating_roots.iter().find(|root| root.key == key)?;
         if root.kind == FloatingRootKind::ImplicitWindowGroup
             && self
                 .branch_container(root.key)
@@ -138,24 +190,55 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
     }
 
-    pub(in crate::layout) fn floating_root_is_workspace_wrapper(&self, index: usize) -> bool {
-        self.floating_roots
-            .get(index)
-            .is_some_and(|root| root.kind.is_workspace_wrapper())
+    pub(in crate::layout) fn floating_root_kind_at(
+        &self,
+        workspace: NodeKey,
+        index: usize,
+    ) -> Option<FloatingRootKind> {
+        self.floating_root_kind(self.floating_root_at(workspace, index)?)
     }
 
-    pub(in crate::layout) fn move_floating_root(&mut self, from: usize, to: usize) -> bool {
-        if from >= self.floating_roots.len() || to >= self.floating_roots.len() {
+    pub(in crate::layout) fn floating_root_is_workspace_wrapper(
+        &self,
+        workspace: NodeKey,
+        index: usize,
+    ) -> bool {
+        self.floating_slots_in(workspace)
+            .get(index)
+            .is_some_and(|slot| self.floating_roots[*slot].kind.is_workspace_wrapper())
+    }
+
+    /// Restack one of a workspace's floating roots, in that workspace's own indices.
+    pub(in crate::layout) fn move_floating_root(
+        &mut self,
+        workspace: NodeKey,
+        from: usize,
+        to: usize,
+    ) -> bool {
+        let slots = self.floating_slots_in(workspace);
+        if from >= slots.len() || to >= slots.len() {
             return false;
         }
-        let root = self.floating_roots.remove(from);
-        self.floating_roots.insert(to, root);
+        // Adjacent swaps along this workspace's own slots: the roots of other workspaces sit
+        // between them in the shared list and must not be dragged along.
+        if from < to {
+            for step in from..to {
+                self.floating_roots.swap(slots[step], slots[step + 1]);
+            }
+        } else {
+            for step in (to..from).rev() {
+                self.floating_roots.swap(slots[step], slots[step + 1]);
+            }
+        }
         true
     }
 
-    /// Every floating group with its box, for the arrange pass.
-    pub(super) fn floating_roots_snapshot(&self) -> Vec<(NodeKey, Rectangle<f64, Logical>)> {
-        self.floating_roots()
+    /// One workspace's floating groups with their boxes, for the arrange pass.
+    pub(super) fn floating_roots_snapshot(
+        &self,
+        workspace: NodeKey,
+    ) -> Vec<(NodeKey, Rectangle<f64, Logical>)> {
+        self.floating_roots(workspace)
             .filter_map(|key| Some((key, self.floating_area(key)?)))
             .collect()
     }
@@ -344,11 +427,16 @@ impl<W: LayoutElement> ContainerArena<W> {
             id: self.next_floating_root_id,
             key,
             kind,
-            geometry: FloatingGeometry::new(self.working_area(), area),
+            geometry: FloatingGeometry::new(self.working_area(workspace), area),
         };
         self.next_floating_root_id += 1;
-        self.floating_roots
-            .insert(stack_index.min(self.floating_roots.len()), root);
+        let slots = self.floating_slots_in(workspace);
+        let slot = slots.get(stack_index).copied().unwrap_or_else(|| {
+            slots
+                .last()
+                .map_or(self.floating_roots.len(), |last| last + 1)
+        });
+        self.floating_roots.insert(slot, root);
         self.set_parent(key, Some(workspace));
     }
 
@@ -377,7 +465,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         {
             return false;
         }
-        self.discard_layout_superseded_by_transfer();
+        self.discard_layout_superseded_by_transfer(workspace);
         let old_parent = self.parent_of(key);
         let restore_raw_focus = (self.seat.node() == Some(key))
             .then_some(old_parent)
@@ -420,7 +508,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             return false;
         }
         let root_idx = self
-            .floating_root_index(key)
+            .floating_slot_of(key)
             .expect("a floating root must have exactly one stack entry");
         self.floating_roots.remove(root_idx);
         if let Some(container) = self.get_container_mut(parent) {
@@ -439,7 +527,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     /// Drop a floating root that is going away.
     pub(in crate::layout) fn forget_floating_root(&mut self, key: NodeKey) {
-        if let Some(index) = self.floating_root_index(key) {
+        if let Some(index) = self.floating_slot_of(key) {
             self.floating_roots.remove(index);
         }
         if self.branch_is_empty(key) {
@@ -492,16 +580,16 @@ impl<W: LayoutElement> ContainerArena<W> {
         if wrapper.child_count() != 0 {
             return None;
         }
-        let root_idx = self.floating_root_index(key)?;
+        let root_idx = self.floating_slot_of(key)?;
         wrapper.set_geometry(self.node_geometry(key)?);
 
         let raw_focus_returns_to_child = self.seat.node() == Some(key);
         // The wrapper takes over the root's slot, so it hangs off the workspace the root
         // hung off — read before the swap, while `key` still names that root.
-        let workspace = self.workspace_of(key);
-        let wrapper_key = self.insert_node(NodeData::Container(wrapper));
+        let workspace = self.workspace_of(key)?;
+        let wrapper_key = self.insert_node(workspace, NodeData::Container(wrapper));
         self.floating_roots[root_idx].key = wrapper_key;
-        self.set_parent(wrapper_key, workspace);
+        self.set_parent(wrapper_key, Some(workspace));
         self.get_container_mut(wrapper_key)
             .expect("the wrapper was just inserted")
             .insert_child(0, key);
@@ -535,8 +623,8 @@ impl<W: LayoutElement> ContainerArena<W> {
         // this the arrange that would give the new group its leaves' boxes is deferred behind
         // a transaction that describes a layout the tile has already left, and the group sits
         // on the workspace, focused, with nothing on screen.
-        self.discard_layout_superseded_by_transfer();
-        let leaf = self.insert_view(tile);
+        self.discard_layout_superseded_by_transfer(workspace);
+        let leaf = self.insert_view(workspace, tile);
         self.register_floating_root(
             workspace,
             leaf,
@@ -557,8 +645,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// of those on the way back loses a level sway keeps
     /// (`tiri-parity/fixtures/unfloat-a-selected-container.parity`).
     fn implicit_group_child(&self, group: NodeKey) -> Option<NodeKey> {
-        let index = self.floating_root_index(group)?;
-        if self.floating_root_kind_at(index)? != FloatingRootKind::ImplicitWindowGroup {
+        if self.floating_root_kind(group)? != FloatingRootKind::ImplicitWindowGroup {
             return None;
         }
         let container = self.get_real_container(group)?;

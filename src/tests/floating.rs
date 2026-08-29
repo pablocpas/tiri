@@ -1201,12 +1201,12 @@ window-rule {
     }
     let _ = f.client(id).window(&surface).recent_configures();
 
-    let win = f
-        .niri()
-        .layout
-        .workspaces()
-        .find_map(|(_, _, ws)| ws.windows().next().map(|w| w.window.clone()))
-        .unwrap();
+    let win = {
+        let (mut workspaces, containers) = f.niri().layout.workspaces_and_containers();
+        workspaces
+            .find_map(|(_, _, ws)| ws.windows(containers).next().map(|w| w.window.clone()))
+            .unwrap()
+    };
     f.niri().layout.set_fullscreen(&win, false);
     f.double_roundtrip(id);
 
@@ -1220,19 +1220,25 @@ window-rule {
         f.double_roundtrip(id);
     }
 
-    let still_fullscreen = f
-        .niri()
-        .layout
-        .workspaces()
-        .find_map(|(_, _, ws)| ws.windows().next().map(|w| w.sizing_mode().is_fullscreen()))
-        .unwrap();
+    let still_fullscreen = {
+        let (mut workspaces, containers) = f.niri().layout.workspaces_and_containers();
+        workspaces
+            .find_map(|(_, _, ws)| {
+                ws.windows(containers)
+                    .next()
+                    .map(|w| w.sizing_mode().is_fullscreen())
+            })
+            .unwrap()
+    };
     assert!(!still_fullscreen, "the window is still fullscreen");
+    let landed_floating = {
+        let (mut workspaces, containers) = f.niri().layout.workspaces_and_containers();
+        workspaces
+            .find_map(|(_, _, ws)| ws.windows(containers).next().map(|w| w.is_floating()))
+            .unwrap()
+    };
     assert!(
-        f.niri()
-            .layout
-            .workspaces()
-            .find_map(|(_, _, ws)| ws.windows().next().map(|w| w.is_floating()))
-            .unwrap(),
+        landed_floating,
         "leaving fullscreen should land the window on the floating side"
     );
 

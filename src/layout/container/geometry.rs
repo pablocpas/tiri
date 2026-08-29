@@ -77,7 +77,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         workspace: NodeKey,
         animate_resize: bool,
     ) {
-        let animate = !self.options().animations.off;
+        let animate = !self.options(workspace).animations.off;
         self.layout_with_animations(workspace, animate, animate_resize);
     }
 
@@ -123,9 +123,9 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.layout_atomic(workspace, true, Some((key, area)));
     }
 
-    pub(in crate::layout) fn layout_area(&self) -> Rectangle<f64, Logical> {
-        let mut area = self.working_area();
-        let gap = self.options().layout.gaps;
+    pub(in crate::layout) fn layout_area(&self, workspace: NodeKey) -> Rectangle<f64, Logical> {
+        let mut area = self.working_area(workspace);
+        let gap = self.options(workspace).layout.gaps;
         if gap > 0.0 {
             area.loc.x += gap;
             area.loc.y += gap;
@@ -141,7 +141,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// that came or went since the snapshot are not reflected in it. Passes that drive
     /// window state must not run over such a snapshot: flushing a configure from it sends
     /// the client bounds computed for a tree that no longer exists.
-    pub(in crate::layout) fn pending_layout_is_stale(&self) -> bool {
+    pub(in crate::layout) fn pending_layout_is_stale(&self, workspace: NodeKey) -> bool {
         if self.pending_layouts.is_empty() {
             return false;
         }
@@ -149,38 +149,46 @@ impl<W: LayoutElement> ContainerArena<W> {
         // Only leaves reachable from a root count: the store can still hold nodes that were
         // detached but not yet dropped.
         // A branch is stale when the leaves it describes are no longer the leaves that branch
-        // has. The other branches' leaves are in `current` too and are none of its business.
-        self.pending_layouts.iter().any(|pending| {
-            let snapshot: HashSet<NodeKey> = pending.data.leaf_layouts.keys().copied().collect();
-            let now: HashSet<NodeKey> = self
-                .dfs_leaf_keys()
-                .into_iter()
-                .filter(|key| self.branch_root(*key) == pending.branch)
-                .collect();
-            snapshot != now
-        })
+        // has. The other branches' leaves are in `current` too and are none of its business —
+        // and so are the branches of every other workspace, which is why this names one.
+        self.pending_layouts
+            .iter()
+            .filter(|pending| self.workspace_of(pending.branch) == Some(workspace))
+            .any(|pending| {
+                let snapshot: HashSet<NodeKey> =
+                    pending.data.leaf_layouts.keys().copied().collect();
+                let now: HashSet<NodeKey> = self
+                    .dfs_leaf_keys()
+                    .into_iter()
+                    .filter(|key| self.branch_root(*key) == pending.branch)
+                    .collect();
+                snapshot != now
+            })
     }
 
     /// The one node currently owning workspace fullscreen.
     ///
     /// This is sway's `workspace->fullscreen`: it spans both the tiled tree and the floating
     /// roots. The window id and its side are projections of this key, never parallel state.
-    pub(in crate::layout) fn fullscreen_key(&self) -> Option<NodeKey> {
-        self.fullscreen_key
+    pub(in crate::layout) fn fullscreen_key(&self, workspace: NodeKey) -> Option<NodeKey> {
+        self.fullscreen_keys.get(&workspace).copied()
     }
 
     /// Window that directly owns fullscreen at the client protocol boundary.
     ///
     /// A fullscreen container has no such window: its descendants remain ordinary tiled
     /// clients while the container's subtree occupies the output.
-    pub(in crate::layout) fn fullscreen_leaf_window_id(&self) -> Option<&W::Id> {
-        self.fullscreen_key
+    pub(in crate::layout) fn fullscreen_leaf_window_id(
+        &self,
+        workspace: NodeKey,
+    ) -> Option<&W::Id> {
+        self.fullscreen_key(workspace)
             .and_then(|key| self.get_tile(key))
             .map(|tile| tile.window().id())
     }
 
-    pub(in crate::layout) fn window_owns_fullscreen(&self, id: &W::Id) -> bool {
-        self.fullscreen_leaf_window_id()
+    pub(in crate::layout) fn window_owns_fullscreen(&self, workspace: NodeKey, id: &W::Id) -> bool {
+        self.fullscreen_leaf_window_id(workspace)
             .is_some_and(|current| current == id)
     }
 
@@ -189,8 +197,11 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// sway's workspace pointer can name a container. Existing tiri inspection APIs expose
     /// window IDs, so descend through the seat's inactive-focus order rather than inventing a
     /// second fullscreen owner.
-    pub(in crate::layout) fn fullscreen_representative_window_id(&self) -> Option<&W::Id> {
-        let key = self.fullscreen_key?;
+    pub(in crate::layout) fn fullscreen_representative_window_id(
+        &self,
+        workspace: NodeKey,
+    ) -> Option<&W::Id> {
+        let key = self.fullscreen_key(workspace)?;
         let leaf = self.focus_inactive_view(key)?;
         self.get_tile(leaf).map(|tile| tile.window().id())
     }
@@ -200,21 +211,29 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Setting it does not arrange: callers still have side-specific window state to request
     /// before arranging. The workspace node is not a fullscreen target; every other live
     /// node can be one.
-    pub(in crate::layout) fn set_fullscreen_key(&mut self, key: Option<NodeKey>) -> bool {
+    pub(in crate::layout) fn set_fullscreen_key(
+        &mut self,
+        workspace: NodeKey,
+        key: Option<NodeKey>,
+    ) -> bool {
         if key.is_some_and(|key| self.is_workspace(key) || !self.holds_node(key)) {
             return false;
         }
-        if self.fullscreen_key == key {
+        if self.fullscreen_key(workspace) == key {
             return false;
         }
-        if let Some(old) = self.fullscreen_key {
+        if let Some(old) = self.fullscreen_key(workspace) {
             self.set_node_fullscreen_restore_geometry(old, None);
         }
         if let Some(key) = key {
             let restore = self.node_geometry(key).unwrap_or_default();
             self.set_node_fullscreen_restore_geometry(key, Some(restore));
         }
-        self.fullscreen_key = key;
+        if let Some(key) = key {
+            self.fullscreen_keys.insert(workspace, key);
+        } else {
+            self.fullscreen_keys.remove(&workspace);
+        }
         true
     }
 
@@ -246,12 +265,15 @@ impl<W: LayoutElement> ContainerArena<W> {
         old_key: NodeKey,
         new_key: NodeKey,
     ) {
-        if self.fullscreen_key != Some(old_key) {
+        let workspace = self
+            .workspace_of(old_key)
+            .or_else(|| self.workspace_of(new_key))
+            .expect("fullscreen replacement belongs to a workspace");
+        if self.fullscreen_key(workspace) != Some(old_key) {
             return;
         }
-
-        let animate = !self.options().animations.off;
-        let working_area_size = self.working_area().size;
+        let animate = !self.options(workspace).animations.off;
+        let working_area_size = self.working_area(workspace).size;
         let replacement_restore = self.node_geometry(new_key).unwrap_or_default();
         if let Some(tile) = self.get_tile_mut(old_key) {
             tile.request_tile_size(working_area_size, animate, None);
@@ -263,7 +285,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         self.set_node_fullscreen_restore_geometry(old_key, None);
         self.set_node_fullscreen_restore_geometry(new_key, Some(replacement_restore));
-        self.fullscreen_key = Some(new_key);
+        self.fullscreen_keys.insert(workspace, new_key);
     }
 
     fn layout_atomic(
@@ -281,18 +303,35 @@ impl<W: LayoutElement> ContainerArena<W> {
             // opposite half-pixel and made that pixel survive the next resize and close.
             //
             // sway/tree/arrange.c:15-55,100-140
-            self.pending_relayout = true;
-            self.debug_layout_state("layout_atomic_pending");
+            self.pending_relayout.insert(workspace);
+            self.debug_layout_state(workspace, "layout_atomic_pending");
         } else {
-            self.pending_relayout = false;
+            self.pending_relayout.remove(&workspace);
         }
 
-        if self.is_empty() && self.floating_roots().next().is_none() {
-            self.leaf_layouts.clear();
-            self.pending_layouts.clear();
-            self.pending_transaction = None;
-            self.pending_relayout = false;
-            self.debug_layout_state("layout_atomic_empty");
+        // This workspace, not the arena: arranging an empty workspace used to clear the caches
+        // of every other one, and the window on the workspace next door lost the box it had
+        // just been given.
+        if self.first_leaf_key(workspace).is_none()
+            && self.floating_roots(workspace).next().is_none()
+        {
+            let leaving: HashSet<NodeKey> = self
+                .leaf_layouts
+                .keys()
+                .filter(|key| self.workspace_of(**key) == Some(workspace))
+                .copied()
+                .collect();
+            self.leaf_layouts.retain(|key, _| !leaving.contains(key));
+            let superseded: Vec<NodeKey> = self
+                .pending_layouts
+                .iter()
+                .filter(|pending| self.workspace_of(pending.branch) == Some(workspace))
+                .map(|pending| pending.branch)
+                .collect();
+            self.pending_layouts
+                .retain(|pending| !superseded.contains(&pending.branch));
+            self.pending_relayout.remove(&workspace);
+            self.debug_layout_state(workspace, "layout_atomic_empty");
             return;
         }
 
@@ -311,7 +350,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         let resolve_roots = subtree.map_or_else(
             || {
                 std::iter::once(workspace)
-                    .chain(self.floating_roots().collect::<Vec<_>>())
+                    .chain(self.floating_roots(workspace).collect::<Vec<_>>())
                     .collect::<Vec<_>>()
             },
             |(key, _)| vec![key],
@@ -333,7 +372,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         for (branch, data) in arrangements {
             if waiting.contains(&branch) {
                 // Still waiting on its own windows. Its neighbours are not.
-                self.pending_relayout = true;
+                self.pending_relayout.insert(workspace);
                 continue;
             }
 
@@ -371,9 +410,9 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.pending_transaction = None;
 
         if requested {
-            self.debug_layout_state("layout_atomic_requested");
+            self.debug_layout_state(workspace, "layout_atomic_requested");
         } else {
-            self.debug_layout_state("layout_atomic_apply");
+            self.debug_layout_state(workspace, "layout_atomic_apply");
         }
     }
 
@@ -389,7 +428,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// sway/tree/arrange.c:264-322
     fn arrange_each_branch(&mut self, workspace: NodeKey) -> Vec<(NodeKey, LayoutData)> {
         if let Some(fullscreen_key) = self
-            .fullscreen_key
+            .fullscreen_key(workspace)
             .filter(|key| self.nodes.contains_key(*key))
         {
             let branch = self.branch_root(fullscreen_key);
@@ -400,7 +439,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
 
         let mut out = vec![(workspace, self.collect_layout_data(workspace))];
-        for (root, area) in self.floating_roots_with_areas() {
+        for (root, area) in self.floating_roots_with_areas(workspace) {
             out.push((root, self.collect_branch_layout_data(workspace, root, area)));
         }
         out
@@ -459,9 +498,12 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
     }
 
-    /// Every floating group with the box it is laid out in.
-    fn floating_roots_with_areas(&self) -> Vec<(NodeKey, Rectangle<f64, Logical>)> {
-        self.floating_roots_snapshot()
+    /// One workspace's floating groups with the boxes they are laid out in.
+    fn floating_roots_with_areas(
+        &self,
+        workspace: NodeKey,
+    ) -> Vec<(NodeKey, Rectangle<f64, Logical>)> {
+        self.floating_roots_snapshot(workspace)
     }
 
     /// Keep a leaf's node box when tree surgery changes how its parent decorates it.
@@ -523,8 +565,11 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     fn focus_makes_leaf_visible(&self, key: NodeKey) -> bool {
+        let Some(workspace) = self.workspace_of(key) else {
+            return false;
+        };
         if self
-            .fullscreen_key
+            .fullscreen_key(workspace)
             .is_some_and(|fullscreen| !self.is_descendant(key, fullscreen))
         {
             return false;
@@ -582,17 +627,24 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
         for pending in ready {
             if !self.pending_layout_is_current(&pending) {
-                self.pending_relayout = true;
+                if let Some(workspace) = self.workspace_of(pending.branch) {
+                    self.pending_relayout.insert(workspace);
+                }
                 continue;
             }
             self.apply_layout_data(pending.branch, pending.data);
         }
-        self.debug_layout_state("layout_atomic_apply_pending");
+        if let Some(workspace) = self.workspaces.first().copied() {
+            self.debug_layout_state(workspace, "layout_atomic_apply_pending");
+        }
         true
     }
 
-    pub(in crate::layout) fn has_pending_layouts(&self) -> bool {
-        !self.pending_layouts.is_empty()
+    /// Whether one workspace is still waiting on windows it asked to resize.
+    pub(in crate::layout) fn has_pending_layouts(&self, workspace: NodeKey) -> bool {
+        self.pending_layouts
+            .iter()
+            .any(|pending| self.workspace_of(pending.branch) == Some(workspace))
     }
 
     /// Drop a size transaction superseded by a branch transfer.
@@ -602,10 +654,17 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// superseding transition in the other direction: `container_set_floating` moves it first
     /// (`sway/tree/container.c:1004`) and the maximized arrange decides its next size. An ordinary
     /// floating-to-tiling move still waits for its outstanding configure.
-    pub(in crate::layout) fn discard_layout_superseded_by_transfer(&mut self) {
-        self.pending_layouts.clear();
+    pub(in crate::layout) fn discard_layout_superseded_by_transfer(&mut self, workspace: NodeKey) {
+        let superseded: Vec<NodeKey> = self
+            .pending_layouts
+            .iter()
+            .filter(|pending| self.workspace_of(pending.branch) == Some(workspace))
+            .map(|pending| pending.branch)
+            .collect();
+        self.pending_layouts
+            .retain(|pending| !superseded.contains(&pending.branch));
         self.pending_transaction = None;
-        self.pending_relayout = false;
+        self.pending_relayout.remove(&workspace);
     }
 
     fn layout_request_for(
@@ -617,7 +676,14 @@ impl<W: LayoutElement> ContainerArena<W> {
         if tile.window().pending_sizing_mode().is_fullscreen() {
             LayoutRequest {
                 mode: LayoutRequestMode::Fullscreen,
-                size: self.view_size().to_i32_round(),
+                size: self
+                    .workspace_of(
+                        self.window_key(tile.window().id())
+                            .expect("tile is in arena"),
+                    )
+                    .map(|workspace| self.view_size(workspace))
+                    .unwrap_or_default()
+                    .to_i32_round(),
             }
         } else {
             LayoutRequest {
@@ -633,7 +699,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             node_geometries: HashMap::new(),
         };
 
-        let area = self.layout_area();
+        let area = self.layout_area(root_key);
         let gap = self.gap_in(root_key);
         let mut walk = LayoutWalk {
             gap,
@@ -659,7 +725,10 @@ impl<W: LayoutElement> ContainerArena<W> {
         if self.is_in_floating_branch(key) {
             0.0
         } else {
-            self.options().layout.gaps
+            let workspace = self
+                .workspace_of(key)
+                .expect("a tiled node belongs to a workspace");
+            self.options(workspace).layout.gaps
         }
     }
 
@@ -682,9 +751,9 @@ impl<W: LayoutElement> ContainerArena<W> {
         fullscreen_key: NodeKey,
     ) -> LayoutData {
         let area = if self.get_container(fullscreen_key).is_some() {
-            Rectangle::from_size(self.view_size())
+            Rectangle::from_size(self.view_size(workspace))
         } else {
-            self.layout_area()
+            self.layout_area(workspace)
         };
         let mut data = self.collect_branch_layout_data(workspace, fullscreen_key, area);
         if self.get_tile(fullscreen_key).is_some() {
@@ -791,6 +860,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// (0.0 for split layouts).
     pub(super) fn child_rects_for_layout(
         &self,
+        workspace: NodeKey,
         layout: Layout,
         rect: Rectangle<f64, Logical>,
         child_count: usize,
@@ -811,7 +881,8 @@ impl<W: LayoutElement> ContainerArena<W> {
                     0.0
                 };
                 let available = (span - total_gap).max(0.0);
-                let lengths = self.distribute_split_lengths(available, child_count, percents);
+                let lengths =
+                    self.distribute_split_lengths(workspace, available, child_count, percents);
 
                 let mut cursor = if horizontal { rect.loc.x } else { rect.loc.y };
                 let end = if horizontal {
@@ -859,7 +930,8 @@ impl<W: LayoutElement> ContainerArena<W> {
                 (rects, 0.0)
             }
             Layout::Tabbed | Layout::Stacked => {
-                let tab_offset = self.switcher_content_offset(layout, child_count, rect.size.h);
+                let tab_offset =
+                    self.switcher_content_offset(workspace, layout, child_count, rect.size.h);
 
                 let mut content_rect = rect;
                 if tab_offset > 0.0 {
@@ -878,11 +950,12 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// rectangle using the new parent layout, so layout and IPC must share this calculation.
     pub(super) fn switcher_content_offset(
         &self,
+        workspace: NodeKey,
         layout: Layout,
         child_count: usize,
         height: f64,
     ) -> f64 {
-        let row_height = self.tab_bar_row_height();
+        let row_height = self.tab_bar_row_height(workspace);
         if row_height <= 0.0 {
             return 0.0;
         }
@@ -903,6 +976,9 @@ impl<W: LayoutElement> ContainerArena<W> {
         ctx: LeafPresentation,
         walk: &mut LayoutWalk<'_>,
     ) {
+        let workspace = self
+            .workspace_of(node_key)
+            .expect("an arranged node belongs to a workspace");
         let (layout, child_count, focused_idx, percents) = match self.get_node(node_key) {
             Some(node) if node.is_view() => {
                 let tile = node.as_tile().expect("a view holds a tile");
@@ -947,11 +1023,11 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
 
         let (child_rects, _) =
-            self.child_rects_for_layout(layout, rect, child_count, &percents, walk.gap);
+            self.child_rects_for_layout(workspace, layout, rect, child_count, &percents, walk.gap);
 
         match layout {
             Layout::SplitH | Layout::SplitV => {
-                let split_bar_height = self.split_title_bar_height();
+                let split_bar_height = self.split_title_bar_height(workspace);
 
                 for (idx, &child_rect) in child_rects.iter().enumerate() {
                     let Some(child_key) = self.get_container_child_at(node_key, idx) else {
@@ -1095,18 +1171,21 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.leaf_layouts.extend(data.leaf_layouts);
     }
 
-    pub(in crate::layout) fn tab_bar_row_height(&self) -> f64 {
-        if self.options().layout.tab_bar.off {
+    pub(in crate::layout) fn tab_bar_row_height(&self, workspace: NodeKey) -> f64 {
+        if self.options(workspace).layout.tab_bar.off {
             return 0.0;
         }
-        tab_bar_row_height(&self.options().layout.tab_bar, self.scale())
+        tab_bar_row_height(
+            &self.options(workspace).layout.tab_bar,
+            self.scale(workspace),
+        )
     }
 
-    pub(in crate::layout) fn split_title_bar_height(&self) -> f64 {
-        if !self.options().layout.tab_bar.show_in_split {
+    pub(in crate::layout) fn split_title_bar_height(&self, workspace: NodeKey) -> f64 {
+        if !self.options(workspace).layout.tab_bar.show_in_split {
             return 0.0;
         }
-        self.tab_bar_row_height()
+        self.tab_bar_row_height(workspace)
     }
 
     fn get_container_child_at(&self, container_key: NodeKey, idx: usize) -> Option<NodeKey> {
@@ -1126,6 +1205,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     pub(in crate::layout) fn distribute_split_lengths(
         &self,
+        workspace: NodeKey,
         available: f64,
         child_count: usize,
         percents: &[f64],
@@ -1135,7 +1215,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
 
         let available = available.max(0.0);
-        let available_phys = (available * self.scale()).round().max(0.0) as i32;
+        let available_phys = (available * self.scale(workspace)).round().max(0.0) as i32;
         let default = 1.0 / child_count as f64;
         let mut weights: Vec<f64> = (0..child_count)
             .map(|idx| percents.get(idx).copied().unwrap_or(default).max(0.0))
@@ -1166,7 +1246,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         lengths_int
             .into_iter()
-            .map(|v| v as f64 / self.scale())
+            .map(|v| v as f64 / self.scale(workspace))
             .collect()
     }
 
@@ -1189,6 +1269,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     pub(in crate::layout) fn tab_bar_rect(
         &self,
+        workspace: NodeKey,
         layout: Layout,
         rect: Rectangle<f64, Logical>,
         tab_count: usize,
@@ -1197,7 +1278,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             return None;
         }
 
-        let row_height = self.tab_bar_row_height();
+        let row_height = self.tab_bar_row_height(workspace);
         if row_height <= 0.0 {
             return None;
         }
@@ -1211,10 +1292,10 @@ impl<W: LayoutElement> ContainerArena<W> {
         // where i3 has one. Growing the bar by that width covers the lane, and
         // `edge_visibility_for_tile` stops drawing it. Layout is untouched: only what is
         // painted (and what a click on the bar hits) changes.
-        let border_ext = if self.options().layout.border.off {
+        let border_ext = if self.options(workspace).layout.border.off {
             0.0
         } else {
-            self.options().layout.border.width
+            self.options(workspace).layout.border.width
         };
 
         let spacing = self.tab_bar_spacing();
