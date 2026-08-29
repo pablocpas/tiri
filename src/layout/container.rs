@@ -25,10 +25,15 @@
 //! leaves the arena free to hold several — which is what a single tree, with the workspaces as
 //! its roots, needs.
 //!
-//! What is left saying `self.root` is therefore an inventory rather than an oversight: the
-//! arena's own identity (`workspace_root`, `get_workspace`), and the walks that mean *every*
-//! node it holds (`all_windows`, `all_tiles`, `dfs_leaf_keys`, `window_count`, `is_empty`).
-//! Those become a loop over the workspaces, not a parameter.
+//! So the arena keeps a list of workspaces rather than a root, and the walks that mean *every*
+//! node it holds — `all_windows`, `all_tiles`, `dfs_leaf_keys`, `window_count`, `is_empty` —
+//! iterate it. A walk that starts from one root would be silently incomplete the moment a
+//! second workspace arrived, and that is the failure that does not announce itself: a window
+//! that exists and is not found.
+//!
+//! One thing still assumes the single workspace, and deliberately says so in one place:
+//! [`ContainerArena::workspace_root`]. Every caller of it is a place that has not yet been
+//! told which workspace it means.
 //!
 //! sway/tree/workspace.c:797-852
 
@@ -563,9 +568,14 @@ pub(super) struct ContainerArena<W: LayoutElement> {
     nodes: NodeStore<W>,
     /// Parent pointer for each node (None for root)
     parents: ParentStore,
-    /// The workspace.
+    /// The workspaces this arena holds, in creation order. Never empty.
     ///
-    /// Always present as a [`NodeData::Workspace`], empty tree included.
+    /// A list rather than one key because the walks that mean *every* node this arena holds
+    /// have to iterate something. A walk that starts from a single root is silently incomplete
+    /// the moment a second workspace arrives, and silently incomplete is how a window comes to
+    /// exist without being found.
+    ///
+    /// Each is always a [`NodeData::Workspace`], empty tree included.
     ///
     /// sway keeps `sway_workspace` and `sway_container` as separate structs, but the
     /// workspace carries the same `layout` and `prev_split_layout` and answers the same
@@ -574,7 +584,7 @@ pub(super) struct ContainerArena<W: LayoutElement> {
     /// Modelling it as a node here buys that same uniformity: every rule that used to ask
     /// "is the parent the workspace?" was working around its absence, and each of those
     /// workarounds disagreed with sway somewhere.
-    root: NodeKey,
+    workspaces: Vec<NodeKey>,
     /// Floating branches in render order, topmost first.
     ///
     /// This is the only floating-root collection and the only owner of their geometry and
@@ -981,7 +991,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         Self {
             nodes,
             parents,
-            root,
+            workspaces: vec![root],
             floating_roots: Vec::new(),
             next_floating_root_id: 1,
             seat,

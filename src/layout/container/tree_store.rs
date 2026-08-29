@@ -81,14 +81,15 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Always present: the root is a workspace node for the arena's whole life. The `Option`
     /// is for callers that would rather ask than assert.
     pub(super) fn get_workspace(&self) -> Option<&WorkspaceData> {
-        match self.nodes.get(self.root)? {
+        match self.nodes.get(self.workspace_root())? {
             NodeData::Workspace(workspace) => Some(workspace),
             _ => None,
         }
     }
 
     pub(super) fn get_workspace_mut(&mut self) -> Option<&mut WorkspaceData> {
-        match self.nodes.get_mut(self.root)? {
+        let workspace = self.workspace_root();
+        match self.nodes.get_mut(workspace)? {
             NodeData::Workspace(workspace) => Some(workspace),
             _ => None,
         }
@@ -390,12 +391,16 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// container that has just been emptied can still be hanging off it when this is called.
     /// Every caller means "is there a window here".
     pub(in crate::layout) fn is_empty(&self) -> bool {
-        self.first_leaf_key(self.root).is_none()
+        self.workspaces
+            .iter()
+            .all(|workspace| self.first_leaf_key(*workspace).is_none())
     }
 
     #[cfg(test)]
     pub(in crate::layout) fn root_is_workspace_node(&self) -> bool {
-        matches!(self.get_node(self.root), Some(NodeData::Workspace(_)))
+        self.workspaces
+            .iter()
+            .all(|workspace| self.is_workspace(*workspace))
     }
 
     /// Whether `key` is `ancestor` or sits somewhere below it.

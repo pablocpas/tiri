@@ -78,7 +78,10 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     /// Count total number of windows in tree
     pub(in crate::layout) fn window_count(&self) -> usize {
-        self.count_windows_in_node(self.root)
+        self.workspaces
+            .iter()
+            .map(|workspace| self.count_windows_in_node(*workspace))
+            .sum()
     }
 
     /// Helper: count windows in a node

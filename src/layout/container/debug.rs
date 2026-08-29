@@ -63,7 +63,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             working_area = ?self.working_area(),
             view_size = ?self.view_size(),
             scale = self.scale(),
-            root = ?self.root,
+            workspaces = ?self.workspaces,
             focused = ?self.focused_key(),
             "layout summary"
         );

@@ -211,7 +211,8 @@ impl<W: LayoutElement> ContainerArena<W> {
                     let percent_sum: f64 = percents.iter().sum();
                     assert!(
                         (percent_sum - 1.0).abs() <= 0.000_001,
-                        "active split child percents must be normalized: layout={:?} fractions={:?}",
+                        "active split child percents must be normalized: \
+                         layout={:?} fractions={:?}",
                         container.layout,
                         percents,
                     );

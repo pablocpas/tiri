@@ -14,9 +14,14 @@ use super::{ContainerArena, ContainerData, LayoutElement, NodeKey, TabBarInfo};
 use crate::layout::tile::Tile;
 
 impl<W: LayoutElement> ContainerArena<W> {
-    /// The workspace's own root — the tiled branch.
+    /// The one workspace this arena holds.
+    ///
+    /// The list is never empty and has one entry, so this is total and unambiguous — for now.
+    /// It is the last thing standing between this arena and several workspaces: every caller
+    /// of it is a place that has not yet been told which one it means, and `ContainerTree`
+    /// already knows, which is why most of them ask it instead.
     pub(in crate::layout) fn workspace_root(&self) -> NodeKey {
-        self.root
+        self.workspaces[0]
     }
 
     /// Whether a branch holds no windows.
