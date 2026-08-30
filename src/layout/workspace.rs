@@ -136,7 +136,7 @@ pub struct WorkspaceTreeView<'a, W: LayoutElement> {
 #[cfg(test)]
 impl<'a, W: LayoutElement> WorkspaceTreeView<'a, W> {
     pub(super) fn arena(&self) -> &'a super::container::ContainerArena<W> {
-        self.containers.arena()
+        self.containers
     }
 
     /// The workspace this view is about, for assertions that name a node.
@@ -209,12 +209,11 @@ impl<'a, W: LayoutElement> WorkspaceTreeView<'a, W> {
     }
 
     pub fn fullscreen_key(&self) -> Option<NodeKey> {
-        self.containers.arena().fullscreen_key(self.workspace)
+        self.containers.fullscreen_key(self.workspace)
     }
 
     pub fn fullscreen_representative_window_id(&self) -> Option<&'a W::Id> {
         self.containers
-            .arena()
             .fullscreen_representative_window_id(self.workspace)
     }
 
@@ -920,7 +919,7 @@ impl<W: LayoutElement> Workspace<W> {
         &'a self,
         containers: &'a ContainerTree<W>,
     ) -> impl Iterator<Item = &'a Tile<W>> + 'a {
-        let tree = containers.arena();
+        let tree = containers;
         tree.leaf_keys_in_workspace(self.workspace)
             .into_iter()
             .filter_map(|key| tree.get_tile(key))
@@ -931,7 +930,7 @@ impl<W: LayoutElement> Workspace<W> {
         containers: &'a mut ContainerTree<W>,
     ) -> impl Iterator<Item = &'a mut Tile<W>> + 'a {
         let workspace = self.workspace;
-        let tree = containers.arena_mut();
+        let tree = &mut *containers;
         let keys = tree.leaf_keys_in_workspace(workspace);
         tree.tiles_mut_for_keys(&keys)
             .into_iter()
@@ -939,7 +938,7 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn is_floating(&self, containers: &ContainerTree<W>, id: &W::Id) -> bool {
-        let tree = containers.arena();
+        let tree = containers;
         tree.window_key(id).is_some_and(|key| {
             tree.workspace_of(key) == Some(self.workspace) && tree.is_in_floating_branch(key)
         })
@@ -955,10 +954,7 @@ impl<W: LayoutElement> Workspace<W> {
     /// parallel routing state.
     fn command_target_key(&self, containers: &ContainerTree<W>) -> NodeKey {
         let workspace = self.workspace;
-        containers
-            .arena()
-            .selected_node_key(workspace)
-            .unwrap_or(workspace)
+        containers.selected_node_key(workspace).unwrap_or(workspace)
     }
 
     pub(super) fn mark_target_key(&self, containers: &ContainerTree<W>) -> Option<NodeKey> {
@@ -991,7 +987,7 @@ impl<W: LayoutElement> Workspace<W> {
         if target == self.workspace {
             return;
         }
-        self.floating_is_active = if containers.arena().is_in_floating_branch(target) {
+        self.floating_is_active = if containers.is_in_floating_branch(target) {
             FloatingActive::Yes
         } else {
             FloatingActive::No
@@ -1032,7 +1028,7 @@ impl<W: LayoutElement> Workspace<W> {
         // so both take the tiled epilogue. Only the floating arm leaves the layer alone.
         let (moved, landed_in_tiling) = if target == self.workspace {
             (workspace(containers), true)
-        } else if containers.arena().is_in_floating_branch(target) {
+        } else if containers.is_in_floating_branch(target) {
             (floating(&mut self.floating, containers), false)
         } else {
             (tiled(containers), true)
@@ -1060,11 +1056,11 @@ impl<W: LayoutElement> Workspace<W> {
         let target = self.command_target_key(containers);
         if target == self.workspace {
             false
-        } else if containers.arena().is_in_floating_branch(target) {
-            if containers.arena().is_floating_root(target) {
+        } else if containers.is_in_floating_branch(target) {
+            if containers.is_floating_root(target) {
                 floating(&mut self.floating, containers);
             } else {
-                let branch = containers.arena().branch_root(target);
+                let branch = containers.branch_root(target);
                 let _ = containers.move_in_branch(branch, direction);
             }
             true
@@ -1111,7 +1107,7 @@ impl<W: LayoutElement> Workspace<W> {
         tiled: impl FnOnce(&mut ContainerTree<W>) -> R,
     ) -> R {
         let target = self.command_target_key(containers);
-        if target != self.workspace && !containers.arena().is_in_floating_branch(target) {
+        if target != self.workspace && !containers.is_in_floating_branch(target) {
             tiled(containers)
         } else {
             R::default()
@@ -1119,9 +1115,7 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn focus_mode_toggle_targets_floating(&self, containers: &ContainerTree<W>) -> bool {
-        !containers
-            .arena()
-            .is_in_floating_branch(self.command_target_key(containers))
+        !containers.is_in_floating_branch(self.command_target_key(containers))
     }
 
     pub fn current_output(&self) -> Option<&Output> {
@@ -1149,7 +1143,7 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn active_selection_is_container(&self, containers: &ContainerTree<W>) -> bool {
         let target = self.command_target_key(containers);
-        target != self.workspace && !containers.arena().is_leaf(target)
+        target != self.workspace && !containers.is_leaf(target)
     }
 
     #[cfg(test)]
@@ -1159,9 +1153,8 @@ impl<W: LayoutElement> Workspace<W> {
         id: &W::Id,
     ) -> Vec<String> {
         containers
-            .arena()
             .window_key(id)
-            .and_then(|key| containers.arena().node_marks(key))
+            .and_then(|key| containers.node_marks(key))
             .unwrap_or_default()
             .to_vec()
     }
@@ -1182,7 +1175,7 @@ impl<W: LayoutElement> Workspace<W> {
                 .collect();
         }
 
-        let ids = if containers.arena().is_in_floating_branch(target) {
+        let ids = if containers.is_in_floating_branch(target) {
             self.floating
                 .close_window_ids_for_active_selection(containers)
         } else {
@@ -1354,17 +1347,16 @@ impl<W: LayoutElement> Workspace<W> {
         let floating_active = self.floating_is_active.get();
         let command_target = self.command_target_key(containers);
         let workspace_command_context = command_target == self.workspace;
-        let map_target = containers.arena().view_map_target(self.workspace);
+        let map_target = containers.view_map_target(self.workspace);
         let map_targets_floating =
-            map_target.is_some_and(|target| containers.arena().is_in_floating_branch(target));
+            map_target.is_some_and(|target| containers.is_in_floating_branch(target));
         // A group root occupies the `ws->floating` slot and is not an insertion parent for a
         // newly mapped normal view. Any node below that boundary is: a leaf, or an inner
         // container created by splitting the root. This is derived from Sway's view-map
         // target, not merely from the currently selected node: selecting the workspace keeps
         // the previous node immediately behind it in the seat order.
-        let map_targets_inside_floating_root = map_target.is_some_and(|target| {
-            map_targets_floating && !containers.arena().is_floating_root(target)
-        });
+        let map_targets_inside_floating_root = map_target
+            .is_some_and(|target| map_targets_floating && !containers.is_floating_root(target));
         match target {
             WorkspaceAddWindowTarget::Auto => {
                 let has_floating_reinsert_hint = containers
@@ -1749,11 +1741,10 @@ impl<W: LayoutElement> Workspace<W> {
         transaction: Transaction,
     ) -> ParkedTile {
         let key = containers
-            .arena()
             .window_key(id)
             .expect("the window to park must exist in the arena");
-        assert_eq!(containers.arena().workspace_of(key), Some(self.workspace));
-        let from_floating = containers.arena().is_in_floating_branch(key);
+        assert_eq!(containers.workspace_of(key), Some(self.workspace));
+        let from_floating = containers.is_in_floating_branch(key);
         let parked = if from_floating {
             self.floating.park_tile(containers, id)
         } else {
@@ -2538,7 +2529,7 @@ impl<W: LayoutElement> Workspace<W> {
         request: ResizeRequest,
     ) {
         let target = match window {
-            Some(id) => containers.arena().window_key(id),
+            Some(id) => containers.window_key(id),
             None => Some(self.command_target_key(containers)),
         };
         let Some(target) = target else {
@@ -2551,7 +2542,7 @@ impl<W: LayoutElement> Workspace<W> {
             return;
         }
 
-        if containers.arena().is_floating_root(target) {
+        if containers.is_floating_root(target) {
             self.floating.resize_window(containers, window, request);
         } else {
             // A descendant of a floating root is tiled inside that root. sway takes the
@@ -2624,7 +2615,7 @@ impl<W: LayoutElement> Workspace<W> {
         if target == self.workspace {
             return false;
         }
-        if containers.arena().is_in_floating_branch(target) {
+        if containers.is_in_floating_branch(target) {
             self.floating
                 .focus_along_parent(containers, forward, descend)
         } else {
@@ -2637,7 +2628,7 @@ impl<W: LayoutElement> Workspace<W> {
         if target == self.workspace {
             return;
         }
-        if containers.arena().is_in_floating_branch(target) {
+        if containers.is_in_floating_branch(target) {
             let _ = self.floating.focus_parent(containers);
         } else {
             let _ = containers.focus_parent(self.workspace);
@@ -2671,7 +2662,7 @@ impl<W: LayoutElement> Workspace<W> {
         let target = self.command_target_key(containers);
         if target == self.workspace {
             workspace(containers);
-        } else if containers.arena().is_in_floating_branch(target) {
+        } else if containers.is_in_floating_branch(target) {
             floating(&mut self.floating, containers);
         } else {
             tiled(containers);
@@ -2787,7 +2778,6 @@ impl<W: LayoutElement> Workspace<W> {
     /// `Option<NodeKey>` and the id is derived from its live leaf.
     pub fn fullscreen_window_ids(&self, containers: &ContainerTree<W>) -> Vec<W::Id> {
         containers
-            .arena()
             .fullscreen_representative_window_id(self.workspace)
             .cloned()
             .into_iter()
@@ -2852,9 +2842,8 @@ impl<W: LayoutElement> Workspace<W> {
         if target == self.workspace {
             return;
         }
-        if containers.arena().is_leaf(target) {
+        if containers.is_leaf(target) {
             let Some(id) = containers
-                .arena()
                 .get_tile(target)
                 .map(|tile| tile.window().id().clone())
             else {
@@ -2862,11 +2851,10 @@ impl<W: LayoutElement> Workspace<W> {
             };
             self.toggle_fullscreen(containers, &id);
         } else {
-            if containers.arena().fullscreen_key(self.workspace) != Some(target) {
+            if containers.fullscreen_key(self.workspace) != Some(target) {
                 // A previous leaf has protocol state to revoke. A previous container does
                 // not; replacing the workspace pointer below is sufficient for it.
                 if let Some(id) = containers
-                    .arena()
                     .fullscreen_leaf_window_id(self.workspace)
                     .cloned()
                 {
@@ -2930,7 +2918,7 @@ impl<W: LayoutElement> Workspace<W> {
         let command_target = self.command_target_key(containers);
         let command_targets_workspace = command_target == self.workspace;
         let command_targets_tiling =
-            !command_targets_workspace && !containers.arena().is_in_floating_branch(command_target);
+            !command_targets_workspace && !containers.is_in_floating_branch(command_target);
 
         if requested_id.is_none() && command_targets_workspace {
             // A selected workspace with no tiled children has nothing that can become floating.
@@ -3050,7 +3038,7 @@ impl<W: LayoutElement> Workspace<W> {
                 else {
                     return false;
                 };
-                if let Some(tile) = containers.arena_mut().get_tile_mut(subtree) {
+                if let Some(tile) = containers.get_tile_mut(subtree) {
                     tile.stop_move_animations();
                 }
 
@@ -3154,13 +3142,12 @@ impl<W: LayoutElement> Workspace<W> {
     /// `container_fullscreen_disable` on whatever this workspace's one fullscreen pointer
     /// names, leaf or container.
     pub fn clear_fullscreen(&mut self, containers: &mut ContainerTree<W>) {
-        let Some(scope) = containers.arena().fullscreen_key(self.workspace) else {
+        let Some(scope) = containers.fullscreen_key(self.workspace) else {
             return;
         };
 
-        if containers.arena().is_leaf(scope) {
+        if containers.is_leaf(scope) {
             if let Some(id) = containers
-                .arena()
                 .fullscreen_leaf_window_id(self.workspace)
                 .cloned()
             {
@@ -3399,7 +3386,7 @@ impl<W: LayoutElement> Workspace<W> {
 
     #[cfg(test)]
     pub(super) fn has_window(&self, containers: &ContainerTree<W>, window: &W::Id) -> bool {
-        let tree = containers.arena();
+        let tree = containers;
         tree.window_key(window)
             .is_some_and(|key| tree.workspace_of(key) == Some(self.workspace))
     }
@@ -3433,7 +3420,7 @@ impl<W: LayoutElement> Workspace<W> {
 
         let floating = self.floating.tiles_with_render_positions_keyed(containers);
         let visible = self.is_floating_visible(containers);
-        let tree = containers.arena();
+        let tree = containers;
         let floating = floating.map(move |(key, tile, pos)| {
             let in_scope = fullscreen_scope.is_none_or(|scope| tree.is_descendant(key, scope));
             (tile, pos, visible && in_scope)
@@ -3449,14 +3436,12 @@ impl<W: LayoutElement> Workspace<W> {
     ) -> impl Iterator<Item = (&'a mut Tile<W>, Point<f64, Logical>)> + 'a {
         let scale = self.scale.fractional_scale();
         let layouts: Vec<_> = containers
-            .arena()
             .leaf_layouts_in(self.workspace)
             .map(|info| (info.key, info.rect.loc))
             .collect();
         let keys: Vec<_> = layouts.iter().map(|(key, _)| *key).collect();
         let locs: Vec<_> = layouts.iter().map(|(_, loc)| *loc).collect();
         containers
-            .arena_mut()
             .tiles_mut_for_keys(&keys)
             .into_iter()
             .map(move |(idx, tile)| {
@@ -3593,9 +3578,8 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn render_above_top_layer(&self, containers: &ContainerTree<W>) -> bool {
         containers.render_above_top_layer(self.workspace)
             || self.floating.fullscreen_key(containers).is_some_and(|key| {
-                containers.arena().container_info(key).is_some()
+                containers.container_info(key).is_some()
                     || containers
-                        .arena()
                         .get_tile(key)
                         .is_some_and(|tile| tile.window().sizing_mode().is_fullscreen())
             })
@@ -3987,7 +3971,7 @@ impl<W: LayoutElement> Workspace<W> {
         let target = self.command_target_key(containers);
         if target == self.workspace {
             "workspace"
-        } else if containers.arena().is_in_floating_branch(target) {
+        } else if containers.is_in_floating_branch(target) {
             "floating"
         } else {
             "tiling"
@@ -3999,13 +3983,13 @@ impl<W: LayoutElement> Workspace<W> {
         let target = self.command_target_key(containers);
         if target == self.workspace {
             "workspace"
-        } else if containers.arena().is_in_floating_branch(target) {
-            if containers.arena().is_leaf(target) {
+        } else if containers.is_in_floating_branch(target) {
+            if containers.is_leaf(target) {
                 "floating_window"
             } else {
                 "floating_container"
             }
-        } else if containers.arena().is_leaf(target) {
+        } else if containers.is_leaf(target) {
             "tiling_window"
         } else {
             "tiling_container"
@@ -4056,9 +4040,7 @@ impl<W: LayoutElement> Workspace<W> {
         );
         if let Some(id) = pending_fullscreen.first() {
             assert!(
-                containers
-                    .arena()
-                    .window_owns_fullscreen(self.workspace, id),
+                containers.window_owns_fullscreen(self.workspace, id),
                 "a pending fullscreen client must be the workspace fullscreen owner"
             );
         }

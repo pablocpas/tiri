@@ -57,8 +57,8 @@ impl TreeHarness {
         let view_size = Size::from((800.0, 600.0));
         let working_area = Rectangle::from_size(view_size);
         let scale = 1.0;
-        let mut tree = ContainerArena::new();
-        let workspace = tree.add_workspace(
+        let mut tree = ContainerArena::new(clock.clone());
+        let workspace = tree.add_workspace_node(
             ContainerLayout::SplitH,
             view_size,
             working_area,
@@ -103,7 +103,7 @@ impl TreeHarness {
 
     /// Add a second workspace to the same arena, laid out in the same box.
     pub(super) fn add_workspace(&mut self) -> super::super::container::NodeKey {
-        self.tree.add_workspace(
+        self.tree.add_workspace_node(
             ContainerLayout::SplitH,
             self.view_size,
             Rectangle::from_size(self.view_size),
@@ -135,12 +135,18 @@ impl TreeHarness {
     /// Called automatically on drop, so every test gets an end-state check even though it
     /// drives the tree directly.
     pub(super) fn verify(&mut self) {
-        // A test may have removed the workspace it built; there is then nothing to arrange.
+        // Every workspace this arena holds, not just the one the harness built first. A test
+        // that adds a second used to leave it unarranged and unchecked, because the arena's
+        // per-workspace check was the one this reached; there is one check now and it walks
+        // them all.
+        for workspace in self.tree.workspace_keys() {
+            self.tree.layout(workspace);
+        }
+        // A test may have removed the workspace it built; there is then nothing to ask about.
         if !self.tree.holds_node(self.workspace) {
             self.tree.verify_all_invariants();
             return;
         }
-        self.tree.layout(self.ws());
         self.tree.verify_invariants(self.ws());
     }
 }
@@ -184,8 +190,8 @@ fn replacing_a_leaf_gives_the_arriving_view_the_slot_it_took() {
     // Standing in the seat belongs to the slot, not to the node that happened to be in it.
     // Appending the arriving node the way a new window arrives would leave the workspace with
     // no focused leaf and the switcher showing the other tab.
-    assert_eq!(harness.tree.focused_key(), Some(arriving_key));
-    assert_eq!(harness.tree.focused_window_id(), Some(3));
+    assert_eq!(harness.tree.seat_focused_key(), Some(arriving_key));
+    assert_eq!(harness.tree.seat_focused_window_id(), Some(3));
     assert!(
         harness
             .tree
@@ -247,7 +253,7 @@ fn one_arena_holds_two_workspaces_without_them_seeing_each_other() {
 
     // The walks that mean "every node this arena holds" mean both workspaces. This is the
     // answer that would have gone on compiling while quietly losing half its windows.
-    let mut ids = harness.tree.all_window_ids();
+    let mut ids = harness.tree.window_ids_everywhere();
     ids.sort();
     assert_eq!(ids, vec![1, 2, 3, 4]);
     assert_eq!(harness.tree.window_count(), 4);
@@ -319,7 +325,7 @@ fn removing_a_workspace_takes_its_windows_and_leaves_the_rest() {
 
     assert!(harness.tree.remove_workspace(second));
     harness.tree.layout(first);
-    assert_eq!(harness.tree.all_window_ids(), vec![1]);
+    assert_eq!(harness.tree.window_ids_everywhere(), vec![1]);
     assert_eq!(harness.tree.window_count(), 1);
     assert_eq!(harness.tree.window_key(&2), None);
     assert!(!harness.tree.holds_node(second));
@@ -489,11 +495,19 @@ fn moving_a_leaf_between_workspace_stores_carries_its_size_state() {
         "identity, both fractions and both child totals travel as one node"
     );
 
+    // The whole operation, the way a monitor resize reaches a workspace: the box and the
+    // tiles that are laid out in it. `set_view_size` alone moves the workspace and leaves
+    // every tile on the old one, which is a state no production path produces.
     let target_size = Size::from((1000.0, 700.0));
-    target
-        .tree
-        .set_view_size(target.ws(), target_size, Rectangle::from_size(target_size));
-    target.tree.layout(target.ws());
+    let target_ws = target.ws();
+    let options = target.options.clone();
+    target.tree.update_config(
+        target_ws,
+        target_size,
+        Rectangle::from_size(target_size),
+        1.0,
+        options,
+    );
     let after_arrange = target.tree.debug_node_sizing(key).unwrap();
     assert_ne!(
         after_arrange.2, before.2,
@@ -671,7 +685,7 @@ fn apply_tree_random_op_inner(
             *next_window_id += 1;
         }
         TreeRandomOp::RemoveFocused => {
-            if let Some(id) = harness.tree.focused_window_id() {
+            if let Some(id) = harness.tree.seat_focused_window_id() {
                 let _ = harness.tree.remove_window(harness.ws(), &id);
             }
         }
@@ -735,10 +749,10 @@ fn apply_tree_random_op_inner(
                 .move_in_direction(harness.ws(), Direction::Down);
         }
         TreeRandomOp::FocusParent => {
-            harness.tree.focus_parent();
+            harness.tree.select_focus_parent();
         }
         TreeRandomOp::FocusChild => {
-            harness.tree.focus_child();
+            harness.tree.select_focus_child();
         }
     }
 }
@@ -783,7 +797,7 @@ proptest! {
             apply_tree_random_op(&mut harness, op, &mut next_window_id);
 
             let tree = harness.tree.debug_tree(harness.ws());
-            let ids = harness.tree.all_window_ids();
+            let ids = harness.tree.window_ids_everywhere();
             let unique = ids.iter().copied().collect::<std::collections::HashSet<_>>();
 
             prop_assert_eq!(
@@ -795,7 +809,7 @@ proptest! {
             );
 
             prop_assert_eq!(
-                harness.tree.focused_window_id().is_some(),
+                harness.tree.seat_focused_window_id().is_some(),
                 !ids.is_empty(),
                 "a tree should have a focused window exactly when it is non-empty, after {:?}:\n{}",
                 op,
@@ -2291,7 +2305,7 @@ fn focus_parent_traverses_hierarchy() {
 
     // Count how many times we can go up
     let mut levels = 0;
-    while harness.tree.focus_parent() {
+    while harness.tree.select_focus_parent() {
         levels += 1;
         // Safeguard against infinite loop
         if levels > 10 {

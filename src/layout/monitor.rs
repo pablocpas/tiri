@@ -543,7 +543,7 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     pub fn has_sticky_window(&self, containers: &ContainerTree<W>, window: &W::Id) -> bool {
-        let tree = containers.arena();
+        let tree = containers;
         tree.window_key(window)
             .and_then(|key| tree.workspace_of(key))
             == Some(self.sticky_workspace)
@@ -556,7 +556,6 @@ impl<W: LayoutElement> Monitor<W> {
     pub(super) fn active_mark_target_key(&self, containers: &ContainerTree<W>) -> Option<NodeKey> {
         if self.sticky_is_active {
             let key = containers
-                .arena()
                 .selected_node_key(self.sticky_workspace)
                 .unwrap_or(self.sticky_workspace);
             return (key != self.sticky_workspace).then_some(key);
@@ -829,7 +828,7 @@ impl<W: LayoutElement> Monitor<W> {
         containers: &ContainerTree<W>,
         window: &W::Id,
     ) -> Option<usize> {
-        let tree = containers.arena();
+        let tree = containers;
         let workspace = tree
             .window_key(window)
             .and_then(|key| tree.workspace_of(key))?;

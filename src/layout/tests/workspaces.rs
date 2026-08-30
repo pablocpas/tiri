@@ -381,14 +381,10 @@ fn sticky_and_scratchpad_roundtrips_keep_node_identity() {
     let key = workspace_node_key(&layout, 1);
 
     layout.toggle_window_sticky(Some(&1));
-    let sticky_key = layout
-        .containers
-        .arena()
-        .window_key(&1)
-        .expect("sticky node");
+    let sticky_key = layout.containers.window_key(&1).expect("sticky node");
     let sticky_workspace = layout.monitors().next().expect("monitor").sticky_workspace;
     assert_eq!(
-        layout.containers.arena().workspace_of(sticky_key),
+        layout.containers.workspace_of(sticky_key),
         Some(sticky_workspace)
     );
     assert_eq!(sticky_key, key);
@@ -418,13 +414,13 @@ fn discarded_workspace_handles_remove_their_roots_from_the_shared_tree() {
         },
     ]);
 
-    assert_eq!(layout.containers.arena().workspace_count(), 4);
+    assert_eq!(layout.containers.workspace_count(), 4);
 
     check_ops_on_layout(&mut layout, [Op::RemoveOutput(1)]);
-    assert_eq!(layout.containers.arena().workspace_count(), 2);
+    assert_eq!(layout.containers.workspace_count(), 2);
 
     check_ops_on_layout(&mut layout, [Op::CloseWindow(1)]);
-    assert_eq!(layout.containers.arena().workspace_count(), 1);
+    assert_eq!(layout.containers.workspace_count(), 1);
 }
 
 #[test]

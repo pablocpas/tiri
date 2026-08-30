@@ -54,7 +54,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                 if self.selected_key() == Some(container_key) {
                     self.seat.keep_selected(child_key);
                 }
-                if self.focused_key() == Some(container_key) {
+                if self.seat_focused_key() == Some(container_key) {
                     self.seat
                         .redirect_focused_leaf(self.leaf_under_key(child_key));
                 }
@@ -71,7 +71,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             if self.selected_key() == Some(container_key) {
                 self.seat.keep_selected(child_key);
             }
-            if self.focused_key() == Some(container_key) {
+            if self.seat_focused_key() == Some(container_key) {
                 self.seat
                     .redirect_focused_leaf(self.leaf_under_key(child_key));
             }
@@ -229,7 +229,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         if self.selected_key() == Some(container_key) {
             self.seat.keep_selected(child_key);
         }
-        if self.focused_key() == Some(container_key) {
+        if self.seat_focused_key() == Some(container_key) {
             self.seat.redirect_focused_leaf(Some(child_key));
         }
         self.remove_node_from_store(container_key);
@@ -404,7 +404,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         // Keep command context on the originally selected container.
         self.seat.keep_selected(selected_key);
-        if self.focused_key().is_none() {
+        if self.seat_focused_key().is_none() {
             if let Some(leaf_key) = self.leaf_under_key(selected_key) {
                 self.seat.redirect_focused_leaf(Some(leaf_key));
             }
@@ -640,13 +640,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
 
         false
-    }
-
-    /// Toggle between horizontal and vertical split for the focused container.
-    #[cfg(test)]
-    pub(in crate::layout) fn toggle_split_layout(&mut self, workspace: NodeKey) -> bool {
-        let target = self.command_target_in(workspace);
-        self.toggle_split_for_target(target)
     }
 
     pub(in crate::layout) fn toggle_split_for_target(&mut self, target: NodeKey) -> bool {

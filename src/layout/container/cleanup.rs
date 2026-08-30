@@ -172,7 +172,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         if matches!(self.selected_key(), Some(k) if k == con_key || k == child_key) {
             self.seat.redirect_selection(inherits);
         }
-        if matches!(self.focused_key(), Some(k) if k == con_key || k == child_key) {
+        if matches!(self.seat_focused_key(), Some(k) if k == con_key || k == child_key) {
             self.seat.redirect_focused_leaf(inherits);
         }
 

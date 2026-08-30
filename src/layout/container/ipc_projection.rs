@@ -5,13 +5,16 @@ use super::{ContainerArena, Layout, NodeData, NodeKey};
 use crate::layout::LayoutElement;
 
 impl<W: LayoutElement> ContainerArena<W> {
-    pub(in crate::layout) fn layout_tree(&self, workspace: NodeKey) -> Option<LayoutTreeNode> {
+    pub(in crate::layout) fn build_workspace_layout_tree(
+        &self,
+        workspace: NodeKey,
+    ) -> Option<LayoutTreeNode> {
         let root_key = self.root_node_key(workspace)?;
         let focused_key = self.selected_node_key(workspace);
         Some(self.build_layout_tree_node(root_key, focused_key, &mut Vec::new(), None, false))
     }
 
-    pub(in crate::layout) fn layout_tree_unfocused(
+    pub(in crate::layout) fn build_workspace_layout_tree_unfocused(
         &self,
         workspace: NodeKey,
     ) -> Option<LayoutTreeNode> {

@@ -1,24 +1,31 @@
 //! Removing views and parking tiled subtrees for synchronous reparenting.
 
 #[cfg(test)]
+use super::DetachedView;
+#[cfg(test)]
 use super::InsertParentInfo;
-use super::{ContainerArena, DetachedView, LayoutElement, NodeKey};
+use super::{ContainerArena, LayoutElement, NodeKey};
 
 impl<W: LayoutElement> ContainerArena<W> {
-    /// Remove a view node by window ID without discarding its semantic state.
+    /// Unlink a view from its workspace while keeping the materialized node in the arena.
+    ///
+    /// Internal transfers use this form and adopt the returned key directly. Final unmap calls
+    /// [`Self::remove_window`], which takes the parked node back out as an owned view.
+    /// Take a window out of the tree and hand back the view, for a test driving a transfer.
+    ///
+    /// Production parks instead: the node stays in the arena and returns by key, which is what
+    /// keeps its identity and its marks across the move. This is those two steps for a caller
+    /// that wants the view in hand, and it is the only reason the pair still exists.
+    #[cfg(test)]
     pub(in crate::layout) fn remove_window(
         &mut self,
         workspace: NodeKey,
         window_id: &W::Id,
     ) -> Option<DetachedView<W>> {
-        let node = self.park_window(workspace, window_id)?;
-        self.take_parked_view(node)
+        let key = self.park_window(workspace, window_id)?;
+        self.take_parked_view(key)
     }
 
-    /// Unlink a view from its workspace while keeping the materialized node in the arena.
-    ///
-    /// Internal transfers use this form and adopt the returned key directly. Final unmap calls
-    /// [`Self::remove_window`], which takes the parked node back out as an owned view.
     pub(in crate::layout) fn park_window(
         &mut self,
         workspace: NodeKey,
@@ -29,7 +36,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             return None;
         }
         let cleanup_key = self.parent_of(node_key);
-        let was_focused = self.focused_key() == Some(node_key);
+        let was_focused = self.seat_focused_key() == Some(node_key);
         // Not "was the closed window inside the fullscreen scope": what decides whether the
         // workspace inherits the selection is where the *selection* was. See
         // `reconcile_focus_after_change`.
@@ -135,7 +142,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.discard_layout_superseded_by_transfer(workspace);
 
         let focused_in_subtree = self
-            .focused_key()
+            .seat_focused_key()
             .is_some_and(|key| self.is_descendant_of(key, node_key));
         let former_ancestors = self
             .parent_of(node_key)

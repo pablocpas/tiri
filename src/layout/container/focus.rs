@@ -13,7 +13,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// answer when it is one of its nodes. Otherwise this is `seat_get_focus_inactive` for
     /// the workspace: the node it would return to when the focus comes back.
     pub(in crate::layout) fn effective_focused_key(&self, workspace: NodeKey) -> Option<NodeKey> {
-        match self.focused_key() {
+        match self.seat_focused_key() {
             Some(key)
                 if self.get_node(key).is_some() && self.workspace_of(key) == Some(workspace) =>
             {
@@ -53,7 +53,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                 return Some(key);
             }
         }
-        self.focused_key()
+        self.seat_focused_key()
             .filter(|key| self.workspace_of(*key) == Some(workspace))
             .or_else(|| self.focus_inactive_view_in_branch(workspace))
             .or_else(|| self.first_leaf_key(workspace))
@@ -66,7 +66,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     pub(in crate::layout) fn focused_node_key(&self) -> Option<NodeKey> {
-        self.focused_key()
+        self.seat_focused_key()
     }
 
     pub(in crate::layout) fn root_node_key(&self, workspace: NodeKey) -> Option<NodeKey> {
@@ -119,7 +119,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         };
         let chain = self.focus_chain(key);
         let leaf = if self.is_workspace(key) {
-            self.focused_key()
+            self.seat_focused_key()
                 .filter(|focused| {
                     self.workspace_of(*focused) == Some(workspace)
                         && self.get_node(*focused).is_some_and(|node| node.is_view())
@@ -165,7 +165,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         let base_key = self
             .selected_key()
             .filter(|key| in_workspace(*key))
-            .or_else(|| self.focused_key().filter(|key| in_workspace(*key)))
+            .or_else(|| self.seat_focused_key().filter(|key| in_workspace(*key)))
             .or_else(|| self.first_leaf_key(workspace));
         let Some(base_key) = base_key else {
             return false;
@@ -185,7 +185,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.selected_key()
             .filter(|key| self.branch_root(*key) == branch_root)
             .or_else(|| {
-                self.focused_key()
+                self.seat_focused_key()
                     .filter(|key| self.branch_root(*key) == branch_root)
             })
             .or_else(|| self.focus_inactive_view_in_branch(branch_root))
@@ -201,7 +201,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         let Some(base_key) = self
             .selected_key()
             .filter(|key| in_scope(*key))
-            .or_else(|| self.focused_key().filter(|key| in_scope(*key)))
+            .or_else(|| self.seat_focused_key().filter(|key| in_scope(*key)))
             .or_else(|| self.focus_inactive_view(scope_root))
         else {
             return false;
@@ -543,9 +543,9 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     #[cfg(test)]
-    pub(in crate::layout) fn focus_parent(&mut self) -> bool {
+    pub(in crate::layout) fn select_focus_parent(&mut self) -> bool {
         self.clear_focus_history();
-        let Some(focused_key) = self.focused_key() else {
+        let Some(focused_key) = self.seat_focused_key() else {
             return false;
         };
         let Some(parent_key) = self.parent_of(focused_key) else {
@@ -556,9 +556,9 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     #[cfg(test)]
-    pub(in crate::layout) fn focus_child(&mut self) -> bool {
+    pub(in crate::layout) fn select_focus_child(&mut self) -> bool {
         self.clear_focus_history();
-        let Some(focused_key) = self.focused_key() else {
+        let Some(focused_key) = self.seat_focused_key() else {
             return false;
         };
         let Some(parent_key) = self.parent_of(focused_key) else {
@@ -621,7 +621,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         let needs_new_focus = focused_removed
             || self
-                .focused_key()
+                .seat_focused_key()
                 .is_none_or(|key| !self.nodes.contains_key(key));
         if !needs_new_focus {
             return;
@@ -666,7 +666,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                 self.seat.redirect_focused_leaf(Some(key));
             }
             Some(key) => self.focus_node_key(key),
-            None => self.focus_first_leaf(workspace),
+            None => self.focus_any_leaf(workspace),
         }
     }
 
@@ -712,7 +712,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// active, filter the same seat order to recover the most recently focused floating view.
     /// There is no floating-side focus cache to reconcile with either answer.
     pub(in crate::layout) fn active_floating_window_id(&self, workspace: NodeKey) -> Option<W::Id> {
-        self.focused_key()
+        self.seat_focused_key()
             .filter(|key| {
                 self.is_in_floating_branch(*key) && self.workspace_of(*key) == Some(workspace)
             })
@@ -734,7 +734,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// there are two sides.
     ///
     /// sway/input/seat.c:1415
-    pub(super) fn focus_first_leaf(&mut self, workspace: NodeKey) {
+    pub(super) fn focus_any_leaf(&mut self, workspace: NodeKey) {
         let key = self
             .first_leaf_key(workspace)
             .or_else(|| self.leaf_keys_in_workspace(workspace).first().copied());
@@ -769,12 +769,12 @@ impl<W: LayoutElement> ContainerArena<W> {
     ///
     /// sway/input/seat.c:1415
     pub(super) fn resync_focus(&mut self, workspace: NodeKey) {
-        if self.focused_key().is_some() {
+        if self.seat_focused_key().is_some() {
             return;
         }
         match self.focus_inactive_anywhere(workspace) {
             Some(key) => self.focus_node_key(key),
-            None => self.focus_first_leaf(workspace),
+            None => self.focus_any_leaf(workspace),
         }
     }
 }
@@ -791,7 +791,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         chain
     }
 
-    pub(in crate::layout) fn focused_key(&self) -> Option<NodeKey> {
+    pub(in crate::layout) fn seat_focused_key(&self) -> Option<NodeKey> {
         self.seat.focused_leaf()
     }
 

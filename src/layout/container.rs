@@ -27,7 +27,7 @@ use smithay::utils::{Logical, Point, Rectangle, Size};
 use tiri_config::BlockOutFrom;
 
 use super::tile::Tile;
-use super::{LayoutElement, Options, SizeFrac};
+use super::{Clock, LayoutElement, Options, SizeFrac};
 use crate::utils::id::IdCounter;
 use crate::utils::transaction::Transaction;
 
@@ -565,7 +565,7 @@ impl ParentStore {
 
 /// Stable node arena and topology backing a workspace's shared container tree.
 #[derive(Debug)]
-pub(super) struct ContainerArena<W: LayoutElement> {
+pub struct ContainerArena<W: LayoutElement> {
     /// Every materialized node in the layout.
     nodes: NodeStore<W>,
     /// Parent pointer for each node (None for root)
@@ -627,6 +627,20 @@ pub(super) struct ContainerArena<W: LayoutElement> {
     pending_relayout: HashSet<NodeKey>,
     /// Generation counter for layout invalidation.
     generation: u64,
+    /// Animation clock.
+    pub(super) clock: Clock,
+    /// Derived render data for the tree: tab bars already drawn, overview textures, scratch.
+    ///
+    /// The one thing this type holds that is not the model. It lived on a wrapper until
+    /// ago-2026, and the wrapper's other two hundred and thirty-six methods were forwards to
+    /// here — two vocabularies for one tree, and every new operation written twice.
+    pub(super) render: super::container_tree::ContainerRenderState,
+    /// For each workspace that has the focus, which of its two sides holds it.
+    ///
+    /// Absent means the workspace is not the active one. Keyed rather than a pair of flags
+    /// because one tree serves every workspace, and the one being rendered is not necessarily
+    /// the one that was last told it was active.
+    pub(super) active_side: HashMap<NodeKey, bool>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -925,7 +939,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// A workspace root only appears through [`Self::add_workspace`], which is what every
     /// `Workspace` calls when it is built. An arena that fabricated one of its own would hand
     /// out a root that no workspace owns.
-    pub(super) fn new() -> Self {
+    pub fn new(clock: Clock) -> Self {
         let nodes = NodeStore::new();
         let parents = ParentStore::new();
         let seat = seat::SeatFocus::default();
@@ -944,6 +958,9 @@ impl<W: LayoutElement> ContainerArena<W> {
             pending_transaction: None,
             pending_relayout: HashSet::new(),
             generation: 0,
+            clock,
+            render: super::container_tree::ContainerRenderState::new(),
+            active_side: HashMap::new(),
         }
     }
 
@@ -958,7 +975,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// workspace on the same output can be parked, or override the layout its monitor handed
     /// down, and then the two differ while sharing an arena.
     ///
-    pub(in crate::layout) fn add_workspace(
+    pub(in crate::layout) fn add_workspace_node(
         &mut self,
         layout: Layout,
         view_size: Size<f64, Logical>,
@@ -988,6 +1005,8 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// The last one may go too: an arena with no workspaces is the state a fresh one starts
     /// in, and nothing reads a root it was not given.
     pub(in crate::layout) fn remove_workspace(&mut self, workspace: NodeKey) -> bool {
+        self.render.overview.remove(&workspace);
+        self.active_side.remove(&workspace);
         let Some(idx) = self.workspaces.iter().position(|key| *key == workspace) else {
             return false;
         };
@@ -1020,7 +1039,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// perfectly good state as garbage when asked from the first.
     pub(in crate::layout) fn verify_all_invariants(&self) {
         for workspace in &self.workspaces {
-            self.verify_invariants(*workspace);
+            self.verify_workspace_invariants(*workspace);
         }
         self.verify_every_node_is_under_a_root();
     }

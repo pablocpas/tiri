@@ -8,7 +8,6 @@ use smithay::utils::{Logical, Rectangle, Size};
 use super::{
     ContainerArena, Layout, LayoutElement, LeafLayoutInfo, NodeData, NodeKey, WorkspaceData,
 };
-use crate::layout::tile::Tile;
 use crate::layout::Options;
 use crate::utils::transaction::Transaction;
 
@@ -46,20 +45,8 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     /// Get the currently focused window
     pub(in crate::layout) fn focused_window(&self) -> Option<&W> {
-        let key = self.focused_key()?;
+        let key = self.seat_focused_key()?;
         self.get_tile(key).map(|tile| tile.window())
-    }
-
-    /// Update view size and working area
-    pub(in crate::layout) fn set_view_size(
-        &mut self,
-        workspace: NodeKey,
-        view_size: Size<f64, Logical>,
-        working_area: Rectangle<f64, Logical>,
-    ) {
-        let data = self.workspace_data_mut(workspace);
-        data.view_size = view_size;
-        data.working_area = working_area;
     }
 
     /// Update configuration
@@ -71,11 +58,31 @@ impl<W: LayoutElement> ContainerArena<W> {
         scale: f64,
         options: Rc<Options>,
     ) {
+        self.render
+            .overview
+            .entry(workspace)
+            .or_insert_with(|| {
+                super::super::container_tree::WorkspaceOverview::new(
+                    view_size,
+                    options.layout.background_color,
+                )
+            })
+            .background
+            .update(view_size, options.layout.background_color);
         let data = self.workspace_data_mut(workspace);
         data.view_size = view_size;
         data.working_area = working_area;
         data.scale = scale;
-        data.options = options;
+        data.options = options.clone();
+
+        // The workspace node takes the new options, but each tile holds its own handle on
+        // them: the floating side already refreshes its tiles here and the tiled side has to
+        // as well. A tile left behind keeps the old border widths and the old scale, and
+        // trips the workspace's options check the moment a swap floats it.
+        for tile in self.tiles_mut(workspace) {
+            tile.update_config(view_size, scale, options.clone());
+        }
+        self.layout(workspace);
     }
 
     /// Count total number of windows in tree
@@ -153,7 +160,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     pub(super) fn prune_leaf_layouts(&mut self, workspace: NodeKey) {
         if self
-            .focused_key()
+            .seat_focused_key()
             .is_some_and(|key| !self.get_node(key).is_some_and(|node| node.is_view()))
         {
             let first = self.first_leaf_key(workspace);
@@ -199,12 +206,6 @@ impl<W: LayoutElement> ContainerArena<W> {
                 .leaf_layouts
                 .retain(|key, _| !leaves.contains(key));
         }
-    }
-
-    /// Focused tile (if any).
-    pub(in crate::layout) fn focused_tile(&self, workspace: NodeKey) -> Option<&Tile<W>> {
-        let key = self.effective_focused_key(workspace)?;
-        self.get_tile(key)
     }
 
     /// The workspace's layout.

@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use super::{ContainerArena, Layout, LayoutElement, LeafLayoutInfo, NodeData, NodeKey};
 
 impl<W: LayoutElement> ContainerArena<W> {
-    pub(in crate::layout) fn verify_invariants(&self, workspace: NodeKey) {
+    pub(in crate::layout) fn verify_workspace_invariants(&self, workspace: NodeKey) {
         assert!(
             self.nodes.contains_key(workspace),
             "root key must point to an existing node"
@@ -183,7 +183,15 @@ impl<W: LayoutElement> ContainerArena<W> {
                     );
                 }
 
-                if child_count > 0 && matches!(container.layout, Layout::SplitH | Layout::SplitV) {
+                // Only where an arrange has run. A parked subtree is out of the tree waiting
+                // to be put back, and its shares are deliberately left for the destination's
+                // arrange to fill — see `resolved_percents` and `prepare_for_workspace_move`.
+                // Asking a parked node to be normalized asks it to have been arranged
+                // somewhere it is not.
+                if child_count > 0
+                    && matches!(container.layout, Layout::SplitH | Layout::SplitV)
+                    && self.workspace_of(key).is_some()
+                {
                     let percents = self.child_percents(key);
                     let percent_sum: f64 = percents.iter().sum();
                     assert!(
@@ -232,7 +240,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
         self.verify_leaf_layout_caches(&leaves);
 
-        match self.focused_key() {
+        match self.seat_focused_key() {
             Some(key) => assert!(
                 leaves.contains(&key),
                 "focused_key must point to a leaf the arena holds"

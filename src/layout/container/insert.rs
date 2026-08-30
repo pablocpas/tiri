@@ -403,7 +403,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         };
 
         let rank = self.seat.order().iter().position(|entry| *entry == key);
-        let was_focused_leaf = self.focused_key() == Some(key);
+        let was_focused_leaf = self.seat_focused_key() == Some(key);
         let was_selected = self.selected_key() == Some(key);
 
         let replacement = self.materialize_incoming_view(workspace, view)?;

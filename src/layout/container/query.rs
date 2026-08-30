@@ -64,7 +64,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     /// All window IDs in the tree, depth-first.
     #[cfg(test)]
-    pub(in crate::layout) fn all_window_ids(&self) -> Vec<W::Id> {
+    pub(in crate::layout) fn window_ids_everywhere(&self) -> Vec<W::Id> {
         self.workspaces
             .iter()
             .flat_map(|workspace| self.window_ids_under(*workspace))
@@ -263,7 +263,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     /// The focused window's id, if any.
     #[cfg(test)]
-    pub(in crate::layout) fn focused_window_id(&self) -> Option<W::Id> {
+    pub(in crate::layout) fn seat_focused_window_id(&self) -> Option<W::Id> {
         self.focused_window().map(|window| window.id().clone())
     }
 

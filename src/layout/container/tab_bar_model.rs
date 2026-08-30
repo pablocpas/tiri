@@ -33,7 +33,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                 container.children.len(),
             ) {
                 let focused_idx = self.active_child_index(node_key).unwrap_or(0);
-                let focused_key = self.focused_key();
+                let focused_key = self.seat_focused_key();
                 let tabs = container
                     .children
                     .iter()

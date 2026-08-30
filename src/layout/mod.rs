@@ -734,7 +734,7 @@ impl ParkedTile {
 
     fn prepare_for_workspace_move<W: LayoutElement>(&self, containers: &mut ContainerTree<W>) {
         if !self.is_floating {
-            containers.arena_mut().unset_node_fractions(self.node);
+            containers.unset_node_fractions(self.node);
         }
     }
 
@@ -1521,7 +1521,6 @@ impl<W: LayoutElement> Layout<W> {
             (MonitorSet::Normal { .. }, WorkspaceOwner::Sticky { .. }) => {
                 let tile = self
                     .containers
-                    .arena_mut()
                     .get_tile_mut(key)
                     .expect("a sticky window key must name a tile");
                 if let Some(serial) = serial {
@@ -2261,7 +2260,7 @@ impl<W: LayoutElement> Layout<W> {
 
     /// Locate a window once in the arena and classify the root it belongs to.
     fn window_owner(&self, window: &W::Id) -> Option<(NodeKey, WorkspaceOwner)> {
-        let tree = self.containers.arena();
+        let tree = &self.containers;
         let root = tree
             .window_key(window)
             .and_then(|key| tree.workspace_of(key))?;
@@ -2357,7 +2356,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     fn window_is_floating(&self, window: &W::Id) -> bool {
-        let tree = self.containers.arena();
+        let tree = &self.containers;
         tree.window_key(window)
             .is_some_and(|key| tree.is_in_floating_branch(key))
     }
@@ -2471,13 +2470,12 @@ impl<W: LayoutElement> Layout<W> {
             .collect();
         let mut keys: Vec<_> = roots
             .into_iter()
-            .flat_map(|root| self.containers.arena().leaf_keys_in_workspace(root))
+            .flat_map(|root| self.containers.leaf_keys_in_workspace(root))
             .collect();
         if let Some(move_) = moving {
             keys.push(move_.node);
         }
         self.containers
-            .arena_mut()
             .tiles_mut_for_keys(&keys)
             .into_iter()
             .map(|(_, tile)| tile.window_mut())
@@ -5993,7 +5991,7 @@ impl<W: LayoutElement> Layout<W> {
 
     /// Set the dragged tile's rubber-band offset. Returns false when the window is gone.
     fn set_interactive_move_offset(&mut self, window: &W::Id, offset: Point<f64, Logical>) -> bool {
-        let tree = self.containers.arena_mut();
+        let tree = &mut self.containers;
         let Some(key) = tree.window_key(window) else {
             return false;
         };
@@ -7687,7 +7685,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn has_window(&self, window: &W::Id) -> bool {
-        self.containers.arena().window_key(window).is_some()
+        self.containers.window_key(window).is_some()
     }
 
     #[cfg(test)]
