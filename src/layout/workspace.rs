@@ -575,8 +575,7 @@ impl<W: LayoutElement> Workspace<W> {
     ) -> Self {
         // The scratchpad is the arena's first root, created like any other workspace: sway's
         // `__i3_scratch` is an ordinary workspace on a hidden output, not a special store.
-        let mut workspace =
-            Self::new_with_config_no_outputs_at(containers, None, None, clock, options);
+        let mut workspace = Self::new_with_config_no_outputs(containers, None, clock, options);
         workspace.identity = WorkspaceIdentity::Anonymous;
         workspace
     }
@@ -587,12 +586,11 @@ impl<W: LayoutElement> Workspace<W> {
         clock: Clock,
         base_options: Rc<Options>,
     ) -> Self {
-        Self::new_with_config_no_outputs_at(containers, None, config, clock, base_options)
+        Self::new_with_config_no_outputs_inner(containers, config, clock, base_options)
     }
 
-    fn new_with_config_no_outputs_at(
+    fn new_with_config_no_outputs_inner(
         containers: &mut ContainerTree<W>,
-        workspace: Option<NodeKey>,
         mut config: Option<WorkspaceConfig>,
         clock: Clock,
         base_options: Rc<Options>,
@@ -621,14 +619,12 @@ impl<W: LayoutElement> Workspace<W> {
             scale.fractional_scale(),
         );
 
-        let workspace = workspace.unwrap_or_else(|| {
-            containers.add_workspace(
-                view_size,
-                working_area,
-                scale.fractional_scale(),
-                options.clone(),
-            )
-        });
+        let workspace = containers.add_workspace(
+            view_size,
+            working_area,
+            scale.fractional_scale(),
+            options.clone(),
+        );
 
         let floating = FloatingSpace::new(workspace);
 
@@ -4031,6 +4027,15 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn verify_invariants(&self, containers: &ContainerTree<W>, move_win_id: Option<&W::Id>) {
         use approx::assert_abs_diff_eq;
+
+        // The floating side holds the same key by construction and nothing reassigns either.
+        // Asserted rather than removed: see the field on `FloatingSpace` for why threading it
+        // would cost more than the duplication does.
+        assert_eq!(
+            self.workspace,
+            self.floating.workspace(),
+            "a workspace's floating side must address that workspace"
+        );
 
         // sway's `ws->fullscreen` is one pointer for the whole workspace.
         let fullscreen = self.fullscreen_window_ids(containers);

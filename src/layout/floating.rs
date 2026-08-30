@@ -82,6 +82,12 @@ pub const DIRECTIONAL_MOVE_PX: f64 = 10.;
 #[derive(Debug)]
 pub struct FloatingSpace<W: LayoutElement> {
     /// Workspace whose floating roots this projection owns in the shared arena.
+    ///
+    /// The workspace beside it holds the same key, and that is a handle rather than a second
+    /// authority: it is written once at construction and never reassigned, on either side.
+    /// Threading it through instead would put it back into the hundred-odd signatures the
+    /// arena and the container tree just stopped carrying, to remove a value that cannot
+    /// disagree with itself. `verify_invariants` asserts the pairing so that stays true.
     workspace: NodeKey,
     /// Ongoing interactive resize.
     interactive_resize: Option<InteractiveResize<W>>,
@@ -275,6 +281,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
     ) -> Rectangle<f64, Logical> {
         let root = self.root(containers, idx);
         containers.arena_mut().set_floating_size(root, size)
+    }
+
+    /// The workspace this floating side belongs to.
+    pub(super) fn workspace(&self) -> NodeKey {
+        self.workspace
     }
 
     pub fn update_config(

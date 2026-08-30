@@ -57,11 +57,11 @@ pub struct Monitor<W: LayoutElement> {
     pub(super) output: Output,
     /// Cached name of the output.
     output_name: String,
-    /// Latest known scale for this output.
-    scale: smithay::output::Scale,
-    /// Latest known size for this output.
-    view_size: Size<f64, Logical>,
     /// Latest known working area for this output.
+    ///
+    /// Memoized where the scale and the view size are not: deriving it reads the output's
+    /// layer map through a `RefCell`, which a caller that already holds it mutably would
+    /// panic on. `update_output_size` and a struts change are the two places it is refreshed.
     ///
     /// Not rounded to physical pixels.
     // FIXME: since this is used for things like DnD scrolling edges in the overview, ideally this
@@ -404,8 +404,6 @@ impl<W: LayoutElement> Monitor<W> {
         Self {
             output_name: output.name(),
             output,
-            scale,
-            view_size,
             working_area,
             workspaces,
             active_workspace_idx,
@@ -1929,7 +1927,7 @@ impl<W: LayoutElement> Monitor<W> {
         let sticky_active = is_active && self.sticky_is_active;
         // The sticky container tree has no tiled side, so floating always holds its focus.
         containers.set_active(self.sticky_workspace, sticky_active, true);
-        let sticky_view_rect = Rectangle::from_size(self.view_size);
+        let sticky_view_rect = Rectangle::from_size(self.view_size());
         self.sticky_floating.update_render_elements(
             containers,
             sticky_active,
@@ -1978,7 +1976,7 @@ impl<W: LayoutElement> Monitor<W> {
                     }
                 }
                 InsertWorkspace::NewAt(ws_idx) => {
-                    let scale = self.scale.fractional_scale();
+                    let scale = self.scale().fractional_scale();
                     let zoom = self.overview_zoom();
                     let gap = self.workspace_gap(zoom);
 
@@ -2043,7 +2041,7 @@ impl<W: LayoutElement> Monitor<W> {
             self.working_area = compute_working_area(
                 &self.output,
                 options.layout.struts,
-                self.scale.fractional_scale(),
+                self.scale().fractional_scale(),
             );
         }
 
@@ -2053,16 +2051,16 @@ impl<W: LayoutElement> Monitor<W> {
 
         containers.update_config(
             self.sticky_workspace,
-            self.view_size,
+            self.view_size(),
             self.working_area,
-            self.scale.fractional_scale(),
+            self.scale().fractional_scale(),
             options.clone(),
         );
         self.sticky_floating.update_config(
             containers,
-            self.view_size,
+            self.view_size(),
             self.working_area,
-            self.scale.fractional_scale(),
+            self.scale().fractional_scale(),
             options.clone(),
         );
 
@@ -2099,12 +2097,10 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     pub fn update_output_size(&mut self, containers: &mut ContainerTree<W>) {
-        self.scale = self.output.current_scale();
-        self.view_size = output_size(&self.output);
         self.working_area = compute_working_area(
             &self.output,
             self.options.layout.struts,
-            self.scale.fractional_scale(),
+            self.scale().fractional_scale(),
         );
 
         for ws in &mut self.workspaces {
@@ -2113,16 +2109,16 @@ impl<W: LayoutElement> Monitor<W> {
 
         containers.update_config(
             self.sticky_workspace,
-            self.view_size,
+            self.view_size(),
             self.working_area,
-            self.scale.fractional_scale(),
+            self.scale().fractional_scale(),
             self.options.clone(),
         );
         self.sticky_floating.update_config(
             containers,
-            self.view_size,
+            self.view_size(),
             self.working_area,
-            self.scale.fractional_scale(),
+            self.scale().fractional_scale(),
             self.options.clone(),
         );
     }
@@ -2289,14 +2285,14 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     fn workspace_size(&self, zoom: f64) -> Size<f64, Logical> {
-        let ws_size = self.view_size.upscale(zoom);
-        let scale = self.scale.fractional_scale();
+        let ws_size = self.view_size().upscale(zoom);
+        let scale = self.scale().fractional_scale();
         ws_size.to_physical_precise_ceil(scale).to_logical(scale)
     }
 
     fn workspace_gap(&self, zoom: f64) -> f64 {
-        let scale = self.scale.fractional_scale();
-        let gap = self.view_size.h * 0.1 * zoom;
+        let scale = self.scale().fractional_scale();
+        let gap = self.view_size().h * 0.1 * zoom;
         round_logical_in_physical_max1(scale, gap)
     }
 
@@ -2406,14 +2402,14 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     pub fn workspaces_render_geo(&self) -> impl Iterator<Item = Rectangle<f64, Logical>> {
-        let scale = self.scale.fractional_scale();
+        let scale = self.scale().fractional_scale();
         let zoom = self.overview_zoom();
 
         let ws_size = self.workspace_size(zoom);
         let gap = self.workspace_gap(zoom);
         let ws_height_with_gap = ws_size.h + gap;
 
-        let static_offset = (self.view_size.to_point() - ws_size.to_point()).downscale(2.);
+        let static_offset = (self.view_size().to_point() - ws_size.to_point()).downscale(2.);
         let static_offset = static_offset
             .to_physical_precise_round(scale)
             .to_logical(scale);
@@ -2440,7 +2436,7 @@ impl<W: LayoutElement> Monitor<W> {
         &self,
         cull: bool,
     ) -> impl Iterator<Item = (&Workspace<W>, Rectangle<f64, Logical>)> {
-        let output_geo = Rectangle::from_size(self.view_size);
+        let output_geo = Rectangle::from_size(self.view_size());
 
         let geo = self.workspaces_render_geo();
         zip(self.workspaces.iter(), geo)
@@ -2457,7 +2453,7 @@ impl<W: LayoutElement> Monitor<W> {
     pub fn workspaces_with_render_geo_idx(
         &self,
     ) -> impl Iterator<Item = ((usize, &Workspace<W>), Rectangle<f64, Logical>)> {
-        let output_geo = Rectangle::from_size(self.view_size);
+        let output_geo = Rectangle::from_size(self.view_size());
 
         let geo = self.workspaces_render_geo();
         zip(self.workspaces.iter().enumerate(), geo)
@@ -2469,7 +2465,7 @@ impl<W: LayoutElement> Monitor<W> {
         &mut self,
         cull: bool,
     ) -> impl Iterator<Item = (&mut Workspace<W>, Rectangle<f64, Logical>)> {
-        let output_geo = Rectangle::from_size(self.view_size);
+        let output_geo = Rectangle::from_size(self.view_size());
 
         let geo = self.workspaces_render_geo();
         zip(self.workspaces.iter_mut(), geo)
@@ -2484,7 +2480,7 @@ impl<W: LayoutElement> Monitor<W> {
         let (ws, geo) = self.workspaces_with_render_geo().find_map(|(ws, geo)| {
             // Extend width to entire output.
             let loc = Point::from((0., geo.loc.y));
-            let size = Size::from((self.view_size.w, geo.size.h));
+            let size = Size::from((self.view_size().w, geo.size.h));
             let bounds = Rectangle::new(loc, size);
 
             bounds.contains(pos_within_output).then_some((ws, geo))
@@ -2605,7 +2601,7 @@ impl<W: LayoutElement> Monitor<W> {
             return Some(hit.edges);
         }
 
-        let view_width = self.view_size.w;
+        let view_width = self.view_size().w;
         for (ws, geo) in self.workspaces_with_render_geo_mut(true) {
             let loc = Point::from((0., geo.loc.y));
             let size = Size::from((view_width, geo.size.h));
@@ -2631,7 +2627,7 @@ impl<W: LayoutElement> Monitor<W> {
             return Some(hit);
         }
 
-        let view_width = self.view_size.w;
+        let view_width = self.view_size().w;
         for (ws, geo) in self.workspaces_with_render_geo_mut(true) {
             let loc = Point::from((0., geo.loc.y));
             let size = Size::from((view_width, geo.size.h));
@@ -2737,9 +2733,9 @@ impl<W: LayoutElement> Monitor<W> {
     ) {
         let _span = tracy_client::span!("Monitor::render_workspaces");
 
-        let scale = self.scale.fractional_scale();
+        let scale = self.scale().fractional_scale();
         // Ceil the height in physical pixels.
-        let height = (self.view_size.h * scale).ceil() as i32;
+        let height = (self.view_size().h * scale).ceil() as i32;
 
         let zoom = self.overview_zoom();
 
@@ -2763,7 +2759,7 @@ impl<W: LayoutElement> Monitor<W> {
 
         // Pre-calculate sticky geometry outside the loop to use a fixed position
         let ws_size = self.workspace_size(zoom);
-        let static_offset = (self.view_size.to_point() - ws_size.to_point()).downscale(2.);
+        let static_offset = (self.view_size().to_point() - ws_size.to_point()).downscale(2.);
         let static_offset = static_offset
             .to_physical_precise_round(scale)
             .to_logical(scale);
@@ -2836,7 +2832,7 @@ impl<W: LayoutElement> Monitor<W> {
                         && ws.id() == active_ws_id
                         && !self.sticky_floating.is_empty(containers)
                     {
-                        let view_rect = Rectangle::from_size(self.view_size);
+                        let view_rect = Rectangle::from_size(self.view_size());
                         let sticky_focus_ring = focus_ring && self.sticky_is_active;
 
                         self.sticky_floating.render(
@@ -2901,7 +2897,7 @@ impl<W: LayoutElement> Monitor<W> {
 
         let _span = tracy_client::span!("Monitor::render_workspace_shadows");
 
-        let scale = self.scale.fractional_scale();
+        let scale = self.scale().fractional_scale();
         let zoom = self.overview_zoom();
 
         for (ws, geo) in self.workspaces_with_render_geo() {
@@ -3023,6 +3019,7 @@ impl<W: LayoutElement> Monitor<W> {
 
     pub fn dnd_scroll_gesture_scroll(&mut self, pos: Point<f64, Logical>, speed: f64) -> bool {
         let zoom = self.overview_zoom();
+        let view_width = self.view_size().w;
 
         let Some(WorkspaceSwitch::Gesture(gesture)) = &mut self.workspace_switch else {
             return false;
@@ -3038,8 +3035,8 @@ impl<W: LayoutElement> Monitor<W> {
 
         // Restrict the scrolling horizontally to the strip of workspaces to avoid unwanted trigger
         // after using the hot corner or during horizontal scroll.
-        let width = self.view_size.w * zoom;
-        let x = pos.x - (self.view_size.w - width) / 2.;
+        let width = view_width * zoom;
+        let x = pos.x - (view_width - width) / 2.;
 
         // Consider the working area so layer-shell docks and such don't prevent scrolling.
         let y = pos.y - self.working_area.loc.y;
@@ -3179,11 +3176,11 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     pub fn scale(&self) -> smithay::output::Scale {
-        self.scale
+        self.output.current_scale()
     }
 
     pub fn view_size(&self) -> Size<f64, Logical> {
-        self.view_size
+        output_size(&self.output)
     }
 
     pub fn working_area(&self) -> Rectangle<f64, Logical> {
@@ -3200,6 +3197,12 @@ impl<W: LayoutElement> Monitor<W> {
         let options =
             Options::clone(&self.base_options).with_merged_layout(self.layout_config.as_ref());
         assert_eq!(&*self.options, &options);
+
+        assert_eq!(
+            self.sticky_workspace,
+            self.sticky_floating.workspace(),
+            "the sticky floating side must address the sticky workspace"
+        );
 
         assert!(
             !self.workspaces.is_empty(),
@@ -3282,7 +3285,7 @@ impl<W: LayoutElement> Monitor<W> {
                 self.scale().fractional_scale(),
                 workspace.scale().fractional_scale()
             );
-            assert_eq!(self.view_size, workspace.view_size(containers));
+            assert_eq!(self.view_size(), workspace.view_size(containers));
 
             // Not the monitor's own working area: a named workspace can carry its own struts,
             // and then it reserves a different part of the same output. What must hold is that
