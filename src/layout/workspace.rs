@@ -972,11 +972,11 @@ impl<W: LayoutElement> Workspace<W> {
         containers: &mut ContainerTree<W>,
         mark: &str,
     ) -> bool {
-        if containers.swap_selected_with_mark(self.workspace, mark) {
+        if containers.swap_selected_with_mark(mark) {
             self.sync_active_layer_to_command_target(containers);
             return true;
         }
-        if !containers.swap_selected_with_mark_at_floating_boundary(self.workspace, mark) {
+        if !containers.swap_selected_with_mark_at_floating_boundary(mark) {
             return false;
         }
         self.floating.forget_resize_that_left(containers);
@@ -1066,7 +1066,7 @@ impl<W: LayoutElement> Workspace<W> {
                 floating(&mut self.floating, containers);
             } else {
                 let branch = containers.arena().branch_root(target);
-                let _ = containers.move_in_branch(self.workspace, branch, direction);
+                let _ = containers.move_in_branch(branch, direction);
             }
             true
         } else {
@@ -1648,12 +1648,12 @@ impl<W: LayoutElement> Workspace<W> {
         tile: DetachedView<W>,
         origin: &InsertParentInfo,
     ) -> Result<(), DetachedView<W>> {
-        if !containers.is_tiling_leaf(self.workspace, target) {
+        if !containers.is_tiling_leaf(target) {
             return Err(tile);
         }
         // A refusal hands the dragged view back untouched, so the caller still has a window to
         // fall back with. Nothing has entered the tree.
-        let displaced = containers.replace_tiling_tile(self.workspace, target, tile)?;
+        let displaced = containers.replace_tiling_tile(target, tile)?;
         containers.insert_tile_with_parent_info(self.workspace, origin, displaced, false);
         Ok(())
     }
@@ -1669,8 +1669,7 @@ impl<W: LayoutElement> Workspace<W> {
         tile.tile_mut().set_scratchpad(false);
         self.enter_output_for_window(tile.window());
 
-        let inserted =
-            containers.insert_tile_split(self.workspace, target, direction, tile, activate);
+        let inserted = containers.insert_tile_split(target, direction, tile, activate);
 
         if inserted && activate {
             self.floating_is_active = FloatingActive::No;
@@ -2445,11 +2444,11 @@ impl<W: LayoutElement> Workspace<W> {
     /// answers for the selected node wherever it sits, and refuses the pairs it cannot
     /// honour.
     pub fn swap_window_with(&mut self, containers: &mut ContainerTree<W>, target: &W::Id) -> bool {
-        if containers.swap_selected_with_window(self.workspace, target) {
+        if containers.swap_selected_with_window(target) {
             self.sync_active_layer_to_command_target(containers);
             return true;
         }
-        if !containers.swap_selected_with_window_at_floating_boundary(self.workspace, target) {
+        if !containers.swap_selected_with_window_at_floating_boundary(target) {
             return false;
         }
         self.floating.forget_resize_that_left(containers);
@@ -2576,7 +2575,7 @@ impl<W: LayoutElement> Workspace<W> {
         } else {
             // A descendant of a floating root is tiled inside that root. sway takes the
             // geometric floating path only for the root itself.
-            containers.resize_node(self.workspace, target, request);
+            containers.resize_node(target, request);
         }
     }
 
@@ -2893,7 +2892,7 @@ impl<W: LayoutElement> Workspace<W> {
                     self.set_fullscreen(containers, &id, false);
                 }
             }
-            containers.toggle_fullscreen_container(self.workspace, target);
+            containers.toggle_fullscreen_container(target);
         }
     }
 
@@ -3189,7 +3188,7 @@ impl<W: LayoutElement> Workspace<W> {
             return;
         }
 
-        containers.toggle_fullscreen_container(self.workspace, scope);
+        containers.toggle_fullscreen_container(scope);
     }
 
     pub fn take_tile_for_scratchpad(

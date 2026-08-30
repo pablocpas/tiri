@@ -464,7 +464,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             let container_area = tree
                 .floating_container_area(root)
                 .expect("every floating stack entry must name a floating root");
-            let gap = containers.branch_gap(self.workspace, root);
+            let gap = containers.branch_gap(root);
             let tab_bar_infos = tree.tab_bar_layouts_in_branch(root);
             for info in super::container_tree::branch_display_layouts(containers.arena(), root)
                 .filter(|info| info.visible)
@@ -623,7 +623,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         containers
             .arena()
             .floating_roots(self.workspace)
-            .find_map(|root| containers.branch_tab_bar_hit(self.workspace, root, pos, 1))
+            .find_map(|root| containers.branch_tab_bar_hit(root, pos, 1))
     }
 
     pub fn window_under<'a>(
@@ -640,7 +640,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         let fullscreen_scope = self.fullscreen_key(containers);
         let tab_hit = if let Some(scope) = fullscreen_scope {
-            containers.branch_tab_bar_hit(self.workspace, scope, pos, 1)
+            containers.branch_tab_bar_hit(scope, pos, 1)
         } else {
             self.tab_bar_hit(containers, pos)
         };
@@ -971,10 +971,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             if let Some(idx) = containers
                 .arena()
                 .floating_root_index_by_id(self.workspace, container_id)
-                .filter(|idx| {
-                    !containers
-                        .branch_root_is_lone_window(self.workspace, self.root(containers, *idx))
-                })
+                .filter(|idx| !containers.branch_root_is_lone_window(self.root(containers, *idx)))
             {
                 self.add_tile_to_container_idx_with_parent_info(
                     containers,
@@ -1958,7 +1955,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
 
         let Some((parent_key, child_idx, available, child_count, _)) =
-            containers.container_metrics_for(self.workspace, key, Layout::SplitH)
+            containers.container_metrics_for(key, Layout::SplitH)
         else {
             self.resize_container_around_center(containers, idx, change, ResizeAxis::Horizontal);
             return;
@@ -1975,7 +1972,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let percent = percent_from_size_change(
             current_percent,
             available,
-            || containers.ppt_reference(self.workspace, key, Layout::SplitH),
+            || containers.ppt_reference(key, Layout::SplitH),
             change,
         );
 
@@ -2113,7 +2110,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
 
         let Some((parent_key, child_idx, available, child_count, _)) =
-            containers.container_metrics_for(self.workspace, key, Layout::SplitV)
+            containers.container_metrics_for(key, Layout::SplitV)
         else {
             self.resize_container_around_center(containers, idx, change, ResizeAxis::Vertical);
             return;
@@ -2130,7 +2127,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let percent = percent_from_size_change(
             current_percent,
             available,
-            || containers.ppt_reference(self.workspace, key, Layout::SplitV),
+            || containers.ppt_reference(key, Layout::SplitV),
             change,
         );
 
@@ -2196,7 +2193,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         if let Some(landing) = landing {
             containers.arena_mut().focus_node(landing);
-        } else if containers.branch_root_is_lone_window(self.workspace, root) {
+        } else if containers.branch_root_is_lone_window(root) {
             containers.arena_mut().focus_node(root);
         } else {
             containers.arena_mut().select_container(root);
@@ -2459,12 +2456,12 @@ impl<W: LayoutElement> FloatingSpace<W> {
     fn should_cycle_top_level_stable_order(&self, containers: &ContainerTree<W>) -> bool {
         self.root_count(containers) > 1
             && self.active_container_idx(containers).is_some_and(|idx| {
-                containers.branch_root_is_lone_window(self.workspace, self.root(containers, idx))
+                containers.branch_root_is_lone_window(self.root(containers, idx))
             })
             && containers
                 .arena()
                 .floating_roots(self.workspace)
-                .all(|root| containers.branch_root_is_lone_window(self.workspace, root))
+                .all(|root| containers.branch_root_is_lone_window(root))
     }
 
     pub fn focus_left(&mut self, containers: &mut ContainerTree<W>) -> bool {
@@ -2615,7 +2612,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return true;
         }
         let root = self.root(containers, idx);
-        if containers.handle_focus_parent_in_branch_fullscreen_scope(self.workspace, root) {
+        if containers.handle_focus_parent_in_branch_fullscreen_scope(root) {
             return true;
         }
 
@@ -2705,7 +2702,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         idx: usize,
         direction: Direction,
     ) -> bool {
-        containers.move_in_branch(self.workspace, self.root(containers, idx), direction)
+        containers.move_in_branch(self.root(containers, idx), direction)
     }
 
     pub fn set_column_display(
@@ -2721,7 +2718,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        containers.set_layout_in_branch(self.workspace, self.root(containers, idx), target_layout);
+        containers.set_layout_in_branch(self.root(containers, idx), target_layout);
     }
 
     pub fn toggle_column_tabbed_display(&mut self, containers: &mut ContainerTree<W>) {
@@ -2733,7 +2730,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             Some(Layout::Tabbed) => Layout::SplitV,
             _ => Layout::Tabbed,
         };
-        containers.set_layout_in_branch(self.workspace, root, target);
+        containers.set_layout_in_branch(root, target);
     }
 
     pub fn split_horizontal(&mut self, containers: &mut ContainerTree<W>) {
@@ -2755,7 +2752,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return;
         };
         let root = self.root(containers, idx);
-        let _ = containers.unsplit_in_branch(self.workspace, root);
+        let _ = containers.unsplit_in_branch(root);
     }
 
     /// A floating root's provenance, promoted on read.
@@ -2781,7 +2778,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         layout: Layout,
     ) -> bool {
         let root = self.root(containers, idx);
-        if !containers.split_in_branch(self.workspace, root, layout) {
+        if !containers.split_in_branch(root, layout) {
             return false;
         }
         // The arena replaces the authoritative root entry atomically when wrapping the old root.
@@ -2792,28 +2789,28 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        containers.set_layout_in_branch(self.workspace, self.root(containers, idx), layout);
+        containers.set_layout_in_branch(self.root(containers, idx), layout);
     }
 
     pub fn toggle_split_layout(&mut self, containers: &mut ContainerTree<W>) {
         let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        containers.toggle_split_in_branch(self.workspace, self.root(containers, idx));
+        containers.toggle_split_in_branch(self.root(containers, idx));
     }
 
     pub fn toggle_layout_all(&mut self, containers: &mut ContainerTree<W>) {
         let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        containers.toggle_layout_all_in_branch(self.workspace, self.root(containers, idx));
+        containers.toggle_layout_all_in_branch(self.root(containers, idx));
     }
 
     pub fn set_default_layout(&mut self, containers: &mut ContainerTree<W>) {
         let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        containers.set_default_layout_in_branch(self.workspace, self.root(containers, idx));
+        containers.set_default_layout_in_branch(self.root(containers, idx));
     }
 
     pub(super) fn toggle_layout_cycle(
@@ -2824,7 +2821,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let Some(idx) = self.active_container_idx(containers) else {
             return;
         };
-        containers.toggle_layout_cycle_in_branch(self.workspace, self.root(containers, idx), cycle);
+        containers.toggle_layout_cycle_in_branch(self.root(containers, idx), cycle);
     }
 
     fn move_container_to(
@@ -3002,7 +2999,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         // commit. An explicit one-view tabbed/stacked/split container includes decoration and
         // owns an independent outer box; feeding its child's content size back here erases
         // that decoration from the container on every commit.
-        if containers.branch_root_is_lone_window(self.workspace, root) {
+        if containers.branch_root_is_lone_window(root) {
             let Some(key) = containers.arena_mut().window_key(id) else {
                 return true;
             };
@@ -3100,7 +3097,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 tree.floating_roots(self.workspace).collect()
             };
             for root in roots {
-                let gap = containers.branch_gap(self.workspace, root);
+                let gap = containers.branch_gap(root);
                 for info in tree.tab_bar_layouts_in_branch(root) {
                     let mut info = info.clone();
                     if gap > 0.0 && info.key == root {
