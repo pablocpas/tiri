@@ -18,8 +18,8 @@
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use super::{
-    ContainerArena, ContainerData, DetachedView, FloatingGeometry, FloatingRoot, FloatingRootKind,
-    InactiveTilingReference, Layout, LayoutElement, NodeData, NodeKey,
+    ContainerArena, ContainerData, FloatingGeometry, FloatingRoot, FloatingRootKind,
+    InactiveTilingReference, IncomingView, Layout, LayoutElement, NodeData, NodeKey,
 };
 use crate::layout::SizeFrac;
 
@@ -408,7 +408,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     ) {
         assert!(
             !self.is_workspace(key),
-            "a destination node cannot become floating"
+            "a workspace node cannot become floating"
         );
         assert_eq!(
             self.parent_of(key),
@@ -615,7 +615,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     pub(in crate::layout) fn float_new_group(
         &mut self,
         workspace: NodeKey,
-        tile: DetachedView<W>,
+        tile: IncomingView<W>,
         area: Rectangle<f64, Logical>,
         stack_index: usize,
     ) -> (NodeKey, NodeKey) {
@@ -625,7 +625,9 @@ impl<W: LayoutElement> ContainerArena<W> {
         // a transaction that describes a layout the tile has already left, and the group sits
         // on the workspace, focused, with nothing on screen.
         self.discard_layout_superseded_by_transfer(workspace);
-        let leaf = self.insert_view(workspace, tile);
+        let leaf = self
+            .materialize_incoming_view(workspace, tile)
+            .expect("a floating insertion must own a valid incoming view");
         self.register_floating_root(
             workspace,
             leaf,

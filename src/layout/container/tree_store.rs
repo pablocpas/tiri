@@ -314,16 +314,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
     }
 
-    /// Put a detached view under the layout's temporary parked-root ownership.
-    pub(in crate::layout) fn park_view(&mut self, view: DetachedView<W>) -> NodeKey {
-        let (key, container) = ContainerData::new_view(view);
-        self.nodes.insert(key, NodeData::Container(container));
-        self.parents.insert(key, None);
-        self.seat.register(key);
-        assert!(self.parked_roots.insert(key));
-        key
-    }
-
     /// Take a parked view out for an immediate insertion or final removal.
     pub(in crate::layout) fn take_parked_view(&mut self, key: NodeKey) -> Option<DetachedView<W>> {
         if !self.parked_roots.remove(&key) {
@@ -391,6 +381,24 @@ impl<W: LayoutElement> ContainerArena<W> {
         let (key, container) = ContainerData::new_view(view);
         self.insert_node_with_key(workspace, key, NodeData::Container(container));
         key
+    }
+
+    /// Materialize one incoming view under `destination`'s configuration.
+    ///
+    /// Only a genuinely detached map creates a node. An internal transfer adopts the parked
+    /// node in place, preserving every piece of node state and its position in the seat order.
+    pub(super) fn materialize_incoming_view(
+        &mut self,
+        destination: NodeKey,
+        view: super::IncomingView<W>,
+    ) -> Result<NodeKey, super::IncomingView<W>> {
+        match view {
+            super::IncomingView::Detached(view) => Ok(self.insert_view(destination, *view)),
+            super::IncomingView::Parked(key) if self.adopt_parked_subtree(destination, key) => {
+                Ok(key)
+            }
+            super::IncomingView::Parked(key) => Err(super::IncomingView::Parked(key)),
+        }
     }
 
     /// Put an existing node back into this workspace without changing its identity.

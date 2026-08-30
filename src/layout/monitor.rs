@@ -13,7 +13,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 use tiri_config::{CornerRadius, LayoutPart};
 
-use super::container::{DetachedView, Direction, NodeKey};
+use super::container::{Direction, IncomingView, NodeKey};
 use super::container_tree::{ContainerTree, RootTilingSubtree};
 use super::floating::{FloatingResizeResult, FloatingSpace};
 use super::insert_hint_element::{InsertHintElement, InsertHintRenderElement};
@@ -22,7 +22,9 @@ use super::workspace::{
     compute_working_area, OutputId, Workspace, WorkspaceAddWindowTarget, WorkspaceId,
     WorkspaceIdentity, WorkspaceLifetime, WorkspaceRenderElement,
 };
-use super::{compute_overview_zoom, ActivateWindow, HitType, LayoutElement, Options, ResizeHit};
+use super::{
+    compute_overview_zoom, ActivateWindow, HitType, LayoutElement, Options, ParkedTile, ResizeHit,
+};
 use crate::animation::{Animation, Clock};
 use crate::input::swipe_tracker::SwipeTracker;
 use crate::layout::RenderLayer;
@@ -541,7 +543,10 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     pub fn has_sticky_window(&self, containers: &ContainerTree<W>, window: &W::Id) -> bool {
-        self.sticky_floating.has_window(containers, window)
+        let tree = containers.arena();
+        tree.window_key(window)
+            .and_then(|key| tree.workspace_of(key))
+            == Some(self.sticky_workspace)
     }
 
     pub fn sticky_is_active(&self) -> bool {
@@ -598,12 +603,7 @@ impl<W: LayoutElement> Monitor<W> {
         window: &W::Id,
         activate: bool,
     ) -> bool {
-        let Some((ws_idx, _)) = self
-            .workspaces
-            .iter()
-            .enumerate()
-            .find(|(_, ws)| ws.has_window(containers, window))
-        else {
+        let Some(ws_idx) = self.workspace_idx_for_window(containers, window) else {
             return false;
         };
 
@@ -611,16 +611,16 @@ impl<W: LayoutElement> Monitor<W> {
             return false;
         }
 
-        let mut removed = {
+        let parked = {
             let workspace = &mut self.workspaces[ws_idx];
-            workspace.remove_tile(containers, window, Transaction::new())
+            workspace.park_tile(containers, window, Transaction::new())
         };
 
-        removed.tile.tile_mut().set_scratchpad(false);
-        removed.tile.tile_mut().set_sticky(true);
+        parked.tile_mut(containers).set_scratchpad(false);
+        parked.tile_mut(containers).set_sticky(true);
 
         self.sticky_floating
-            .add_tile(containers, removed.tile, activate);
+            .add_tile(containers, parked.incoming(), activate);
         if activate {
             self.sticky_is_active = true;
         }
@@ -628,14 +628,19 @@ impl<W: LayoutElement> Monitor<W> {
         true
     }
 
-    pub fn add_sticky_tile(
+    pub(super) fn add_sticky_tile(
         &mut self,
         containers: &mut ContainerTree<W>,
-        mut tile: DetachedView<W>,
+        mut tile: IncomingView<W>,
         activate: bool,
     ) {
-        tile.tile_mut().set_scratchpad(false);
-        tile.tile_mut().set_sticky(true);
+        {
+            let tile = containers
+                .incoming_tile_mut(&mut tile)
+                .expect("a sticky insertion must own a valid incoming view");
+            tile.set_scratchpad(false);
+            tile.set_sticky(true);
+        }
 
         self.sticky_floating.add_tile(containers, tile, activate);
         if activate {
@@ -643,10 +648,10 @@ impl<W: LayoutElement> Monitor<W> {
         }
     }
 
-    pub fn add_scratchpad_tile(
+    pub(super) fn add_scratchpad_tile(
         &mut self,
         containers: &mut ContainerTree<W>,
-        tile: DetachedView<W>,
+        tile: IncomingView<W>,
         activate: bool,
     ) {
         let mut workspace_idx = self.active_workspace_idx;
@@ -689,7 +694,7 @@ impl<W: LayoutElement> Monitor<W> {
         window: &W::Id,
         activate: bool,
     ) -> bool {
-        if !self.sticky_floating.has_window(containers, window) {
+        if !self.has_sticky_window(containers, window) {
             return false;
         }
 
@@ -699,8 +704,8 @@ impl<W: LayoutElement> Monitor<W> {
                 .active_window(containers)
                 .is_some_and(|win| win.id() == window);
 
-        let mut removed = self.sticky_floating.remove_tile(containers, window);
-        removed.tile.tile_mut().set_sticky(false);
+        let parked = self.sticky_floating.park_tile(containers, window);
+        parked.tile_mut(containers).set_sticky(false);
 
         let ws_id = self.workspaces[self.active_workspace_idx].id();
         let activate = if activate {
@@ -710,7 +715,7 @@ impl<W: LayoutElement> Monitor<W> {
         };
         self.add_tile(
             containers,
-            removed.tile,
+            parked.incoming(),
             MonitorAddWindowTarget::Workspace {
                 id: ws_id,
                 root_index: None,
@@ -728,16 +733,13 @@ impl<W: LayoutElement> Monitor<W> {
         true
     }
 
-    pub fn take_sticky_window(
+    pub(super) fn park_sticky_window(
         &mut self,
         containers: &mut ContainerTree<W>,
         window: &W::Id,
-    ) -> Option<super::RemovedTile<W>> {
-        if !self.sticky_floating.has_window(containers, window) {
-            return None;
-        }
-
-        Some(self.sticky_floating.remove_tile(containers, window))
+    ) -> Option<ParkedTile> {
+        self.has_sticky_window(containers, window)
+            .then(|| self.sticky_floating.park_tile(containers, window))
     }
 
     pub fn start_close_animation_for_sticky_window(
@@ -820,6 +822,20 @@ impl<W: LayoutElement> Monitor<W> {
 
     pub fn idx_of_ws(&self, id: WorkspaceId) -> Option<usize> {
         self.workspaces.iter().position(|ws| ws.id() == id)
+    }
+
+    pub(super) fn workspace_idx_for_window(
+        &self,
+        containers: &ContainerTree<W>,
+        window: &W::Id,
+    ) -> Option<usize> {
+        let tree = containers.arena();
+        let workspace = tree
+            .window_key(window)
+            .and_then(|key| tree.workspace_of(key))?;
+        self.workspaces
+            .iter()
+            .position(|candidate| candidate.workspace_key() == workspace)
     }
 
     pub fn has_ws(&self, id: WorkspaceId) -> bool {
@@ -909,10 +925,6 @@ impl<W: LayoutElement> Monitor<W> {
         self.sticky_floating
             .tiles_with_render_positions(containers)
             .find(|(tile, _)| tile.window().id() == window)
-    }
-
-    pub fn has_window(&self, containers: &ContainerTree<W>, window: &W::Id) -> bool {
-        self.windows(containers).any(|win| win.id() == window)
     }
 
     pub fn add_workspace_at(&mut self, containers: &mut ContainerTree<W>, idx: usize) {
@@ -1103,11 +1115,7 @@ impl<W: LayoutElement> Monitor<W> {
                 (idx, target)
             }
             MonitorAddWindowTarget::NextTo(win_id) => {
-                let idx = self
-                    .workspaces
-                    .iter_mut()
-                    .position(|ws| ws.has_window(containers, win_id))
-                    .unwrap();
+                let idx = self.workspace_idx_for_window(containers, win_id).unwrap();
                 (idx, WorkspaceAddWindowTarget::NextTo(win_id))
             }
         }
@@ -1125,7 +1133,15 @@ impl<W: LayoutElement> Monitor<W> {
         // monitor. So we can use any workspace, not necessarily the exact target workspace.
         let tile = self.workspaces[0].make_tile(containers, window);
 
-        self.add_tile(containers, tile, target, activate, true, is_floating, None);
+        self.add_tile(
+            containers,
+            tile.into(),
+            target,
+            activate,
+            true,
+            is_floating,
+            None,
+        );
     }
 
     pub fn add_root_tiling_subtree(
@@ -1158,10 +1174,10 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn add_tile(
+    pub(super) fn add_tile(
         &mut self,
         containers: &mut ContainerTree<W>,
-        tile: DetachedView<W>,
+        tile: IncomingView<W>,
         target: MonitorAddWindowTarget<W>,
         activate: ActivateWindow,
         // FIXME: Refactor ActivateWindow enum to make this better.
@@ -1196,13 +1212,13 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn add_tile_split(
+    pub(super) fn add_tile_split(
         &mut self,
         containers: &mut ContainerTree<W>,
         workspace_idx: usize,
         target: NodeKey,
         direction: Direction,
-        tile: DetachedView<W>,
+        tile: IncomingView<W>,
         activate: bool,
         allow_to_activate_workspace: bool,
     ) -> bool {
@@ -1240,12 +1256,12 @@ impl<W: LayoutElement> Monitor<W> {
         true
     }
 
-    pub fn add_tile_split_root(
+    pub(super) fn add_tile_split_root(
         &mut self,
         containers: &mut ContainerTree<W>,
         workspace_idx: usize,
         direction: Direction,
-        tile: DetachedView<W>,
+        tile: IncomingView<W>,
         activate: bool,
         allow_to_activate_workspace: bool,
     ) -> bool {
@@ -1281,35 +1297,6 @@ impl<W: LayoutElement> Monitor<W> {
         }
 
         true
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn add_tile_to_root_container(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        workspace_idx: usize,
-        root_idx: usize,
-        tile_idx: Option<usize>,
-        tile: DetachedView<W>,
-        activate: bool,
-        // FIXME: Refactor ActivateWindow enum to make this better.
-        allow_to_activate_workspace: bool,
-    ) {
-        let workspace = &mut self.workspaces[workspace_idx];
-
-        workspace.add_tile_to_root_container(containers, root_idx, tile_idx, tile, activate);
-
-        // After adding a new window, workspace becomes this output's own.
-        if !workspace.has_persistent_identity() {
-            workspace.original_output = OutputId::new(&self.output);
-        }
-
-        // Since we're adding window to an existing column, the workspace isn't empty, and
-        // therefore cannot be the last one, so we never need to insert a new empty workspace.
-
-        if allow_to_activate_workspace && activate {
-            self.activate_workspace(workspace_idx);
-        }
     }
 
     pub fn clean_up_workspaces(&mut self, containers: &mut ContainerTree<W>) {
@@ -1547,14 +1534,12 @@ impl<W: LayoutElement> Monitor<W> {
                     ActivateWindow::No
                 };
 
-                let mut removed = self
-                    .take_sticky_window(containers, window_id)
-                    .expect("sticky window should exist");
-                removed.tile.tile_mut().set_sticky(false);
+                let parked = self.sticky_floating.park_tile(containers, window_id);
+                parked.tile_mut(containers).set_sticky(false);
 
                 self.add_tile(
                     containers,
-                    removed.tile,
+                    parked.incoming(),
                     MonitorAddWindowTarget::Workspace {
                         id: new_id,
                         root_index: None,
@@ -1577,10 +1562,7 @@ impl<W: LayoutElement> Monitor<W> {
         }
 
         let source_workspace_idx = if let Some(window) = window {
-            self.workspaces
-                .iter()
-                .position(|ws| ws.has_window(containers, window))
-                .unwrap()
+            self.workspace_idx_for_window(containers, window).unwrap()
         } else {
             self.active_workspace_idx
         };
@@ -1616,8 +1598,8 @@ impl<W: LayoutElement> Monitor<W> {
             .find_map(|(tile, offset, _visible)| (tile.window().id() == &window).then_some(offset));
 
         let transaction = Transaction::new();
-        let mut removed = workspace.remove_tile(containers, &window, transaction);
-        removed.prepare_for_workspace_move();
+        let parked = workspace.park_tile(containers, &window, transaction);
+        parked.prepare_for_workspace_move(containers);
 
         // If the view is following the tile, match the animation.
         let config = if activate {
@@ -1626,9 +1608,10 @@ impl<W: LayoutElement> Monitor<W> {
             self.options.animations.window_movement.0
         };
 
+        let is_floating = parked.is_floating;
         self.add_tile(
             containers,
-            removed.tile,
+            parked.incoming(),
             MonitorAddWindowTarget::Workspace {
                 id: new_id,
                 root_index: None,
@@ -1639,7 +1622,7 @@ impl<W: LayoutElement> Monitor<W> {
                 ActivateWindow::No
             },
             true,
-            removed.is_floating,
+            is_floating,
             Some(config),
         );
 

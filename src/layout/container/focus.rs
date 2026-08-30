@@ -608,12 +608,10 @@ impl<W: LayoutElement> ContainerArena<W> {
         // every workspace — so the focused leaf falls back to the most recent one that is
         // still somewhere in the arena, and only an arena with no leaves at all clears it.
         if self.leaf_keys_in_workspace(workspace).is_empty() {
-            let survivor = self
-                .seat
-                .order()
-                .iter()
-                .copied()
-                .find(|key| self.get_node(*key).is_some_and(|node| node.is_view()));
+            let survivor = self.seat.order().iter().copied().find(|key| {
+                self.get_node(*key).is_some_and(|node| node.is_view())
+                    && self.workspace_of(*key).is_some()
+            });
             match survivor {
                 Some(key) => self.seat.redirect_focused_leaf(Some(key)),
                 None => self.seat.clear(),

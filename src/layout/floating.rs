@@ -14,8 +14,8 @@ use tiri_ipc::{
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::container::{
-    floating_position_from_logical, scale_floating_position, DetachedView, Direction,
-    FloatingRootKind, InactiveTilingReference, InsertParentInfo, Layout, NodeKey, TabBarInfo,
+    floating_position_from_logical, scale_floating_position, Direction, FloatingRootKind,
+    InactiveTilingReference, IncomingView, InsertParentInfo, Layout, NodeKey, TabBarInfo,
 };
 use super::container_tree::{percent_from_size_change, ContainerTree, LeafFrameInfo, TileConfig};
 use super::focus_ring::{render_container_selection, FocusRingEdges, FocusRingRenderElement};
@@ -23,7 +23,7 @@ use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
 use super::workspace::{InteractiveResize, ResolvedSize};
 use super::{
     resize_edges_for_point, ConfigureIntent, InteractiveResizeData, LayoutCycleEntry,
-    LayoutElement, Options, RemovedTile, ResizeAxis, ResizeRequest, SizeFrac,
+    LayoutElement, Options, ParkedTile, ResizeAxis, ResizeRequest, SizeFrac,
 };
 use crate::animation::Animation;
 use crate::layout::tab_bar::{
@@ -838,10 +838,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
             .flatten()
     }
 
-    pub fn has_window(&self, containers: &ContainerTree<W>, id: &W::Id) -> bool {
-        self.idx_of(containers, id).is_some()
-    }
-
     pub fn is_empty(&self, containers: &ContainerTree<W>) -> bool {
         containers.arena().floating_root_count(self.workspace) == 0
     }
@@ -957,22 +953,26 @@ impl<W: LayoutElement> FloatingSpace<W> {
         tree.clear_selection();
     }
 
-    pub fn add_tile(
+    pub(super) fn add_tile(
         &mut self,
         containers: &mut ContainerTree<W>,
-        tile: DetachedView<W>,
+        tile: IncomingView<W>,
         activate: bool,
     ) {
         self.add_tile_at(containers, 0, tile, activate);
     }
 
-    pub fn add_tile_with_restore_hint(
+    pub(super) fn add_tile_with_restore_hint(
         &mut self,
         containers: &mut ContainerTree<W>,
-        mut tile: DetachedView<W>,
+        mut tile: IncomingView<W>,
         activate: bool,
     ) {
-        let hint = tile.tile_mut().floating_reinsert_hint.take();
+        let hint = containers
+            .incoming_tile_mut(&mut tile)
+            .expect("a floating insertion must own a valid incoming view")
+            .floating_reinsert_hint
+            .take();
 
         // A tile that was the whole group has no position inside one to be restored to, and
         // the group it was went away with it; it comes back the way it left, as its own. Nor
@@ -1091,7 +1091,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         &mut self,
         containers: &mut ContainerTree<W>,
         mut idx: usize,
-        mut tile: DetachedView<W>,
+        mut tile: IncomingView<W>,
         activate: bool,
     ) {
         let config = containers.tile_config(self.workspace);
@@ -1099,20 +1099,44 @@ impl<W: LayoutElement> FloatingSpace<W> {
         // `container_set_fullscreen` never moves a node between lists, so arriving floating is
         // not a reason to leave fullscreen. Only a view that is not fullscreen gets normalized
         // to a floating size on the way in.
-        let maps_fullscreen = tile.window().pending_sizing_mode().is_fullscreen();
+        let maps_fullscreen = containers
+            .incoming_tile(&tile)
+            .expect("a floating insertion must own a valid incoming view")
+            .window()
+            .pending_sizing_mode()
+            .is_fullscreen();
         let requested_tile_size = if maps_fullscreen {
-            Self::preserve_fullscreen_tile_for_floating(&config, tile.tile_mut(), None);
+            Self::preserve_fullscreen_tile_for_floating(
+                &config,
+                containers
+                    .incoming_tile_mut(&mut tile)
+                    .expect("a floating insertion must own a valid incoming view"),
+                None,
+            );
             // The group's box is the one the view would have had unfullscreened.
             // `container_init_floating` computes it from the natural size whatever the
             // fullscreen state, and it is what `fullscreen disable` restores to later.
-            tile.tile().floating_window_size.map(|size| {
-                Size::from((
-                    tile.tile().tile_width_for_window_width(f64::from(size.w)),
-                    tile.tile().tile_height_for_window_height(f64::from(size.h)),
-                ))
-            })
+            containers
+                .incoming_tile(&tile)
+                .expect("a floating insertion must own a valid incoming view")
+                .floating_window_size
+                .map(|size| {
+                    let tile = containers
+                        .incoming_tile(&tile)
+                        .expect("a floating insertion must own a valid incoming view");
+                    Size::from((
+                        tile.tile_width_for_window_width(f64::from(size.w)),
+                        tile.tile_height_for_window_height(f64::from(size.h)),
+                    ))
+                })
         } else {
-            Self::prepare_tile_for_floating(&config, tile.tile_mut()).1
+            Self::prepare_tile_for_floating(
+                &config,
+                containers
+                    .incoming_tile_mut(&mut tile)
+                    .expect("a floating insertion must own a valid incoming view"),
+            )
+            .1
         };
 
         // Make sure the tile isn't inserted below its parent.
@@ -1123,19 +1147,28 @@ impl<W: LayoutElement> FloatingSpace<W> {
             .collect();
         for (i, root) in roots.into_iter().enumerate() {
             if containers
-                .arena_mut()
+                .arena()
                 .windows_in_branch(root)
                 .iter()
-                .any(|parent| tile.window().is_child_of(parent))
+                .any(|parent| {
+                    containers
+                        .incoming_tile(&tile)
+                        .expect("a floating insertion must own a valid incoming view")
+                        .window()
+                        .is_child_of(parent)
+                })
             {
                 idx = i;
                 break;
             }
         }
 
-        let tile_size = requested_tile_size.unwrap_or_else(|| tile.tile().tile_size());
+        let tile_ref = containers
+            .incoming_tile(&tile)
+            .expect("a floating insertion must own a valid incoming view");
+        let tile_size = requested_tile_size.unwrap_or_else(|| tile_ref.tile_size());
         let pos = self
-            .stored_or_default_tile_pos(containers.working_area(self.workspace), tile.tile())
+            .stored_or_default_tile_pos(containers.working_area(self.workspace), tile_ref)
             .unwrap_or_else(|| {
                 center_preferring_top_left_in_area(
                     containers.working_area(self.workspace),
@@ -1166,7 +1199,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     pub(super) fn add_tile_to_active_container(
         &mut self,
         containers: &mut ContainerTree<W>,
-        tile: DetachedView<W>,
+        tile: IncomingView<W>,
         activate: bool,
     ) -> bool {
         let Some(idx) = self.active_container_idx(containers) else {
@@ -1179,7 +1212,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         &mut self,
         containers: &mut ContainerTree<W>,
         id: &W::Id,
-        tile: DetachedView<W>,
+        tile: IncomingView<W>,
         activate: bool,
     ) -> bool {
         let Some(idx) = self.idx_of(containers, id) else {
@@ -1193,11 +1226,16 @@ impl<W: LayoutElement> FloatingSpace<W> {
         &mut self,
         containers: &mut ContainerTree<W>,
         idx: usize,
-        mut tile: DetachedView<W>,
+        mut tile: IncomingView<W>,
         activate: bool,
     ) -> bool {
         let config = containers.tile_config(self.workspace);
-        let (win_id, _) = Self::prepare_tile_for_floating(&config, tile.tile_mut());
+        let (win_id, _) = Self::prepare_tile_for_floating(
+            &config,
+            containers
+                .incoming_tile_mut(&mut tile)
+                .expect("a floating insertion must own a valid incoming view"),
+        );
         let root = self.root(containers, idx);
         if containers.arena_mut().selected_container_key() == Some(root) {
             let insert_idx = containers.arena_mut().branch_children_len(root);
@@ -1226,12 +1264,17 @@ impl<W: LayoutElement> FloatingSpace<W> {
         &mut self,
         containers: &mut ContainerTree<W>,
         idx: usize,
-        mut tile: DetachedView<W>,
+        mut tile: IncomingView<W>,
         activate: bool,
         info: &InsertParentInfo,
     ) {
         let config = containers.tile_config(self.workspace);
-        let (win_id, _) = Self::prepare_tile_for_floating(&config, tile.tile_mut());
+        let (win_id, _) = Self::prepare_tile_for_floating(
+            &config,
+            containers
+                .incoming_tile_mut(&mut tile)
+                .expect("a floating insertion must own a valid incoming view"),
+        );
 
         let root = self.root(containers, idx);
         let _ = containers
@@ -1288,22 +1331,28 @@ impl<W: LayoutElement> FloatingSpace<W> {
         true
     }
 
-    pub fn add_tile_above(
+    pub(super) fn add_tile_above(
         &mut self,
         containers: &mut ContainerTree<W>,
         above: &W::Id,
-        mut tile: DetachedView<W>,
+        mut tile: IncomingView<W>,
         activate: bool,
     ) {
         let idx = self.idx_of(containers, above).unwrap();
 
         let above_area = self.container_area(containers, idx);
-        let tile_size = tile.tile().tile_size();
+        let tile_size = containers
+            .incoming_tile(&tile)
+            .expect("a floating insertion must own a valid incoming view")
+            .tile_size();
         let pos =
             above_area.loc + (above_area.size.to_point() - tile_size.to_point()).downscale(2.);
         let pos =
             self.clamp_within_working_area(containers.working_area(self.workspace), pos, tile_size);
-        tile.tile_mut().floating_pos =
+        containers
+            .incoming_tile_mut(&mut tile)
+            .expect("a floating insertion must own a valid incoming view")
+            .floating_pos =
             Some(self.logical_to_size_frac(containers.working_area(self.workspace), pos));
 
         self.add_tile_at(containers, idx, tile, activate);
@@ -1447,17 +1496,13 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
     }
 
-    pub fn remove_active_tile(
+    pub(super) fn park_tile(
         &mut self,
         containers: &mut ContainerTree<W>,
-    ) -> Option<RemovedTile<W>> {
-        let id = self.active_window_id(containers)?;
-        Some(self.remove_tile(containers, &id))
-    }
-
-    pub fn remove_tile(&mut self, containers: &mut ContainerTree<W>, id: &W::Id) -> RemovedTile<W> {
+        id: &W::Id,
+    ) -> ParkedTile {
         let idx = self.idx_of(containers, id).unwrap();
-        self.remove_tile_from_container(containers, idx, id)
+        self.park_tile_from_container(containers, idx, id)
     }
 
     pub(super) fn unfloat_container(
@@ -1550,12 +1595,12 @@ impl<W: LayoutElement> FloatingSpace<W> {
             })
     }
 
-    fn remove_tile_from_container(
+    fn park_tile_from_container(
         &mut self,
         containers: &mut ContainerTree<W>,
         idx: usize,
         id: &W::Id,
-    ) -> RemovedTile<W> {
+    ) -> ParkedTile {
         let root = self.root(containers, idx);
         let container_pos = containers
             .arena()
@@ -1567,29 +1612,37 @@ impl<W: LayoutElement> FloatingSpace<W> {
             .expect("floating index must have a stable reinsertion id");
         let insert_hint = containers.arena().insert_parent_info_for_window(id);
         let workspace = self.workspace;
-        let mut tile = containers
+        let node = containers
             .arena_mut()
-            .remove_window(workspace, id)
+            .park_window(workspace, id)
             .expect("window must exist in floating container");
 
         // Stop interactive resize.
         if let Some(resize) = &self.interactive_resize {
-            if tile.window().id() == &resize.window {
+            if id == &resize.window {
                 self.interactive_resize = None;
             }
         }
 
-        if containers.arena().window_count_in_branch(root) == 0 {
+        // An implicit single-window group is registered under the window's own node, so once
+        // that node is parked the root has left with it and the branch count cannot say so:
+        // it still counts the parked node's own window. Parking used to destroy the node,
+        // which is what made the count enough. Leaving the stack entry behind means the next
+        // registration of the same key finds it already there.
+        if node == root || containers.arena().window_count_in_branch(root) == 0 {
             containers.arena_mut().forget_floating_root(root);
         }
 
-        Self::store_floating_size_for_restore(tile.tile_mut());
+        let tile = containers
+            .parked_tile_mut(node)
+            .expect("the floating view was just parked");
+        Self::store_floating_size_for_restore(tile);
         // Store the floating position.
-        tile.tile_mut().floating_pos = Some(container_pos);
-        tile.tile_mut().floating_reinsert_hint = Some((container_id, insert_hint));
+        tile.floating_pos = Some(container_pos);
+        tile.floating_reinsert_hint = Some((container_id, insert_hint));
 
-        RemovedTile {
-            tile,
+        ParkedTile {
+            node,
             is_floating: true,
         }
     }

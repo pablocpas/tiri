@@ -1,7 +1,9 @@
 //! Window and subtree insertion at focus, path or split targets.
 
+#[cfg(test)]
+use super::DetachedView;
 use super::{
-    ContainerArena, ContainerData, DetachedView, Direction, InsertParentInfo, Layout,
+    ContainerArena, ContainerData, Direction, IncomingView, InsertParentInfo, Layout,
     LayoutElement, NodeData, NodeKey,
 };
 
@@ -9,14 +11,14 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Insert a window into the tree, focusing it afterwards.
     #[cfg(test)]
     pub(in crate::layout) fn insert_window(&mut self, workspace: NodeKey, tile: DetachedView<W>) {
-        self.insert_window_with_focus(workspace, tile, true);
+        self.insert_window_with_focus(workspace, tile.into(), true);
     }
 
     /// Insert a window into the tree, optionally focusing it afterwards.
     pub(in crate::layout) fn insert_window_with_focus(
         &mut self,
         workspace: NodeKey,
-        tile: DetachedView<W>,
+        tile: IncomingView<W>,
         focus: bool,
     ) {
         self.insert_window_into_branch(workspace, tile, focus);
@@ -26,7 +28,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     pub(in crate::layout) fn insert_window_into_branch(
         &mut self,
         branch_root: NodeKey,
-        tile: DetachedView<W>,
+        tile: IncomingView<W>,
         focus: bool,
     ) {
         let Some(workspace) = self.workspace_of(branch_root) else {
@@ -38,7 +40,9 @@ impl<W: LayoutElement> ContainerArena<W> {
         // is not attached to anything yet.
         self.autotile_presplit(branch_root);
 
-        let tile_key = self.insert_view(workspace, tile);
+        let Ok(tile_key) = self.materialize_incoming_view(workspace, tile) else {
+            return;
+        };
         self.insert_key_as_focus_sibling(workspace, branch_root, tile_key, focus);
     }
 
@@ -222,18 +226,6 @@ impl<W: LayoutElement> ContainerArena<W> {
             .find_map(|child_key| self.lone_split_child(child_key))
     }
 
-    /// Insert a parked subtree into the tree, optionally focusing it afterwards.
-    pub(in crate::layout) fn insert_subtree_with_focus(&mut self, subtree: NodeKey, focus: bool) {
-        let Some(workspace) = self.workspace_of(subtree) else {
-            return;
-        };
-        self.clear_focus_history();
-
-        assert!(self.adopt_parked_subtree(workspace, subtree));
-        let node_key = subtree;
-        self.insert_key_as_focus_sibling(workspace, workspace, node_key, focus);
-    }
-
     /// Put a new node where sway puts a new window: next to whatever was most recently
     /// focused under the workspace, which is `seat_get_focus_inactive` there.
     ///
@@ -306,7 +298,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         &mut self,
         workspace: NodeKey,
         window_id: &W::Id,
-        tile: DetachedView<W>,
+        tile: IncomingView<W>,
         focus: bool,
     ) {
         let slot = self
@@ -323,74 +315,14 @@ impl<W: LayoutElement> ContainerArena<W> {
             return;
         };
 
-        let tile_key = self.insert_view(workspace, tile);
+        let Ok(tile_key) = self.materialize_incoming_view(workspace, tile) else {
+            return;
+        };
         self.get_container_mut(parent_key)
             .expect("child_index resolved this parent as a layout parent")
             .insert_child(insert_idx, tile_key);
         self.set_parent(tile_key, Some(parent_key));
         self.settle_focus_after_insert(tile_key, focus);
-    }
-
-    pub(in crate::layout) fn insert_leaf_in_root_container(
-        &mut self,
-        workspace: NodeKey,
-        root_idx: usize,
-        tile_idx: Option<usize>,
-        tile: DetachedView<W>,
-        focus: bool,
-    ) -> bool {
-        let root_container = match self.get_container(workspace) {
-            Some(c) => c,
-            None => return false,
-        };
-
-        if root_idx >= root_container.children.len() {
-            return false;
-        }
-
-        let Some(root_child_key) = root_container.child_key(root_idx) else {
-            return false;
-        };
-
-        if self
-            .get_node(root_child_key)
-            .is_some_and(|node| node.is_view())
-        {
-            // Wrap the root leaf child in a vertical container so tiles can stack inside it.
-            let Some(_) = self.wrap_child_in_new_container(
-                workspace,
-                root_child_key,
-                ContainerData::new(Layout::SplitV),
-            ) else {
-                return false;
-            };
-        }
-
-        // Now insert the new tile.
-        let root_child_key = match self.get_container(workspace) {
-            Some(c) => match c.child_key(root_idx) {
-                Some(key) => key,
-                None => return false,
-            },
-            None => return false,
-        };
-        let root_child_container = match self.get_container(root_child_key) {
-            Some(c) => c,
-            None => return false,
-        };
-
-        let insert_at = tile_idx.unwrap_or(root_child_container.children.len());
-        let insert_at = insert_at.min(root_child_container.children.len());
-
-        let tile_key = self.insert_view(workspace, tile);
-
-        if let Some(root_child_container) = self.get_container_mut(root_child_key) {
-            root_child_container.insert_child(insert_at, tile_key);
-            self.settle_focus_after_insert(tile_key, focus);
-        }
-        self.set_parent(tile_key, Some(root_child_key));
-
-        true
     }
 
     /// Where a window sits, addressed within its own branch, so it can be put back there.
@@ -451,13 +383,12 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// swap that cannot happen is the caller's to fall back from, and it cannot fall back to
     /// anything without the window. Past that point the node is out of the store and both views
     /// are in hand, so there is nothing left to report and no way to report it.
-    // Both variants carry a view back to the caller; boxing would only add an allocation.
-    #[allow(clippy::result_large_err)]
     pub(in crate::layout) fn replace_leaf(
         &mut self,
         key: NodeKey,
-        view: DetachedView<W>,
-    ) -> Result<DetachedView<W>, DetachedView<W>> {
+        view: impl Into<IncomingView<W>>,
+    ) -> Result<IncomingView<W>, IncomingView<W>> {
+        let view = view.into();
         let Some(workspace) = self.workspace_of(key) else {
             return Err(view);
         };
@@ -475,21 +406,15 @@ impl<W: LayoutElement> ContainerArena<W> {
         let was_focused_leaf = self.focused_key() == Some(key);
         let was_selected = self.selected_key() == Some(key);
 
-        let node = self
-            .remove_node_from_store(key)
-            .expect("the node was just read out of the store");
-        let NodeData::Container(container) = node else {
-            unreachable!("a leaf cannot be the workspace")
-        };
-        let displaced = container
-            .into_view(key)
-            .expect("a view container must hold its tile");
+        let replacement = self.materialize_incoming_view(workspace, view)?;
 
-        let replacement = self.insert_view(workspace, view);
         self.get_container_mut(parent)
             .expect("child_index resolved this parent as a layout parent")
             .children[idx] = replacement;
         self.set_parent(replacement, Some(parent));
+        self.set_parent(key, None);
+        assert!(self.park_subtree(key));
+        self.drop_subtree_layouts(key);
 
         if let Some(rank) = rank {
             self.seat.restore_at(rank, [replacement]);
@@ -502,7 +427,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
 
         self.prune_leaf_layouts(workspace);
-        Ok(displaced)
+        Ok(IncomingView::Parked(key))
     }
 
     /// Whether `key` addresses a leaf (window) node.
@@ -514,13 +439,15 @@ impl<W: LayoutElement> ContainerArena<W> {
         &mut self,
         branch_root: NodeKey,
         info: &InsertParentInfo,
-        tile: DetachedView<W>,
+        tile: IncomingView<W>,
         focus: bool,
     ) -> bool {
         let Some(workspace) = self.workspace_of(branch_root) else {
             return false;
         };
-        let tile_key = self.insert_view(workspace, tile);
+        let Ok(tile_key) = self.materialize_incoming_view(workspace, tile) else {
+            return false;
+        };
         self.insert_key_with_parent_info(branch_root, info, tile_key, focus)
     }
 
@@ -598,7 +525,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         &mut self,
         target_key: NodeKey,
         direction: Direction,
-        tile: DetachedView<W>,
+        tile: IncomingView<W>,
         focus: bool,
     ) -> bool {
         let Some(workspace) = self.workspace_of(target_key) else {
@@ -636,7 +563,9 @@ impl<W: LayoutElement> ContainerArena<W> {
             } else {
                 target_idx + 1
             };
-            let tile_key = self.insert_view(workspace, tile);
+            let Ok(tile_key) = self.materialize_incoming_view(workspace, tile) else {
+                return false;
+            };
 
             let container = self
                 .get_container_mut(parent_key)
@@ -650,7 +579,9 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         // Otherwise wrap the target and the new tile in a fresh split container that
         // replaces the target in its parent.
-        let tile_key = self.insert_view(workspace, tile);
+        let Ok(tile_key) = self.materialize_incoming_view(workspace, tile) else {
+            return false;
+        };
         let new_container_key =
             self.new_split_pair_container(workspace, target_key, tile_key, direction);
 
@@ -665,7 +596,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         &mut self,
         workspace: NodeKey,
         direction: Direction,
-        tile: DetachedView<W>,
+        tile: IncomingView<W>,
         focus: bool,
     ) -> bool {
         // The workspace has to face the direction for an edge to mean anything. When it does
@@ -678,7 +609,9 @@ impl<W: LayoutElement> ContainerArena<W> {
             self.wrap_workspace_children(workspace, previous, direction.split_layout());
         }
 
-        let tile_key = self.insert_view(workspace, tile);
+        let Ok(tile_key) = self.materialize_incoming_view(workspace, tile) else {
+            return false;
+        };
         let insert_idx = match direction.is_leading() {
             true => 0,
             false => self

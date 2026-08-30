@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 use super::InsertParentInfo;
-use super::{ContainerArena, DetachedView, LayoutElement, NodeData, NodeKey};
+use super::{ContainerArena, DetachedView, LayoutElement, NodeKey};
 
 impl<W: LayoutElement> ContainerArena<W> {
     /// Remove a view node by window ID without discarding its semantic state.
@@ -11,7 +11,23 @@ impl<W: LayoutElement> ContainerArena<W> {
         workspace: NodeKey,
         window_id: &W::Id,
     ) -> Option<DetachedView<W>> {
+        let node = self.park_window(workspace, window_id)?;
+        self.take_parked_view(node)
+    }
+
+    /// Unlink a view from its workspace while keeping the materialized node in the arena.
+    ///
+    /// Internal transfers use this form and adopt the returned key directly. Final unmap calls
+    /// [`Self::remove_window`], which takes the parked node back out as an owned view.
+    pub(in crate::layout) fn park_window(
+        &mut self,
+        workspace: NodeKey,
+        window_id: &W::Id,
+    ) -> Option<NodeKey> {
         let node_key = self.window_key(window_id)?;
+        if self.workspace_of(node_key) != Some(workspace) {
+            return None;
+        }
         let cleanup_key = self.parent_of(node_key);
         let was_focused = self.focused_key() == Some(node_key);
         // Not "was the closed window inside the fullscreen scope": what decides whether the
@@ -28,6 +44,10 @@ impl<W: LayoutElement> ContainerArena<W> {
             .map(|parent| self.focus_chain(parent))
             .unwrap_or_default();
 
+        if self.selected_key() == Some(node_key) {
+            self.seat.redirect_selection(None);
+        }
+
         // Detach from the parent's child list before dropping the node itself. The
         // workspace has no parent and is not a window, so nothing routes here for it.
         let parent_key = self.parent_of(node_key)?;
@@ -37,13 +57,8 @@ impl<W: LayoutElement> ContainerArena<W> {
             }
         }
         self.set_parent(node_key, None);
-
-        // Now remove from the arena (only the leaf, not recursive).
-        let node_data = self.remove_node_from_store(node_key)?;
-        let NodeData::Container(container) = node_data else {
-            unreachable!("a window key must name a container node")
-        };
-        let view = container.into_view(node_key)?;
+        assert!(self.park_subtree(node_key));
+        self.drop_subtree_layouts(node_key);
 
         if let Some(cleanup_key) = cleanup_key {
             self.reap_empty(cleanup_key);
@@ -56,7 +71,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         // Keeping the empty scope for even this arrange skips every surviving branch.
         if self
             .fullscreen_key(workspace)
-            .is_some_and(|scope| self.branch_is_empty(scope))
+            .is_some_and(|scope| scope == node_key || self.branch_is_empty(scope))
         {
             self.fullscreen_keys.remove(&workspace);
         }
@@ -72,7 +87,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         self.layout(workspace);
 
-        Some(view)
+        Some(node_key)
     }
 
     /// Park the subtree rooted at `node_key`, returning it along with enough information

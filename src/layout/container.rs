@@ -286,6 +286,51 @@ pub struct DetachedView<W: LayoutElement> {
     tile: Tile<W>,
 }
 
+/// A view entering a branch, either for the first time or from another root in this arena.
+///
+/// New maps and final unmaps cross the arena boundary as [`DetachedView`]. Every internal
+/// transfer keeps the materialized node parked and carries only its stable key.
+pub(super) enum IncomingView<W: LayoutElement> {
+    /// A view built outside the arena, which has never had a node in it.
+    ///
+    /// Boxed because the other variant is a key: a tile beside a `NodeKey` makes every
+    /// `Result` carrying this enum as large as a tile, and these are returned by value from
+    /// the insertion paths.
+    Detached(Box<DetachedView<W>>),
+    Parked(NodeKey),
+}
+
+impl<W: LayoutElement> std::fmt::Debug for IncomingView<W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Detached(_) => f.write_str("IncomingView::Detached(..)"),
+            Self::Parked(key) => f.debug_tuple("IncomingView::Parked").field(key).finish(),
+        }
+    }
+}
+
+impl<W: LayoutElement> IncomingView<W> {
+    #[cfg(test)]
+    pub(super) fn key(&self) -> NodeKey {
+        match self {
+            Self::Detached(view) => view.key,
+            Self::Parked(key) => *key,
+        }
+    }
+}
+
+impl<W: LayoutElement> From<DetachedView<W>> for IncomingView<W> {
+    fn from(view: DetachedView<W>) -> Self {
+        Self::Detached(Box::new(view))
+    }
+}
+
+impl<W: LayoutElement> From<NodeKey> for IncomingView<W> {
+    fn from(key: NodeKey) -> Self {
+        Self::Parked(key)
+    }
+}
+
 /// Fields shared by the workspace and real containers because both lay out child nodes.
 #[derive(Debug)]
 pub struct LayoutParentData {
@@ -867,23 +912,6 @@ impl<W: LayoutElement> DetachedView<W> {
 
     pub(super) fn tile_mut(&mut self) -> &mut Tile<W> {
         &mut self.tile
-    }
-
-    /// The window this node *is*.
-    ///
-    /// Forwarded rather than reached through [`Self::tile`] because it is the one thing a
-    /// detached node answers in its own right: a view node is a window, in the arena or out of
-    /// it. Everything else about the tile is presentation and goes through the accessor.
-    pub(super) fn window(&self) -> &W {
-        self.tile.window()
-    }
-
-    pub(super) fn window_mut(&mut self) -> &mut W {
-        self.tile.window_mut()
-    }
-
-    pub(super) fn unset_fractions(&mut self) {
-        self.sizing.unset_fractions();
     }
 }
 

@@ -1,6 +1,6 @@
 //! Root-child ("column") compatibility layer over the tree root.
 
-use super::{ContainerArena, DetachedView, LayoutElement, NodeData, NodeKey, WorkspaceData};
+use super::{ContainerArena, IncomingView, LayoutElement, NodeData, NodeKey, WorkspaceData};
 
 impl<W: LayoutElement> ContainerArena<W> {
     /// Number of root-level children (columns).
@@ -259,17 +259,22 @@ impl<W: LayoutElement> ContainerArena<W> {
     pub(in crate::layout) fn append_leaf(
         &mut self,
         workspace: NodeKey,
-        tile: DetachedView<W>,
+        tile: impl Into<IncomingView<W>>,
         focus: bool,
     ) {
-        self.insert_leaf_at(workspace, self.root_children_len(workspace), tile, focus);
+        self.insert_leaf_at(
+            workspace,
+            self.root_children_len(workspace),
+            tile.into(),
+            focus,
+        );
     }
 
     pub(in crate::layout) fn insert_leaf_at(
         &mut self,
         workspace: NodeKey,
         index: usize,
-        tile: DetachedView<W>,
+        tile: IncomingView<W>,
         focus: bool,
     ) {
         self.insert_leaf_into_branch(workspace, index, tile, focus);
@@ -280,13 +285,15 @@ impl<W: LayoutElement> ContainerArena<W> {
         &mut self,
         branch_root: NodeKey,
         index: usize,
-        tile: DetachedView<W>,
+        tile: IncomingView<W>,
         focus: bool,
     ) {
         let Some(workspace) = self.workspace_of(branch_root) else {
             return;
         };
-        let tile_key = self.insert_view(workspace, tile);
+        let Ok(tile_key) = self.materialize_incoming_view(workspace, tile) else {
+            return;
+        };
         self.insert_key_into_branch(branch_root, index, tile_key, focus);
     }
 

@@ -36,8 +36,9 @@ use tiri_ipc::{ColumnDisplay, LayoutTreeNode, LayoutTreeRect, SizeChange};
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::container::{
-    ContainerArena, ContainerMetrics, DetachedView, Direction, InteractiveResizeState, Layout,
-    LeafLayoutInfo, NodeKey, ResizeDelta, ResizeReach, ResizeSpace, ResizeTarget,
+    ContainerArena, ContainerMetrics, DetachedView, Direction, IncomingView,
+    InteractiveResizeState, Layout, LeafLayoutInfo, NodeKey, ResizeDelta, ResizeReach, ResizeSpace,
+    ResizeTarget,
 };
 use super::focus_ring::{
     render_container_selection, FocusRingEdges, FocusRingIndicatorEdge, FocusRingRenderElement,
@@ -45,7 +46,7 @@ use super::focus_ring::{
 use super::monitor::{InsertPosition, SplitIndicator};
 use super::tile::{Tile, TileRenderElement};
 use super::{
-    ConfigureIntent, InteractiveResizeData, LayoutCycleEntry, LayoutElement, Options, RemovedTile,
+    ConfigureIntent, InteractiveResizeData, LayoutCycleEntry, LayoutElement, Options, ParkedTile,
     ResizeAxis, ResizeHit, ResizeRequest,
 };
 use crate::animation::{Animation, Clock};
@@ -359,10 +360,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         &mut self.arena
     }
 
-    pub(super) fn park_view(&mut self, view: DetachedView<W>) -> NodeKey {
-        self.arena.park_view(view)
-    }
-
     pub(super) fn take_parked_view(&mut self, key: NodeKey) -> Option<DetachedView<W>> {
         self.arena.take_parked_view(key)
     }
@@ -373,6 +370,26 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     pub(super) fn parked_tile_mut(&mut self, key: NodeKey) -> Option<&mut Tile<W>> {
         self.arena.parked_tile_mut(key)
+    }
+
+    pub(super) fn incoming_tile<'a>(
+        &'a self,
+        incoming: &'a IncomingView<W>,
+    ) -> Option<&'a Tile<W>> {
+        match incoming {
+            IncomingView::Detached(view) => Some(view.tile()),
+            IncomingView::Parked(key) => self.arena.parked_tile(*key),
+        }
+    }
+
+    pub(super) fn incoming_tile_mut<'a>(
+        &'a mut self,
+        incoming: &'a mut IncomingView<W>,
+    ) -> Option<&'a mut Tile<W>> {
+        match incoming {
+            IncomingView::Detached(view) => Some(view.tile_mut()),
+            IncomingView::Parked(key) => self.arena.parked_tile_mut(*key),
+        }
     }
 
     pub(super) fn node_has_mark(&self, key: NodeKey, mark: &str) -> bool {
@@ -1314,14 +1331,8 @@ impl<W: LayoutElement> ContainerTree<W> {
             .flatten()
     }
 
-    pub fn remove_window(&mut self, workspace: NodeKey, window: &W) -> Option<RemovedTile<W>> {
-        let tile = self.arena.remove_window(workspace, window.id())?;
-
-        // Create RemovedTile
-        Some(RemovedTile {
-            tile,
-            is_floating: false,
-        })
+    pub fn remove_window(&mut self, workspace: NodeKey, window: &W) -> Option<DetachedView<W>> {
+        self.arena.remove_window(workspace, window.id())
     }
 
     pub fn update_window(
@@ -3029,14 +3040,19 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.arena.first_leaf_key(workspace).is_none()
     }
 
-    pub fn add_tile(
+    pub(super) fn add_tile(
         &mut self,
         workspace: NodeKey,
         root_index: Option<usize>,
-        tile: DetachedView<W>,
+        tile: IncomingView<W>,
         activate: bool,
     ) {
-        let id = tile.window().id().clone();
+        let id = self
+            .incoming_tile(&tile)
+            .expect("an insertion must own a valid incoming view")
+            .window()
+            .id()
+            .clone();
         if let Some(index) = root_index {
             self.arena.insert_leaf_at(workspace, index, tile, activate);
         } else {
@@ -3047,54 +3063,23 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.layout_after_tiled_insert(workspace, &id);
     }
 
-    pub fn add_tile_right_of(
+    pub(super) fn add_tile_right_of(
         &mut self,
         workspace: NodeKey,
         next_to: &W::Id,
-        tile: DetachedView<W>,
+        tile: IncomingView<W>,
         activate: bool,
     ) {
-        let id = tile.window().id().clone();
+        let id = self
+            .incoming_tile(&tile)
+            .expect("an insertion must own a valid incoming view")
+            .window()
+            .id()
+            .clone();
         self.arena
             .insert_leaf_after(workspace, next_to, tile, activate);
         self.sync_fullscreen_window(workspace);
         self.layout_after_tiled_insert(workspace, &id);
-    }
-
-    pub fn add_tile_to_root_container(
-        &mut self,
-        workspace: NodeKey,
-        root_idx: usize,
-        tile_idx: Option<usize>,
-        tile: DetachedView<W>,
-        activate: bool,
-    ) {
-        let id = tile.window().id().clone();
-        if self
-            .arena
-            .insert_leaf_in_root_container(workspace, root_idx, tile_idx, tile, activate)
-        {
-            self.sync_fullscreen_window(workspace);
-            self.layout_after_tiled_insert(workspace, &id);
-        }
-    }
-
-    pub fn insert_subtree_at_root(&mut self, index: usize, subtree: NodeKey, focus: bool) {
-        let Some(workspace) = self.arena.workspace_of(subtree) else {
-            return;
-        };
-        self.mutate_tree(workspace, |tree| {
-            tree.insert_subtree_at_root(workspace, index, subtree, focus)
-        });
-    }
-
-    pub fn insert_subtree_with_focus(&mut self, subtree: NodeKey, focus: bool) {
-        let Some(workspace) = self.arena.workspace_of(subtree) else {
-            return;
-        };
-        self.arena.insert_subtree_with_focus(subtree, focus);
-        self.sync_fullscreen_window(workspace);
-        self.arena.layout(workspace);
     }
 
     pub(super) fn insert_parent_info_for_window(
@@ -3104,13 +3089,11 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.arena.insert_parent_info_for_window(window)
     }
 
-    // Both variants carry a view back to the caller; boxing would only add an allocation.
-    #[allow(clippy::result_large_err)]
     pub(super) fn replace_tiling_tile(
         &mut self,
         key: NodeKey,
-        tile: DetachedView<W>,
-    ) -> Result<DetachedView<W>, DetachedView<W>> {
+        tile: IncomingView<W>,
+    ) -> Result<IncomingView<W>, IncomingView<W>> {
         if !self.is_tiling_leaf(key) {
             return Err(tile);
         }
@@ -3128,7 +3111,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         &mut self,
         workspace: NodeKey,
         info: &super::container::InsertParentInfo,
-        tile: DetachedView<W>,
+        tile: IncomingView<W>,
         activate: bool,
     ) -> bool {
         let root = workspace;
@@ -3145,11 +3128,11 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Split-insert next to the live tiling leaf selected by the drag-and-drop hit result.
-    pub fn insert_tile_split(
+    pub(super) fn insert_tile_split(
         &mut self,
         target: NodeKey,
         direction: Direction,
-        tile: DetachedView<W>,
+        tile: IncomingView<W>,
         activate: bool,
     ) -> bool {
         let Some(workspace) = self.arena.workspace_of(target) else {
@@ -3170,11 +3153,11 @@ impl<W: LayoutElement> ContainerTree<W> {
         false
     }
 
-    pub fn insert_tile_split_root(
+    pub(super) fn insert_tile_split_root(
         &mut self,
         workspace: NodeKey,
         direction: Direction,
-        tile: DetachedView<W>,
+        tile: IncomingView<W>,
         activate: bool,
     ) -> bool {
         if self
@@ -3224,30 +3207,22 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.arena.layout(workspace);
     }
 
-    pub fn remove_tile(
+    pub(super) fn park_tile(
         &mut self,
         workspace: NodeKey,
         window: &W::Id,
         transaction: Transaction,
-    ) -> RemovedTile<W> {
+    ) -> ParkedTile {
         self.arena.set_pending_transaction(transaction.clone());
-        let tile = self
+        let node = self
             .arena
-            .remove_window(workspace, window)
+            .park_window(workspace, window)
             .expect("attempted to remove missing window");
 
-        RemovedTile {
-            tile,
+        ParkedTile {
+            node,
             is_floating: false,
         }
-    }
-    pub fn remove_active_tile(
-        &mut self,
-        workspace: NodeKey,
-        transaction: Transaction,
-    ) -> Option<RemovedTile<W>> {
-        let id = self.focused_tile(workspace)?.window().id().clone();
-        Some(self.remove_tile(workspace, &id, transaction))
     }
     pub fn remove_active_root_tiling_subtree(
         &mut self,

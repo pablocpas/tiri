@@ -13,10 +13,9 @@ use smithay::output::Output;
 use smithay::utils::{IsAlive, Logical, Point, SERIAL_COUNTER};
 
 use crate::input::AnyStartData;
-use crate::layout::workspace::{Workspace, WorkspaceId};
+use crate::layout::workspace::WorkspaceId;
 use crate::tiri::State;
 use crate::utils::get_monotonic_time;
-use crate::window::Mapped;
 
 // When the touch is stationary for this much time, it becomes an interactive move.
 const INTERACTIVE_MOVE_THRESHOLD: Duration = Duration::from_millis(500);
@@ -170,22 +169,17 @@ impl TouchOverviewGrab {
                 if self.window.is_some() || self.workspace_matched_narrow {
                     // When activating a window, we want to activate the window's current
                     // workspace. Otherwise, find the workspace that we tapped on.
-                    let containers = layout.containers();
-                    let ws_matches = |ws: &Workspace<Mapped>| {
-                        if let Some(window) = &self.window {
-                            ws.has_window(containers, window)
-                        } else if let Some(ws_id) = self.workspace_id {
-                            ws.id() == ws_id
+                    let ws_idx = if let Some(window) = &self.window {
+                        layout.workspace_idx_on_output_for_window(&self.output, window)
+                    } else if let Some(ws_id) = self.workspace_id {
+                        if let Some((Some(mon), ws_idx, _)) =
+                            layout.workspaces().find(|(_, _, ws)| ws.id() == ws_id)
+                        {
+                            // The workspace could've moved to a different output in the meantime.
+                            (*mon.output() == self.output).then_some(ws_idx)
                         } else {
-                            false
+                            None
                         }
-                    };
-
-                    let ws_idx = if let Some((Some(mon), ws_idx, _)) =
-                        layout.workspaces().find(|(_, _, ws)| ws_matches(ws))
-                    {
-                        // The workspace could've moved to a different output in the meantime.
-                        (*mon.output() == self.output).then_some(ws_idx)
                     } else {
                         None
                     };
