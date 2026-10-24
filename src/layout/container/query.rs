@@ -2,12 +2,13 @@
 
 use std::collections::HashMap;
 
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Rectangle};
 
-use super::{ContainerArena, Layout, LayoutElement, NodeData, NodeKey, ResizeReach};
+use super::{ContainerTree, Layout, LayoutElement, NodeData, NodeKey, ResizeReach};
 use crate::layout::tile::Tile;
 
-impl<W: LayoutElement> ContainerArena<W> {
+impl<W: LayoutElement> ContainerTree<W> {
     #[cfg(test)]
     pub(in crate::layout) fn workspace_count(&self) -> usize {
         self.workspaces.len()
@@ -142,8 +143,8 @@ impl<W: LayoutElement> ContainerArena<W> {
     ///
     /// Every node's parent chain reaches one: a floating root is parented to its workspace even
     /// though the workspace holds it in `floating_roots` rather than among its children, so
-    /// there is no second rule for the floating side. `None` only for a node the arena does not
-    /// hold, or one detached and not yet reattached.
+    /// there is no second rule for the floating side. `None` only for a node the tree does not
+    /// hold, or one transferred between parent assignments.
     /// The workspace a node is in, read off the tree rather than taken on trust.
     ///
     /// This is the answer, so an operation that already has a node in the tree does not also
@@ -155,11 +156,11 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// named for which:
     ///
     /// - `destination`: the node is arriving and is not attached yet, so there is nothing to
-    ///   climb. Every `insert_*`, `adopt_parked_subtree`, `register_floating_root`.
+    ///   climb. Every `insert_*`, `consume_transfer_root`, `register_floating_root`.
     /// - `workspace`: the workspace is what the operation searches, and the node is the
     ///   needle rather than something in it. `floating_root_index` is the only one, and the
     ///   filter carries weight: `window_key` finds a window wherever it is, so answering
-    ///   `None` for one on another workspace is how `FloatingSpace::contains` comes to mean
+    ///   `None` for one on another workspace is how `FloatingRuntime::contains` comes to mean
     ///   "on mine".
     pub(in crate::layout) fn workspace_of(&self, key: NodeKey) -> Option<NodeKey> {
         let mut current = key;
@@ -173,8 +174,8 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     /// Whether `key` is a workspace node.
     ///
-    /// Asked of the node rather than compared against the arena's root, so that the answer
-    /// stays right when an arena holds more than one workspace.
+    /// Asked of the node rather than compared against the tree's root, so that the answer
+    /// stays right when a tree holds more than one workspace.
     pub(in crate::layout) fn is_workspace(&self, key: NodeKey) -> bool {
         matches!(self.get_node(key), Some(NodeData::Workspace(_)))
     }
@@ -203,21 +204,58 @@ impl<W: LayoutElement> ContainerArena<W> {
         keys
     }
 
-    /// The windows of one workspace, both sides, in visual order.
-    #[cfg(test)]
-    pub(in crate::layout) fn windows_in_workspace(&self, workspace: NodeKey) -> Vec<&W> {
+    /// Every tile of one workspace, tiled and floating, in tree order.
+    pub(in crate::layout) fn tiles_in_workspace(
+        &self,
+        workspace: NodeKey,
+    ) -> impl Iterator<Item = &Tile<W>> + '_ {
         self.leaf_keys_in_workspace(workspace)
             .into_iter()
             .filter_map(|key| self.get_tile(key))
-            .map(Tile::window)
-            .collect()
+    }
+
+    /// Every window of one workspace, tiled and floating, in tree order.
+    pub(crate) fn windows_in_workspace(&self, workspace: NodeKey) -> impl Iterator<Item = &W> + '_ {
+        self.tiles_in_workspace(workspace).map(Tile::window)
+    }
+
+    pub(in crate::layout) fn workspace_has_windows(&self, workspace: NodeKey) -> bool {
+        self.windows_in_workspace(workspace).next().is_some()
+    }
+
+    pub(in crate::layout) fn window_is_floating_in(
+        &self,
+        workspace: NodeKey,
+        window: &W::Id,
+    ) -> bool {
+        self.window_key(window).is_some_and(|key| {
+            self.workspace_of(key) == Some(workspace) && self.is_in_floating_branch(key)
+        })
+    }
+
+    pub(in crate::layout) fn find_wl_surface_in_workspace(
+        &self,
+        workspace: NodeKey,
+        surface: &WlSurface,
+    ) -> Option<&W> {
+        self.windows_in_workspace(workspace)
+            .find(|window| window.is_wl_surface(surface))
+    }
+
+    pub(in crate::layout) fn find_wl_surface_in_workspace_mut(
+        &mut self,
+        workspace: NodeKey,
+        surface: &WlSurface,
+    ) -> Option<&mut W> {
+        self.windows_mut_in_workspace(workspace)
+            .into_iter()
+            .find(|window| window.is_wl_surface(surface))
     }
 
     /// The window ids of one workspace, both sides, in visual order.
     #[cfg(test)]
     pub(in crate::layout) fn window_ids_in_workspace(&self, workspace: NodeKey) -> Vec<W::Id> {
         self.windows_in_workspace(workspace)
-            .into_iter()
             .map(|window| window.id().clone())
             .collect()
     }

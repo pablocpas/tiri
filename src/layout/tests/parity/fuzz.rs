@@ -208,7 +208,7 @@ const SWAY_1_12_MOVE_LEFT_AFTER_REPEATED_SPLIT_TOGGLE_CRASH: &[&str] = &[
 ];
 
 /// Further minimal routes to the same `arrange_workspace <- cmd_move_in_direction` SIGSEGV,
-/// found after the arena fixes let the campaign search past its earlier divergences. These
+/// found after the tree fixes let the campaign search past its earlier divergences. These
 /// were verified against the pinned binary under gdb. They stay exact: an arbitrary sway
 /// disconnect during the same final command is still a broken harness, not a known crash.
 const SWAY_1_12_MOVE_UP_AFTER_TOGGLE_ALL_CRASH: &[&str] = &[

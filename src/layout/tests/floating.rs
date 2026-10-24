@@ -13,7 +13,7 @@ fn floating_roundtrip_keeps_the_window_node_key() {
         .active_workspace()
         .expect("active workspace")
         .container_tree(&layout.containers)
-        .arena()
+        .tree()
         .window_key(&1)
         .expect("mapped window");
 
@@ -23,7 +23,7 @@ fn floating_roundtrip_keeps_the_window_node_key() {
     assert_eq!(
         workspace
             .container_tree(&layout.containers)
-            .arena()
+            .tree()
             .window_key(&1),
         Some(key)
     );
@@ -34,7 +34,7 @@ fn floating_roundtrip_keeps_the_window_node_key() {
     assert_eq!(
         workspace
             .container_tree(&layout.containers)
-            .arena()
+            .tree()
             .window_key(&1),
         Some(key)
     );
@@ -58,7 +58,7 @@ fn unfloat_uses_the_container_preserved_in_the_seat_order() {
     ]);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree(&layout.containers).arena();
+    let tree = workspace.container_tree(&layout.containers).tree();
     let first = tree.window_key(&1).expect("first window");
     let second = tree.window_key(&2).expect("second window");
     let inner = tree.parent_of(first).expect("vertical wrapper");
@@ -543,7 +543,7 @@ fn unfloat_workspace_wrapper_preserves_selected_descendant() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     let view = workspace.container_tree(&layout.containers);
-    let tree = view.arena();
+    let tree = view.tree();
     let selected = tree.selected_container_key().expect("selected descendant");
     assert_ne!(tree.parent_of(selected), Some(view.workspace()));
 }
@@ -1831,7 +1831,7 @@ fn floating_restore_does_not_relabel_resize_after_workspace_axis_change() {
         heights
             .windows(2)
             .all(|pair| (pair[0] - pair[1]).abs() <= 1),
-        "the detached horizontal resize must not become a vertical resize: {heights:?}"
+        "the previous horizontal resize must not become a vertical resize: {heights:?}"
     );
 }
 
@@ -2878,14 +2878,14 @@ fn floating_workspace_context_layout_all_preserves_context_like_split_toggle() {
     );
 }
 
-/// The two sides of a workspace each ask the space whether they are the focused one, and
+/// The two branches of a workspace each ask the tree whether they are the focused one, and
 /// the answers have to differ. They used to be two fields, and merging them into one left
-/// the floating side writing the tiled side's answer after it: every tiled tab bar then
-/// drew with no focused tab, because as far as it could tell nothing on its side had focus.
+/// the floating branch writing the tiled branch's answer after it: every tiled tab bar then
+/// drew with no focused tab, because as far as it could tell nothing in its branch had focus.
 ///
-/// Nothing rendered in the test suite, so this asks the space directly.
+/// Nothing rendered in the test suite, so this asks the tree directly.
 #[test]
-fn the_two_sides_of_a_workspace_do_not_overwrite_each_other_s_focus() {
+fn the_two_branches_of_a_workspace_do_not_overwrite_each_other_s_focus() {
     let mut layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow {
@@ -2895,28 +2895,26 @@ fn the_two_sides_of_a_workspace_do_not_overwrite_each_other_s_focus() {
     layout.update_render_elements(None);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let containers = workspace.container_tree(&layout.containers);
     assert!(
-        containers.side_is_active(false),
-        "the tiled side holds the focus, so it must render as active"
+        workspace.layer_has_focus(LayoutLayer::Tiled),
+        "the tiled branch holds the focus, so it must render as active"
     );
     assert!(
-        !containers.side_is_active(true),
-        "and the floating side must not"
+        !workspace.layer_has_focus(LayoutLayer::Floating),
+        "and the floating branch must not"
     );
 
     check_ops_on_layout(&mut layout, [Op::ToggleWindowFloating { id: Some(1) }]);
     layout.update_render_elements(None);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let containers = workspace.container_tree(&layout.containers);
     assert!(
-        containers.side_is_active(true),
-        "the window floated, so the floating side holds the focus"
+        workspace.layer_has_focus(LayoutLayer::Floating),
+        "the window floated, so the floating branch holds the focus"
     );
     assert!(
-        !containers.side_is_active(false),
-        "and the tiled side must not"
+        !workspace.layer_has_focus(LayoutLayer::Tiled),
+        "and the tiled branch must not"
     );
 }
 

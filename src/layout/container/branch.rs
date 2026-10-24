@@ -10,11 +10,11 @@
 
 #[cfg(test)]
 use super::Layout;
-use super::{ContainerArena, ContainerData, LayoutElement, NodeKey, TabBarInfo};
+use super::{ContainerData, ContainerTree, LayoutElement, NodeKey, TabBarInfo};
 use crate::layout::tile::Tile;
 
-impl<W: LayoutElement> ContainerArena<W> {
-    /// Every workspace this arena holds.
+impl<W: LayoutElement> ContainerTree<W> {
+    /// Every workspace this tree holds.
     pub(in crate::layout) fn workspace_keys(&self) -> Vec<NodeKey> {
         self.workspaces.clone()
     }
@@ -44,7 +44,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     /// Lay out after changing one branch.
     ///
-    /// The arena has one transaction and one committed geometry cache, so a branch cannot be
+    /// The tree has one transaction and one committed geometry cache, so a branch cannot be
     /// applied independently without bypassing size requests and overwriting an in-flight
     /// transaction. `arrange_workspace` still visits `arrange_children` and every
     /// `arrange_floating` branch separately inside the pass; unchanged leaves do not receive a

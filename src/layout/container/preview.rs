@@ -2,7 +2,7 @@
 
 use smithay::utils::{Logical, Rectangle};
 
-use super::{ContainerArena, Layout, LayoutElement, NodeKey, PreviewLeafGeometry};
+use super::{ContainerTree, Layout, LayoutElement, NodeKey, PreviewLeafGeometry};
 
 /// The container a preview is being taken inside: everything `child_rects_for_layout` needs
 /// to lay its children out, which is what the preview is asking about.
@@ -14,7 +14,7 @@ pub(super) struct PreviewContainer<'a> {
     pub(super) gap: f64,
 }
 
-impl<W: LayoutElement> ContainerArena<W> {
+impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn preview_new_leaf_geometry(
         &self,
         workspace: NodeKey,

@@ -6,25 +6,25 @@ use std::rc::Rc;
 use smithay::utils::{Logical, Rectangle, Size};
 
 use super::{
-    ContainerArena, Layout, LayoutElement, LeafLayoutInfo, NodeData, NodeKey, WorkspaceData,
+    ContainerTree, Layout, LayoutElement, LeafLayoutInfo, NodeData, NodeKey, WorkspaceData,
 };
 use crate::layout::Options;
 use crate::utils::transaction::Transaction;
 
-impl<W: LayoutElement> ContainerArena<W> {
+impl<W: LayoutElement> ContainerTree<W> {
     /// The box and config the tree is laid out in, read off the workspace that owns them.
     ///
     /// Every reader goes through here rather than through a field beside the tree, so that the
-    /// day a second workspace root joins the arena the question "whose view size?" has one
+    /// day a second workspace root joins the tree the question "whose view size?" has one
     /// place to be answered instead of forty.
-    fn workspace_data(&self, workspace: NodeKey) -> &WorkspaceData {
+    pub(super) fn workspace_data(&self, workspace: NodeKey) -> &WorkspaceData {
         self.get_workspace(workspace)
-            .expect("the requested arena root is a workspace node")
+            .expect("the requested tree root is a workspace node")
     }
 
-    fn workspace_data_mut(&mut self, workspace: NodeKey) -> &mut WorkspaceData {
+    pub(super) fn workspace_data_mut(&mut self, workspace: NodeKey) -> &mut WorkspaceData {
         self.get_workspace_mut(workspace)
-            .expect("the requested arena root is a workspace node")
+            .expect("the requested tree root is a workspace node")
     }
 
     pub(in crate::layout) fn view_size(&self, workspace: NodeKey) -> Size<f64, Logical> {
@@ -75,11 +75,15 @@ impl<W: LayoutElement> ContainerArena<W> {
         data.scale = scale;
         data.options = options.clone();
 
-        // The workspace node takes the new options, but each tile holds its own handle on
-        // them: the floating side already refreshes its tiles here and the tiled side has to
-        // as well. A tile left behind keeps the old border widths and the old scale, and
-        // trips the workspace's options check the moment a swap floats it.
-        for tile in self.tiles_mut(workspace) {
+        let floating_roots: Vec<_> = self.floating_roots(workspace).collect();
+        for root in floating_roots {
+            self.update_floating_working_area(root, working_area);
+        }
+
+        // Tile configuration is independent of the branch that currently owns the tile.
+        // Walking the workspace once also guarantees a reparent cannot leave stale options
+        // behind on either side.
+        for tile in self.tiles_mut_in_workspace(workspace) {
             tile.update_config(view_size, scale, options.clone());
         }
         self.layout(workspace);
@@ -177,7 +181,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.drop_stale_leaf_layouts();
     }
 
-    /// Forget every cached presentation whose leaf has left the arena.
+    /// Forget every cached presentation whose leaf has left the tree.
     ///
     /// Separate from [`Self::prune_leaf_layouts`] because dropping the last workspace has no
     /// workspace left to redirect focus into, and the caches still have to go.
@@ -196,7 +200,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
     }
 
-    /// Forget presentation state for a subtree that is parked outside every layout branch.
+    /// Forget presentation state for a subtree that is transferred outside every layout branch.
     pub(super) fn drop_subtree_layouts(&mut self, root: NodeKey) {
         let leaves: HashSet<_> = self.leaf_keys_under(root).into_iter().collect();
         self.leaf_layouts.retain(|key, _| !leaves.contains(key));
@@ -225,6 +229,10 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     pub(in crate::layout) fn take_pending_relayout(&mut self, workspace: NodeKey) -> bool {
-        self.pending_relayout.remove(&workspace)
+        std::mem::take(&mut self.workspace_data_mut(workspace).pending_relayout)
+    }
+
+    pub(super) fn set_pending_relayout(&mut self, workspace: NodeKey, pending: bool) {
+        self.workspace_data_mut(workspace).pending_relayout = pending;
     }
 }

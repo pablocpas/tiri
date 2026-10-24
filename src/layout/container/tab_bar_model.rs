@@ -2,9 +2,9 @@
 
 use tiri_config::BlockOutFrom;
 
-use super::{ContainerArena, Layout, LayoutElement, NodeData, NodeKey, TabBarInfo, TabBarTab};
+use super::{ContainerTree, Layout, LayoutElement, NodeData, NodeKey, TabBarInfo, TabBarTab};
 
-impl<W: LayoutElement> ContainerArena<W> {
+impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn tab_bar_layouts(&self, workspace: NodeKey) -> Vec<TabBarInfo> {
         let mut out = Vec::new();
 

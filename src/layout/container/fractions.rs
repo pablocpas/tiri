@@ -1,7 +1,7 @@
 //! Size fractions and resize reference spans owned by the nodes they describe.
 
 use super::{
-    ChildFractions, ContainerArena, Layout, LayoutElement, NodeData, NodeKey, NodeSizing,
+    ChildFractions, ContainerTree, Layout, LayoutElement, NodeData, NodeKey, NodeSizing,
     ResizeDelta, ResizeReach, ResizeSpace, MIN_CHILD_PERCENT,
 };
 
@@ -28,7 +28,7 @@ fn normalize_percents(percents: &mut [f64]) {
     }
 }
 
-impl<W: LayoutElement> ContainerArena<W> {
+impl<W: LayoutElement> ContainerTree<W> {
     pub(super) fn node_sizing(&self, key: NodeKey) -> Option<&NodeSizing> {
         match self.get_node(key)? {
             NodeData::Workspace(_) => None,

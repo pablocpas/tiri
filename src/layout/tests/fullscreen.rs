@@ -933,7 +933,7 @@ fn fullscreen_command_keeps_a_selected_container_as_the_authority() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     let view = workspace.container_tree(&layout.containers);
-    let tree = view.arena();
+    let tree = view.tree();
     let authority = view.fullscreen_key().expect("fullscreen authority");
 
     assert!(
@@ -1071,7 +1071,7 @@ fn floating_fullscreen_container_uses_the_same_render_and_input_scope() {
         );
 
         let view = workspace.container_tree(&layout.containers);
-        let tree = view.arena();
+        let tree = view.tree();
         let authority = view.fullscreen_key().expect("fullscreen authority");
         assert!(tree.is_in_floating_branch(authority));
         assert!(tree.get_tile(authority).is_none());
@@ -1154,7 +1154,7 @@ fn fullscreen_targets_the_container_created_by_floating_the_workspace() {
 
     let workspace = layout.active_workspace().expect("active workspace");
     let view = workspace.container_tree(&layout.containers);
-    let tree = view.arena();
+    let tree = view.tree();
     let authority = view.fullscreen_key().expect("fullscreen authority");
     assert!(tree.is_in_floating_branch(authority));
     assert!(tree.get_tile(authority).is_none());

@@ -6,16 +6,16 @@
 //! `workspace_squash` only after a directional move. A container left holding one child by
 //! a `close` therefore stays, and the identical shape reached by a `move` does not.
 
-use super::{ContainerArena, ContainerData, Layout, LayoutElement, NodeData, NodeKey};
+use super::{ContainerData, ContainerTree, Layout, LayoutElement, NodeData, NodeKey};
 
-impl<W: LayoutElement> ContainerArena<W> {
+impl<W: LayoutElement> ContainerTree<W> {
     /// sway's `container_reap_empty`: destroy a container the command has emptied, and any
     /// ancestor it empties in turn.
     ///
     /// Only emptiness — this is not the place where redundant nesting goes, which is why a
     /// `close` leaves the container it emptied down to one child standing.
     ///
-    /// A branch's root is where the walk stops. It has no parent to be detached from, and an
+    /// A branch's root is where the walk stops. It has no parent link to remove, and an
     /// empty workspace is an empty workspace rather than a container to be got rid of. An
     /// emptied floating root is not reaped either: the floating side owns that list, and it
     /// drops the group when the last window leaves it.
@@ -58,7 +58,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                     self.unregister_unfocused_node(container_key, parent_key);
                 }
             }
-            self.detach_child(container_key);
+            self.unlink_child(container_key);
             self.remove_node_from_store(container_key);
             current = parent_key;
         }

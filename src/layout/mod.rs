@@ -205,7 +205,7 @@ pub enum SizingMode {
 
 pub trait LayoutElement {
     /// Type that can be used as a unique ID of this element.
-    type Id: PartialEq + std::fmt::Debug + Clone;
+    type Id: Eq + std::hash::Hash + std::fmt::Debug + Clone;
 
     /// Unique ID of this element.
     fn id(&self) -> &Self::Id;
@@ -444,8 +444,8 @@ pub trait LayoutElement {
 
 #[derive(Debug)]
 pub struct Layout<W: LayoutElement> {
-    /// The single container arena shared by every workspace, sticky window, scratchpad
-    /// entry, and parked interactive move in this layout.
+    /// The single container tree shared by every workspace, sticky window, scratchpad
+    /// entry, and interactive move transfer in this layout.
     containers: ContainerTree<W>,
     /// Monitors and workspaes in the layout.
     monitor_set: MonitorSet<W>,
@@ -490,7 +490,7 @@ pub struct Layout<W: LayoutElement> {
     /// client like any other. Showing one is `move to workspace`, and there is no third state
     /// for a window to be in.
     ///
-    /// Tiri kept a queue of detached tiles instead. A detached tile is arranged by nobody, so
+    /// Tiri kept value-form tiles outside the tree instead. Such a tile is arranged by nobody, so
     /// it had no box while hidden and needed a full resize handshake with an idle client on
     /// the way back — which is what made showing one take the whole transaction deadline.
     /// Everything that walks the layout also had to remember the queue was there.
@@ -522,7 +522,7 @@ enum MonitorSet<W: LayoutElement> {
     },
 }
 
-/// Owner of one workspace root in the layout-wide container arena.
+/// Owner of one workspace root in the layout-wide container tree.
 ///
 /// Window lookup stops at the root. This value bridges that structural answer to the
 /// presentation object which owns transient state for the root, without asking every monitor
@@ -545,7 +545,6 @@ enum WorkspaceOwner {
 fn ensure_no_outputs_workspace_idx<W: LayoutElement>(
     containers: &mut ContainerTree<W>,
     workspaces: &mut Vec<Workspace<W>>,
-    clock: Clock,
     options: Rc<Options>,
 ) -> usize {
     if let Some(idx) = workspaces
@@ -554,7 +553,7 @@ fn ensure_no_outputs_workspace_idx<W: LayoutElement>(
     {
         idx
     } else {
-        workspaces.push(Workspace::new_no_outputs(containers, clock, options));
+        workspaces.push(Workspace::new_no_outputs(containers, options));
         workspaces.len() - 1
     }
 }
@@ -597,7 +596,8 @@ enum InteractiveMoveState<W: LayoutElement> {
         /// This helps the pointer remain inside the window as it resizes.
         pointer_ratio_within_window: (f64, f64),
     },
-    /// Moving; the window is parked outside every workspace but remains in the layout tree.
+    /// Moving; the window is an in-flight transfer outside every workspace but remains in the
+    /// layout tree.
     Moving(InteractiveMoveData<W>),
     /// Moving a floating container; the windows remain in the layout.
     MovingContainer(InteractiveMoveContainerData<W>),
@@ -605,9 +605,9 @@ enum InteractiveMoveState<W: LayoutElement> {
 
 #[derive(Debug)]
 struct InteractiveMoveData<W: LayoutElement> {
-    /// View node parked in the layout-wide tree while attached to no workspace.
+    /// View node held by the interactive move while attached to no workspace.
     pub(self) node: NodeKey,
-    /// Stable id cached so routing does not need to borrow the parked tile.
+    /// Stable id cached so routing does not need to borrow the in-flight tile.
     pub(self) window_id: W::Id,
     /// Output where the window is currently located/rendered.
     pub(self) output: Output,
@@ -707,20 +707,20 @@ pub enum MarkMode {
     Toggle,
 }
 
-/// Existing view parked between two roots of the layout-wide arena.
+/// Existing view in transit between two roots of the layout-wide tree.
 #[derive(Debug)]
-#[must_use = "a parked view must be reattached or finally removed"]
-struct ParkedTile {
+#[must_use = "a view transfer must be reattached or finally removed"]
+struct ViewTransfer {
     node: NodeKey,
     /// Whether the view left a floating branch.
     is_floating: bool,
 }
 
-impl ParkedTile {
+impl ViewTransfer {
     fn tile<'a, W: LayoutElement>(&self, containers: &'a ContainerTree<W>) -> &'a Tile<W> {
         containers
-            .parked_tile(self.node)
-            .expect("a parked transfer must remain in the arena")
+            .transferred_tile(self.node)
+            .expect("a view transfer must remain in the tree")
     }
 
     fn tile_mut<'a, W: LayoutElement>(
@@ -728,8 +728,8 @@ impl ParkedTile {
         containers: &'a mut ContainerTree<W>,
     ) -> &'a mut Tile<W> {
         containers
-            .parked_tile_mut(self.node)
-            .expect("a parked transfer must remain in the arena")
+            .transferred_tile_mut(self.node)
+            .expect("a view transfer must remain in the tree")
     }
 
     fn prepare_for_workspace_move<W: LayoutElement>(&self, containers: &mut ContainerTree<W>) {
@@ -738,8 +738,8 @@ impl ParkedTile {
         }
     }
 
-    fn incoming<W: LayoutElement>(self) -> IncomingView<W> {
-        IncomingView::Parked(self.node)
+    fn into_incoming<W: LayoutElement>(self) -> IncomingView<W> {
+        IncomingView::Transferred(self.node)
     }
 }
 
@@ -808,6 +808,14 @@ pub enum RenderLayer {
     Normal,
     /// Windows currently moving between workspaces.
     MovingBetweenWorkspaces,
+}
+
+/// Presentation inputs shared by the two branches of a workspace for one render pass.
+#[derive(Clone, Copy)]
+struct BranchRenderParams {
+    has_focus: bool,
+    focus_ring: bool,
+    layer: RenderLayer,
 }
 
 impl SizingMode {
@@ -966,7 +974,7 @@ impl<W: LayoutElement> Layout<W> {
     pub fn with_options(clock: Clock, options: Options) -> Self {
         let options = Rc::new(options);
         let mut containers = ContainerTree::new(clock.clone());
-        let scratchpad = Workspace::new_scratchpad(&mut containers, clock.clone(), options.clone());
+        let scratchpad = Workspace::new_scratchpad(&mut containers, options.clone());
         Self {
             containers,
             monitor_set: MonitorSet::NoOutputs { workspaces: vec![] },
@@ -989,7 +997,7 @@ impl<W: LayoutElement> Layout<W> {
         let opts = Rc::new(options);
 
         let mut containers = ContainerTree::new(clock.clone());
-        let scratchpad = Workspace::new_scratchpad(&mut containers, clock.clone(), opts.clone());
+        let scratchpad = Workspace::new_scratchpad(&mut containers, opts.clone());
 
         let workspaces = config
             .workspaces
@@ -998,7 +1006,6 @@ impl<W: LayoutElement> Layout<W> {
                 Workspace::new_with_config_no_outputs(
                     &mut containers,
                     Some(ws.clone()),
-                    clock.clone(),
                     opts.clone(),
                 )
             })
@@ -1341,7 +1348,6 @@ impl<W: LayoutElement> Layout<W> {
                         if workspaces.is_empty() {
                             workspaces.push(Workspace::new_no_outputs(
                                 &mut self.containers,
-                                self.clock.clone(),
                                 self.options.clone(),
                             ));
                         }
@@ -1374,7 +1380,6 @@ impl<W: LayoutElement> Layout<W> {
                             if workspaces.is_empty() {
                                 workspaces.push(Workspace::new_no_outputs(
                                     &mut self.containers,
-                                    self.clock.clone(),
                                     self.options.clone(),
                                 ));
                             }
@@ -1400,7 +1405,6 @@ impl<W: LayoutElement> Layout<W> {
                     target,
                     activate,
                     is_floating,
-                    None,
                 );
 
                 // Set the default height for tiling windows.
@@ -1445,9 +1449,7 @@ impl<W: LayoutElement> Layout<W> {
                             mon.dnd_scroll_gesture_end();
                         }
 
-                        self.containers
-                            .take_parked_view(move_.node)
-                            .expect("moving view must remain parked");
+                        assert!(self.containers.destroy_transferred_subtree(move_.node));
                         return true;
                     }
                 }
@@ -1459,12 +1461,12 @@ impl<W: LayoutElement> Layout<W> {
             }
         }
 
-        let Some(parked) = self.park_window_inner(window, transaction) else {
+        let Some(transferred) = self.take_window_for_transfer(window, transaction) else {
             return false;
         };
-        self.containers
-            .take_parked_view(parked.node)
-            .expect("a final removal must consume its parked view");
+        assert!(self
+            .containers
+            .destroy_transferred_subtree(transferred.node));
         true
     }
 
@@ -1498,8 +1500,8 @@ impl<W: LayoutElement> Layout<W> {
             if &move_.window_id == window {
                 let tile = self
                     .containers
-                    .parked_tile_mut(move_.node)
-                    .expect("moving view must remain parked");
+                    .transferred_tile_mut(move_.node)
+                    .expect("moving view must remain transferred");
                 // Do this before calling update_window() so it can get up-to-date info.
                 if let Some(serial) = serial {
                     tile.window_mut().on_commit(serial);
@@ -1630,7 +1632,6 @@ impl<W: LayoutElement> Layout<W> {
                 let idx = ensure_no_outputs_workspace_idx(
                     &mut self.containers,
                     workspaces,
-                    self.clock.clone(),
                     self.options.clone(),
                 );
                 let lifetime = if transient {
@@ -1695,7 +1696,6 @@ impl<W: LayoutElement> Layout<W> {
                 let idx = ensure_no_outputs_workspace_idx(
                     &mut self.containers,
                     workspaces,
-                    self.clock.clone(),
                     self.options.clone(),
                 );
                 workspaces[idx].set_numeric_identity(number, WorkspaceLifetime::Transient);
@@ -1752,7 +1752,10 @@ impl<W: LayoutElement> Layout<W> {
                 workspaces[idx].unname();
 
                 // Clean up empty workspaces.
-                if !workspaces[idx].has_windows(&self.containers) {
+                if !self
+                    .containers
+                    .workspace_has_windows(workspaces[idx].workspace_key())
+                {
                     workspaces
                         .remove(idx)
                         .remove_from_tree(&mut self.containers);
@@ -1769,8 +1772,8 @@ impl<W: LayoutElement> Layout<W> {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
             let window = self
                 .containers
-                .parked_tile(move_.node)
-                .expect("moving view must remain parked")
+                .transferred_tile(move_.node)
+                .expect("moving view must remain transferred")
                 .window();
             if window.is_wl_surface(wl_surface) {
                 return Some((window, Some(&move_.output)));
@@ -1786,7 +1789,10 @@ impl<W: LayoutElement> Layout<W> {
                     }
 
                     for ws in &mon.workspaces {
-                        if let Some(window) = ws.find_wl_surface(&self.containers, wl_surface) {
+                        if let Some(window) = self
+                            .containers
+                            .find_wl_surface_in_workspace(ws.workspace_key(), wl_surface)
+                        {
                             return Some((window, Some(&mon.output)));
                         }
                     }
@@ -1794,7 +1800,10 @@ impl<W: LayoutElement> Layout<W> {
             }
             MonitorSet::NoOutputs { workspaces } => {
                 for ws in workspaces {
-                    if let Some(window) = ws.find_wl_surface(&self.containers, wl_surface) {
+                    if let Some(window) = self
+                        .containers
+                        .find_wl_surface_in_workspace(ws.workspace_key(), wl_surface)
+                    {
                         return Some((window, None));
                     }
                 }
@@ -1802,8 +1811,8 @@ impl<W: LayoutElement> Layout<W> {
         }
 
         if let Some(window) = self
-            .scratchpad
-            .tiles(&self.containers)
+            .containers
+            .tiles_in_workspace(self.scratchpad.workspace_key())
             .find(|tile| tile.window().is_wl_surface(wl_surface))
             .map(|tile| tile.window())
         {
@@ -1833,8 +1842,8 @@ impl<W: LayoutElement> Layout<W> {
             .and_then(InteractiveMoveState::moving)
             .is_some_and(|move_| {
                 self.containers
-                    .parked_tile(move_.node)
-                    .expect("moving view must remain parked")
+                    .transferred_tile(move_.node)
+                    .expect("moving view must remain transferred")
                     .window()
                     .is_wl_surface(wl_surface)
             });
@@ -1853,7 +1862,9 @@ impl<W: LayoutElement> Layout<W> {
                             break;
                         }
                         if let Some(ws_idx) = mon.workspaces.iter().position(|ws| {
-                            ws.find_wl_surface(&self.containers, wl_surface).is_some()
+                            self.containers
+                                .find_wl_surface_in_workspace(ws.workspace_key(), wl_surface)
+                                .is_some()
                         }) {
                             found = Location::Workspace(idx, ws_idx);
                             break;
@@ -1862,10 +1873,11 @@ impl<W: LayoutElement> Layout<W> {
                     found
                 }
                 MonitorSet::NoOutputs { workspaces } => {
-                    if let Some(ws_idx) = workspaces
-                        .iter()
-                        .position(|ws| ws.find_wl_surface(&self.containers, wl_surface).is_some())
-                    {
+                    if let Some(ws_idx) = workspaces.iter().position(|ws| {
+                        self.containers
+                            .find_wl_surface_in_workspace(ws.workspace_key(), wl_surface)
+                            .is_some()
+                    }) {
                         Location::NoOutput(ws_idx)
                     } else {
                         Location::NotFound
@@ -1877,8 +1889,8 @@ impl<W: LayoutElement> Layout<W> {
         // Check scratchpad with immutable borrow
         let location = if matches!(location, Location::NotFound) {
             if self
-                .scratchpad
-                .tiles(&self.containers)
+                .containers
+                .tiles_in_workspace(self.scratchpad.workspace_key())
                 .any(|tile| tile.window().is_wl_surface(wl_surface))
             {
                 Location::Scratchpad
@@ -1897,8 +1909,8 @@ impl<W: LayoutElement> Layout<W> {
                 };
                 let window = self
                     .containers
-                    .parked_tile_mut(move_.node)
-                    .expect("moving view must remain parked")
+                    .transferred_tile_mut(move_.node)
+                    .expect("moving view must remain transferred")
                     .window_mut();
                 return Some((window, Some(&move_.output)));
             }
@@ -1906,9 +1918,8 @@ impl<W: LayoutElement> Layout<W> {
                 let containers = &mut self.containers;
                 if let MonitorSet::Normal { monitors, .. } = &mut self.monitor_set {
                     let mon = &mut monitors[idx];
-                    if let Some(tile) = mon
-                        .sticky_floating
-                        .tiles_mut(containers)
+                    if let Some(tile) = containers
+                        .floating_tiles_mut_in_workspace(mon.sticky_workspace)
                         .find(|tile| tile.window().is_wl_surface(wl_surface))
                     {
                         return Some((tile.window_mut(), Some(&mon.output)));
@@ -1918,8 +1929,10 @@ impl<W: LayoutElement> Layout<W> {
             Location::Workspace(idx, ws_idx) => {
                 if let MonitorSet::Normal { monitors, .. } = &mut self.monitor_set {
                     let mon = &mut monitors[idx];
-                    if let Some(window) =
-                        mon.workspaces[ws_idx].find_wl_surface_mut(&mut self.containers, wl_surface)
+                    let workspace = mon.workspaces[ws_idx].workspace_key();
+                    if let Some(window) = self
+                        .containers
+                        .find_wl_surface_in_workspace_mut(workspace, wl_surface)
                     {
                         return Some((window, Some(&mon.output)));
                     }
@@ -1927,17 +1940,21 @@ impl<W: LayoutElement> Layout<W> {
             }
             Location::NoOutput(ws_idx) => {
                 if let MonitorSet::NoOutputs { workspaces } = &mut self.monitor_set {
-                    if let Some(window) =
-                        workspaces[ws_idx].find_wl_surface_mut(&mut self.containers, wl_surface)
+                    let workspace = workspaces[ws_idx].workspace_key();
+                    if let Some(window) = self
+                        .containers
+                        .find_wl_surface_in_workspace_mut(workspace, wl_surface)
                     {
                         return Some((window, None));
                     }
                 }
             }
             Location::Scratchpad => {
+                let scratchpad = self.scratchpad.workspace_key();
                 if let Some(window) = self
-                    .scratchpad
-                    .tiles_mut(&mut self.containers)
+                    .containers
+                    .tiles_mut_in_workspace(scratchpad)
+                    .into_iter()
                     .find(|tile| tile.window().is_wl_surface(wl_surface))
                     .map(|tile| tile.window_mut())
                 {
@@ -1958,8 +1975,8 @@ impl<W: LayoutElement> Layout<W> {
             if &move_.window_id == window {
                 let tile = self
                     .containers
-                    .parked_tile(move_.node)
-                    .expect("moving view must remain parked");
+                    .transferred_tile(move_.node)
+                    .expect("moving view must remain transferred");
                 // Follow the tiling layout logic and fit the popup horizontally within the
                 // window geometry.
                 let width = tile.window_size().w;
@@ -2226,7 +2243,7 @@ impl<W: LayoutElement> Layout<W> {
         Some((&mut mon.workspaces[mon.active_workspace_idx], containers))
     }
 
-    /// Resolve an arena workspace root to the object that owns its transient state.
+    /// Resolve a tree workspace root to the object that owns its transient state.
     fn workspace_owner(&self, root: NodeKey) -> Option<WorkspaceOwner> {
         if self.scratchpad.workspace_key() == root {
             return Some(WorkspaceOwner::Scratchpad);
@@ -2258,7 +2275,49 @@ impl<W: LayoutElement> Layout<W> {
         }
     }
 
-    /// Locate a window once in the arena and classify the root it belongs to.
+    /// Reconcile the transient runtime state of every workspace touched by one tree swap.
+    ///
+    /// The topology mutation is global and returns its affected roots. Applying its effects
+    /// here keeps workspace/floating runtimes out of the model operation while still updating
+    /// both sides of a cross-workspace swap exactly once.
+    fn apply_swap_effects(&mut self, effects: container::SwapEffects) {
+        for root in [effects.source_workspace, effects.target_workspace]
+            .into_iter()
+            .take(if effects.source_workspace == effects.target_workspace {
+                1
+            } else {
+                2
+            })
+        {
+            let owner = self
+                .workspace_owner(root)
+                .expect("every tree workspace must have one layout runtime owner");
+            let containers = &self.containers;
+            match (&mut self.monitor_set, owner) {
+                (_, WorkspaceOwner::Scratchpad) => {
+                    self.scratchpad.apply_swap_effects(containers, effects);
+                }
+                (MonitorSet::Normal { monitors, .. }, WorkspaceOwner::Sticky { monitor_idx }) => {
+                    monitors[monitor_idx].apply_sticky_swap_effects(containers, effects)
+                }
+                (
+                    MonitorSet::Normal { monitors, .. },
+                    WorkspaceOwner::Monitor {
+                        monitor_idx,
+                        workspace_idx,
+                    },
+                ) => monitors[monitor_idx].workspaces[workspace_idx]
+                    .apply_swap_effects(containers, effects),
+                (
+                    MonitorSet::NoOutputs { workspaces },
+                    WorkspaceOwner::NoOutputs { workspace_idx },
+                ) => workspaces[workspace_idx].apply_swap_effects(containers, effects),
+                _ => unreachable!("workspace owner must match the monitor-set state"),
+            }
+        }
+    }
+
+    /// Locate a window once in the tree and classify the root it belongs to.
     fn window_owner(&self, window: &W::Id) -> Option<(NodeKey, WorkspaceOwner)> {
         let tree = &self.containers;
         let root = tree
@@ -2293,15 +2352,15 @@ impl<W: LayoutElement> Layout<W> {
         }
     }
 
-    /// Detach one leaf from its workspace without taking it out of the layout-wide arena.
-    fn park_window_inner(
+    /// Transfer one leaf for reparenting without taking it out of the layout-wide tree.
+    fn take_window_for_transfer(
         &mut self,
         window: &W::Id,
         transaction: Transaction,
-    ) -> Option<ParkedTile> {
+    ) -> Option<ViewTransfer> {
         let (_, owner) = self.window_owner(window)?;
         match owner {
-            WorkspaceOwner::Scratchpad => Some(self.scratchpad.park_tile(
+            WorkspaceOwner::Scratchpad => Some(self.scratchpad.take_tile_for_transfer(
                 &mut self.containers,
                 window,
                 transaction,
@@ -2315,12 +2374,13 @@ impl<W: LayoutElement> Layout<W> {
                     && monitor
                         .sticky_active_window_id(&self.containers)
                         .is_some_and(|id| id == window);
-                let parked = monitor.park_sticky_window(&mut self.containers, window)?;
-                parked.tile_mut(&mut self.containers).set_sticky(false);
+                let transferred =
+                    monitor.take_sticky_window_for_transfer(&mut self.containers, window)?;
+                transferred.tile_mut(&mut self.containers).set_sticky(false);
                 if was_active {
                     monitor.clear_sticky_focus();
                 }
-                Some(parked)
+                Some(transferred)
             }
             WorkspaceOwner::Monitor {
                 monitor_idx,
@@ -2329,28 +2389,28 @@ impl<W: LayoutElement> Layout<W> {
                 let MonitorSet::Normal { monitors, .. } = &mut self.monitor_set else {
                     unreachable!("monitor workspaces only exist with outputs")
                 };
-                let parked = monitors[monitor_idx].workspaces[workspace_idx].park_tile(
-                    &mut self.containers,
-                    window,
-                    transaction,
-                );
+                let transferred = monitors[monitor_idx].workspaces[workspace_idx]
+                    .take_tile_for_transfer(&mut self.containers, window, transaction);
                 if monitors[monitor_idx].workspace_switch.is_none() {
                     monitors[monitor_idx].clean_up_workspaces(&mut self.containers);
                 }
-                Some(parked)
+                Some(transferred)
             }
             WorkspaceOwner::NoOutputs { workspace_idx } => {
                 let MonitorSet::NoOutputs { workspaces } = &mut self.monitor_set else {
                     unreachable!("outputless workspaces only exist without outputs")
                 };
-                let parked =
-                    workspaces[workspace_idx].park_tile(&mut self.containers, window, transaction);
+                let transferred = workspaces[workspace_idx].take_tile_for_transfer(
+                    &mut self.containers,
+                    window,
+                    transaction,
+                );
                 if !workspaces[workspace_idx].has_windows_or_persistent_identity(&self.containers) {
                     workspaces
                         .remove(workspace_idx)
                         .remove_from_tree(&mut self.containers);
                 }
-                Some(parked)
+                Some(transferred)
             }
         }
     }
@@ -2361,7 +2421,7 @@ impl<W: LayoutElement> Layout<W> {
             .is_some_and(|key| tree.is_in_floating_branch(key))
     }
 
-    /// A normal, output-backed or parked-without-output workspace holding `window`.
+    /// A normal output-backed or outputless workspace holding `window`.
     ///
     /// Sticky and scratchpad roots deliberately do not answer: callers of this helper operate
     /// on a real [`Workspace`] from the monitor set, matching the old search over
@@ -2438,7 +2498,7 @@ impl<W: LayoutElement> Layout<W> {
             .as_ref()
             .and_then(|x| x.moving())
             .filter(|move_| move_.output == *output)
-            .and_then(|move_| self.containers.parked_tile(move_.node))
+            .and_then(|move_| self.containers.transferred_tile(move_.node))
             .map(Tile::window)
             .into_iter();
 
@@ -2446,7 +2506,7 @@ impl<W: LayoutElement> Layout<W> {
         let mon_windows = mon
             .workspaces
             .iter()
-            .flat_map(|ws| ws.windows(&self.containers));
+            .flat_map(|ws| self.containers.windows_in_workspace(ws.workspace_key()));
         let sticky_windows = mon.sticky_windows(&self.containers);
 
         moving_window.chain(mon_windows).chain(sticky_windows)
@@ -2489,13 +2549,16 @@ impl<W: LayoutElement> Layout<W> {
             // We don't fill any positions for interactively moved windows.
             let tile = self
                 .containers
-                .parked_tile(move_.node)
-                .expect("moving view must remain parked");
+                .transferred_tile(move_.node)
+                .expect("moving view must remain transferred");
             let layout = tile.ipc_layout_template();
             f(tile.window(), Some(&move_.output), None, layout);
         }
 
-        for tile in self.scratchpad.tiles(&self.containers) {
+        for tile in self
+            .containers
+            .tiles_in_workspace(self.scratchpad.workspace_key())
+        {
             let layout = tile.ipc_layout_template();
             f(tile.window(), None, None, layout);
         }
@@ -2504,20 +2567,29 @@ impl<W: LayoutElement> Layout<W> {
             MonitorSet::Normal { monitors, .. } => {
                 for mon in monitors {
                     for ws in &mon.workspaces {
-                        for (tile, layout) in ws.tiles_with_ipc_layouts(&self.containers) {
+                        for (tile, layout) in self
+                            .containers
+                            .workspace_tiles_with_ipc_layouts(ws.workspace_key())
+                        {
                             f(tile.window(), Some(&mon.output), Some(ws.id()), layout);
                         }
                     }
 
                     let active_ws_id = mon.active_workspace_ref().id();
-                    for (tile, layout) in mon.sticky_tiles_with_ipc_layouts(&self.containers) {
+                    for (tile, layout) in self
+                        .containers
+                        .floating_tiles_with_ipc_layouts(mon.sticky_workspace)
+                    {
                         f(tile.window(), Some(&mon.output), Some(active_ws_id), layout);
                     }
                 }
             }
             MonitorSet::NoOutputs { workspaces } => {
                 for ws in workspaces {
-                    for (tile, layout) in ws.tiles_with_ipc_layouts(&self.containers) {
+                    for (tile, layout) in self
+                        .containers
+                        .workspace_tiles_with_ipc_layouts(ws.workspace_key())
+                    {
                         f(tile.window(), None, Some(ws.id()), layout);
                     }
                 }
@@ -2529,13 +2601,14 @@ impl<W: LayoutElement> Layout<W> {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
             let window = self
                 .containers
-                .parked_tile_mut(move_.node)
-                .expect("moving view must remain parked")
+                .transferred_tile_mut(move_.node)
+                .expect("moving view must remain transferred")
                 .window_mut();
             f(window, Some(&move_.output));
         }
 
-        for tile in self.scratchpad.tiles_mut(&mut self.containers) {
+        let scratchpad = self.scratchpad.workspace_key();
+        for tile in self.containers.tiles_mut_in_workspace(scratchpad) {
             f(tile.window_mut(), None);
         }
 
@@ -2543,7 +2616,7 @@ impl<W: LayoutElement> Layout<W> {
             MonitorSet::Normal { monitors, .. } => {
                 for mon in monitors {
                     for ws in &mut mon.workspaces {
-                        for win in ws.windows_mut(&mut self.containers) {
+                        for win in self.containers.windows_mut_in_workspace(ws.workspace_key()) {
                             f(win, Some(&mon.output));
                         }
                     }
@@ -2556,7 +2629,7 @@ impl<W: LayoutElement> Layout<W> {
             }
             MonitorSet::NoOutputs { workspaces } => {
                 for ws in workspaces {
-                    for win in ws.windows_mut(&mut self.containers) {
+                    for win in self.containers.windows_mut_in_workspace(ws.workspace_key()) {
                         f(win, None);
                     }
                 }
@@ -3007,21 +3080,21 @@ impl<W: LayoutElement> Layout<W> {
         let Some((workspace, containers)) = self.active_workspace_and_containers_mut() else {
             return;
         };
-        workspace.move_container_left(containers);
+        workspace.move_left(containers);
     }
 
     pub fn move_container_right(&mut self) {
         let Some((workspace, containers)) = self.active_workspace_and_containers_mut() else {
             return;
         };
-        workspace.move_container_right(containers);
+        workspace.move_right(containers);
     }
 
     pub fn move_root_container_to_first(&mut self) {
         let Some((workspace, containers)) = self.active_workspace_and_containers_mut() else {
             return;
         };
-        workspace.move_container_to_first(containers);
+        workspace.move_root_container_to_first(containers);
     }
 
     pub fn move_container_to_first(&mut self) {
@@ -3036,7 +3109,7 @@ impl<W: LayoutElement> Layout<W> {
         let Some((workspace, containers)) = self.active_workspace_and_containers_mut() else {
             return;
         };
-        workspace.move_container_to_last(containers);
+        workspace.move_root_container_to_last(containers);
     }
 
     pub fn move_container_to_last(&mut self) {
@@ -3049,7 +3122,7 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn move_container_left_or_to_output(&mut self, output: &Output) -> bool {
         if let Some((workspace, containers)) = self.active_workspace_and_containers_mut() {
-            if workspace.move_container_left(containers) {
+            if workspace.move_left(containers) {
                 return false;
             }
         }
@@ -3064,7 +3137,7 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn move_container_right_or_to_output(&mut self, output: &Output) -> bool {
         if let Some((workspace, containers)) = self.active_workspace_and_containers_mut() {
-            if workspace.move_container_right(containers) {
+            if workspace.move_right(containers) {
                 return false;
             }
         }
@@ -3081,7 +3154,7 @@ impl<W: LayoutElement> Layout<W> {
         let Some((workspace, containers)) = self.active_workspace_and_containers_mut() else {
             return;
         };
-        workspace.move_container_to_index(containers, index);
+        workspace.move_root_container_to_index(containers, index);
     }
 
     pub fn move_container_to_index(&mut self, index: usize) {
@@ -3190,12 +3263,14 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn focus_root_container_right_or_first(&mut self) {
         self.with_active_workspace_focus(|ws, containers| {
-            ws.focus_column_right_or_first(containers)
+            ws.focus_root_container_right_or_first(containers)
         });
     }
 
     pub fn focus_root_container_left_or_last(&mut self) {
-        self.with_active_workspace_focus(|ws, containers| ws.focus_column_left_or_last(containers));
+        self.with_active_workspace_focus(|ws, containers| {
+            ws.focus_root_container_left_or_last(containers)
+        });
     }
 
     pub fn focus_root_container(&mut self, index: usize) {
@@ -3282,7 +3357,7 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn focus_window_in_column(&mut self, index: u8) {
         self.with_active_workspace_focus(|ws, containers| {
-            ws.focus_window_in_column(containers, index)
+            ws.focus_leaf_in_root_container(containers, index)
         });
     }
 
@@ -3628,24 +3703,31 @@ impl<W: LayoutElement> Layout<W> {
     /// interesting cases anyway; a target on another workspace is left alone rather than
     /// dragged across one.
     pub fn swap_window_with(&mut self, target: &W::Id) -> bool {
-        let Some((workspace, containers)) = self.active_workspace_and_containers_mut() else {
+        let Some(source_workspace) = self.active_workspace().map(Workspace::workspace_key) else {
             return false;
         };
-        workspace.swap_window_with(containers, target)
+        let Some(effects) = self
+            .containers
+            .swap_selected_with_window(source_workspace, target)
+        else {
+            return false;
+        };
+        self.apply_swap_effects(effects);
+        true
     }
 
     pub fn toggle_column_tabbed_display(&mut self) {
         let Some((workspace, containers)) = self.active_workspace_and_containers_mut() else {
             return;
         };
-        workspace.toggle_column_tabbed_display(containers);
+        workspace.toggle_container_tabbed(containers);
     }
 
     pub fn set_column_display(&mut self, display: ColumnDisplay) {
         let Some((workspace, containers)) = self.active_workspace_and_containers_mut() else {
             return;
         };
-        workspace.set_column_display(containers, display);
+        workspace.set_container_display(containers, display);
     }
 
     pub fn center_window(&mut self, id: Option<&W::Id>) {
@@ -3711,16 +3793,19 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn active_command_can_fullscreen(&self) -> bool {
-        self.active_workspace()
-            .is_some_and(|ws| ws.active_command_can_fullscreen(&self.containers))
+        self.active_workspace().is_some_and(|ws| {
+            self.containers
+                .workspace_command_node(ws.workspace_key())
+                .is_some()
+        })
     }
 
     pub fn focus_with_output(&self) -> Option<(&W, &Output)> {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
             let window = self
                 .containers
-                .parked_tile(move_.node)
-                .expect("moving view must remain parked")
+                .transferred_tile(move_.node)
+                .expect("moving view must remain transferred")
                 .window();
             return Some((window, &move_.output));
         }
@@ -3752,8 +3837,8 @@ impl<W: LayoutElement> Layout<W> {
             if move_.output == *output {
                 let tile = self
                     .containers
-                    .parked_tile(move_.node)
-                    .expect("moving view must remain parked");
+                    .transferred_tile(move_.node)
+                    .expect("moving view must remain transferred");
                 if self.overview_progress.is_some() {
                     let zoom = self.overview_zoom();
                     let tile_pos = move_.tile_render_location(tile, zoom);
@@ -3870,7 +3955,7 @@ impl<W: LayoutElement> Layout<W> {
     /// True while any workspace is still waiting on a configure it sent.
     pub(crate) fn has_pending_layouts(&self) -> bool {
         self.workspaces()
-            .any(|(_, _, ws)| ws.has_pending_layouts(&self.containers))
+            .any(|(_, _, ws)| self.containers.has_pending_layouts(ws.workspace_key()))
     }
 
     /// Assert every structural invariant the layout is supposed to hold.
@@ -3890,6 +3975,7 @@ impl<W: LayoutElement> Layout<W> {
         let zoom = self.overview_zoom();
 
         let mut move_win_id = None;
+        let mut interactive_transfer = None;
         if let Some(state) = &self.interactive_move {
             match state {
                 InteractiveMoveState::Starting {
@@ -3904,10 +3990,11 @@ impl<W: LayoutElement> Layout<W> {
                     move_win_id = Some(window_id.clone());
                 }
                 InteractiveMoveState::Moving(move_) => {
+                    interactive_transfer = Some(move_.node);
                     let tile = self
                         .containers
-                        .parked_tile(move_.node)
-                        .expect("moving view must remain parked");
+                        .transferred_tile(move_.node)
+                        .expect("moving view must remain transferred");
                     assert_eq!(self.clock, tile.clock);
                     assert!(tile.window().pending_sizing_mode().is_normal());
 
@@ -3969,6 +4056,44 @@ impl<W: LayoutElement> Layout<W> {
             }
         }
 
+        let transfer_roots: Vec<_> = self.containers.transfer_root_keys().collect();
+        match interactive_transfer {
+            Some(node) => assert_eq!(
+                transfer_roots,
+                vec![node],
+                "only the active interactive move may survive as an in-flight tree transfer",
+            ),
+            None => assert!(
+                transfer_roots.is_empty(),
+                "a completed synchronous reparent must not leave an in-flight root: \
+                 {transfer_roots:?}",
+            ),
+        }
+
+        let mut runtime_workspace_roots = HashSet::new();
+        assert!(runtime_workspace_roots.insert(self.scratchpad.workspace_key()));
+        match &self.monitor_set {
+            MonitorSet::Normal { monitors, .. } => {
+                for monitor in monitors {
+                    assert!(runtime_workspace_roots.insert(monitor.sticky_workspace));
+                    for workspace in &monitor.workspaces {
+                        assert!(runtime_workspace_roots.insert(workspace.workspace_key()));
+                    }
+                }
+            }
+            MonitorSet::NoOutputs { workspaces } => {
+                for workspace in workspaces {
+                    assert!(runtime_workspace_roots.insert(workspace.workspace_key()));
+                }
+            }
+        }
+        let tree_workspace_roots: HashSet<_> =
+            self.containers.workspace_keys().into_iter().collect();
+        assert_eq!(
+            runtime_workspace_roots, tree_workspace_roots,
+            "layout runtimes and tree workspace roots must form a bijection",
+        );
+
         let mut seen_workspace_id = HashSet::new();
         let mut seen_workspace_name = Vec::<String>::new();
 
@@ -3984,8 +4109,6 @@ impl<W: LayoutElement> Layout<W> {
                         workspace.has_windows_or_persistent_identity(&self.containers),
                         "with no outputs there cannot be empty unnamed workspaces"
                     );
-
-                    assert_eq!(self.clock, workspace.clock);
 
                     assert_eq!(
                         workspace.base_options, self.options,
@@ -4093,8 +4216,8 @@ impl<W: LayoutElement> Layout<W> {
 
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
             self.containers
-                .parked_tile_mut(move_.node)
-                .expect("moving view must remain parked")
+                .transferred_tile_mut(move_.node)
+                .expect("moving view must remain transferred")
                 .advance_animations();
 
             if dnd_scroll.is_none() {
@@ -4242,8 +4365,8 @@ impl<W: LayoutElement> Layout<W> {
             if output.is_none_or(|output| *output == move_.output) {
                 if self
                     .containers
-                    .parked_tile(move_.node)
-                    .expect("moving view must remain parked")
+                    .transferred_tile(move_.node)
+                    .expect("moving view must remain transferred")
                     .are_animations_ongoing()
                 {
                     return true;
@@ -4287,8 +4410,8 @@ impl<W: LayoutElement> Layout<W> {
             if output.is_none_or(|output| move_.output == *output) {
                 let tile = self
                     .containers
-                    .parked_tile_mut(move_.node)
-                    .expect("moving view must remain parked");
+                    .transferred_tile_mut(move_.node)
+                    .expect("moving view must remain transferred");
                 let pos_within_output = move_.tile_render_location(tile, zoom);
 
                 // We're not on any specific workspace so we can't compute a "workspace view" rect.
@@ -4348,8 +4471,8 @@ impl<W: LayoutElement> Layout<W> {
     pub fn update_shaders(&mut self) {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
             self.containers
-                .parked_tile_mut(move_.node)
-                .expect("moving view must remain parked")
+                .transferred_tile_mut(move_.node)
+                .expect("moving view must remain transferred")
                 .update_shaders();
         }
 
@@ -4403,8 +4526,8 @@ impl<W: LayoutElement> Layout<W> {
                     };
 
                     let tile = containers
-                        .parked_tile(move_.node)
-                        .expect("moving view must remain parked");
+                        .transferred_tile(move_.node)
+                        .expect("moving view must remain transferred");
                     let border_width = tile.effective_border_width().unwrap_or(0.);
                     let corner_radius = tile
                         .window()
@@ -4439,7 +4562,6 @@ impl<W: LayoutElement> Layout<W> {
             return;
         }
 
-        let clock = self.clock.clone();
         let options = self.options.clone();
 
         match &mut self.monitor_set {
@@ -4464,7 +4586,6 @@ impl<W: LayoutElement> Layout<W> {
                     &mut self.containers,
                     mon.output.clone(),
                     Some(ws_config.clone()),
-                    clock,
                     options,
                 );
                 mon.insert_workspace(
@@ -4478,7 +4599,6 @@ impl<W: LayoutElement> Layout<W> {
                 let ws = Workspace::new_with_config_no_outputs(
                     &mut self.containers,
                     Some(ws_config.clone()),
-                    clock,
                     options,
                 );
                 workspaces.push(ws);
@@ -4530,8 +4650,8 @@ impl<W: LayoutElement> Layout<W> {
                 .with_merged_layout(move_.workspace_config.as_ref().map(|(_, c)| c))
                 .adjusted_for_scale(scale);
             self.containers
-                .parked_tile_mut(move_.node)
-                .expect("moving view must remain parked")
+                .transferred_tile_mut(move_.node)
+                .expect("moving view must remain transferred")
                 .update_config(view_size, scale, Rc::new(options));
         }
 
@@ -4704,7 +4824,7 @@ impl<W: LayoutElement> Layout<W> {
         let Some((workspace, containers)) = self.active_workspace_and_containers_mut() else {
             return;
         };
-        workspace.set_column_width(containers, change);
+        workspace.set_root_container_width(containers, change);
     }
 
     pub fn set_window_width(&mut self, window: Option<&W::Id>, change: SizeChange) {
@@ -4771,7 +4891,7 @@ impl<W: LayoutElement> Layout<W> {
         let Some((workspace, containers)) = self.active_workspace_and_containers_mut() else {
             return;
         };
-        workspace.expand_column_to_available_width(containers);
+        workspace.expand_root_container_to_available_width(containers);
     }
 
     pub fn toggle_window_floating(&mut self, window: Option<&W::Id>) {
@@ -4781,8 +4901,8 @@ impl<W: LayoutElement> Layout<W> {
                 move_.is_floating = !move_.is_floating;
                 let tile = self
                     .containers
-                    .parked_tile_mut(move_.node)
-                    .expect("moving view must remain parked");
+                    .transferred_tile_mut(move_.node)
+                    .expect("moving view must remain transferred");
 
                 // When going to floating, restore the floating window size.
                 if move_.is_floating {
@@ -5033,7 +5153,7 @@ impl<W: LayoutElement> Layout<W> {
                     .take_tile_for_hiding_in_scratchpad(&mut self.containers, &target)
                     .expect("the resolved source workspace must still own the window");
                 self.scratchpad
-                    .hide_in_scratchpad(&mut self.containers, tile.incoming());
+                    .hide_in_scratchpad(&mut self.containers, tile.into_incoming());
 
                 if monitor.workspace_switch.is_none() {
                     monitor.clean_up_workspaces(&mut self.containers);
@@ -5044,7 +5164,7 @@ impl<W: LayoutElement> Layout<W> {
                     .take_tile_for_hiding_in_scratchpad(&mut self.containers, &target)
                     .expect("the resolved source workspace must still own the window");
                 self.scratchpad
-                    .hide_in_scratchpad(&mut self.containers, tile.incoming());
+                    .hide_in_scratchpad(&mut self.containers, tile.into_incoming());
                 for idx in (0..workspaces.len()).rev() {
                     if !workspaces[idx].has_windows_or_persistent_identity(&self.containers) {
                         workspaces
@@ -5092,7 +5212,7 @@ impl<W: LayoutElement> Layout<W> {
                 );
                 if let Some(tile) = tile {
                     self.scratchpad
-                        .hide_in_scratchpad(&mut self.containers, tile.incoming());
+                        .hide_in_scratchpad(&mut self.containers, tile.into_incoming());
                     self.seat_focus_after_mutation();
                 }
                 return;
@@ -5117,7 +5237,7 @@ impl<W: LayoutElement> Layout<W> {
             if let (Some(tile), Some((monitor, containers))) =
                 (tile, self.active_monitor_and_containers_mut())
             {
-                monitor.add_scratchpad_tile(containers, tile.incoming(), true);
+                monitor.add_scratchpad_tile(containers, tile.into_incoming(), true);
             }
             self.seat_focus_after_mutation();
             return;
@@ -5132,7 +5252,7 @@ impl<W: LayoutElement> Layout<W> {
         if let (Some(tile), Some((monitor, containers))) =
             (tile, self.active_monitor_and_containers_mut())
         {
-            monitor.add_scratchpad_tile(containers, tile.incoming(), true);
+            monitor.add_scratchpad_tile(containers, tile.into_incoming(), true);
             self.seat_focus_after_mutation();
         }
     }
@@ -5166,10 +5286,17 @@ impl<W: LayoutElement> Layout<W> {
 
     /// sway's `swap container with mark <mark>`.
     pub fn swap_window_with_mark(&mut self, mark: &str) -> bool {
-        let Some((workspace, containers)) = self.active_workspace_and_containers_mut() else {
+        let Some(source_workspace) = self.active_workspace().map(Workspace::workspace_key) else {
             return false;
         };
-        workspace.swap_selected_with_mark(containers, mark)
+        let Some(effects) = self
+            .containers
+            .swap_selected_with_mark(source_workspace, mark)
+        else {
+            return false;
+        };
+        self.apply_swap_effects(effects);
+        true
     }
 
     /// i3's `unmark`: named, it takes that mark off whichever container holds it; bare, it
@@ -5273,7 +5400,7 @@ impl<W: LayoutElement> Layout<W> {
 
             let ws_idx = monitors[idx].active_workspace_idx;
             let ws = &mut monitors[idx].workspaces[ws_idx];
-            target_has_tiling = ws.has_tiling_windows(&self.containers);
+            target_has_tiling = !self.containers.tiled_is_empty(ws.workspace_key());
             if !target_has_tiling {
                 ws.focus_workspace_node(&mut self.containers);
             }
@@ -5405,16 +5532,20 @@ impl<W: LayoutElement> Layout<W> {
                             .sticky_active_window_id(&self.containers)
                             .is_some_and(|id| id == &sticky_id);
 
-                    let parked = monitors[src_idx]
-                        .park_sticky_window(&mut self.containers, &sticky_id)
+                    let transferred = monitors[src_idx]
+                        .take_sticky_window_for_transfer(&mut self.containers, &sticky_id)
                         .expect("sticky window should exist");
-                    parked.tile_mut(&mut self.containers).set_sticky(true);
+                    transferred.tile_mut(&mut self.containers).set_sticky(true);
                     if was_active {
                         monitors[src_idx].clear_sticky_focus();
                     }
 
                     let mon = &mut monitors[new_idx];
-                    mon.add_sticky_tile(&mut self.containers, parked.incoming(), activate_flag);
+                    mon.add_sticky_tile(
+                        &mut self.containers,
+                        transferred.into_incoming(),
+                        activate_flag,
+                    );
                     if activate_flag {
                         *active_monitor_idx = new_idx;
                     }
@@ -5472,15 +5603,17 @@ impl<W: LayoutElement> Layout<W> {
             let window = window.clone();
 
             let transaction = Transaction::new();
-            let parked = ws.park_tile(&mut self.containers, &window, transaction);
-            parked.prepare_for_workspace_move(&mut self.containers);
-            parked.tile_mut(&mut self.containers).stop_move_animations();
-            let is_floating = parked.is_floating;
+            let transferred = ws.take_tile_for_transfer(&mut self.containers, &window, transaction);
+            transferred.prepare_for_workspace_move(&mut self.containers);
+            transferred
+                .tile_mut(&mut self.containers)
+                .stop_move_animations();
+            let is_floating = transferred.is_floating;
 
             let mon = &mut monitors[new_idx];
             mon.add_tile(
                 &mut self.containers,
-                parked.incoming(),
+                transferred.into_incoming(),
                 MonitorAddWindowTarget::Workspace {
                     id: ws_id,
                     root_index: None,
@@ -5488,7 +5621,6 @@ impl<W: LayoutElement> Layout<W> {
                 activate,
                 true,
                 is_floating,
-                None,
             );
             if activate.map_smart(|| false) {
                 *active_monitor_idx = new_idx;
@@ -6083,7 +6215,8 @@ impl<W: LayoutElement> Layout<W> {
                         };
                         let workspace_config = ws.layout_config().cloned().map(|c| (ws.id(), c));
                         (
-                            ws.is_floating(&self.containers, &window_id),
+                            self.containers
+                                .window_is_floating_in(ws.workspace_key(), &window_id),
                             workspace_config,
                         )
                     }
@@ -6197,21 +6330,26 @@ impl<W: LayoutElement> Layout<W> {
                     };
                     (origin_workspace, swap_origin)
                 };
-                let parked = self
-                    .park_window_inner(window, Transaction::new())
+                let transferred = self
+                    .take_window_for_transfer(window, Transaction::new())
                     .expect("the interactively moved window must still exist");
-                let is_floating = parked.is_floating;
+                let is_floating = transferred.is_floating;
 
                 if was_sticky {
-                    parked.tile_mut(&mut self.containers).set_sticky(true);
+                    transferred.tile_mut(&mut self.containers).set_sticky(true);
                 }
 
-                parked.tile_mut(&mut self.containers).stop_move_animations();
-                parked
+                transferred
+                    .tile_mut(&mut self.containers)
+                    .stop_move_animations();
+                transferred
                     .tile_mut(&mut self.containers)
                     .interactive_move_offset = Point::from((0., 0.));
-                parked.tile(&self.containers).window().output_enter(&output);
-                parked
+                transferred
+                    .tile(&self.containers)
+                    .window()
+                    .output_enter(&output);
+                transferred
                     .tile(&self.containers)
                     .window()
                     .set_preferred_scale_transform(
@@ -6225,39 +6363,37 @@ impl<W: LayoutElement> Layout<W> {
                     .with_merged_layout(output_config.as_ref())
                     .with_merged_layout(workspace_config.as_ref().map(|(_, c)| c))
                     .adjusted_for_scale(scale);
-                parked.tile_mut(&mut self.containers).update_config(
+                transferred.tile_mut(&mut self.containers).update_config(
                     view_size,
                     scale,
                     Rc::new(options),
                 );
-                if !parked
+                if !transferred
                     .tile(&self.containers)
                     .window()
                     .pending_sizing_mode()
                     .is_normal()
                 {
-                    let tile_size = parked.tile(&self.containers).tile_size();
-                    parked.tile_mut(&mut self.containers).request_tile_size(
-                        tile_size,
-                        !self.options.animations.off,
-                        None,
-                    );
+                    let tile_size = transferred.tile(&self.containers).tile_size();
+                    transferred
+                        .tile_mut(&mut self.containers)
+                        .request_tile_size(tile_size, !self.options.animations.off, None);
                 }
 
                 if !is_floating {
                     // Animate to semitransparent.
-                    parked.tile_mut(&mut self.containers).animate_alpha(
+                    transferred.tile_mut(&mut self.containers).animate_alpha(
                         1.,
                         INTERACTIVE_MOVE_ALPHA,
                         self.options.animations.window_movement.0,
                     );
-                    parked
+                    transferred
                         .tile_mut(&mut self.containers)
                         .hold_alpha_animation_after_done();
                 }
 
-                let window_id = parked.tile(&self.containers).window().id().clone();
-                let node = parked.node;
+                let window_id = transferred.tile(&self.containers).window().id().clone();
+                let node = transferred.node;
                 let data = InteractiveMoveData {
                     node,
                     window_id,
@@ -6275,13 +6411,13 @@ impl<W: LayoutElement> Layout<W> {
                 if let Some((tile_pos, zoom)) = tile_pos {
                     let new_tile_pos = data.tile_render_location(
                         self.containers
-                            .parked_tile(node)
-                            .expect("moving view must remain parked"),
+                            .transferred_tile(node)
+                            .expect("moving view must remain transferred"),
                         zoom,
                     );
                     self.containers
-                        .parked_tile_mut(node)
-                        .expect("moving view must remain parked")
+                        .transferred_tile_mut(node)
+                        .expect("moving view must remain transferred")
                         .animate_move_from((tile_pos - new_tile_pos).downscale(zoom));
                 }
 
@@ -6313,8 +6449,8 @@ impl<W: LayoutElement> Layout<W> {
                 if output != move_.output {
                     let window = self
                         .containers
-                        .parked_tile(move_.node)
-                        .expect("moving view must remain parked")
+                        .transferred_tile(move_.node)
+                        .expect("moving view must remain transferred")
                         .window();
                     window.output_leave(&move_.output);
                     window.output_enter(&output);
@@ -6340,8 +6476,8 @@ impl<W: LayoutElement> Layout<W> {
                         .with_merged_layout(move_.workspace_config.as_ref().map(|(_, c)| c))
                         .adjusted_for_scale(scale);
                     self.containers
-                        .parked_tile_mut(move_.node)
-                        .expect("moving view must remain parked")
+                        .transferred_tile_mut(move_.node)
+                        .expect("moving view must remain transferred")
                         .update_config(view_size, scale, Rc::new(options));
                 }
 
@@ -6428,8 +6564,9 @@ impl<W: LayoutElement> Layout<W> {
                 if let Some((ws, containers)) =
                     self.workspace_for_window_and_containers_mut(&window_id)
                 {
-                    if let Some(tile) = ws
-                        .tiles_mut(containers)
+                    if let Some(tile) = containers
+                        .tiles_mut_in_workspace(ws.workspace_key())
+                        .into_iter()
                         .find(|tile| *tile.window().id() == window_id)
                     {
                         let offset = tile.interactive_move_offset;
@@ -6481,8 +6618,9 @@ impl<W: LayoutElement> Layout<W> {
                 if let Some((ws, containers)) =
                     self.workspace_for_window_and_containers_mut(&move_.window_id)
                 {
-                    if let Some(tile) = ws
-                        .tiles_mut(containers)
+                    if let Some(tile) = containers
+                        .tiles_mut_in_workspace(ws.workspace_key())
+                        .into_iter()
                         .find(|tile| *tile.window().id() == move_.window_id)
                     {
                         tile.interactive_move_offset = Point::from((0., 0.));
@@ -6517,14 +6655,14 @@ impl<W: LayoutElement> Layout<W> {
             mon.dnd_scroll_gesture_end();
         }
 
-        let parked = ParkedTile {
+        let transferred = ViewTransfer {
             node: move_.node,
             is_floating: move_.is_floating,
         };
 
         // Animate the tile back to opaque.
         if !move_.is_floating {
-            parked.tile_mut(&mut self.containers).animate_alpha(
+            transferred.tile_mut(&mut self.containers).animate_alpha(
                 INTERACTIVE_MOVE_ALPHA,
                 1.,
                 self.options.animations.window_movement.0,
@@ -6592,9 +6730,9 @@ impl<W: LayoutElement> Layout<W> {
 
                 if move_.was_sticky {
                     let tile_render_loc =
-                        move_.tile_render_location(parked.tile(&self.containers), zoom);
-                    parked.tile_mut(&mut self.containers).set_sticky(true);
-                    parked.tile_mut(&mut self.containers).floating_pos = None;
+                        move_.tile_render_location(transferred.tile(&self.containers), zoom);
+                    transferred.tile_mut(&mut self.containers).set_sticky(true);
+                    transferred.tile_mut(&mut self.containers).floating_pos = None;
 
                     let ws_idx_for_pos = match insert_ws {
                         InsertWorkspace::Existing(ws_id) => mon
@@ -6609,16 +6747,16 @@ impl<W: LayoutElement> Layout<W> {
                         let pos = (tile_render_loc - offset).downscale(zoom);
                         let pos = mon.workspaces[ws_idx_for_pos]
                             .floating_logical_to_size_frac(&self.containers, pos);
-                        parked.tile_mut(&mut self.containers).floating_pos = Some(pos);
+                        transferred.tile_mut(&mut self.containers).floating_pos = Some(pos);
                     }
 
-                    mon.add_sticky_tile(&mut self.containers, parked.incoming(), true);
+                    mon.add_sticky_tile(&mut self.containers, transferred.into_incoming(), true);
                     return;
                 }
 
                 let win_id = move_.window_id.clone();
                 let tile_render_loc =
-                    move_.tile_render_location(parked.tile(&self.containers), zoom);
+                    move_.tile_render_location(transferred.tile(&self.containers), zoom);
 
                 let ws_idx = match insert_ws {
                     InsertWorkspace::Existing(ws_id) => mon.idx_of_ws(ws_id).unwrap(),
@@ -6641,7 +6779,7 @@ impl<W: LayoutElement> Layout<W> {
                         let ws_id = mon.workspaces[ws_idx].id();
                         mon.add_tile(
                             &mut self.containers,
-                            parked.incoming(),
+                            transferred.into_incoming(),
                             MonitorAddWindowTarget::Workspace {
                                 id: ws_id,
                                 root_index: Some(0),
@@ -6649,7 +6787,6 @@ impl<W: LayoutElement> Layout<W> {
                             ActivateWindow::Yes,
                             allow_to_activate_workspace,
                             false,
-                            None,
                         );
                     }
                     InsertPosition::Swap { target, direction } => {
@@ -6660,7 +6797,7 @@ impl<W: LayoutElement> Layout<W> {
                             .then(|| move_.swap_origin.clone())
                             .flatten();
 
-                        let tile = parked.incoming();
+                        let tile = transferred.into_incoming();
                         let swap = match origin {
                             Some(origin) => mon.workspaces[ws_idx].tiling_swap_tile(
                                 &mut self.containers,
@@ -6679,7 +6816,7 @@ impl<W: LayoutElement> Layout<W> {
                                 }
                             }
                             Err(tile) => {
-                                let _ = mon.add_tile_split(
+                                if let Err(tile) = mon.add_tile_split(
                                     &mut self.containers,
                                     ws_idx,
                                     target,
@@ -6687,35 +6824,73 @@ impl<W: LayoutElement> Layout<W> {
                                     tile,
                                     true,
                                     allow_to_activate_workspace,
-                                );
+                                ) {
+                                    mon.add_tile(
+                                        &mut self.containers,
+                                        tile,
+                                        MonitorAddWindowTarget::Workspace {
+                                            id: ws_id,
+                                            root_index: None,
+                                        },
+                                        ActivateWindow::Yes,
+                                        allow_to_activate_workspace,
+                                        false,
+                                    );
+                                }
                             }
                         }
                     }
                     InsertPosition::Split {
                         target, direction, ..
                     } => {
-                        let _ = mon.add_tile_split(
+                        let ws_id = mon.workspaces[ws_idx].id();
+                        if let Err(tile) = mon.add_tile_split(
                             &mut self.containers,
                             ws_idx,
                             target,
                             direction,
-                            parked.incoming(),
+                            transferred.into_incoming(),
                             true,
                             allow_to_activate_workspace,
-                        );
+                        ) {
+                            mon.add_tile(
+                                &mut self.containers,
+                                tile,
+                                MonitorAddWindowTarget::Workspace {
+                                    id: ws_id,
+                                    root_index: None,
+                                },
+                                ActivateWindow::Yes,
+                                allow_to_activate_workspace,
+                                false,
+                            );
+                        }
                     }
                     InsertPosition::SplitRoot { direction, .. } => {
-                        let _ = mon.add_tile_split_root(
+                        let ws_id = mon.workspaces[ws_idx].id();
+                        if let Err(tile) = mon.add_tile_split_root(
                             &mut self.containers,
                             ws_idx,
                             direction,
-                            parked.incoming(),
+                            transferred.into_incoming(),
                             true,
                             allow_to_activate_workspace,
-                        );
+                        ) {
+                            mon.add_tile(
+                                &mut self.containers,
+                                tile,
+                                MonitorAddWindowTarget::Workspace {
+                                    id: ws_id,
+                                    root_index: None,
+                                },
+                                ActivateWindow::Yes,
+                                allow_to_activate_workspace,
+                                false,
+                            );
+                        }
                     }
                     InsertPosition::Floating => {
-                        parked.tile_mut(&mut self.containers).floating_pos = None;
+                        transferred.tile_mut(&mut self.containers).floating_pos = None;
 
                         match insert_ws {
                             InsertWorkspace::Existing(_) => {
@@ -6723,7 +6898,8 @@ impl<W: LayoutElement> Layout<W> {
                                     let pos = (tile_render_loc - offset).downscale(zoom);
                                     let pos = mon.workspaces[ws_idx]
                                         .floating_logical_to_size_frac(&self.containers, pos);
-                                    parked.tile_mut(&mut self.containers).floating_pos = Some(pos);
+                                    transferred.tile_mut(&mut self.containers).floating_pos =
+                                        Some(pos);
                                 } else {
                                     error!(
                                         "offset unset for inserting a floating tile \
@@ -6739,14 +6915,18 @@ impl<W: LayoutElement> Layout<W> {
 
                         // Set the floating size so it takes into account any window resizing that
                         // took place during the move.
-                        if let Some(size) = parked.tile(&self.containers).window().expected_size() {
-                            parked.tile_mut(&mut self.containers).floating_window_size = Some(size);
+                        if let Some(size) =
+                            transferred.tile(&self.containers).window().expected_size()
+                        {
+                            transferred
+                                .tile_mut(&mut self.containers)
+                                .floating_window_size = Some(size);
                         }
 
                         let ws_id = mon.workspaces[ws_idx].id();
                         mon.add_tile(
                             &mut self.containers,
-                            parked.incoming(),
+                            transferred.into_incoming(),
                             MonitorAddWindowTarget::Workspace {
                                 id: ws_id,
                                 root_index: None,
@@ -6754,7 +6934,6 @@ impl<W: LayoutElement> Layout<W> {
                             ActivateWindow::Yes,
                             allow_to_activate_workspace,
                             true,
-                            None,
                         );
                     }
                 }
@@ -6769,8 +6948,10 @@ impl<W: LayoutElement> Layout<W> {
                     // No render position when the insert's arrange is still waiting on the
                     // window's configure, the same reason `old_render_pos` above is an option:
                     // a tile that has not been laid out has no place to animate to yet.
-                    let landed = mon.workspaces[inserted_ws_idx]
-                        .tiles_with_render_positions_mut(&mut self.containers, false)
+                    let workspace = mon.workspaces[inserted_ws_idx].workspace_key();
+                    let landed = self
+                        .containers
+                        .workspace_tiles_with_render_positions_mut(workspace, false)
                         .find(|(tile, _)| tile.window().id() == &win_id);
                     if let Some((tile, tile_offset)) = landed {
                         let new_tile_render_loc = ws_geo.loc + tile_offset.upscale(zoom);
@@ -6784,7 +6965,6 @@ impl<W: LayoutElement> Layout<W> {
                 if workspaces.is_empty() {
                     workspaces.push(Workspace::new_no_outputs(
                         &mut self.containers,
-                        self.clock.clone(),
                         self.options.clone(),
                     ));
                 }
@@ -6793,11 +6973,10 @@ impl<W: LayoutElement> Layout<W> {
                 // No point in trying to use the pointer position without outputs.
                 ws.add_tile(
                     &mut self.containers,
-                    parked.incoming(),
+                    transferred.into_incoming(),
                     WorkspaceAddWindowTarget::Auto,
                     ActivateWindow::Yes,
                     move_.is_floating,
-                    None,
                 );
             }
         }
@@ -7214,8 +7393,8 @@ impl<W: LayoutElement> Layout<W> {
             if &move_.window_id == window {
                 let tile = self
                     .containers
-                    .parked_tile_mut(move_.node)
-                    .expect("moving view must remain parked");
+                    .transferred_tile_mut(move_.node)
+                    .expect("moving view must remain transferred");
                 let pos_within_output = move_.tile_render_location(tile, zoom);
 
                 // Computation matches update_render_elements().
@@ -7286,8 +7465,8 @@ impl<W: LayoutElement> Layout<W> {
             if &move_.window_id == window {
                 let _ = self
                     .containers
-                    .parked_tile_mut(move_.node)
-                    .expect("moving view must remain parked")
+                    .transferred_tile_mut(move_.node)
+                    .expect("moving view must remain transferred")
                     .take_unmap_snapshot();
                 return;
             }
@@ -7326,8 +7505,8 @@ impl<W: LayoutElement> Layout<W> {
             if &move_.window_id == window {
                 let tile = self
                     .containers
-                    .parked_tile_mut(move_.node)
-                    .expect("moving view must remain parked");
+                    .transferred_tile_mut(move_.node)
+                    .expect("moving view must remain transferred");
                 let Some(snapshot) = tile.take_unmap_snapshot() else {
                     return;
                 };
@@ -7412,8 +7591,8 @@ impl<W: LayoutElement> Layout<W> {
         let zoom = self.overview_zoom();
         let tile = self
             .containers
-            .parked_tile(move_.node)
-            .expect("moving view must remain parked");
+            .transferred_tile(move_.node)
+            .expect("moving view must remain transferred");
         let pos_in_backdrop = move_.tile_render_location(tile, zoom);
         let xray_pos = XrayPos::new(pos_in_backdrop, zoom);
 
@@ -7436,8 +7615,8 @@ impl<W: LayoutElement> Layout<W> {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
             let win = self
                 .containers
-                .parked_tile_mut(move_.node)
-                .expect("moving view must remain parked")
+                .transferred_tile_mut(move_.node)
+                .expect("moving view must remain transferred")
                 .window_mut();
 
             win.set_active_in_column(true);
@@ -7633,14 +7812,16 @@ impl<W: LayoutElement> Layout<W> {
             .and_then(|x| x.moving())
             .and_then(|move_| {
                 self.containers
-                    .parked_tile(move_.node)
+                    .transferred_tile(move_.node)
                     .map(|tile| (self.monitor_for_output(&move_.output), tile.window()))
             })
             .into_iter();
 
-        let rest = self
-            .workspaces()
-            .flat_map(|(mon, _, ws)| ws.windows(&self.containers).map(move |win| (mon, win)));
+        let rest = self.workspaces().flat_map(|(mon, _, ws)| {
+            self.containers
+                .windows_in_workspace(ws.workspace_key())
+                .map(move |win| (mon, win))
+        });
 
         let sticky = self.monitors().flat_map(|mon| {
             mon.sticky_windows(&self.containers)
@@ -7648,8 +7829,8 @@ impl<W: LayoutElement> Layout<W> {
         });
 
         let scratchpad = self
-            .scratchpad
-            .tiles(&self.containers)
+            .containers
+            .tiles_in_workspace(self.scratchpad.workspace_key())
             .map(|tile| (None, tile.window()));
 
         moving_window.chain(rest).chain(sticky).chain(scratchpad)
@@ -7716,7 +7897,9 @@ impl<W: LayoutElement> Layout<W> {
             workspace_name: workspace.name().cloned(),
             output: Some(monitor.output.name()),
             root: workspace.layout_tree(&self.containers),
-            floating: workspace.floating_layout_tree_nodes(&self.containers),
+            floating: self
+                .containers
+                .floating_layout_tree_nodes(workspace.workspace_key()),
         }
     }
 }

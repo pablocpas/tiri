@@ -1,8 +1,7 @@
 use insta::assert_snapshot;
 
 use super::super::container::{
-    ContainerArena, ContainerData, DetachedView, Direction, FloatingRootKind,
-    Layout as ContainerLayout,
+    ContainerData, ContainerTree, Direction, FloatingRootKind, Layout as ContainerLayout, NewView,
 };
 use super::super::tile::Tile;
 use super::*;
@@ -42,7 +41,7 @@ fn removing_window_above_preserves_focused_window() {
     );
 }
 pub(super) struct TreeHarness {
-    pub(super) tree: ContainerArena<TestWindow>,
+    pub(super) tree: ContainerTree<TestWindow>,
     /// The workspace this harness built first, kept because a test may add a second.
     workspace: super::super::container::NodeKey,
     options: Rc<Options>,
@@ -57,7 +56,7 @@ impl TreeHarness {
         let view_size = Size::from((800.0, 600.0));
         let working_area = Rectangle::from_size(view_size);
         let scale = 1.0;
-        let mut tree = ContainerArena::new(clock.clone());
+        let mut tree = ContainerTree::new(clock.clone());
         let workspace = tree.add_workspace_node(
             ContainerLayout::SplitH,
             view_size,
@@ -80,8 +79,7 @@ impl TreeHarness {
     }
 
     pub(super) fn add_window_with_params(&mut self, params: TestWindowParams) {
-        self.tree
-            .insert_window(self.ws(), self.detached_view(params));
+        self.tree.insert_window(self.ws(), self.new_view(params));
     }
 
     pub(super) fn append_window(&mut self, id: usize) {
@@ -90,18 +88,18 @@ impl TreeHarness {
 
     pub(super) fn append_window_with_params(&mut self, params: TestWindowParams) {
         self.tree
-            .append_leaf(self.ws(), self.detached_view(params), true);
+            .append_leaf(self.ws(), self.new_view(params), true);
     }
 
-    /// The workspace this harness's arena holds.
+    /// The workspace this harness's tree holds.
     ///
-    /// The arena's operations name their workspace and the tests drive the arena directly, so
+    /// The tree's operations name their workspace and the tests drive the tree directly, so
     /// without this every call reaches back through the tree for the same key.
     pub(super) fn ws(&self) -> super::super::container::NodeKey {
         self.workspace
     }
 
-    /// Add a second workspace to the same arena, laid out in the same box.
+    /// Add a second workspace to the same tree, laid out in the same box.
     pub(super) fn add_workspace(&mut self) -> super::super::container::NodeKey {
         self.tree.add_workspace_node(
             ContainerLayout::SplitH,
@@ -112,15 +110,15 @@ impl TreeHarness {
         )
     }
 
-    /// Put a window into a named workspace of this arena.
+    /// Put a window into a named workspace of this tree.
     pub(super) fn add_window_to(&mut self, workspace: super::super::container::NodeKey, id: usize) {
-        let view = self.detached_view(TestWindowParams::new(id));
+        let view = self.new_view(TestWindowParams::new(id));
         self.tree.append_leaf(workspace, view, false);
     }
 
-    /// A view node that no arena owns, the way one arrives from a scratchpad or a drag.
-    pub(super) fn detached_view(&self, params: TestWindowParams) -> DetachedView<TestWindow> {
-        DetachedView::new(Tile::new(
+    /// A view node that no tree owns, the way one arrives from a scratchpad or a drag.
+    pub(super) fn new_view(&self, params: TestWindowParams) -> NewView<TestWindow> {
+        NewView::new(Tile::new(
             TestWindow::new(params),
             self.view_size,
             self.scale,
@@ -135,8 +133,8 @@ impl TreeHarness {
     /// Called automatically on drop, so every test gets an end-state check even though it
     /// drives the tree directly.
     pub(super) fn verify(&mut self) {
-        // Every workspace this arena holds, not just the one the harness built first. A test
-        // that adds a second used to leave it unarranged and unchecked, because the arena's
+        // Every workspace this tree holds, not just the one the harness built first. A test
+        // that adds a second used to leave it unarranged and unchecked, because the tree's
         // per-workspace check was the one this reached; there is one check now and it walks
         // them all.
         for workspace in self.tree.workspace_keys() {
@@ -172,7 +170,7 @@ fn replacing_a_leaf_gives_the_arriving_view_the_slot_it_took() {
     harness.tree.layout(harness.ws());
 
     let target = harness.tree.window_key(&2).expect("the tab being shown");
-    let arriving = harness.detached_view(TestWindowParams::new(3));
+    let arriving = harness.new_view(TestWindowParams::new(3));
     let arriving_key = arriving.key();
 
     let displaced = harness
@@ -224,7 +222,7 @@ fn a_refused_replacement_hands_the_view_back() {
         .tree
         .parent_of(harness.tree.window_key(&1).expect("leaf"))
         .expect("the tabbed container");
-    let arriving = harness.detached_view(TestWindowParams::new(3));
+    let arriving = harness.new_view(TestWindowParams::new(3));
     let arriving_key = arriving.key();
 
     let returned = harness
@@ -239,7 +237,7 @@ fn a_refused_replacement_hands_the_view_back() {
 }
 
 #[test]
-fn one_arena_holds_two_workspaces_without_them_seeing_each_other() {
+fn one_tree_holds_two_workspaces_without_them_seeing_each_other() {
     let mut harness = TreeHarness::new();
     harness.add_window(1);
     harness.add_window(2);
@@ -251,7 +249,7 @@ fn one_arena_holds_two_workspaces_without_them_seeing_each_other() {
     harness.tree.layout(second);
     harness.tree.verify_all_invariants();
 
-    // The walks that mean "every node this arena holds" mean both workspaces. This is the
+    // The walks that mean "every node this tree holds" mean both workspaces. This is the
     // answer that would have gone on compiling while quietly losing half its windows.
     let mut ids = harness.tree.window_ids_everywhere();
     ids.sort();
@@ -262,7 +260,7 @@ fn one_arena_holds_two_workspaces_without_them_seeing_each_other() {
 
     // Every node names its own workspace, and no node names the other's.
     for (id, expected) in [(1, first), (2, first), (3, second), (4, second)] {
-        let key = harness.tree.window_key(&id).expect("window in the arena");
+        let key = harness.tree.window_key(&id).expect("window in the tree");
         assert_eq!(
             harness.tree.workspace_of(key),
             Some(expected),
@@ -289,6 +287,133 @@ fn one_arena_holds_two_workspaces_without_them_seeing_each_other() {
     );
     harness.tree.layout(first);
     harness.tree.layout(second);
+    harness.tree.verify_all_invariants();
+}
+
+#[test]
+fn command_swap_uses_the_source_workspace_target_across_workspaces() {
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+    harness.add_window(2);
+    let source = harness.ws();
+    let target = harness.add_workspace();
+    harness.add_window_to(target, 3);
+    harness.add_window_to(target, 4);
+
+    assert!(harness.tree.focus_window_by_id(source, &1));
+    let source_key = harness.tree.window_key(&1).expect("source leaf");
+    let target_key = harness.tree.window_key(&3).expect("target leaf");
+
+    let effects = harness
+        .tree
+        .swap_selected_with_window(source, &3)
+        .expect("cross-workspace swap");
+
+    assert_eq!(effects.source_workspace, source);
+    assert_eq!(effects.target_workspace, target);
+    assert_eq!(harness.tree.workspace_of(source_key), Some(target));
+    assert_eq!(harness.tree.workspace_of(target_key), Some(source));
+    assert_eq!(
+        harness
+            .tree
+            .workspace_of(harness.tree.window_key(&2).unwrap()),
+        Some(source)
+    );
+    assert_eq!(
+        harness
+            .tree
+            .workspace_of(harness.tree.window_key(&4).unwrap()),
+        Some(target)
+    );
+    assert_eq!(
+        harness
+            .tree
+            .focused_node_key()
+            .and_then(|key| harness.tree.get_tile(key))
+            .map(|tile| *tile.window().id()),
+        Some(3),
+        "sway keeps focus in the source slot rather than switching workspace",
+    );
+    harness.tree.verify_all_invariants();
+}
+
+#[test]
+fn marked_cross_workspace_swap_keeps_the_command_source_explicit() {
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+    let source = harness.ws();
+    let target = harness.add_workspace();
+    harness.add_window_to(target, 2);
+    let source_key = harness.tree.window_key(&1).expect("source leaf");
+    let target_key = harness.tree.window_key(&2).expect("target leaf");
+    assert!(harness
+        .tree
+        .add_mark_to_node(target_key, String::from("remote")));
+    assert!(harness.tree.focus_window_by_id(source, &1));
+
+    harness
+        .tree
+        .swap_selected_with_mark(source, "remote")
+        .expect("marked cross-workspace swap");
+
+    assert_eq!(harness.tree.workspace_of(source_key), Some(target));
+    assert_eq!(harness.tree.workspace_of(target_key), Some(source));
+    harness.tree.verify_all_invariants();
+}
+
+#[test]
+fn cross_workspace_swap_transfers_both_fullscreen_slots() {
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+    let source = harness.ws();
+    let target = harness.add_workspace();
+    harness.add_window_to(target, 2);
+
+    let source_key = harness.tree.window_key(&1).expect("source leaf");
+    let target_key = harness.tree.window_key(&2).expect("target leaf");
+    assert!(harness.tree.set_fullscreen_key(source, Some(source_key)));
+    assert!(harness.tree.set_fullscreen_key(target, Some(target_key)));
+    assert!(harness.tree.focus_window_by_id(source, &1));
+
+    harness
+        .tree
+        .swap_selected_with_window(source, &2)
+        .expect("cross-workspace fullscreen swap");
+
+    assert_eq!(harness.tree.fullscreen_key(source), Some(target_key));
+    assert_eq!(harness.tree.fullscreen_key(target), Some(source_key));
+    assert_eq!(harness.tree.workspace_of(source_key), Some(target));
+    assert_eq!(harness.tree.workspace_of(target_key), Some(source));
+    harness.tree.verify_all_invariants();
+}
+
+#[test]
+fn cross_workspace_swap_exchanges_tiled_and_floating_slots() {
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+    let source = harness.ws();
+    let target = harness.add_workspace();
+    harness.add_window_to(target, 2);
+
+    let source_key = harness.tree.window_key(&1).expect("source leaf");
+    let target_key = harness.tree.window_key(&2).expect("target leaf");
+    let area = Rectangle::new(Point::from((20.0, 30.0)), Size::from((300.0, 200.0)));
+    harness
+        .tree
+        .float_as_group(target_key, area, 0, FloatingRootKind::ImplicitWindowGroup)
+        .expect("target should become floating");
+    assert!(harness.tree.focus_window_by_id(source, &1));
+
+    let effects = harness
+        .tree
+        .swap_selected_with_window(source, &2)
+        .expect("tiled/floating cross-workspace swap");
+
+    assert!(effects.floating_ownership_changed);
+    assert_eq!(harness.tree.workspace_of(source_key), Some(target));
+    assert!(harness.tree.is_in_floating_branch(source_key));
+    assert_eq!(harness.tree.workspace_of(target_key), Some(source));
+    assert!(harness.tree.is_in_tiled_branch(target_key));
     harness.tree.verify_all_invariants();
 }
 
@@ -332,26 +457,34 @@ fn removing_a_workspace_takes_its_windows_and_leaves_the_rest() {
     assert_eq!(harness.ws(), first);
     harness.tree.verify_all_invariants();
 
-    // The last one goes too: an arena with no workspace is the state a fresh one starts in.
+    // The last one goes too: a tree with no workspace is the state a fresh one starts in.
     assert!(harness.tree.remove_workspace(first));
     assert_eq!(harness.tree.window_count(), 0);
 }
 
 #[test]
-fn moving_a_leaf_between_workspace_stores_keeps_its_identity() {
-    let mut source = TreeHarness::new();
-    let mut target = TreeHarness::new();
-    source.add_window(1);
+fn removing_a_workspace_destroys_its_floating_branches_too() {
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+    let first = harness.ws();
+    let second = harness.add_workspace();
+    harness.add_window_to(second, 2);
+    harness.add_window_to(second, 3);
 
-    let key = source.tree.window_key(&1).expect("source leaf");
-    let tile = source
+    let floating = harness.tree.window_key(&2).expect("second-workspace leaf");
+    let area = Rectangle::new(Point::from((20.0, 30.0)), Size::from((300.0, 200.0)));
+    harness
         .tree
-        .remove_window(source.ws(), &1)
-        .expect("detached leaf");
-    assert_eq!(tile.key(), key);
+        .float_as_group(floating, area, 0, FloatingRootKind::ImplicitWindowGroup)
+        .expect("the leaf should become a floating root");
+    harness.tree.layout(second);
 
-    target.tree.append_leaf(target.ws(), tile, true);
-    assert_eq!(target.tree.window_key(&1), Some(key));
+    assert!(harness.tree.remove_workspace(second));
+    harness.tree.layout(first);
+    assert_eq!(harness.tree.window_ids_everywhere(), vec![1]);
+    assert_eq!(harness.tree.window_count(), 1);
+    assert!(!harness.tree.holds_node(floating));
+    harness.tree.verify_all_invariants();
 }
 
 #[test]
@@ -363,10 +496,7 @@ fn removing_fullscreen_leaf_clears_workspace_pointer() {
     assert!(harness.tree.set_fullscreen_key(harness.ws(), Some(key)));
     assert_eq!(harness.tree.fullscreen_key(harness.ws()), Some(key));
 
-    harness
-        .tree
-        .remove_window(harness.ws(), &1)
-        .expect("removed leaf");
+    assert!(harness.tree.remove_window(harness.ws(), &1));
     assert_eq!(
         harness.tree.fullscreen_key(harness.ws()),
         None,
@@ -394,7 +524,7 @@ fn extracting_parent_of_fullscreen_leaf_clears_workspace_pointer() {
     harness
         .tree
         .take_subtree_at(wrapper)
-        .expect("detached fullscreen subtree");
+        .expect("transferred fullscreen subtree");
     assert_eq!(
         harness.tree.fullscreen_key(harness.ws()),
         None,
@@ -445,74 +575,9 @@ fn reaping_empty_fullscreen_wrapper_clears_workspace_pointer() {
         .expect("wrapper");
     assert!(harness.tree.set_fullscreen_key(harness.ws(), Some(wrapper)));
 
-    harness
-        .tree
-        .remove_window(harness.ws(), &1)
-        .expect("removed leaf");
+    assert!(harness.tree.remove_window(harness.ws(), &1));
 
     assert_eq!(harness.tree.fullscreen_key(harness.ws()), None);
-}
-
-#[test]
-fn moving_a_leaf_between_workspace_stores_carries_its_size_state() {
-    let mut source = TreeHarness::new();
-    let mut target = TreeHarness::new();
-    for id in 1..=3 {
-        source.add_window(id);
-        target.add_window(id + 10);
-    }
-
-    let source_root = source
-        .tree
-        .root_node_key(source.ws())
-        .expect("source workspace");
-    assert!(source
-        .tree
-        .set_child_percent(source_root, 1, ContainerLayout::SplitH, 0.6));
-    source.tree.layout(source.ws());
-
-    let key = source.tree.window_key(&2).expect("source leaf");
-    let before = source
-        .tree
-        .debug_node_sizing(key)
-        .expect("size state on source leaf");
-    assert!(
-        before.0 > 0.5,
-        "the test needs a distinctive width fraction"
-    );
-    assert!(before.2 > 0.0, "arrange must record the resize denominator");
-
-    let tile = source
-        .tree
-        .remove_window(source.ws(), &2)
-        .expect("detached leaf");
-    target.tree.append_leaf(target.ws(), tile, true);
-
-    assert_eq!(target.tree.window_key(&2), Some(key));
-    assert_eq!(
-        target.tree.debug_node_sizing(key),
-        Some(before),
-        "identity, both fractions and both child totals travel as one node"
-    );
-
-    // The whole operation, the way a monitor resize reaches a workspace: the box and the
-    // tiles that are laid out in it. `set_view_size` alone moves the workspace and leaves
-    // every tile on the old one, which is a state no production path produces.
-    let target_size = Size::from((1000.0, 700.0));
-    let target_ws = target.ws();
-    let options = target.options.clone();
-    target.tree.update_config(
-        target_ws,
-        target_size,
-        Rectangle::from_size(target_size),
-        1.0,
-        options,
-    );
-    let after_arrange = target.tree.debug_node_sizing(key).unwrap();
-    assert_ne!(
-        after_arrange.2, before.2,
-        "the destination arrange replaces the carried denominator with its own span"
-    );
 }
 
 #[test]
@@ -536,13 +601,40 @@ fn moving_a_subtree_between_workspaces_keeps_every_identity() {
     let subtree = harness
         .tree
         .take_root_child_subtree(source, idx)
-        .expect("parked subtree");
+        .expect("transferred subtree");
     harness
         .tree
         .insert_subtree_at_root(target, 0, subtree, true);
 
     assert_eq!(harness.tree.window_key(&1), Some(first));
     assert_eq!(harness.tree.parent_of(first), Some(container));
+}
+
+#[test]
+fn refused_insert_returns_the_in_flight_view_for_fallback() {
+    let mut harness = TreeHarness::new();
+    harness.add_window(1);
+    let workspace = harness.ws();
+    let key = harness
+        .tree
+        .take_window_for_transfer(workspace, &1)
+        .expect("view transfer");
+
+    let transfer = super::super::container::IncomingView::Transferred(key);
+    let transfer = harness
+        .tree
+        .insert_tile_split(workspace, Direction::Right, transfer, true)
+        .expect_err("a workspace node is not a leaf split target");
+
+    assert_eq!(transfer.key(), key);
+    assert!(harness.tree.transferred_tile(key).is_some());
+    harness
+        .tree
+        .insert_tile_split_root(workspace, Direction::Right, transfer, true)
+        .expect("fallback insertion");
+    assert_eq!(harness.tree.window_key(&1), Some(key));
+    assert!(harness.tree.transfer_root_keys().next().is_none());
+    harness.tree.verify_all_invariants();
 }
 
 /// sway's `container_move_to_workspace`: a container landing on an empty workspace is
@@ -572,7 +664,7 @@ fn moving_a_container_to_an_empty_workspace_unwraps_it() {
     let subtree = harness
         .tree
         .take_root_child_subtree(source, idx)
-        .expect("parked subtree");
+        .expect("transferred subtree");
     harness
         .tree
         .insert_subtree_at_root(target, 0, subtree, true);
@@ -590,7 +682,7 @@ fn moving_a_container_to_an_empty_workspace_unwraps_it() {
     );
     assert!(
         !harness.tree.holds_node(container),
-        "the emptied container is reaped, not left in the arena"
+        "the emptied container is reaped, not left in the tree"
     );
     assert_eq!(
         harness.tree.workspace_layout(target),
@@ -1632,7 +1724,7 @@ fn layout_axis_changes_keep_width_and_height_fractions_independent() {
 }
 
 #[test]
-fn detached_snapshot_does_not_relabel_fractions_after_parent_axis_change() {
+fn transferred_snapshot_does_not_relabel_fractions_after_parent_axis_change() {
     let mut harness = TreeHarness::new();
     for id in 1..=3 {
         harness.add_window(id);
@@ -2322,8 +2414,8 @@ fn focus_parent_traverses_hierarchy() {
 /// The property the two-tree model could not have. Everything anyone holds about a node —
 /// its place in the seat's focus order above all — is keyed by that, so a crossing that
 /// rebuilds the node loses it and a crossing that moves it does not. sway gets this free:
-/// `container_set_floating` detaches from one of the workspace's lists and attaches to the
-/// other, and the container is the same container throughout.
+/// `container_set_floating` reparents between the workspace's two lists, and the container is
+/// the same container throughout.
 #[test]
 fn floating_a_subtree_keeps_its_identity() {
     let mut harness = TreeHarness::new();
@@ -2346,7 +2438,7 @@ fn floating_a_subtree_keeps_its_identity() {
             FloatingRootKind::ImplicitWindowGroup,
         )
         .expect("the window should become a floating group");
-    // Arranged before asking: a detach leaves the siblings' fractions raw on purpose, and the
+    // Arranged before asking: reparenting leaves the siblings' fractions raw on purpose, and the
     // arrange pass is what resolves them. Checking in between asks the tree to be settled
     // halfway through a command.
     harness.tree.layout(harness.ws());

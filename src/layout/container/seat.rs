@@ -78,9 +78,11 @@ impl SeatFocus {
 
     /// sway's `seat_set_focus`: the node becomes the most recent, and its ancestry with it.
     ///
-    /// `chain` is the node first and its ancestors after, which is the order sway adds them
-    /// in — a container sits ahead of its siblings exactly when something inside it was
-    /// focused more recently than anything inside them.
+    /// `chain` is the node first, followed by its parent up to the workspace. sway raw-focuses
+    /// those parents from the inside out, then the workspace, and finally the node. Since raw
+    /// focus inserts at the front, the resulting order is the node, the workspace, and the
+    /// ancestors from outside in. A container sits ahead of its siblings exactly when
+    /// something inside it was focused more recently than anything inside them.
     ///
     /// What is raised is what was *focused*. Focusing a container raises the container, not
     /// a window underneath it: the windows in there keep the order they had, and a later
@@ -139,14 +141,11 @@ impl SeatFocus {
         self.leaf = leaf;
     }
 
-    /// Take in nodes arriving from outside the tree, keeping the sequence they carried.
+    /// Replace a focus-order entry while preserving its rank.
     ///
-    /// Nothing is raised: arriving is not being focused. Nor is anything restored — a subtree
-    /// that left went to a different tree with a different arena, so the keys it had are gone
-    /// and its standing in this order with them. sway has no such loss because it has no such
-    /// journey: floating moves a container between two lists of one workspace and the node
-    /// stays the node. Until tiri's two trees are one, a floated window comes back as though
-    /// nobody had focused it.
+    /// Normal moves keep the same keys in the global tree and need no restoration. This is for
+    /// structural replacement during normalization, where one materialized node takes another
+    /// node's semantic place without implying a user focus change.
     pub(super) fn restore_at(&mut self, rank: usize, keys: impl IntoIterator<Item = NodeKey>) {
         let mut at = rank.min(self.order.len());
         for key in keys {
@@ -169,9 +168,14 @@ impl SeatFocus {
     }
 
     fn raise(&mut self, chain: &[NodeKey]) {
-        for node in chain.iter().rev() {
-            self.order.retain(|entry| entry != node);
-            self.order.insert(0, *node);
+        let Some((node, ancestors)) = chain.split_first() else {
+            return;
+        };
+        for ancestor in ancestors {
+            self.order.retain(|entry| entry != ancestor);
+            self.order.insert(0, *ancestor);
         }
+        self.order.retain(|entry| entry != node);
+        self.order.insert(0, *node);
     }
 }

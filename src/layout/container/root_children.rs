@@ -1,9 +1,9 @@
-//! Root-child ("column") compatibility layer over the tree root.
+//! Operations on the direct children of a workspace root.
 
-use super::{ContainerArena, IncomingView, LayoutElement, NodeData, NodeKey, WorkspaceData};
+use super::{ContainerTree, IncomingView, LayoutElement, NodeData, NodeKey, WorkspaceData};
 
-impl<W: LayoutElement> ContainerArena<W> {
-    /// Number of root-level children (columns).
+impl<W: LayoutElement> ContainerTree<W> {
+    /// Number of root-level containers.
     pub(in crate::layout) fn root_children_len(&self, workspace: NodeKey) -> usize {
         match self.get_node(workspace) {
             Some(node) if node.is_view() => 1,
@@ -55,8 +55,6 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     /// Focus root child at index, descending to the first leaf.
     pub(in crate::layout) fn focus_root_child(&mut self, workspace: NodeKey, idx: usize) -> bool {
-        self.clear_focus_history();
-
         match self.get_node(workspace) {
             Some(node) if node.is_view() => {
                 if idx == 0 {
@@ -101,8 +99,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         from: usize,
         to: usize,
     ) -> bool {
-        self.clear_focus_history();
-
         let container = match self.get_container_mut(workspace) {
             Some(c) => c,
             None => return false,
@@ -119,7 +115,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         true
     }
 
-    /// Insert a parked subtree at root level.
+    /// Insert a transferred subtree at root level.
     pub(in crate::layout) fn insert_subtree_at_root(
         &mut self,
         destination: NodeKey,
@@ -131,7 +127,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         // would leave the transferred container (including its tab bar) absent until another
         // commit or command invalidated the layout.
         self.discard_layout_superseded_by_transfer(destination);
-        assert!(self.adopt_parked_subtree(destination, subtree));
+        assert!(self.consume_transfer_root(destination, subtree));
         let node_key = subtree;
         if self.unwrap_into_empty_workspace(destination, node_key, focus) {
             return;
@@ -204,7 +200,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         child_idx: usize,
         leaf_idx: usize,
     ) -> bool {
-        self.clear_focus_history();
         if leaf_idx == 0 {
             return false;
         }
@@ -288,12 +283,10 @@ impl<W: LayoutElement> ContainerArena<W> {
         tile: IncomingView<W>,
         focus: bool,
     ) {
-        let Some(workspace) = self.workspace_of(branch_root) else {
-            return;
-        };
-        let Ok(tile_key) = self.materialize_incoming_view(workspace, tile) else {
-            return;
-        };
+        let workspace = self
+            .workspace_of(branch_root)
+            .expect("an insertion branch must belong to a workspace");
+        let tile_key = self.materialize_incoming_view(workspace, tile);
         self.insert_key_into_branch(branch_root, index, tile_key, focus);
     }
 

@@ -1,8 +1,8 @@
 //! Marks attached to addressable container nodes.
 
-use super::{ContainerArena, LayoutElement, NodeData, NodeKey};
+use super::{ContainerTree, LayoutElement, NodeData, NodeKey};
 
-impl<W: LayoutElement> ContainerArena<W> {
+impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn node_marks(&self, key: NodeKey) -> Option<&[String]> {
         match self.get_node(key)? {
             NodeData::Container(container) => Some(container.marks()),

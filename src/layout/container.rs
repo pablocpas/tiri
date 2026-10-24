@@ -7,11 +7,11 @@
 //! fractions, floating geometry — which is what lets a window float, be split, or cross a
 //! workspace without anything having to wrap it first.
 //!
-//! One arena owns every workspace root, floating branch and temporarily parked node in a
+//! One tree owns every workspace root, floating branch and in-flight transfer in a
 //! `Layout`. A container crossing a workspace or branch is reparented in place, preserving its
 //! key, marks, sizing and seat order just as sway's `container_detach` does.
 //!
-//! Operations scoped to one workspace take its `NodeKey`; arena-wide walks say so in their
+//! Operations scoped to one workspace take its `NodeKey`; tree-wide walks say so in their
 //! names. This keeps a local command from silently reading another root while still giving
 //! transactions and lookup one authoritative store.
 //!
@@ -35,7 +35,6 @@ mod branch;
 mod cleanup;
 mod command;
 mod debug;
-mod detach;
 mod floating_region;
 mod focus;
 mod fractions;
@@ -56,8 +55,10 @@ mod split;
 mod state;
 mod swap;
 mod tab_bar_model;
+mod transfer;
 mod tree_store;
 
+pub(super) use command::WorkspaceCommandTarget;
 pub(super) use floating_region::{floating_position_from_logical, scale_floating_position};
 use geometry::PendingLayout;
 pub(super) use resize::{InteractiveResizeState, ResizeTarget};
@@ -94,6 +95,29 @@ pub enum Layout {
     Tabbed,
     /// Stacked layout - children stacked with title bars
     Stacked,
+}
+
+/// Which root collection of a workspace an operation or focus state addresses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LayoutLayer {
+    Tiled,
+    Floating,
+}
+
+/// Runtime-relevant effects of a successful tree swap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct SwapEffects {
+    /// Workspace whose command target initiated the swap.
+    pub source_workspace: NodeKey,
+    /// Workspace that owned the addressed target before the swap.
+    pub target_workspace: NodeKey,
+    pub floating_ownership_changed: bool,
+}
+
+impl SwapEffects {
+    pub(super) fn affects(self, workspace: NodeKey) -> bool {
+        workspace == self.source_workspace || workspace == self.target_workspace
+    }
 }
 
 /// Which siblings a resize takes the space from.
@@ -272,39 +296,42 @@ impl<W: LayoutElement> NodeData<W> {
     }
 }
 
-/// A view node at the map/unmap boundary or during a synchronous leaf handoff.
+/// A newly mapped view that has not entered the container tree yet.
 ///
-/// Existing subtrees remain in the arena as parked roots and move by `NodeKey`. A lone view can
-/// still cross the arena boundary when it is first mapped, finally unmapped, or synchronously
-/// handed between leaf-only APIs. `Tile` is only the visual/protocol object; identity, marks and
-/// sizing belong to the sway container node and therefore stay beside it across that boundary.
+/// This is the only value-form boundary. Once materialized, a view remains a node in the one
+/// store until final unmap; workspace moves, floating transitions, scratchpad and interactive
+/// moves carry its `NodeKey` and never turn it back into this type.
 #[derive(Debug)]
-pub struct DetachedView<W: LayoutElement> {
+pub struct NewView<W: LayoutElement> {
     key: NodeKey,
     sizing: NodeSizing,
     marks: Vec<String>,
     tile: Tile<W>,
 }
 
-/// A view entering a branch, either for the first time or from another root in this arena.
+/// A view entering a branch, either for the first time or from an in-flight tree transfer.
 ///
-/// New maps and final unmaps cross the arena boundary as [`DetachedView`]. Every internal
-/// transfer keeps the materialized node parked and carries only its stable key.
+/// New maps cross the tree boundary as [`NewView`]. Every internal transfer keeps the
+/// materialized node in the store and carries only its stable key; final unmap destroys it.
+#[must_use = "an incoming view must be inserted or returned to its caller"]
 pub(super) enum IncomingView<W: LayoutElement> {
-    /// A view built outside the arena, which has never had a node in it.
+    /// A view built outside the tree, which has never had a node in it.
     ///
     /// Boxed because the other variant is a key: a tile beside a `NodeKey` makes every
     /// `Result` carrying this enum as large as a tile, and these are returned by value from
     /// the insertion paths.
-    Detached(Box<DetachedView<W>>),
-    Parked(NodeKey),
+    New(Box<NewView<W>>),
+    Transferred(NodeKey),
 }
 
 impl<W: LayoutElement> std::fmt::Debug for IncomingView<W> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Detached(_) => f.write_str("IncomingView::Detached(..)"),
-            Self::Parked(key) => f.debug_tuple("IncomingView::Parked").field(key).finish(),
+            Self::New(_) => f.write_str("IncomingView::New(..)"),
+            Self::Transferred(key) => f
+                .debug_tuple("IncomingView::Transferred")
+                .field(key)
+                .finish(),
         }
     }
 }
@@ -313,21 +340,15 @@ impl<W: LayoutElement> IncomingView<W> {
     #[cfg(test)]
     pub(super) fn key(&self) -> NodeKey {
         match self {
-            Self::Detached(view) => view.key,
-            Self::Parked(key) => *key,
+            Self::New(view) => view.key,
+            Self::Transferred(key) => *key,
         }
     }
 }
 
-impl<W: LayoutElement> From<DetachedView<W>> for IncomingView<W> {
-    fn from(view: DetachedView<W>) -> Self {
-        Self::Detached(Box::new(view))
-    }
-}
-
-impl<W: LayoutElement> From<NodeKey> for IncomingView<W> {
-    fn from(key: NodeKey) -> Self {
-        Self::Parked(key)
+impl<W: LayoutElement> From<NewView<W>> for IncomingView<W> {
+    fn from(view: NewView<W>) -> Self {
+        Self::New(Box::new(view))
     }
 }
 
@@ -344,12 +365,22 @@ pub struct LayoutParentData {
 #[derive(Debug)]
 pub struct WorkspaceData {
     common: LayoutParentData,
+    /// Floating roots in render order, topmost first.
+    ///
+    /// A workspace owns both of its root lists. The tiled roots are `common.children`; the
+    /// floating roots live here because their stack order and geometry have different
+    /// semantics, while still belonging to the same workspace node and the same tree.
+    floating_roots: Vec<FloatingRoot>,
+    /// The one container currently owning workspace fullscreen.
+    fullscreen_key: Option<NodeKey>,
+    /// Another arrange was requested while this workspace still had a pending layout.
+    pending_relayout: bool,
     /// The box this workspace is laid out in, and the config it is laid out with.
     ///
     /// On the workspace node rather than beside the tree because they are the workspace's and
-    /// not the tree's. A workspace parked without an output keeps the last box it had, and a
-    /// workspace can override the layout config its monitor handed down, so "the arena's view
-    /// size" is only an answer while an arena holds exactly one workspace. sway keeps the same
+    /// not the tree's. A workspace left without an output keeps the last box it had, and a
+    /// workspace can override the layout config its monitor handed down, so "the tree's view
+    /// size" is only an answer while a tree holds exactly one workspace. sway keeps the same
     /// split: the box is `sway_output`'s and `arrange_output` walks it down.
     view_size: Size<f64, Logical>,
     working_area: Rectangle<f64, Logical>,
@@ -389,9 +420,9 @@ impl FloatingRootKind {
 
 /// The single authority for one floating branch.
 ///
-/// Entries live in [`ContainerArena::floating_roots`] in top-to-bottom order. Keeping the key,
+/// Entries live in [`ContainerTree::floating_roots`] in top-to-bottom order. Keeping the key,
 /// stable reinsertion id, semantic provenance and complete geometry in one record means a root
-/// cannot exist in the arena without its stack slot, or vice versa.
+/// cannot exist in the tree without its stack slot, or vice versa.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct FloatingRoot {
     id: u64,
@@ -406,7 +437,7 @@ struct FloatingRoot {
 /// older transaction may replace that cache while a newer compositor target still has to be
 /// requested. `resize_base_size` similarly records a client-observed size without overwriting
 /// the newer target. They are different meanings, but they live together on the root that owns
-/// both rather than being coordinated across `ContainerArena` and `FloatingSpace`.
+/// both rather than being coordinated across the tree and `FloatingRuntime`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct FloatingGeometry {
     pos: Point<f64, SizeFrac>,
@@ -487,34 +518,53 @@ impl InactiveTilingReference {
 /// Container key, child index, available span, child count and rect of a window's container.
 pub(super) type ContainerMetrics = (NodeKey, usize, f64, usize, Rectangle<f64, Logical>);
 
-/// Workspace-local ownership of globally identified nodes.
+/// One materialized node and its current structural owner.
 #[derive(Debug)]
-struct NodeStore<W: LayoutElement>(HashMap<NodeKey, NodeData<W>>);
+struct NodeRecord<W: LayoutElement> {
+    parent: Option<NodeKey>,
+    data: NodeData<W>,
+}
+
+/// Layout-wide ownership of globally identified nodes.
+#[derive(Debug)]
+struct NodeStore<W: LayoutElement>(HashMap<NodeKey, NodeRecord<W>>);
 
 impl<W: LayoutElement> NodeStore<W> {
     fn new() -> Self {
         Self(HashMap::new())
     }
 
-    fn insert(&mut self, key: NodeKey, node: NodeData<W>) {
+    fn insert(&mut self, key: NodeKey, data: NodeData<W>, parent: Option<NodeKey>) {
         match self.0.entry(key) {
             Entry::Vacant(entry) => {
-                entry.insert(node);
+                entry.insert(NodeRecord { parent, data });
             }
-            Entry::Occupied(_) => panic!("a node key cannot belong to the same workspace twice"),
+            Entry::Occupied(_) => panic!("a node key can only have one materialized record"),
         }
     }
 
     fn get(&self, key: NodeKey) -> Option<&NodeData<W>> {
-        self.0.get(&key)
+        self.0.get(&key).map(|record| &record.data)
     }
 
     fn get_mut(&mut self, key: NodeKey) -> Option<&mut NodeData<W>> {
-        self.0.get_mut(&key)
+        self.0.get_mut(&key).map(|record| &mut record.data)
     }
 
     fn remove(&mut self, key: NodeKey) -> Option<NodeData<W>> {
-        self.0.remove(&key)
+        self.0.remove(&key).map(|record| record.data)
+    }
+
+    fn parent(&self, key: NodeKey) -> Option<NodeKey> {
+        self.0.get(&key).and_then(|record| record.parent)
+    }
+
+    fn set_parent(&mut self, key: NodeKey, parent: Option<NodeKey>) -> bool {
+        let Some(record) = self.0.get_mut(&key) else {
+            return false;
+        };
+        record.parent = parent;
+        true
     }
 
     fn contains_key(&self, key: NodeKey) -> bool {
@@ -530,49 +580,26 @@ impl<W: LayoutElement> NodeStore<W> {
     }
 
     fn iter(&self) -> impl Iterator<Item = (NodeKey, &NodeData<W>)> + '_ {
-        self.0.iter().map(|(key, node)| (*key, node))
+        self.0.iter().map(|(key, record)| (*key, &record.data))
     }
 
     fn iter_mut(&mut self) -> impl Iterator<Item = (NodeKey, &mut NodeData<W>)> + '_ {
-        self.0.iter_mut().map(|(key, node)| (*key, node))
+        self.0
+            .iter_mut()
+            .map(|(key, record)| (*key, &mut record.data))
     }
 }
 
+/// The layout's one container tree: all workspaces, floating branches and in-flight transfers.
 #[derive(Debug)]
-struct ParentStore(HashMap<NodeKey, Option<NodeKey>>);
-
-impl ParentStore {
-    fn new() -> Self {
-        Self(HashMap::new())
-    }
-
-    fn insert(&mut self, key: NodeKey, parent: Option<NodeKey>) {
-        self.0.insert(key, parent);
-    }
-
-    fn get(&self, key: NodeKey) -> Option<&Option<NodeKey>> {
-        self.0.get(&key)
-    }
-
-    fn get_mut(&mut self, key: NodeKey) -> Option<&mut Option<NodeKey>> {
-        self.0.get_mut(&key)
-    }
-
-    fn remove(&mut self, key: NodeKey) -> Option<Option<NodeKey>> {
-        self.0.remove(&key)
-    }
-}
-
-/// Stable node arena and topology backing a workspace's shared container tree.
-#[derive(Debug)]
-pub struct ContainerArena<W: LayoutElement> {
+pub struct ContainerTree<W: LayoutElement> {
     /// Every materialized node in the layout.
     nodes: NodeStore<W>,
-    /// Parent pointer for each node (None for root)
-    parents: ParentStore,
-    /// The workspaces this arena holds, in creation order.
+    /// Unique window identity to its stable tree node.
+    window_nodes: HashMap<W::Id, NodeKey>,
+    /// The workspaces this tree holds, in creation order.
     ///
-    /// A list rather than one key because the walks that mean *every* node this arena holds
+    /// A list rather than one key because the walks that mean *every* node this tree holds
     /// have to iterate something. A walk that starts from a single root is silently incomplete
     /// the moment a second workspace arrives, and silently incomplete is how a window comes to
     /// exist without being found.
@@ -587,17 +614,12 @@ pub struct ContainerArena<W: LayoutElement> {
     /// "is the parent the workspace?" was working around its absence, and each of those
     /// workarounds disagreed with sway somewhere.
     workspaces: Vec<NodeKey>,
-    /// Floating branches in render order, topmost first.
-    ///
-    /// This is the only floating-root collection and the only owner of their geometry and
-    /// semantic metadata. `FloatingSpace` owns only transient interaction/render state.
-    floating_roots: Vec<FloatingRoot>,
     /// Roots temporarily owned by the layout but attached to no workspace.
     ///
     /// Interactive moves live here between pointer events. They stay in the one node store,
     /// so identity, marks and window lookup do not acquire a second authority while the view
     /// is being dragged.
-    parked_roots: HashSet<NodeKey>,
+    transfer_roots: HashSet<NodeKey>,
     next_floating_root_id: u64,
     /// The seat's focus: what holds it, and the order everything was last in.
     ///
@@ -606,11 +628,6 @@ pub struct ContainerArena<W: LayoutElement> {
     /// — which tab a switcher shows, which window a descent lands on — was therefore right
     /// for the commands whose authors remembered and wrong for the rest.
     seat: seat::SeatFocus,
-    /// Fullscreen authority per workspace.
-    ///
-    /// Hidden workspaces keep their own fullscreen container, just like sway; a single
-    /// arena-wide slot would make fullscreen on one workspace revoke it on every other one.
-    fullscreen_keys: HashMap<NodeKey, NodeKey>,
     /// Cached presentation by stable leaf identity.
     leaf_layouts: HashMap<NodeKey, LeafLayoutInfo>,
     /// Branches whose arrange is waiting for the windows it asked to resize.
@@ -620,27 +637,16 @@ pub struct ContainerArena<W: LayoutElement> {
     pending_layouts: Vec<PendingLayout>,
     /// Optional transaction to use for the next atomic layout.
     pending_transaction: Option<Transaction>,
-    /// Workspaces that asked for a layout pass while a transaction was still pending.
-    ///
-    /// Keyed by workspace, not a single flag: two workspaces arrange independently, and one
-    /// consuming the other's retry left that one never arranged again.
-    pending_relayout: HashSet<NodeKey>,
     /// Generation counter for layout invalidation.
     generation: u64,
     /// Animation clock.
     pub(super) clock: Clock,
     /// Derived render data for the tree: tab bars already drawn, overview textures, scratch.
     ///
-    /// The one thing this type holds that is not the model. It lived on a wrapper until
-    /// ago-2026, and the wrapper's other two hundred and thirty-six methods were forwards to
-    /// here — two vocabularies for one tree, and every new operation written twice.
+    /// The one thing this type holds that is not the model. Before this refactor it lived on a
+    /// wrapper whose other methods mostly forwarded here — two vocabularies for one tree, and
+    /// every new operation written twice.
     pub(super) render: super::container_tree::ContainerRenderState,
-    /// For each workspace that has the focus, which of its two sides holds it.
-    ///
-    /// Absent means the workspace is not the active one. Keyed rather than a pair of flags
-    /// because one tree serves every workspace, and the one being rendered is not necessarily
-    /// the one that was last told it was active.
-    pub(super) active_side: HashMap<NodeKey, bool>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -762,6 +768,9 @@ impl WorkspaceData {
     ) -> Self {
         Self {
             common: LayoutParentData::new(layout),
+            floating_roots: Vec::new(),
+            fullscreen_key: None,
+            pending_relayout: false,
             view_size,
             working_area,
             scale,
@@ -796,9 +805,9 @@ impl<W: LayoutElement> ContainerData<W> {
         }
     }
 
-    /// Reattach the node a window is, returning its stable identity with the arena payload.
-    pub(super) fn new_view(view: DetachedView<W>) -> (NodeKey, Self) {
-        let DetachedView {
+    /// Materialize a new window as a node, returning its reserved identity and payload.
+    pub(super) fn from_new_view(view: NewView<W>) -> (NodeKey, Self) {
+        let NewView {
             key,
             sizing,
             marks,
@@ -824,15 +833,6 @@ impl<W: LayoutElement> ContainerData<W> {
 
     pub(super) fn is_view(&self) -> bool {
         self.tile.is_some()
-    }
-
-    pub(super) fn into_view(self, key: NodeKey) -> Option<DetachedView<W>> {
-        Some(DetachedView {
-            key,
-            sizing: self.sizing,
-            marks: self.marks,
-            tile: self.tile?,
-        })
     }
 
     pub(super) fn marks(&self) -> &[String] {
@@ -899,7 +899,7 @@ impl<W: LayoutElement> DerefMut for ContainerData<W> {
     }
 }
 
-impl<W: LayoutElement> DetachedView<W> {
+impl<W: LayoutElement> NewView<W> {
     pub(super) fn new(tile: Tile<W>) -> Self {
         Self {
             key: NodeKey::next(),
@@ -916,10 +916,8 @@ impl<W: LayoutElement> DetachedView<W> {
 
     /// The visual object, and only that.
     ///
-    /// Deliberately not a `Deref`. A detached node is a node, and the whole reason it is one is
-    /// that identity, marks and fractions are not the tile's to answer for; borrowing every
-    /// `Tile` method onto this type would put the two vocabularies back in one namespace, where
-    /// an inherent method here and a like-named one there differ by which the compiler picks.
+    /// Deliberately not a `Deref`: this is the map input, while `Tile` is only its
+    /// visual/protocol payload.
     pub(super) fn tile(&self) -> &Tile<W> {
         &self.tile
     }
@@ -930,50 +928,45 @@ impl<W: LayoutElement> DetachedView<W> {
 }
 
 // ============================================================================
-// ContainerArena Implementation
+// ContainerTree implementation
 // ============================================================================
 
-impl<W: LayoutElement> ContainerArena<W> {
-    /// A new arena with no workspaces in it.
+impl<W: LayoutElement> ContainerTree<W> {
+    /// A new tree with no workspaces in it.
     ///
     /// A workspace root only appears through [`Self::add_workspace`], which is what every
-    /// `Workspace` calls when it is built. An arena that fabricated one of its own would hand
+    /// `Workspace` calls when it is built. An tree that fabricated one of its own would hand
     /// out a root that no workspace owns.
     pub fn new(clock: Clock) -> Self {
         let nodes = NodeStore::new();
-        let parents = ParentStore::new();
         let seat = seat::SeatFocus::default();
 
         Self {
             nodes,
-            parents,
+            window_nodes: HashMap::new(),
             workspaces: Vec::new(),
-            floating_roots: Vec::new(),
-            parked_roots: HashSet::new(),
+            transfer_roots: HashSet::new(),
             next_floating_root_id: 1,
             seat,
-            fullscreen_keys: HashMap::new(),
             leaf_layouts: HashMap::new(),
             pending_layouts: Vec::new(),
             pending_transaction: None,
-            pending_relayout: HashSet::new(),
             generation: 0,
             clock,
             render: super::container_tree::ContainerRenderState::new(),
-            active_side: HashMap::new(),
         }
     }
 
-    /// Add a workspace to this arena and return its node.
+    /// Add a workspace to this tree and return its node.
     ///
-    /// A workspace root is a node with no parent, like the one the arena is created with and
+    /// A workspace root is a node with no parent, like the one the tree is created with and
     /// like a floating root before it is registered. Nothing else distinguishes it: the walks
     /// iterate `workspaces`, `workspace_of` finds it by climbing to the parentless ancestor,
     /// and every operation is already told which one it acts on.
     ///
     /// It carries its own box and config because those are the workspace's — a second
-    /// workspace on the same output can be parked, or override the layout its monitor handed
-    /// down, and then the two differ while sharing an arena.
+    /// workspace on the same output can be transferred, or override the layout its monitor handed
+    /// down, and then the two differ while sharing a tree.
     ///
     pub(in crate::layout) fn add_workspace_node(
         &mut self,
@@ -993,8 +986,8 @@ impl<W: LayoutElement> ContainerArena<W> {
                 scale,
                 options,
             )),
+            None,
         );
-        self.parents.insert(key, None);
         self.seat.register(key);
         self.workspaces.push(key);
         key
@@ -1002,20 +995,18 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     /// Drop a workspace and everything under it.
     ///
-    /// The last one may go too: an arena with no workspaces is the state a fresh one starts
+    /// The last one may go too: a tree with no workspaces is the state a fresh one starts
     /// in, and nothing reads a root it was not given.
     pub(in crate::layout) fn remove_workspace(&mut self, workspace: NodeKey) -> bool {
         self.render.overview.remove(&workspace);
-        self.active_side.remove(&workspace);
         let Some(idx) = self.workspaces.iter().position(|key| *key == workspace) else {
             return false;
         };
 
         for root in self.floating_roots_in(workspace) {
-            self.forget_floating_root(root);
+            assert!(self.remove_floating_branch(root));
         }
         self.remove_node_recursive(workspace);
-        self.fullscreen_keys.remove(&workspace);
         self.workspaces.remove(idx);
         self.prune_focus_order();
         match self.workspaces.first().copied() {
@@ -1030,12 +1021,12 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.floating_roots(workspace).collect()
     }
 
-    /// Check every workspace this arena holds, and then the arena itself.
+    /// Check every workspace this tree holds, and then the tree itself.
     ///
     /// Reachability belongs here rather than in [`Self::verify_invariants`]: "every node is
-    /// under a root" is a claim about the arena, and a per-workspace check can only see one
+    /// under a root" is a claim about the tree, and a per-workspace check can only see one
     /// root's worth of nodes. So does where the seat's focused leaf points, and what the layout
-    /// caches describe — all three are the arena's, and all three read a second workspace's
+    /// caches describe — all three are the tree's, and all three read a second workspace's
     /// perfectly good state as garbage when asked from the first.
     pub(in crate::layout) fn verify_all_invariants(&self) {
         for workspace in &self.workspaces {

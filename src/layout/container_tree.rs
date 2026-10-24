@@ -11,7 +11,7 @@
 //! `Workspace` is a `NodeKey` into this store plus its presentation state, and it passes that
 //! key in. That is what makes moving a window between workspaces a reparent — the node keeps
 //! its key, its place in the seat's focus order, its marks — rather than a subtree carried
-//! between two arenas and rebuilt with new keys on arrival.
+//! between two trees and rebuilt with new keys on arrival.
 //!
 //! Node access is O(1), and node keys remain stable when a subtree changes workspace or
 //! output.
@@ -35,9 +35,10 @@ use tiri_config::{Border, Color, HideEdgeBorders, PresetSize, TabBar};
 use tiri_ipc::{ColumnDisplay, LayoutTreeNode, LayoutTreeRect, SizeChange};
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
+pub use super::container::ContainerTree;
 use super::container::{
-    ContainerArena, ContainerMetrics, Direction, IncomingView, InteractiveResizeState, Layout,
-    LeafLayoutInfo, NodeKey, ResizeDelta, ResizeReach, ResizeSpace, ResizeTarget,
+    ContainerMetrics, Direction, IncomingView, InteractiveResizeState, Layout, LeafLayoutInfo,
+    NodeKey, ResizeDelta, ResizeReach, ResizeSpace, ResizeTarget, SwapEffects,
 };
 use super::focus_ring::{
     render_container_selection, FocusRingEdges, FocusRingIndicatorEdge, FocusRingRenderElement,
@@ -45,8 +46,8 @@ use super::focus_ring::{
 use super::monitor::{InsertPosition, SplitIndicator};
 use super::tile::{Tile, TileRenderElement};
 use super::{
-    ConfigureIntent, InteractiveResizeData, LayoutCycleEntry, LayoutElement, Options, ParkedTile,
-    ResizeAxis, ResizeHit, ResizeRequest,
+    BranchRenderParams, ConfigureIntent, InteractiveResizeData, LayoutCycleEntry, LayoutElement,
+    Options, ResizeAxis, ResizeHit, ResizeRequest, SizingMode, ViewTransfer,
 };
 use crate::animation::{Animation, Clock};
 use crate::layout::tab_bar::{
@@ -75,28 +76,7 @@ const SWAY_MIN_TILED_HEIGHT: f64 = 60.0;
 // MAIN STRUCTURES - i3-style container tree implementation
 // ============================================================================
 
-/// The layout's container arena, plus the render state derived from it.
-///
-/// This is deliberately not one workspace and not the tiled side: every workspace's nodes are
-/// in `arena`, which also owns the floating-root stack and its geometry. They share tab-bar
-/// and render projections and keep stable node identity while crossing sides or workspaces.
-/// Tiled-only interaction state — an ongoing resize, the windows closing — belongs to the
-/// [`Workspace`] and is handed to the methods that need it.
-///
-/// Every method takes the workspace it acts on. Nothing here answers "which workspace do you
-/// mean"; the caller already knows, and one that did not would be reading another workspace's
-/// tree.
-///
-/// [`Workspace`]: super::workspace::Workspace
-///
-/// The tree, its render caches, and everything addressed on it.
-///
-/// Was a wrapper around `ContainerArena` until ago-2026, with 236 of its 252 methods
-/// forwarding into it. One tree, one name: this is the arena, and the operations that used
-/// to live on the wrapper are the arena's own.
-pub type ContainerTree<W> = ContainerArena<W>;
-
-/// Render caches derived from the shared arena.
+/// Render caches derived from the shared tree.
 ///
 /// Keeping these together makes their ownership explicit without giving either the tiled or
 /// floating side a second copy. None of this state is part of the container topology.
@@ -104,7 +84,7 @@ pub type ContainerTree<W> = ContainerArena<W>;
 pub(super) struct ContainerRenderState {
     /// Tab bars already drawn, for both sides of the workspace.
     ///
-    /// One cache, because a node key is unique across the arena; two would have to agree on
+    /// One cache, because a node key is unique across the tree; two would have to agree on
     /// which side a container is on, and a container changes sides. Entries are dropped when
     /// their container leaves the tree, rather than when a frame does not redraw them: a
     /// fullscreen draws no bars at all and is not a reason to forget every one of them.
@@ -250,13 +230,13 @@ niri_render_elements! {
     }
 }
 
-/// Parked top-level tiling subtree.
+/// Top-level tiling subtree in transit between two workspace roots.
 ///
 /// This is the internal unit moved across workspaces and monitors in the i3-style tree.
 #[derive(Debug)]
-#[must_use = "a parked subtree must be reattached to the layout tree"]
+#[must_use = "a subtree transfer must be reattached to the layout tree"]
 pub struct RootTilingSubtree {
-    /// Parked root that preserves the materialized container structure in the shared arena.
+    /// Root that preserves the materialized container structure in the shared tree.
     subtree: NodeKey,
 }
 
@@ -264,7 +244,7 @@ pub struct RootTilingSubtree {
 // ContainerTree Implementation
 // ============================================================================
 
-impl<W: LayoutElement> ContainerArena<W> {
+impl<W: LayoutElement> ContainerTree<W> {
     fn tiled_window_key(&self, workspace: NodeKey, id: &W::Id) -> Option<NodeKey> {
         let key = self.window_key(id)?;
         (self.branch_root(key) == workspace).then_some(key)
@@ -343,8 +323,8 @@ impl<W: LayoutElement> ContainerArena<W> {
         incoming: &'a IncomingView<W>,
     ) -> Option<&'a Tile<W>> {
         match incoming {
-            IncomingView::Detached(view) => Some(view.tile()),
-            IncomingView::Parked(key) => self.parked_tile(*key),
+            IncomingView::New(view) => Some(view.tile()),
+            IncomingView::Transferred(key) => self.transferred_tile(*key),
         }
     }
 
@@ -353,8 +333,8 @@ impl<W: LayoutElement> ContainerArena<W> {
         incoming: &'a mut IncomingView<W>,
     ) -> Option<&'a mut Tile<W>> {
         match incoming {
-            IncomingView::Detached(view) => Some(view.tile_mut()),
-            IncomingView::Parked(key) => self.parked_tile_mut(*key),
+            IncomingView::New(view) => Some(view.tile_mut()),
+            IncomingView::Transferred(key) => self.transferred_tile_mut(*key),
         }
     }
 
@@ -364,11 +344,13 @@ impl<W: LayoutElement> ContainerArena<W> {
             .map(|window| window.id().clone())
     }
 
-    pub(super) fn swap_selected_with_mark(&mut self, mark: &str) -> bool {
-        let Some(target) = self.node_with_mark(mark) else {
-            return false;
-        };
-        self.swap_selected_nodes(target)
+    pub(super) fn swap_selected_with_mark(
+        &mut self,
+        source_workspace: NodeKey,
+        mark: &str,
+    ) -> Option<SwapEffects> {
+        let target = self.node_with_mark(mark)?;
+        self.swap_selected_nodes(source_workspace, target)
     }
 
     /// Arrange the two parents that `container_swap` leaves behind.
@@ -378,13 +360,13 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// below a fullscreen ancestor: both parent containers retain their zero pending boxes.
     /// A workspace parent still expands to the regular whole-workspace arrange.
     fn arrange_swapped_parents(&mut self, selected: NodeKey, target: NodeKey) {
-        let Some(workspace) = self.workspace_of(selected) else {
-            return;
-        };
         let current_parent = self.parent_of(selected);
         let other_parent = self.parent_of(target);
 
         let mut arrange = |parent| {
+            let Some(workspace) = self.workspace_of(parent) else {
+                return;
+            };
             if parent == workspace {
                 self.layout(workspace);
             } else {
@@ -403,49 +385,29 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.refresh_focus_visibility();
     }
 
-    fn swap_selected_nodes(&mut self, target: NodeKey) -> bool {
-        let Some(workspace) = self.workspace_of(target) else {
-            return false;
-        };
-        let Some(selected) = self.selected_node_key(workspace) else {
-            return false;
-        };
-        if !self.swap_nodes(selected, target) {
-            return false;
-        }
-        self.arrange_swapped_parents(selected, target);
-        true
-    }
-
-    fn swap_selected_at_floating_boundary(&mut self, target: NodeKey) -> bool {
-        let Some(workspace) = self.workspace_of(target) else {
-            return false;
-        };
-        let Some(selected) = self.selected_node_key(workspace) else {
-            return false;
-        };
-        if !self.swap_nodes_at_floating_boundary(selected, target) {
-            return false;
-        }
-        self.arrange_swapped_parents(selected, target);
-        true
-    }
-
-    pub(super) fn swap_selected_with_window_at_floating_boundary(
+    fn swap_selected_nodes(
         &mut self,
-        target: &W::Id,
-    ) -> bool {
-        let Some(target) = self.window_key(target) else {
-            return false;
-        };
-        self.swap_selected_at_floating_boundary(target)
-    }
+        source_workspace: NodeKey,
+        target: NodeKey,
+    ) -> Option<SwapEffects> {
+        let target_workspace = self.workspace_of(target)?;
+        let selected = self.workspace_command_node(source_workspace)?;
+        let selected_was_floating = self.is_in_floating_branch(selected);
+        let target_was_floating = self.is_in_floating_branch(target);
 
-    pub(super) fn swap_selected_with_mark_at_floating_boundary(&mut self, mark: &str) -> bool {
-        let Some(target) = self.node_with_mark(mark) else {
-            return false;
-        };
-        self.swap_selected_at_floating_boundary(target)
+        if !self.swap_nodes(selected, target)
+            && !self.swap_nodes_at_floating_boundary(selected, target)
+        {
+            return None;
+        }
+        self.arrange_swapped_parents(selected, target);
+        Some(SwapEffects {
+            source_workspace,
+            target_workspace,
+            floating_ownership_changed: (selected_was_floating || target_was_floating)
+                && (source_workspace != target_workspace
+                    || selected_was_floating != target_was_floating),
+        })
     }
 
     /// The tiled side's cached leaf layouts. The floating groups are branches of the same
@@ -878,7 +840,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             }
         }
 
-        self.active_window(workspace)
+        self.active_tiled_window(workspace)
             .map(|window| vec![window.id().clone()])
             .unwrap_or_default()
     }
@@ -945,7 +907,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     fn mutate_tree<R: TreeMutation>(
         &mut self,
         workspace: NodeKey,
-        f: impl FnOnce(&mut ContainerArena<W>) -> R,
+        f: impl FnOnce(&mut ContainerTree<W>) -> R,
     ) -> R {
         let result = f(self);
         if result.changed() {
@@ -1009,11 +971,11 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.apply_resize(target, layout, percent)
     }
 
-    /// Add a workspace root to this arena and return it.
+    /// Add a workspace root to this tree and return it.
     ///
     /// `Workspace` no longer builds a tree of its own: it is handed the one tree and takes a
     /// root in it. That is what makes a workspace moving between outputs a reparent rather
-    /// than a subtree carried between two arenas.
+    /// than a subtree carried between two trees.
     pub fn add_workspace(
         &mut self,
         view_size: Size<f64, Logical>,
@@ -1033,7 +995,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     /// Every window under the given workspace roots, in their order.
     ///
-    /// One pass over the arena rather than one borrow per workspace: the workspaces share a
+    /// One pass over the tree rather than one borrow per workspace: the workspaces share a
     /// tree now, so they cannot each be handed a mutable borrow of it in turn.
     pub fn windows_mut_in_workspaces(&mut self, workspaces: &[NodeKey]) -> Vec<&mut W> {
         self.tiles_mut_in_workspaces(workspaces)
@@ -1054,21 +1016,66 @@ impl<W: LayoutElement> ContainerArena<W> {
             .collect()
     }
 
-    // Basic getters using ContainerTree
-    /// The windows on one workspace's tiled side, in visual order.
-    ///
-    /// The tiled side only, like [`Self::tiles_mut`]. A workspace's two sides together are
-    /// [`super::workspace::Workspace::windows`], which walks its floating groups as well.
-    pub fn windows(&self, workspace: NodeKey) -> impl Iterator<Item = &W> + '_ {
-        self.windows_in_branch(workspace).into_iter()
+    /// Every mutable tile of one workspace, tiled and floating, in tree order.
+    pub(in crate::layout) fn tiles_mut_in_workspace(
+        &mut self,
+        workspace: NodeKey,
+    ) -> Vec<&mut Tile<W>> {
+        let keys = self.leaf_keys_in_workspace(workspace);
+        self.tiles_mut_for_keys(&keys)
+            .into_iter()
+            .map(|(_, tile)| tile)
+            .collect()
     }
 
+    /// Every mutable window of one workspace, tiled and floating, in tree order.
+    pub(in crate::layout) fn windows_mut_in_workspace(
+        &mut self,
+        workspace: NodeKey,
+    ) -> Vec<&mut W> {
+        self.tiles_mut_in_workspace(workspace)
+            .into_iter()
+            .map(Tile::window_mut)
+            .collect()
+    }
+
+    /// Every mutable tile of one workspace paired with its unrounded or rounded render position.
+    pub(in crate::layout) fn workspace_tiles_with_render_positions_mut(
+        &mut self,
+        workspace: NodeKey,
+        round: bool,
+    ) -> impl Iterator<Item = (&mut Tile<W>, Point<f64, Logical>)> + '_ {
+        let scale = self.scale(workspace);
+        let layouts: Vec<_> = self
+            .leaf_layouts_in(workspace)
+            .map(|info| (info.key, info.rect.loc))
+            .collect();
+        let keys: Vec<_> = layouts.iter().map(|(key, _)| *key).collect();
+        let locs: Vec<_> = layouts.iter().map(|(_, loc)| *loc).collect();
+        self.tiles_mut_for_keys(&keys)
+            .into_iter()
+            .map(move |(idx, tile)| {
+                let mut pos = locs[idx] + tile.render_offset();
+                if round {
+                    pos = pos.to_physical_precise_round(scale).to_logical(scale);
+                }
+                (tile, pos)
+            })
+    }
+
+    // Basic getters using ContainerTree
     /// The tiles on one workspace's tiled side, in visual order.
-    pub fn tiles(&self, workspace: NodeKey) -> impl Iterator<Item = &Tile<W>> + '_ {
+    pub(in crate::layout) fn tiled_tiles(
+        &self,
+        workspace: NodeKey,
+    ) -> impl Iterator<Item = &Tile<W>> + '_ {
         self.tiles_in_branch(workspace).into_iter()
     }
 
-    pub fn active_window_mut(&mut self, workspace: NodeKey) -> Option<&mut W> {
+    pub(in crate::layout) fn active_tiled_window_mut(
+        &mut self,
+        workspace: NodeKey,
+    ) -> Option<&mut W> {
         let key = self.focus_inactive_view_in_branch(workspace)?;
         Some(self.get_tile_mut(key)?.window_mut())
     }
@@ -1084,44 +1091,21 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.working_area(workspace)
     }
 
-    /// Whether one of a workspace's two sides is the focused one.
-    pub(in crate::layout) fn side_is_active(&self, workspace: NodeKey, floating: bool) -> bool {
-        self.active_side.get(&workspace) == Some(&floating)
-    }
-
-    /// Whose the focus is: the workspace's, and then which of its two sides has it.
-    ///
-    /// The owner says, because only the owner knows — a side asked about itself would only
-    /// ever answer yes.
-    pub(super) fn set_active(
-        &mut self,
-        workspace: NodeKey,
-        is_active: bool,
-        floating_has_focus: bool,
-    ) {
-        if is_active {
-            self.active_side.insert(workspace, floating_has_focus);
-        } else {
-            self.active_side.remove(&workspace);
-        }
-    }
-
     pub fn clock(&self) -> &Clock {
         &self.clock
     }
 
     pub fn verify_invariants(&self, workspace: NodeKey) {
-        // Every workspace, and then the arena: the checks that are about the arena rather than
+        // Every workspace, and then the tree: the checks that are about the tree rather than
         // about one workspace — reachability, the seat's focused leaf, the layout caches — can
         // only be made where every root has been walked.
         self.verify_all_invariants();
 
-        // The same check the floating side makes on its own tiles. A tiled tile on a foreign
-        // options handle is invisible until something floats it, so the two sides ask it.
-        for tile in self.tiles(workspace) {
+        // Configuration belongs to the workspace, not to the branch a tile currently occupies.
+        for tile in self.tiles_in_workspace(workspace) {
             assert!(
                 Rc::ptr_eq(self.options(workspace), &tile.options),
-                "a tiled tile must be on its workspace's options: ws={:?} tile={:?} ws_opts={:p} tile_opts={:p}",
+                "a tile must use its workspace's options: ws={:?} tile={:?} ws_opts={:p} tile_opts={:p}",
                 workspace,
                 tile.window().id(),
                 Rc::as_ptr(self.options(workspace)),
@@ -1129,6 +1113,27 @@ impl<W: LayoutElement> ContainerArena<W> {
             );
             assert_eq!(self.view_size(workspace), tile.view_size());
             assert_eq!(self.scale(workspace), tile.scale());
+            assert_eq!(*self.clock(), tile.clock);
+            tile.verify_invariants();
+
+            if self
+                .window_key(tile.window().id())
+                .is_some_and(|key| self.is_in_floating_branch(key))
+            {
+                if let Some(idx) = tile.floating_preset_width_idx {
+                    assert!(idx < self.options(workspace).layout.preset_column_widths.len());
+                }
+                if let Some(idx) = tile.floating_preset_height_idx {
+                    assert!(idx < self.options(workspace).layout.preset_window_heights.len());
+                }
+                if !self.window_owns_fullscreen(workspace, tile.window().id()) {
+                    assert_eq!(
+                        tile.window().pending_sizing_mode(),
+                        SizingMode::Normal,
+                        "floating windows cannot be maximized or fullscreen"
+                    );
+                }
+            }
         }
     }
 
@@ -1209,15 +1214,19 @@ impl<W: LayoutElement> ContainerArena<W> {
         tile.update_window();
     }
 
-    pub fn render_elements<R: NiriRenderer>(
+    fn render_elements<R: NiriRenderer>(
         &self,
         workspace: NodeKey,
         closing: &[ClosingWindow],
         mut ctx: RenderCtx<R>,
         xray_pos: XrayPos,
-        tiling_focus_ring: bool,
-        layer: RenderLayer,
+        params: BranchRenderParams,
     ) -> Vec<ContainerTreeRenderElement<R>> {
+        let BranchRenderParams {
+            has_focus: tiling_has_focus,
+            focus_ring: tiling_focus_ring,
+            layer,
+        } = params;
         // Pre-allocate: ~4 elements per tile + closing windows + tab bars
         let tile_count = self.window_count();
         let estimated_capacity = tile_count * 4 + closing.len() + tile_count / 2;
@@ -1226,8 +1235,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         let scale = Scale::from(self.scale(workspace));
         let focused_key = self.focused_key(workspace);
         let selection_is_layout_parent = self.selected_layout_parent_in_tiling(workspace);
-        let selection_is_active =
-            self.side_is_active(workspace, false) || self.workspace_is_selected(workspace);
+        let selection_is_active = tiling_has_focus || self.workspace_is_selected(workspace);
         let fullscreen = self.fullscreen_render_state(workspace);
         let view_rect = Rectangle::from_size(self.view_size(workspace));
 
@@ -1293,7 +1301,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                     pos = Point::from((0.0, 0.0));
                 }
 
-                let is_focused = self.side_is_active(workspace, false)
+                let is_focused = tiling_has_focus
                     && Some(info.key) == focused_key
                     && !selection_is_layout_parent;
                 let draw_focus = tiling_focus_ring && is_focused;
@@ -1316,7 +1324,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             let mut cache = self.render.tab_bar_cache.borrow_mut();
             let gles = ctx.renderer.as_gles_renderer();
             let tab_bar_config = self.effective_tab_bar_config(workspace);
-            let is_active_workspace = self.side_is_active(workspace, false);
+            let is_active_workspace = tiling_has_focus;
             let target = ctx.target;
             for info in tab_bar_infos {
                 if fullscreen
@@ -1386,33 +1394,29 @@ impl<W: LayoutElement> ContainerArena<W> {
         elements
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn render<R: NiriRenderer>(
+    pub(super) fn render<R: NiriRenderer>(
         &self,
         workspace: NodeKey,
         closing: &[ClosingWindow],
         ctx: RenderCtx<R>,
         xray_pos: XrayPos,
-        tiling_focus_ring: bool,
-        layer: RenderLayer,
+        params: BranchRenderParams,
         push: &mut dyn FnMut(ContainerTreeRenderElement<R>),
     ) {
-        for elem in
-            self.render_elements(workspace, closing, ctx, xray_pos, tiling_focus_ring, layer)
-        {
+        for elem in self.render_elements(workspace, closing, ctx, xray_pos, params) {
             push(elem);
         }
     }
 
-    pub fn render_as_offscreen(
+    pub(super) fn render_as_offscreen(
         &self,
         workspace: NodeKey,
         closing: &[ClosingWindow],
         renderer: &mut GlesRenderer,
         target: RenderTarget,
-        tiling_focus_ring: bool,
+        params: BranchRenderParams,
     ) -> Option<OffscreenRenderElement> {
-        for tile in self.tiles(workspace) {
+        for tile in self.tiled_tiles(workspace) {
             tile.window().set_offscreen_data(None);
         }
 
@@ -1426,8 +1430,10 @@ impl<W: LayoutElement> ContainerArena<W> {
             closing,
             ctx,
             XrayPos::default(),
-            tiling_focus_ring,
-            RenderLayer::Normal,
+            BranchRenderParams {
+                layer: RenderLayer::Normal,
+                ..params
+            },
         );
         if elements.is_empty() {
             return None;
@@ -1446,31 +1452,31 @@ impl<W: LayoutElement> ContainerArena<W> {
             .offscreen
             .render(renderer, Scale::from(self.scale(workspace)), &elements)
             .map(|(elem, _sync, data)| {
-                for tile in self.tiles(workspace) {
+                for tile in self.tiled_tiles(workspace) {
                     tile.window().set_offscreen_data(Some(data.clone()));
                 }
 
                 elem
             })
-            .map_err(|err| warn!("error rendering tiling space to offscreen: {err:?}"))
+            .map_err(|err| warn!("error rendering tiled branch to offscreen: {err:?}"))
             .ok()
     }
 
     // Layout operations using ContainerTree
     pub fn advance_animations(&mut self, workspace: NodeKey) {
-        for tile in self.tiles_mut(workspace) {
+        for tile in self.tiles_mut_in_workspace(workspace) {
             tile.advance_animations();
         }
     }
 
     pub fn are_animations_ongoing(&self, workspace: NodeKey) -> bool {
-        self.tiles(workspace)
+        self.tiles_in_workspace(workspace)
             .any(|tile| tile.are_animations_ongoing())
     }
 
     /// What a tile needs to know about the space it is in.
     ///
-    /// Taken as a value so a caller can read it before borrowing the arena: a tile is reached
+    /// Taken as a value so a caller can read it before borrowing the tree: a tile is reached
     /// through the tree, and asking the space about itself while holding one is the borrow
     /// checker's way of pointing out that these are two different questions.
     pub(super) fn tile_config(&self, workspace: NodeKey) -> TileConfig {
@@ -1488,10 +1494,10 @@ impl<W: LayoutElement> ContainerArena<W> {
     pub(super) fn update_render_elements(
         &mut self,
         workspace: NodeKey,
+        is_active: bool,
         resize: &Option<InteractiveResizeState<W>>,
     ) {
         let _span = tracy_client::span!("ContainerTree::update_render_elements");
-        let is_active = self.side_is_active(workspace, false);
         // Once a frame, and for both sides: a container that has left the tree will not be
         // asked for again, and its texture is the largest thing an entry holds.
         self.render
@@ -1510,11 +1516,10 @@ impl<W: LayoutElement> ContainerArena<W> {
                         .map(|(branch, info)| LeafFrameInfo::new(branch, info)),
                 );
             } else {
-                let arena = &*self;
+                let tree = &*self;
                 state_layouts.extend(
-                    arena
-                        .leaf_layouts_in(workspace)
-                        .map(|info| LeafFrameInfo::new(arena.branch_root(info.key), info)),
+                    tree.leaf_layouts_in(workspace)
+                        .map(|info| LeafFrameInfo::new(tree.branch_root(info.key), info)),
                 );
             }
         }
@@ -1853,7 +1858,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         direction: Direction,
         allow_wrap: bool,
     ) -> bool {
-        // The arena walk checks fullscreen at each ancestor exactly where sway does. That is
+        // The tree walk checks fullscreen at each ancestor exactly where sway does. That is
         // deliberately not a preselected scope: a node outside fullscreen may enter the
         // fullscreen sibling directly, while a descendant cannot climb through its owner.
         if !allow_wrap {
@@ -2032,13 +2037,13 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.move_command_target(workspace, Direction::Up)
     }
 
-    // Container operations (replacing column operations)
-    pub fn consume_into_column(&mut self, workspace: NodeKey) {
+    // Container operations
+    pub fn consume_into_container(&mut self, workspace: NodeKey) {
         // In i3 model: create vertical split
         self.split_in_branch(workspace, Layout::SplitV);
     }
 
-    pub fn expel_from_column(&mut self, workspace: NodeKey) {
+    pub fn expel_from_container(&mut self, workspace: NodeKey) {
         // In i3 model: create horizontal split
         self.split_in_branch(workspace, Layout::SplitH);
     }
@@ -2153,8 +2158,8 @@ impl<W: LayoutElement> ContainerArena<W> {
         });
     }
 
-    /// Set the width of the currently focused root-level column
-    pub fn set_column_width(&mut self, workspace: NodeKey, change: SizeChange) {
+    /// Set the width of the currently focused root container.
+    pub fn set_root_container_width(&mut self, workspace: NodeKey, change: SizeChange) {
         let Some(idx) = self.focused_root_index(workspace) else {
             return;
         };
@@ -2651,7 +2656,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     /// Set the display mode for the focused container
-    pub fn set_column_display(&mut self, workspace: NodeKey, display: ColumnDisplay) {
+    pub fn set_container_display(&mut self, workspace: NodeKey, display: ColumnDisplay) {
         let layout = match display {
             ColumnDisplay::Normal => Layout::SplitV,
             ColumnDisplay::Tabbed => Layout::Tabbed,
@@ -2661,7 +2666,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     /// Toggle between tabbed and normal (split) layout for focused container
-    pub fn toggle_column_tabbed_display(&mut self, workspace: NodeKey) {
+    pub fn toggle_container_tabbed(&mut self, workspace: NodeKey) {
         let current = self.selection_layout_in(workspace);
         let target = match current {
             Some(Layout::Tabbed) => Layout::SplitV,
@@ -2671,13 +2676,15 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.set_layout_in_branch(workspace, target);
     }
 
-    // Additional methods needed by workspace.rs
-    pub fn tiles_mut(&mut self, workspace: NodeKey) -> impl Iterator<Item = &mut Tile<W>> + '_ {
+    pub(in crate::layout) fn tiled_tiles_mut(
+        &mut self,
+        workspace: NodeKey,
+    ) -> impl Iterator<Item = &mut Tile<W>> + '_ {
         let root = workspace;
         self.tiles_in_branch_mut(root).into_iter()
     }
 
-    pub fn tiles_with_render_positions(
+    pub(in crate::layout) fn tiled_tiles_with_render_positions(
         &self,
         workspace: NodeKey,
     ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>, bool)> + '_ {
@@ -2694,32 +2701,12 @@ impl<W: LayoutElement> ContainerArena<W> {
         })
     }
 
-    pub fn tiles_with_render_positions_mut(
-        &mut self,
-        workspace: NodeKey,
-        round: bool,
-    ) -> impl Iterator<Item = (&mut Tile<W>, Point<f64, Logical>)> + '_ {
-        let scale = Scale::from(self.scale(workspace));
-        let layouts: Vec<LeafLayoutInfo> = self.display_layouts(workspace).cloned().collect();
-        let keys: Vec<NodeKey> = layouts.iter().map(|info| info.key).collect();
-        let locs: Vec<Point<f64, Logical>> = layouts.iter().map(|info| info.rect.loc).collect();
-        self.tiles_mut_for_keys(&keys)
-            .into_iter()
-            .map(move |(idx, tile)| {
-                let mut pos = locs[idx] + tile.render_offset();
-                if round {
-                    pos = pos.to_physical_precise_round(scale).to_logical(scale);
-                }
-                (tile, pos)
-            })
-    }
-
-    pub fn tiles_with_ipc_layouts(
+    pub(in crate::layout) fn tiled_tiles_with_ipc_layouts(
         &self,
         workspace: NodeKey,
     ) -> impl Iterator<Item = (&Tile<W>, tiri_ipc::WindowLayout)> + '_ {
         let scale = Scale::from(self.scale(workspace));
-        let legacy_positions = self.legacy_tiling_positions(workspace);
+        let ipc_positions = self.ipc_tiling_positions(workspace);
 
         self.display_layouts(workspace).filter_map(move |info| {
             let tile = self.get_tile(info.key)?;
@@ -2735,12 +2722,22 @@ impl<W: LayoutElement> ContainerArena<W> {
             layout.window_offset_in_tile = (window_offset.x, window_offset.y);
             layout.pos_in_tiling_layout = self
                 .branch_relative_path(info.key)
-                .and_then(|path| legacy_positions.get(&path).copied());
+                .and_then(|path| ipc_positions.get(&path).copied());
             Some((tile, layout))
         })
     }
 
-    fn legacy_tiling_positions(&self, workspace: NodeKey) -> HashMap<Vec<usize>, (usize, usize)> {
+    /// IPC projection of one workspace, preserving floating-before-tiling order.
+    pub(in crate::layout) fn workspace_tiles_with_ipc_layouts(
+        &self,
+        workspace: NodeKey,
+    ) -> impl Iterator<Item = (&Tile<W>, tiri_ipc::WindowLayout)> + '_ {
+        self.floating_tiles_with_ipc_layouts(workspace)
+            .chain(self.tiled_tiles_with_ipc_layouts(workspace))
+    }
+
+    /// Project the tree onto the two-dimensional position retained by the public IPC schema.
+    fn ipc_tiling_positions(&self, workspace: NodeKey) -> HashMap<Vec<usize>, (usize, usize)> {
         let mut positions = HashMap::new();
 
         if self.root_children_len(workspace) == 0 {
@@ -2766,22 +2763,22 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     pub fn are_transitions_ongoing(&self, workspace: NodeKey) -> bool {
-        self.tiles(workspace)
+        self.tiles_in_workspace(workspace)
             .any(|tile| tile.are_transitions_ongoing())
     }
 
     pub fn update_shaders(&mut self, workspace: NodeKey) {
-        for tile in self.tiles_mut(workspace) {
+        for tile in self.tiles_mut_in_workspace(workspace) {
             tile.update_shaders();
         }
     }
 
-    pub fn active_window(&self, workspace: NodeKey) -> Option<&W> {
+    pub(in crate::layout) fn active_tiled_window(&self, workspace: NodeKey) -> Option<&W> {
         self.focused_window_in_branch(workspace)
     }
 
     /// Whether one workspace's tiled side holds no window.
-    pub fn is_empty(&self, workspace: NodeKey) -> bool {
+    pub(in crate::layout) fn tiled_is_empty(&self, workspace: NodeKey) -> bool {
         self.first_leaf_key(workspace).is_none()
     }
 
@@ -2849,15 +2846,12 @@ impl<W: LayoutElement> ContainerArena<W> {
         info: &super::container::InsertParentInfo,
         tile: IncomingView<W>,
         activate: bool,
-    ) -> bool {
+    ) -> Result<(), IncomingView<W>> {
         let root = workspace;
-        if self.insert_leaf_with_parent_info(root, info, tile, activate) {
-            self.sync_fullscreen_window(workspace);
-            self.layout(workspace);
-            return true;
-        }
-
-        false
+        self.insert_leaf_with_parent_info(root, info, tile, activate)?;
+        self.sync_fullscreen_window(workspace);
+        self.layout(workspace);
+        Ok(())
     }
 
     /// Split-insert next to the live tiling leaf selected by the drag-and-drop hit result.
@@ -2867,20 +2861,17 @@ impl<W: LayoutElement> ContainerArena<W> {
         direction: Direction,
         tile: IncomingView<W>,
         activate: bool,
-    ) -> bool {
+    ) -> Result<(), IncomingView<W>> {
         let Some(workspace) = self.workspace_of(target) else {
-            return false;
+            return Err(tile);
         };
         if !self.is_tiling_leaf(target) {
-            return false;
+            return Err(tile);
         }
-        if self.insert_leaf_split(target, direction, tile, activate) {
-            self.sync_fullscreen_window(workspace);
-            self.layout(workspace);
-            return true;
-        }
-
-        false
+        self.insert_leaf_split(target, direction, tile, activate)?;
+        self.sync_fullscreen_window(workspace);
+        self.layout(workspace);
+        Ok(())
     }
 
     pub(super) fn insert_tile_split_root(
@@ -2889,14 +2880,11 @@ impl<W: LayoutElement> ContainerArena<W> {
         direction: Direction,
         tile: IncomingView<W>,
         activate: bool,
-    ) -> bool {
-        if self.insert_leaf_split_root(workspace, direction, tile, activate) {
-            self.sync_fullscreen_window(workspace);
-            self.layout(workspace);
-            return true;
-        }
-
-        false
+    ) -> Result<(), IncomingView<W>> {
+        self.insert_leaf_split_root(workspace, direction, tile, activate)?;
+        self.sync_fullscreen_window(workspace);
+        self.layout(workspace);
+        Ok(())
     }
 
     pub fn active_tile_visual_rectangle(
@@ -2933,18 +2921,18 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.layout(workspace);
     }
 
-    pub(super) fn park_tile(
+    pub(super) fn take_tile_for_transfer(
         &mut self,
         workspace: NodeKey,
         window: &W::Id,
         transaction: Transaction,
-    ) -> ParkedTile {
+    ) -> ViewTransfer {
         self.set_pending_transaction(transaction.clone());
         let node = self
-            .park_window(workspace, window)
+            .take_window_for_transfer(workspace, window)
             .expect("attempted to remove missing window");
 
-        ParkedTile {
+        ViewTransfer {
             node,
             is_floating: false,
         }
@@ -3045,22 +3033,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.focus_leaf_in_root_child(workspace, root_idx, index as usize);
     }
 
-    pub fn focus_column_first(&mut self, workspace: NodeKey) {
-        self.focus_root_container_first(workspace);
-    }
-
-    pub fn focus_column_last(&mut self, workspace: NodeKey) {
-        self.focus_root_container_last(workspace);
-    }
-
-    pub fn focus_column(&mut self, workspace: NodeKey, idx: usize) {
-        self.focus_root_container(workspace, idx);
-    }
-
-    pub fn focus_window_in_column(&mut self, workspace: NodeKey, index: u8) {
-        self.focus_leaf_in_root_container(workspace, index);
-    }
-
     pub fn focus_down_or_left(&mut self, workspace: NodeKey) {
         let _ = self.focus_in_direction(workspace, Direction::Down)
             || self.focus_in_direction(workspace, Direction::Left);
@@ -3135,18 +3107,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
     }
 
-    pub fn move_column_to_first(&mut self, workspace: NodeKey) {
-        self.move_root_container_to_first(workspace);
-    }
-
-    pub fn move_column_to_last(&mut self, workspace: NodeKey) {
-        self.move_root_container_to_last(workspace);
-    }
-
-    pub fn move_column_to_index(&mut self, workspace: NodeKey, idx: usize) {
-        self.move_root_container_to_index(workspace, idx);
-    }
-
     fn consume_or_expel_window(
         &mut self,
         workspace: NodeKey,
@@ -3172,15 +3132,6 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     pub fn consume_or_expel_window_right(&mut self, workspace: NodeKey, window: Option<&W::Id>) {
         self.consume_or_expel_window(workspace, window, Direction::Right);
-    }
-
-    pub fn toggle_full_width(&mut self, workspace: NodeKey) {
-        let Some(tile) = self.focused_tile(workspace) else {
-            return;
-        };
-        let id = tile.window().id().clone();
-        let currently_fullscreen = self.window_owns_fullscreen(workspace, tile.window().id());
-        let _ = self.set_fullscreen(workspace, &id, !currently_fullscreen);
     }
 
     fn toggle_window_dimension(
@@ -3514,7 +3465,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     pub(super) fn sync_fullscreen_window(&mut self, workspace: NodeKey) {
-        // A parked subtree carries client sizing state, but the destination workspace keeps
+        // A transferred subtree carries client sizing state, but the destination workspace keeps
         // its own fullscreen pointer. Adopt the arriving fullscreen only when the destination
         // has none; otherwise revoke the stale request. This makes the single pointer true at
         // the protocol boundary too, rather than leaving two clients pending fullscreen.
@@ -3550,15 +3501,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
     }
 
-    /// Inert: a tiled window has no position of its own to centre.
-    ///
-    /// It fills the slot its container hands it, so there is nothing here to move without
-    /// inventing a meaning for centering inside a tree. sway says this by refusing `move
-    /// position` on a tiled container; tiri says it by doing nothing, which
-    /// `centering_a_tiled_window_does_nothing` pins.
-    pub fn center_window(&mut self, _window: Option<&W::Id>) {}
-
-    pub fn expand_column_to_available_width(&mut self, workspace: NodeKey) {
+    pub fn expand_root_container_to_available_width(&mut self, workspace: NodeKey) {
         let Some(idx) = self.focused_root_index(workspace) else {
             return;
         };
@@ -3571,11 +3514,13 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     /// sway's `swap container with`: exchange the selected node and the window `target`.
-    pub fn swap_selected_with_window(&mut self, target: &W::Id) -> bool {
-        let Some(target) = self.window_key(target) else {
-            return false;
-        };
-        self.swap_selected_nodes(target)
+    pub(super) fn swap_selected_with_window(
+        &mut self,
+        source_workspace: NodeKey,
+        target: &W::Id,
+    ) -> Option<SwapEffects> {
+        let target = self.window_key(target)?;
+        self.swap_selected_nodes(source_workspace, target)
     }
 
     pub fn start_open_animation(&mut self, workspace: NodeKey, id: &W::Id) -> bool {
@@ -3672,11 +3617,10 @@ impl<W: LayoutElement> ContainerArena<W> {
                         .map(|(branch, info)| LeafFrameInfo::new(branch, info)),
                 );
             } else {
-                let arena = &*self;
+                let tree = &*self;
                 layouts.extend(
-                    arena
-                        .leaf_layouts_in(workspace)
-                        .map(|info| LeafFrameInfo::new(arena.branch_root(info.key), info)),
+                    tree.leaf_layouts_in(workspace)
+                        .map(|info| LeafFrameInfo::new(tree.branch_root(info.key), info)),
                 );
             }
         }
@@ -3765,7 +3709,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 }
 
-impl<W: LayoutElement> ContainerArena<W> {
+impl<W: LayoutElement> ContainerTree<W> {
     pub(crate) fn layout_tree(&self, workspace: NodeKey) -> Option<LayoutTreeNode> {
         self.apply_workspace_fullscreen(workspace, self.build_workspace_layout_tree(workspace)?)
     }
@@ -3854,7 +3798,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 }
 
-impl<W: LayoutElement> ContainerArena<W> {
+impl<W: LayoutElement> ContainerTree<W> {
     fn update_window_state(
         tile: &mut Tile<W>,
         info: &LeafFrameInfo,
@@ -4049,7 +3993,7 @@ fn edge_visibility_for_tile(
 }
 
 fn split_indicator_edge_for_tile<W: LayoutElement>(
-    tree: &ContainerArena<W>,
+    tree: &ContainerTree<W>,
     key: NodeKey,
     edges: FocusRingEdges,
 ) -> Option<FocusRingIndicatorEdge> {
@@ -4066,7 +4010,7 @@ fn split_indicator_edge_for_tile<W: LayoutElement>(
 /// One tree holds both sides now, so a consumer that means "my leaves" has to say which
 /// branch. Identity and order come from the live tree; the cache contributes presentation only.
 pub(super) fn branch_display_layouts<'a, W: LayoutElement>(
-    tree: &'a ContainerArena<W>,
+    tree: &'a ContainerTree<W>,
     branch: NodeKey,
 ) -> impl DoubleEndedIterator<Item = &'a LeafLayoutInfo> + 'a {
     // The committed layouts are what is on screen, so they are the answer whenever this

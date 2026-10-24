@@ -1,8 +1,8 @@
 //! Focus and selection: state, queries and directional navigation.
 
-use super::{ContainerArena, Direction, LayoutElement, NodeData, NodeKey};
+use super::{ContainerTree, Direction, LayoutElement, NodeData, NodeKey};
 
-impl<W: LayoutElement> ContainerArena<W> {
+impl<W: LayoutElement> ContainerTree<W> {
     /// The leaf that is effectively focused.
     ///
     /// Falls back to the first leaf when nothing is focused or the focused key went stale,
@@ -269,8 +269,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         let Some(direction) = self.direction_along_parent(selected_key, forward) else {
             return false;
         };
-
-        self.clear_focus_history();
         self.focus_in_direction_from_until(selected_key, direction, true, descend, None)
     }
 
@@ -302,7 +300,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         allow_wrap: bool,
         descend: bool,
     ) -> bool {
-        self.clear_focus_history();
         let Some(selected_key) = self.selected_node_key(workspace) else {
             return false;
         };
@@ -316,7 +313,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         direction: Direction,
         allow_wrap: bool,
     ) -> bool {
-        self.clear_focus_history();
         let Some(start) = self.branch_position(branch_root) else {
             return false;
         };
@@ -537,14 +533,12 @@ impl<W: LayoutElement> ContainerArena<W> {
         if self.workspace_of(key) != Some(workspace) {
             return false;
         }
-        self.clear_focus_history();
         self.focus_node_key(key);
         true
     }
 
     #[cfg(test)]
     pub(in crate::layout) fn select_focus_parent(&mut self) -> bool {
-        self.clear_focus_history();
         let Some(focused_key) = self.seat_focused_key() else {
             return false;
         };
@@ -557,7 +551,6 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     #[cfg(test)]
     pub(in crate::layout) fn select_focus_child(&mut self) -> bool {
-        self.clear_focus_history();
         let Some(focused_key) = self.seat_focused_key() else {
             return false;
         };
@@ -606,7 +599,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         // Both sides: a workspace with a floating window in it is not one where nothing is
         // focused. When the workspace does empty, the seat is not emptied with it — it serves
         // every workspace — so the focused leaf falls back to the most recent one that is
-        // still somewhere in the arena, and only an arena with no leaves at all clears it.
+        // still somewhere in the tree, and only a tree with no leaves at all clears it.
         if self.leaf_keys_in_workspace(workspace).is_empty() {
             let survivor = self.seat.order().iter().copied().find(|key| {
                 self.get_node(*key).is_some_and(|node| node.is_view())
@@ -721,6 +714,21 @@ impl<W: LayoutElement> ContainerArena<W> {
             .or_else(|| self.inactive_floating_window_id(workspace))
     }
 
+    pub(in crate::layout) fn active_floating_window(&self, workspace: NodeKey) -> Option<&W> {
+        let id = self.active_floating_window_id(workspace)?;
+        let key = self.window_key(&id)?;
+        self.get_tile(key).map(|tile| tile.window())
+    }
+
+    pub(in crate::layout) fn active_floating_window_mut(
+        &mut self,
+        workspace: NodeKey,
+    ) -> Option<&mut W> {
+        let id = self.active_floating_window_id(workspace)?;
+        let key = self.window_key(&id)?;
+        self.get_tile_mut(key).map(|tile| tile.window_mut())
+    }
+
     /// Focus what this workspace answers with when nothing has said otherwise.
     ///
     /// The tiled side first, because that is where a workspace's first window goes. Then any
@@ -765,7 +773,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// alone, and a workspace whose only window is floating would come out of an insert with
     /// nothing focused — `seat_get_focus_inactive` has no answer for it, and every descent
     /// into that workspace asks. It was correct while the floating side was a tree of its own
-    /// and an empty tiling tree really did mean an empty workspace. One arena, one answer.
+    /// and an empty tiling tree really did mean an empty workspace. One tree, one answer.
     ///
     /// sway/input/seat.c:1415
     pub(super) fn resync_focus(&mut self, workspace: NodeKey) {
@@ -779,8 +787,8 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 }
 
-impl<W: LayoutElement> ContainerArena<W> {
-    /// A node and its ancestors, the node first — the order sway adds them to the seat in.
+impl<W: LayoutElement> ContainerTree<W> {
+    /// A node followed by its parent chain, from nearest ancestor to workspace.
     pub(super) fn focus_chain(&self, key: NodeKey) -> Vec<NodeKey> {
         let mut chain = Vec::new();
         let mut current = Some(key);
@@ -807,7 +815,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// focus state at all.
     ///
     /// At the workspace the search skips floats, as sway's does: the children it walks are
-    /// `ws->tiling`, and a floating node is in `ws->floating` instead. One arena holds both
+    /// `ws->tiling`, and a floating node is in `ws->floating` instead. One tree holds both
     /// here, so the same distinction is a question about the branch a child roots.
     pub(in crate::layout) fn active_tiling_child(&self, parent: NodeKey) -> Option<NodeKey> {
         self.seat.order().iter().copied().find(|key| {

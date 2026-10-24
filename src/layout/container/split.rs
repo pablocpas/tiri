@@ -1,11 +1,11 @@
 //! Split, layout-toggle and root-wrapping commands.
 
 use super::{
-    ContainerArena, ContainerData, FloatingGeometry, Layout, LayoutElement, NodeData, NodeKey,
+    ContainerData, ContainerTree, FloatingGeometry, Layout, LayoutElement, NodeData, NodeKey,
 };
 use crate::layout::LayoutCycleEntry;
 
-impl<W: LayoutElement> ContainerArena<W> {
+impl<W: LayoutElement> ContainerTree<W> {
     /// Sway's `split none`: flatten the target's single-child parent, continuing through
     /// single-child container ancestors but never through the workspace.
     ///
@@ -23,8 +23,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         {
             return None;
         }
-
-        self.clear_focus_history();
         let branch_root = loop {
             let child_key = self
                 .get_container(container_key)
@@ -40,16 +38,15 @@ impl<W: LayoutElement> ContainerArena<W> {
                 // split alike — the exact reverse of the wrapper `container_split` builds.
                 // Transfer only the root-owned geometry; all subtree state remains on the
                 // child NodeKey.
-                let root_idx = self.floating_slot_of(container_key)?;
-                let working_area = self.floating_roots[root_idx].geometry.working_area;
+                let (root_workspace, root_idx) = self.floating_slot_of(container_key)?;
+                let working_area = self.floating_entries(root_workspace)?[root_idx]
+                    .geometry
+                    .working_area;
                 let child_area = self.node_geometry(child_key)?;
-                // The surviving child takes over the root's slot, so it hangs off the same
-                // workspace — read before the swap, while `container_key` still names it.
-                let workspace = self.workspace_of(container_key);
-                self.floating_roots[root_idx].key = child_key;
-                self.floating_roots[root_idx].geometry =
-                    FloatingGeometry::new(working_area, child_area);
-                self.set_parent(child_key, workspace);
+                let root = &mut self.floating_entries_mut(root_workspace)?[root_idx];
+                root.key = child_key;
+                root.geometry = FloatingGeometry::new(working_area, child_area);
+                self.set_parent(child_key, Some(root_workspace));
                 self.transfer_fullscreen_to_replacement(container_key, child_key);
                 if self.selected_key() == Some(container_key) {
                     self.seat.keep_selected(child_key);
@@ -461,7 +458,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         let Some(workspace) = self.workspace_of(target) else {
             return false;
         };
-        self.clear_focus_history();
 
         let changed = if self.is_workspace(target) {
             self.split_workspace_container(workspace, layout)
@@ -482,8 +478,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         branch_root: NodeKey,
         layout: Layout,
     ) -> bool {
-        self.clear_focus_history();
-
         let Some(container) = self.get_real_container_mut(branch_root) else {
             return false;
         };
@@ -500,7 +494,6 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// tests asking the short question.
     #[cfg(test)]
     pub(in crate::layout) fn split_focused(&mut self, workspace: NodeKey, layout: Layout) -> bool {
-        self.clear_focus_history();
         if self.workspace_is_empty(workspace) {
             // Same rule as the workspace route: a split on an empty workspace only records
             // the orientation. The first window is a plain child of the workspace and gets

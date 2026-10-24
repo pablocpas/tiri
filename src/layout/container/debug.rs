@@ -4,13 +4,13 @@
 use super::layout_label;
 #[cfg(test)]
 use super::NodeData;
-use super::{ContainerArena, LayoutElement, NodeKey};
+use super::{ContainerTree, LayoutElement, NodeKey};
 
-impl<W: LayoutElement> ContainerArena<W> {
+impl<W: LayoutElement> ContainerTree<W> {
     /// Log a diagnostic dump when the layout state looks inconsistent. Quiet otherwise, so
     /// it is safe to call on every layout pass.
     pub(super) fn debug_layout_state(&self, workspace: NodeKey, context: &'static str) {
-        let _span = tracy_client::span!("ContainerArena::debug_layout_state");
+        let _span = tracy_client::span!("ContainerTree::debug_layout_state");
         let window_count = self.window_count();
         let leaf_count = self.leaf_layouts.len();
         let pending_leaf_count: usize = self

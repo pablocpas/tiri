@@ -1,10 +1,10 @@
 use smithay::utils::{Logical, Rectangle};
-use tiri_ipc::{LayoutTreeLayout, LayoutTreeNode, LayoutTreeRect};
+use tiri_ipc::{LayoutTreeFloatingRootKind, LayoutTreeLayout, LayoutTreeNode, LayoutTreeRect};
 
-use super::{ContainerArena, Layout, NodeData, NodeKey};
+use super::{ContainerTree, FloatingRootKind, Layout, NodeData, NodeKey};
 use crate::layout::LayoutElement;
 
-impl<W: LayoutElement> ContainerArena<W> {
+impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn build_workspace_layout_tree(
         &self,
         workspace: NodeKey,
@@ -35,6 +35,34 @@ impl<W: LayoutElement> ContainerArena<W> {
     ) -> Option<LayoutTreeNode> {
         self.get_node(branch_root)?;
         Some(self.build_layout_tree_node(branch_root, focused_key, path, None, is_floating))
+    }
+
+    pub(in crate::layout) fn floating_layout_tree_nodes(
+        &self,
+        workspace: NodeKey,
+    ) -> Vec<LayoutTreeNode> {
+        // Rendering keeps the topmost floating group first. sway's `floating_nodes` IPC list
+        // exposes the workspace list in the opposite, bottom-to-top order. Reverse only this
+        // projection: changing stored order would invert hit testing, focus raising and render.
+        let roots: Vec<_> = self.floating_roots(workspace).collect();
+        roots
+            .into_iter()
+            .enumerate()
+            .rev()
+            .enumerate()
+            .filter_map(|(ipc_idx, (stack_idx, root_key))| {
+                let focused_key = self
+                    .selected_node_key(workspace)
+                    .filter(|key| self.is_descendant(*key, root_key));
+                let mut path = vec![ipc_idx];
+                let mut root =
+                    self.layout_tree_for_branch(root_key, focused_key, &mut path, true)?;
+                root.floating_root_kind = Some(floating_root_kind_to_ipc(
+                    self.floating_root_kind_at(workspace, stack_idx)?,
+                ));
+                self.apply_workspace_fullscreen(workspace, root)
+            })
+            .collect()
     }
 
     fn build_layout_tree_node(
@@ -157,6 +185,14 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
 
         Some(rect_to_ipc(rect))
+    }
+}
+
+fn floating_root_kind_to_ipc(kind: FloatingRootKind) -> LayoutTreeFloatingRootKind {
+    match kind {
+        FloatingRootKind::ImplicitWindowGroup => LayoutTreeFloatingRootKind::ImplicitWindowGroup,
+        FloatingRootKind::FloatedContainer => LayoutTreeFloatingRootKind::FloatedContainer,
+        FloatingRootKind::WorkspaceWrapper => LayoutTreeFloatingRootKind::WorkspaceWrapper,
     }
 }
 

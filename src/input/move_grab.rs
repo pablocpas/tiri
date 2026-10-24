@@ -80,7 +80,9 @@ impl MoveGrab {
                 // synchronized workspace animation.
                 if layout.is_overview_open() {
                     let res = layout.workspaces().find_map(|(mon, ws_idx, ws)| {
-                        ws.windows(layout.containers())
+                        layout
+                            .containers()
+                            .windows_in_workspace(ws.workspace_key())
                             .any(|w| w.window == self.window)
                             .then(|| (mon.map(|mon| mon.output().clone()), ws_idx))
                     });

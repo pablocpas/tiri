@@ -603,11 +603,10 @@ fn tiled_window_rects(
         .active_workspace()
         .expect("active workspace")
         .container_tree(&layout.containers);
-    let arena = view.arena();
+    let tree = view.tree();
     let root = view.workspace();
-    arena
-        .leaf_layouts_in(root)
-        .filter(|info| arena.branch_root(info.key) == root)
+    tree.leaf_layouts_in(root)
+        .filter(|info| tree.branch_root(info.key) == root)
         .map(|info| info.rect)
         .collect()
 }
@@ -696,7 +695,7 @@ fn a_shown_scratchpad_window_has_a_size() {
     layout.update_render_elements(None);
 
     let workspace = layout.active_workspace().expect("active workspace");
-    let tree = workspace.container_tree(&layout.containers).arena();
+    let tree = workspace.container_tree(&layout.containers).tree();
     let key = tree
         .window_key(&3)
         .expect("the scratchpad window is mapped");
@@ -713,7 +712,7 @@ fn a_shown_scratchpad_window_has_a_size() {
 
 /// A window in the scratchpad is a window on a workspace: laid out, with a box of its own.
 ///
-/// It used to be a detached tile in a queue, arranged by nobody. That is why showing one cost
+/// It used to be a value-form tile outside the tree, arranged by nobody. That is why showing one cost
 /// a full resize handshake with a client that had been idle — the window had no box, so the
 /// arrange that gave it one waited for a configure the client was in no hurry to ack, and the
 /// wait was the whole transaction deadline.
@@ -737,8 +736,8 @@ fn a_hidden_scratchpad_window_is_laid_out_while_it_is_hidden() {
         "the hidden window is on the scratchpad workspace"
     );
 
-    let tree = scratchpad.container_tree(&layout.containers).arena();
-    let key = tree.window_key(&2).expect("hidden window is in the arena");
+    let tree = scratchpad.container_tree(&layout.containers).tree();
+    let key = tree.window_key(&2).expect("hidden window is in the tree");
     let root = tree.branch_root(key);
     let area = tree
         .floating_area(root)

@@ -1,6 +1,48 @@
-use super::{ContainerArena, LayoutElement, NodeKey};
+use super::{ContainerTree, LayoutElement, NodeKey};
 
-impl<W: LayoutElement> ContainerArena<W> {
+/// Semantic target of a command resolved for one workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::layout) enum WorkspaceCommandTarget {
+    Workspace,
+    Tiled(NodeKey),
+    Floating(NodeKey),
+}
+
+impl WorkspaceCommandTarget {
+    pub(in crate::layout) fn key(self, workspace: NodeKey) -> NodeKey {
+        match self {
+            Self::Workspace => workspace,
+            Self::Tiled(key) | Self::Floating(key) => key,
+        }
+    }
+}
+
+impl<W: LayoutElement> ContainerTree<W> {
+    /// Resolve a workspace command once, including which root collection owns its target.
+    pub(in crate::layout) fn workspace_command_target(
+        &self,
+        workspace: NodeKey,
+    ) -> WorkspaceCommandTarget {
+        let Some(key) = self.selected_node_key(workspace) else {
+            return WorkspaceCommandTarget::Workspace;
+        };
+        if key == workspace {
+            WorkspaceCommandTarget::Workspace
+        } else if self.is_in_floating_branch(key) {
+            WorkspaceCommandTarget::Floating(key)
+        } else {
+            WorkspaceCommandTarget::Tiled(key)
+        }
+    }
+
+    /// The selected command node, or `None` when the workspace itself is the target.
+    pub(in crate::layout) fn workspace_command_node(&self, workspace: NodeKey) -> Option<NodeKey> {
+        match self.workspace_command_target(workspace) {
+            WorkspaceCommandTarget::Workspace => None,
+            WorkspaceCommandTarget::Tiled(key) | WorkspaceCommandTarget::Floating(key) => Some(key),
+        }
+    }
+
     /// Whether the root of the branch holding `key` is a container a command can be aimed at.
     ///
     /// The workspace is not one: a command that lands there means the workspace, and sway

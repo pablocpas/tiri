@@ -48,33 +48,11 @@ pub(super) enum Verdict {
 /// compared, and other fixtures are untouched. Without this the choice would be between a
 /// red suite and deleting the fixture that found the problem, and both of those end with
 /// nobody recording anything.
-pub(super) const KNOWN: &[Divergence] = &[
-    Divergence {
-        fixture: "open-after-swapping-into-a-tabbed.parity",
-        verdict: Verdict::Open,
-        step: 13,
-        reason: "\
-            A new view maps beside `seat_get_focus_inactive_view` of the workspace's most \
-            recent tiling child (sway/tree/view.c:802-824), and after two swaps the two \
-            compositors disagree about which view that is: sway answers the tab, tiri the \
-            window inside the tab's sibling split. The map target is read the same way on \
-            both sides, so what differs is the seat order a swap leaves behind, not the \
-            insertion rule.",
-    },
-    Divergence {
-        fixture: "swap-two-floating-roots.parity",
-        verdict: Verdict::Open,
-        step: 8,
-        reason: "\
-            Swapping a node with a top-level floating one: sway leaves `ws->floating` in the \
-            order it found it, tiri raises the node that arrived. The stack order is what \
-            the two disagree about, not the tree.",
-    },
-    Divergence {
-        fixture: "move-left-under-a-fullscreen-sibling.parity",
-        verdict: Verdict::Deliberate,
-        step: 8,
-        reason: "\
+pub(super) const KNOWN: &[Divergence] = &[Divergence {
+    fixture: "move-left-under-a-fullscreen-sibling.parity",
+    verdict: Verdict::Deliberate,
+    step: 8,
+    reason: "\
             sway's `arrange_workspace` hands the fullscreen node the output and returns, so \
             the branches it skipped keep whatever pending box they last had — 0x0 for one \
             built while something else was fullscreen. Tiri arranges them, to `1.000x1.000`. \
@@ -85,8 +63,7 @@ pub(super) const KNOWN: &[Divergence] = &[
             so that a query about something invisible returns sway's arithmetic. The three \
             differences the suite reports here are one: `erase_decoration` reseats a stacked \
             container's children onto its box, so the parent's 0x0 reaches both of them.",
-    },
-];
+}];
 
 /// What makes two divergences "the same one".
 ///

@@ -1,32 +1,27 @@
-//! Removing views and parking tiled subtrees for synchronous reparenting.
+//! In-flight nodes between two in-place parent assignments.
 
-#[cfg(test)]
-use super::DetachedView;
 #[cfg(test)]
 use super::InsertParentInfo;
-use super::{ContainerArena, LayoutElement, NodeKey};
+use super::{ContainerTree, LayoutElement, NodeKey};
 
-impl<W: LayoutElement> ContainerArena<W> {
-    /// Unlink a view from its workspace while keeping the materialized node in the arena.
+impl<W: LayoutElement> ContainerTree<W> {
+    /// Permanently remove a window in direct tree tests.
     ///
-    /// Internal transfers use this form and adopt the returned key directly. Final unmap calls
-    /// [`Self::remove_window`], which takes the parked node back out as an owned view.
-    /// Take a window out of the tree and hand back the view, for a test driving a transfer.
-    ///
-    /// Production parks instead: the node stays in the arena and returns by key, which is what
-    /// keeps its identity and its marks across the move. This is those two steps for a caller
-    /// that wants the view in hand, and it is the only reason the pair still exists.
+    /// Production follows the same two explicit phases: transfer the node, then either reparent
+    /// that key or destroy it at final unmap. No view is converted back into a value-form node.
     #[cfg(test)]
     pub(in crate::layout) fn remove_window(
         &mut self,
         workspace: NodeKey,
         window_id: &W::Id,
-    ) -> Option<DetachedView<W>> {
-        let key = self.park_window(workspace, window_id)?;
-        self.take_parked_view(key)
+    ) -> bool {
+        let Some(key) = self.take_window_for_transfer(workspace, window_id) else {
+            return false;
+        };
+        self.destroy_transferred_subtree(key)
     }
 
-    pub(in crate::layout) fn park_window(
+    pub(in crate::layout) fn take_window_for_transfer(
         &mut self,
         workspace: NodeKey,
         window_id: &W::Id,
@@ -55,16 +50,21 @@ impl<W: LayoutElement> ContainerArena<W> {
             self.seat.redirect_selection(None);
         }
 
-        // Detach from the parent's child list before dropping the node itself. The
+        // Unlink from the parent's child list before transferring the node. The
         // workspace has no parent and is not a window, so nothing routes here for it.
         let parent_key = self.parent_of(node_key)?;
-        if let Some(child_idx) = self.child_index(parent_key, node_key) {
+        if self.is_floating_root(node_key) {
+            let (owner, _, _) = self
+                .unregister_floating_root(node_key)
+                .expect("a floating root must have one workspace ownership record");
+            debug_assert_eq!(owner, workspace);
+        } else if let Some(child_idx) = self.child_index(parent_key, node_key) {
             if let Some(container) = self.get_container_mut(parent_key) {
                 container.remove_child(child_idx);
             }
         }
         self.set_parent(node_key, None);
-        assert!(self.park_subtree(node_key));
+        assert!(self.register_transfer_root(node_key));
         self.drop_subtree_layouts(node_key);
 
         if let Some(cleanup_key) = cleanup_key {
@@ -80,7 +80,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             .fullscreen_key(workspace)
             .is_some_and(|scope| scope == node_key || self.branch_is_empty(scope))
         {
-            self.fullscreen_keys.remove(&workspace);
+            self.workspace_data_mut(workspace).fullscreen_key = None;
         }
         self.prune_leaf_layouts(workspace);
 
@@ -97,7 +97,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         Some(node_key)
     }
 
-    /// Park the subtree rooted at `node_key`, returning it along with enough information
+    /// Transfer the subtree rooted at `node_key`, returning it along with enough information
     /// to put it back where it was.
     #[cfg(test)]
     pub(in crate::layout) fn take_subtree_at(
@@ -114,11 +114,11 @@ impl<W: LayoutElement> ContainerArena<W> {
         Some((subtree, insert_info))
     }
 
-    /// Park the command target for `move container`, preserving the addressed subtree.
+    /// Transfer the command target for `move container`, preserving the addressed subtree.
     ///
     /// With no selected parent this is the focused leaf, including under tabbed/stacked. A
     /// parent selected through `focus parent` is intentionally moved as a group. The workspace
-    /// itself is not a container target and therefore cannot be detached here.
+    /// itself is not a container target and therefore cannot be transferred here.
     pub(in crate::layout) fn take_command_target_subtree(
         &mut self,
         workspace: NodeKey,
@@ -138,7 +138,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
 
         // Any outstanding layout describes a branch that still contains the node being
-        // transferred. It cannot govern either the source after detachment or the destination.
+        // transferred. It cannot govern either the source after transferring or the destination.
         self.discard_layout_superseded_by_transfer(workspace);
 
         let focused_in_subtree = self
@@ -167,9 +167,9 @@ impl<W: LayoutElement> ContainerArena<W> {
             .fullscreen_key(workspace)
             .is_some_and(|fullscreen| self.is_descendant_of(fullscreen, node_key))
         {
-            self.fullscreen_keys.remove(&workspace);
+            self.workspace_data_mut(workspace).fullscreen_key = None;
         }
-        assert!(self.park_subtree(node_key));
+        assert!(self.register_transfer_root(node_key));
         self.drop_subtree_layouts(node_key);
         self.reap_empty(parent_key);
         self.autotile_squash_lone_children(workspace);
@@ -183,7 +183,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         Some(node_key)
     }
 
-    /// Park and return the root-level child at the given index.
+    /// Transfer and return the root-level child at the given index.
     pub(in crate::layout) fn take_root_child_subtree(
         &mut self,
         workspace: NodeKey,

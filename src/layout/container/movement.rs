@@ -10,7 +10,7 @@
 //! workspace's children by hand at the top level. Each disagreed with sway somewhere, and
 //! the disagreements did not share a cause, which is what made them look like eight bugs.
 
-use super::{ContainerArena, Direction, LayoutElement, NodeData, NodeKey};
+use super::{ContainerTree, Direction, LayoutElement, NodeData, NodeKey};
 
 /// What a reparent does to the shares of the node it moves.
 ///
@@ -35,7 +35,7 @@ enum ReparentFractions {
     PreserveAndUnset(NodeKey),
 }
 
-impl<W: LayoutElement> ContainerArena<W> {
+impl<W: LayoutElement> ContainerTree<W> {
     /// Move the current command target in a direction.
     #[cfg(test)]
     pub(in crate::layout) fn move_in_direction(
@@ -58,7 +58,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         let Some(workspace) = self.workspace_of(target) else {
             return false;
         };
-        self.clear_focus_history();
 
         let Some((node_key, preserve_selected_container)) = self.resolve_move_source(target) else {
             return false;
@@ -332,7 +331,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         insert_at: usize,
         fractions: ReparentFractions,
     ) {
-        self.detach_child(node_key);
+        self.unlink_child(node_key);
         if let Some(parent) = self.get_container_mut(parent_key) {
             parent.insert_child(insert_at, node_key);
             // The moved node becomes the most recently focused of its new siblings, and of
@@ -359,7 +358,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     /// Take a node out of its parent's child list, leaving it parentless.
-    pub(super) fn detach_child(&mut self, node_key: NodeKey) -> Option<(NodeKey, usize)> {
+    pub(super) fn unlink_child(&mut self, node_key: NodeKey) -> Option<(NodeKey, usize)> {
         let parent_key = self.parent_of(node_key)?;
         let idx = self.child_index(parent_key, node_key)?;
         self.get_container_mut(parent_key)?.remove_child(idx);

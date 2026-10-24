@@ -13,7 +13,7 @@ use tiri_config::{
 
 use smithay::wayland::compositor::{Blocker as _, BlockerState};
 
-use super::container::Layout as ContainerLayout;
+use super::container::{Layout as ContainerLayout, LayoutLayer};
 use super::*;
 
 mod animations;
@@ -1523,8 +1523,8 @@ impl Op {
                     if move_.window_id == id {
                         layout
                             .containers
-                            .parked_tile(move_.node)
-                            .expect("moving view must remain parked")
+                            .transferred_tile(move_.node)
+                            .expect("moving view must remain transferred")
                             .window()
                             .0
                             .parent_id
@@ -1581,8 +1581,8 @@ impl Op {
                     if move_.window_id == id {
                         if layout
                             .containers
-                            .parked_tile(move_.node)
-                            .expect("moving view must remain parked")
+                            .transferred_tile(move_.node)
+                            .expect("moving view must remain transferred")
                             .window()
                             .communicate()
                         {
@@ -3598,7 +3598,7 @@ fn opening_next_to_a_lone_floating_window_does_not_group_into_it() {
     // the tile opens as its own group. Asking whether the *focused* container took splits
     // answered for a different window entirely — one that an expel had just wrapped — and the
     // insert then addressed a container the named window does not have, leaving the new node
-    // in the arena with no parent. Found by the ops fuzz.
+    // in the tree with no parent. Found by the ops fuzz.
     let mut floating_4 = TestWindowParams::new(4);
     floating_4.is_floating = true;
     let mut floating_1 = TestWindowParams::new(1);
@@ -3620,7 +3620,7 @@ fn moving_a_floating_window_across_workspaces_does_not_orphan_it() {
     // The tile carries where it sat inside its floating group, and that position means
     // nothing in the workspace it lands in: the path resolved onto a window there, which
     // holds a tile and never children, so the insert quietly did nothing while the node's
-    // parent had already been written. The node stayed in the arena with no one listing it.
+    // parent had already been written. The node stayed in the tree with no one listing it.
     // Found by the ops fuzz.
     let mut floating_1 = TestWindowParams::new(1);
     floating_1.is_floating = true;
@@ -3649,7 +3649,7 @@ fn moving_a_floating_window_across_workspaces_does_not_orphan_it() {
 fn a_floating_window_moved_between_workspaces_animates_like_a_tiled_one() {
     // The animation is applied through `tiles_with_render_positions_mut`, which reaches tiles
     // by asking the tree for its leaf layouts. That list covers the floating side too, because
-    // both sides live in the one arena — so this holds without the walk knowing there are two.
+    // both sides live in the one tree — so this holds without the walk knowing there are two.
     for is_floating in [false, true] {
         let mut params = TestWindowParams::new(1);
         params.is_floating = is_floating;
@@ -3736,7 +3736,7 @@ fn swapping_a_tiled_window_into_floating_keeps_the_workspace_options() {
 
 #[test]
 fn a_config_reload_reaches_the_tiles_on_the_tiled_side() {
-    // The arena takes the new options, but the tiles hold their own handle on them. A tiled
+    // The tree takes the new options, but the tiles hold their own handle on them. A tiled
     // window has to draw the wider border just like a floating one does.
     let mut config = Config::default();
     config.layout.border.off = false;

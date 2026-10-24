@@ -4,7 +4,7 @@ use smithay::utils::{Logical, Point, Rectangle, Size};
 use smithay::wayland::compositor::{Blocker, BlockerState};
 
 use super::{
-    ContainerArena, Layout, LayoutElement, LeafLayoutInfo, LeafPresentation, NodeData, NodeKey,
+    ContainerTree, Layout, LayoutElement, LeafLayoutInfo, LeafPresentation, NodeData, NodeKey,
 };
 use crate::layout::tab_bar::tab_bar_row_height;
 use crate::layout::tile::Tile;
@@ -65,7 +65,7 @@ struct LayoutRequest {
     size: Size<i32, Logical>,
 }
 
-impl<W: LayoutElement> ContainerArena<W> {
+impl<W: LayoutElement> ContainerTree<W> {
     /// Calculate and apply layout to the tree.
     pub(in crate::layout) fn layout(&mut self, workspace: NodeKey) {
         self.layout_with_resize_animation(workspace, true);
@@ -149,7 +149,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
 
         // Only leaves reachable from a root count: the store can still hold nodes that were
-        // detached but not yet dropped.
+        // transferred but not yet dropped.
         // A branch is stale when the leaves it describes are no longer the leaves that branch
         // has. The other branches' leaves are in `current` too and are none of its business —
         // and so are the branches of every other workspace, which is why this names one.
@@ -173,7 +173,29 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// This is sway's `workspace->fullscreen`: it spans both the tiled tree and the floating
     /// roots. The window id and its side are projections of this key, never parallel state.
     pub(in crate::layout) fn fullscreen_key(&self, workspace: NodeKey) -> Option<NodeKey> {
-        self.fullscreen_keys.get(&workspace).copied()
+        self.workspace_data(workspace).fullscreen_key
+    }
+
+    pub(in crate::layout) fn floating_fullscreen_key(&self, workspace: NodeKey) -> Option<NodeKey> {
+        let key = self.fullscreen_key(workspace)?;
+        (self.holds_node(key) && self.is_in_floating_branch(key)).then_some(key)
+    }
+
+    pub(in crate::layout) fn floating_window_owns_fullscreen(
+        &self,
+        workspace: NodeKey,
+        window: &W::Id,
+    ) -> bool {
+        self.floating_fullscreen_window_id(workspace)
+            .is_some_and(|current| current == window)
+    }
+
+    pub(in crate::layout) fn floating_fullscreen_window_id(
+        &self,
+        workspace: NodeKey,
+    ) -> Option<&W::Id> {
+        self.floating_fullscreen_key(workspace)?;
+        self.fullscreen_leaf_window_id(workspace)
     }
 
     /// Window that directly owns fullscreen at the client protocol boundary.
@@ -231,11 +253,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             let restore = self.node_geometry(key).unwrap_or_default();
             self.set_node_fullscreen_restore_geometry(key, Some(restore));
         }
-        if let Some(key) = key {
-            self.fullscreen_keys.insert(workspace, key);
-        } else {
-            self.fullscreen_keys.remove(&workspace);
-        }
+        self.workspace_data_mut(workspace).fullscreen_key = key;
         true
     }
 
@@ -271,6 +289,20 @@ impl<W: LayoutElement> ContainerArena<W> {
             .workspace_of(old_key)
             .or_else(|| self.workspace_of(new_key))
             .expect("fullscreen replacement belongs to a workspace");
+        self.transfer_fullscreen_to_replacement_in(workspace, old_key, new_key);
+    }
+
+    /// Transfer one workspace's fullscreen slot when topology has already moved `old_key`.
+    ///
+    /// Cross-workspace swaps exchange both parent slots before restoring fullscreen. At that
+    /// point neither node can be used to rediscover the workspace whose pointer is being
+    /// replaced, so the mutation carries that workspace identity explicitly.
+    pub(super) fn transfer_fullscreen_to_replacement_in(
+        &mut self,
+        workspace: NodeKey,
+        old_key: NodeKey,
+        new_key: NodeKey,
+    ) {
         if self.fullscreen_key(workspace) != Some(old_key) {
             return;
         }
@@ -287,7 +319,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
         self.set_node_fullscreen_restore_geometry(old_key, None);
         self.set_node_fullscreen_restore_geometry(new_key, Some(replacement_restore));
-        self.fullscreen_keys.insert(workspace, new_key);
+        self.workspace_data_mut(workspace).fullscreen_key = Some(new_key);
     }
 
     fn layout_atomic(
@@ -297,7 +329,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         subtree: Option<(NodeKey, Rectangle<f64, Logical>)>,
     ) {
         self.apply_pending_layouts_if_ready();
-        // This workspace's own branches, not the arena's. A configure outstanding on the
+        // This workspace's own branches, not the tree's. A configure outstanding on the
         // workspace next door says nothing about whether this one may arrange, and noting a
         // deferred relayout it does not need leaves it re-arranging every frame until the
         // neighbour's client answers.
@@ -309,13 +341,13 @@ impl<W: LayoutElement> ContainerArena<W> {
             // opposite half-pixel and made that pixel survive the next resize and close.
             //
             // sway/tree/arrange.c:15-55,100-140
-            self.pending_relayout.insert(workspace);
+            self.set_pending_relayout(workspace, true);
             self.debug_layout_state(workspace, "layout_atomic_pending");
         } else {
-            self.pending_relayout.remove(&workspace);
+            self.set_pending_relayout(workspace, false);
         }
 
-        // This workspace, not the arena: arranging an empty workspace used to clear the caches
+        // This workspace, not the tree: arranging an empty workspace used to clear the caches
         // of every other one, and the window on the workspace next door lost the box it had
         // just been given.
         if self.first_leaf_key(workspace).is_none()
@@ -336,7 +368,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                 .collect();
             self.pending_layouts
                 .retain(|pending| !superseded.contains(&pending.branch));
-            self.pending_relayout.remove(&workspace);
+            self.set_pending_relayout(workspace, false);
             // The caller's transaction leaves with this pass, the same as it would at the
             // bottom. An emptied workspace has nobody left to resize, so holding the clone
             // here only keeps the transaction from completing — and the one waiting on it is
@@ -384,7 +416,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         for (branch, data) in arrangements {
             if waiting.contains(&branch) {
                 // Still waiting on its own windows. Its neighbours are not.
-                self.pending_relayout.insert(workspace);
+                self.set_pending_relayout(workspace, true);
                 continue;
             }
 
@@ -518,7 +550,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Keep a leaf's node box when tree surgery changes how its parent decorates it.
     ///
     /// A leaf directly under tabs is the awkward representation boundary in tiri: the
-    /// cached rectangle is its content box, while [`ContainerArena::node_geometry`] answers
+    /// cached rectangle is its content box, while [`ContainerTree::node_geometry`] answers
     /// with the whole pending box sway keeps on the container. If `cmd_layout` flattens that
     /// parent and then finds that the surviving layout already has the requested value, it
     /// does not arrange. sway's box nevertheless stays whole; only the tab decoration that
@@ -619,7 +651,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Commit whatever is ready, then run the arrange `workspace` deferred while it waited.
     ///
     /// The two halves answer different questions and only one of them is about this
-    /// workspace. Committing is the arena's: it walks every branch whose windows have
+    /// workspace. Committing is the tree's: it walks every branch whose windows have
     /// answered, wherever they live. Whether this workspace still owes itself an arrange is
     /// its own, and reading it off the commit pass's "something happened" is what stranded
     /// it: the frame visits every workspace in turn, the first one to call this consumed the
@@ -658,7 +690,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         for pending in ready {
             if !self.pending_layout_is_current(&pending) {
                 if let Some(workspace) = self.workspace_of(pending.branch) {
-                    self.pending_relayout.insert(workspace);
+                    self.set_pending_relayout(workspace, true);
                 }
                 continue;
             }
@@ -694,7 +726,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.pending_layouts
             .retain(|pending| !superseded.contains(&pending.branch));
         self.pending_transaction = None;
-        self.pending_relayout.remove(&workspace);
+        self.set_pending_relayout(workspace, false);
     }
 
     fn layout_request_for(
@@ -709,7 +741,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                 size: self
                     .workspace_of(
                         self.window_key(tile.window().id())
-                            .expect("tile is in arena"),
+                            .expect("tile is in tree"),
                     )
                     .map(|workspace| self.view_size(workspace))
                     .unwrap_or_default()

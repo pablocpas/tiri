@@ -11,7 +11,7 @@ fn workspace_node_key(
         .find_map(|(_, _, workspace)| {
             workspace
                 .container_tree(&layout.containers)
-                .arena()
+                .tree()
                 .window_key(&window)
         })
         .expect("window in a workspace tree")
@@ -21,7 +21,7 @@ fn window_node_sizing(layout: &Layout<TestWindow>, window: usize) -> (f64, f64, 
     layout
         .workspaces()
         .find_map(|(_, _, workspace)| {
-            let tree = workspace.container_tree(&layout.containers).arena();
+            let tree = workspace.container_tree(&layout.containers).tree();
             let key = tree.window_key(&window)?;
             tree.debug_node_sizing(key)
         })
@@ -113,7 +113,7 @@ fn moving_a_container_between_workspaces_keeps_all_node_identities() {
             })
             .expect("source workspace");
         let view = workspace.container_tree(&layout.containers);
-        let tree = view.arena();
+        let tree = view.tree();
         let first = tree.window_key(&1).expect("first source leaf");
         let second = tree.window_key(&2).expect("second source leaf");
         let container = tree.parent_of(first).expect("source container");
@@ -132,7 +132,7 @@ fn moving_a_container_between_workspaces_keeps_all_node_identities() {
                 .then_some(workspace)
         })
         .expect("target workspace");
-    let tree = workspace.container_tree(&layout.containers).arena();
+    let tree = workspace.container_tree(&layout.containers).tree();
     assert_eq!(tree.window_key(&1), Some(first));
     assert_eq!(tree.window_key(&2), Some(second));
     assert_eq!(tree.parent_of(first), Some(container));
@@ -222,7 +222,7 @@ fn assert_moving_window_out_of_workspace_group_moves_one(
     assert!(!target.has_window(&layout.containers, &1));
 
     let view = source.container_tree(&layout.containers);
-    let tab_bars = view.arena().tab_bar_layouts(view.workspace());
+    let tab_bars = view.tree().tab_bar_layouts(view.workspace());
     assert_eq!(
         tab_bars.len(),
         1,
@@ -324,7 +324,7 @@ fn moving_a_window_between_outputs_keeps_its_node_identity() {
 }
 
 #[test]
-fn an_interactive_move_between_outputs_keeps_node_identity_while_detached() {
+fn an_interactive_move_between_outputs_keeps_node_identity_while_transferred() {
     let mut layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow {
@@ -357,7 +357,7 @@ fn an_interactive_move_between_outputs_keeps_node_identity_while_detached() {
     let InteractiveMoveState::Moving(move_) = layout
         .interactive_move
         .as_ref()
-        .expect("detached interactive move")
+        .expect("transferred interactive move")
     else {
         panic!("window should have crossed the interactive-move threshold");
     };
@@ -397,7 +397,7 @@ fn sticky_and_scratchpad_roundtrips_keep_node_identity() {
         layout
             .scratchpad
             .container_tree(&layout.containers)
-            .arena()
+            .tree()
             .window_key(&1),
         Some(key)
     );
@@ -775,7 +775,7 @@ fn a_one_entry_layout_cycle_selects_that_entry_like_sway() {
         layout
             .workspaces()
             .find_map(|(_, _, workspace)| {
-                let tree = workspace.container_tree(&layout.containers).arena();
+                let tree = workspace.container_tree(&layout.containers).tree();
                 let leaf = tree.window_key(&1)?;
                 tree.container_info(tree.parent_of(leaf)?)
             })
@@ -2647,7 +2647,7 @@ fn insert_position_empty_workspace_returns_new_column() {
 /// into a workspace asks it. The fallback every path took when it lost its focused node
 /// walked from the workspace root, which is the tiled side alone — correct while the floating
 /// side was a tree of its own, because then an empty tiling tree really did mean an empty
-/// workspace. With one arena it left a workspace holding a window and answering "nothing".
+/// workspace. With one tree it left a workspace holding a window and answering "nothing".
 ///
 /// Found by the ops fuzz.
 #[test]
@@ -2678,7 +2678,7 @@ fn a_workspace_left_with_only_a_floating_window_still_has_a_focused_leaf() {
 // says so, and `seat.restore_at`'s doc says why.
 //
 // sway has one seat and one `focus_stack` for the whole tree, so none of these crossings
-// exist there. Folding tiri's arenas into one tree is what would remove them here, and these
+// exist there. Folding tiri's per-workspace arenas into one tree is what would remove them here, and these
 // are the answers that must come out the same on the other side. They are behaviour, not
 // implementation: which window is focused, which tab is shown.
 
@@ -2791,7 +2791,7 @@ fn a_sticky_window_keeps_focus_across_a_workspace_switch() {
 
 /// Showing a scratchpad window focuses it and leaves the workspace's own history behind.
 ///
-/// The scratchpad is already a workspace rather than a queue of detached tiles, so this
+/// The scratchpad is already a workspace rather than a queue of value-form tiles, so this
 /// crossing is a workspace-to-workspace move like any other — and the one whose focus answer
 /// a user notices immediately.
 #[test]
@@ -2836,11 +2836,10 @@ fn focused_window(layout: &Layout<TestWindow>) -> Option<usize> {
 fn visible_windows(layout: &Layout<TestWindow>) -> Vec<usize> {
     let workspace = layout.active_workspace().expect("active workspace");
     let view = workspace.container_tree(&layout.containers);
-    let arena = view.arena();
-    arena
-        .leaf_layouts_in(view.workspace())
+    let tree = view.tree();
+    tree.leaf_layouts_in(view.workspace())
         .filter(|info| info.visible)
-        .filter_map(|info| arena.get_tile(info.key))
+        .filter_map(|info| tree.get_tile(info.key))
         .map(|tile| *tile.window().id())
         .collect()
 }

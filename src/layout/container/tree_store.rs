@@ -1,15 +1,15 @@
-//! Arena node storage primitives: raw node access and parent links.
+//! Tree node storage primitives: raw node access and parent links.
 
 use smithay::utils::{Logical, Point, Rectangle};
 
 use super::{
-    ContainerArena, ContainerData, DetachedView, Layout, LayoutElement, LayoutParentData, NodeData,
+    ContainerData, ContainerTree, Layout, LayoutElement, LayoutParentData, NewView, NodeData,
     NodeKey, WorkspaceData,
 };
 use crate::layout::tile::Tile;
 
-impl<W: LayoutElement> ContainerArena<W> {
-    /// Whether this arena still holds a node.
+impl<W: LayoutElement> ContainerTree<W> {
+    /// Whether this tree still holds a node.
     pub(in crate::layout) fn holds_node(&self, key: NodeKey) -> bool {
         self.nodes.contains_key(key)
     }
@@ -76,9 +76,9 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
     }
 
-    /// The workspace this arena lays out in.
+    /// The workspace this tree lays out in.
     ///
-    /// Always present: the root is a workspace node for the arena's whole life. The `Option`
+    /// Always present: the root is a workspace node for the tree's whole life. The `Option`
     /// is for callers that would rather ask than assert.
     pub(super) fn get_workspace(&self, workspace: NodeKey) -> Option<&WorkspaceData> {
         match self.nodes.get(workspace)? {
@@ -95,15 +95,14 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     pub(super) fn set_parent(&mut self, child: NodeKey, parent: Option<NodeKey>) {
-        if let Some(entry) = self.parents.get_mut(child) {
-            *entry = parent;
-        } else {
-            self.parents.insert(child, parent);
-        }
+        assert!(
+            self.nodes.set_parent(child, parent),
+            "only a materialized node can be reparented"
+        );
     }
 
     pub(in crate::layout) fn parent_of(&self, key: NodeKey) -> Option<NodeKey> {
-        self.parents.get(key).and_then(|parent| *parent)
+        self.nodes.parent(key)
     }
 
     pub(super) fn child_index(&self, parent_key: NodeKey, child_key: NodeKey) -> Option<usize> {
@@ -115,7 +114,7 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     /// Replace a child, handing its parent share to the replacement.
     ///
-    /// `container_replace` inserts the replacement beside the old node, detaches the old one,
+    /// `container_replace` inserts the replacement beside the old node, unlinks the old one,
     /// then copies both fractions across. The resize totals do not move: they describe the
     /// rounded pending size of a particular node, while the fractions describe the slot the
     /// replacement has just taken.
@@ -314,43 +313,45 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
     }
 
-    /// Take a parked view out for an immediate insertion or final removal.
-    pub(in crate::layout) fn take_parked_view(&mut self, key: NodeKey) -> Option<DetachedView<W>> {
-        if !self.parked_roots.remove(&key) {
-            return None;
+    /// Permanently destroy a transferred subtree at the final unmap boundary.
+    ///
+    /// Reparenting never calls this: a move adopts the same transferred key into its destination.
+    pub(in crate::layout) fn destroy_transferred_subtree(&mut self, key: NodeKey) -> bool {
+        if !self.transfer_roots.remove(&key) {
+            return false;
         }
-        let node = self.remove_node_from_store(key)?;
-        let NodeData::Container(container) = node else {
-            unreachable!("a parked view key must name a container node")
-        };
-        container.into_view(key)
+        self.remove_node_recursive(key).is_some()
     }
 
-    pub(in crate::layout) fn parked_tile(&self, key: NodeKey) -> Option<&Tile<W>> {
-        self.parked_roots
+    pub(in crate::layout) fn transferred_tile(&self, key: NodeKey) -> Option<&Tile<W>> {
+        self.transfer_roots
             .contains(&key)
             .then(|| self.get_tile(key))
             .flatten()
     }
 
-    pub(in crate::layout) fn parked_tile_mut(&mut self, key: NodeKey) -> Option<&mut Tile<W>> {
-        if !self.parked_roots.contains(&key) {
+    pub(in crate::layout) fn transferred_tile_mut(&mut self, key: NodeKey) -> Option<&mut Tile<W>> {
+        if !self.transfer_roots.contains(&key) {
             return None;
         }
         self.get_tile_mut(key)
     }
 
-    /// Register an already-materialized, parentless subtree as temporarily parked.
-    pub(super) fn park_subtree(&mut self, key: NodeKey) -> bool {
+    pub(in crate::layout) fn transfer_root_keys(&self) -> impl Iterator<Item = NodeKey> + '_ {
+        self.transfer_roots.iter().copied()
+    }
+
+    /// Register an already-materialized, parentless subtree as temporarily transferred.
+    pub(super) fn register_transfer_root(&mut self, key: NodeKey) -> bool {
         if !self.nodes.contains_key(key) || self.parent_of(key).is_some() {
             return false;
         }
-        self.parked_roots.insert(key)
+        self.transfer_roots.insert(key)
     }
 
-    /// Hand a parked subtree to a workspace and adopt that workspace's tile configuration.
-    pub(super) fn adopt_parked_subtree(&mut self, destination: NodeKey, key: NodeKey) -> bool {
-        if !self.parked_roots.remove(&key) {
+    /// Hand a transferred subtree to a workspace and adopt that workspace's tile configuration.
+    pub(super) fn consume_transfer_root(&mut self, destination: NodeKey, key: NodeKey) -> bool {
+        if !self.transfer_roots.remove(&key) {
             return false;
         }
 
@@ -376,28 +377,32 @@ impl<W: LayoutElement> ContainerArena<W> {
         key
     }
 
-    /// Reattach a view node without changing the identity it carried outside the arena.
-    pub(super) fn insert_view(&mut self, workspace: NodeKey, view: DetachedView<W>) -> NodeKey {
-        let (key, container) = ContainerData::new_view(view);
+    /// Materialize a view that has not belonged to the tree before.
+    pub(super) fn insert_view(&mut self, workspace: NodeKey, view: NewView<W>) -> NodeKey {
+        let (key, container) = ContainerData::from_new_view(view);
         self.insert_node_with_key(workspace, key, NodeData::Container(container));
         key
     }
 
     /// Materialize one incoming view under `destination`'s configuration.
     ///
-    /// Only a genuinely detached map creates a node. An internal transfer adopts the parked
+    /// Only a genuinely new map creates a node. An internal transfer adopts the transferred
     /// node in place, preserving every piece of node state and its position in the seat order.
     pub(super) fn materialize_incoming_view(
         &mut self,
         destination: NodeKey,
         view: super::IncomingView<W>,
-    ) -> Result<NodeKey, super::IncomingView<W>> {
+    ) -> NodeKey {
         match view {
-            super::IncomingView::Detached(view) => Ok(self.insert_view(destination, *view)),
-            super::IncomingView::Parked(key) if self.adopt_parked_subtree(destination, key) => {
-                Ok(key)
+            super::IncomingView::New(view) => self.insert_view(destination, *view),
+            super::IncomingView::Transferred(key)
+                if self.consume_transfer_root(destination, key) =>
+            {
+                key
             }
-            super::IncomingView::Parked(key) => Err(super::IncomingView::Parked(key)),
+            super::IncomingView::Transferred(key) => {
+                panic!("an internal transfer must still own its node: {key:?}")
+            }
         }
     }
 
@@ -407,7 +412,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// builds one from `workspaces[0]` for whichever workspace is the target, and a subtree
     /// crossing to another workspace or another output brings its own along. Every workspace
     /// has its own handle on the options, and a named workspace's `layout_config` makes them
-    /// differ in value too, so adoption belongs at the one place a node enters an arena
+    /// differ in value too, so adoption belongs at the one place a node enters a tree
     /// rather than at each of the routes that lead here.
     pub(super) fn insert_node_with_key(
         &mut self,
@@ -415,6 +420,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         key: NodeKey,
         mut node: NodeData<W>,
     ) {
+        let window_id = node.as_tile().map(|tile| tile.window().id().clone());
         if let NodeData::Container(container) = &mut node {
             if let Some(tile) = container.tile_mut() {
                 tile.update_config(
@@ -424,12 +430,17 @@ impl<W: LayoutElement> ContainerArena<W> {
                 );
             }
         }
-        self.nodes.insert(key, node);
-        self.parents.insert(key, None);
+        self.nodes.insert(key, node, None);
+        if let Some(window_id) = window_id {
+            assert!(
+                self.window_nodes.insert(window_id, key).is_none(),
+                "a live window id can only name one tree node"
+            );
+        }
         self.seat.register(key);
     }
 
-    /// Remove one node from the arena and retire every workspace authority naming it.
+    /// Remove one node from the tree and retire every workspace authority naming it.
     ///
     /// Structural callers still own child handling and where focus should land next. What they
     /// do not own is whether the seat still lists the node: sway drops it from `focus_stack` in
@@ -441,17 +452,32 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// sway/input/seat.c:261-324
     pub(super) fn remove_node_from_store(&mut self, key: NodeKey) -> Option<NodeData<W>> {
         let node = self.nodes.remove(key)?;
-        self.parents.remove(key);
-        self.parked_roots.remove(&key);
+        if let Some(window_id) = node.as_tile().map(|tile| tile.window().id()) {
+            assert_eq!(
+                self.window_nodes.remove(window_id),
+                Some(key),
+                "the window index must retire the node leaving the store"
+            );
+        }
+        self.transfer_roots.remove(&key);
         self.seat.unregister(key);
         // By value, not by asking the node which workspace it is on: a node on its way out of
-        // the arena has usually been unparented already, and would answer with itself.
-        self.fullscreen_keys
-            .retain(|_, fullscreen| *fullscreen != key);
+        // the tree has usually been unparented already, and would answer with itself.
+        let workspaces = self.workspaces.clone();
+        for workspace in workspaces {
+            // Removing a workspace also removes its authority with the workspace node. It has
+            // already left `nodes` at this point, so there is nothing to clear or inspect.
+            if workspace == key || self.get_workspace(workspace).is_none() {
+                continue;
+            }
+            if self.workspace_data(workspace).fullscreen_key == Some(key) {
+                self.workspace_data_mut(workspace).fullscreen_key = None;
+            }
+        }
         Some(node)
     }
 
-    /// Remove a node from the arena (and recursively all its children).
+    /// Remove a node from the tree (and recursively all its children).
     pub(super) fn remove_node_recursive(&mut self, key: NodeKey) -> Option<NodeData<W>> {
         // Read the children before the node leaves: a workspace lays out children exactly as a
         // split container does, and matching on `NodeData::Container` alone walked past that —
@@ -476,7 +502,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Every caller means "is there a window here".
     /// Whether one workspace's tiled side holds no window.
     ///
-    /// Named for a workspace rather than for the arena: "empty" was the arena's answer while
+    /// Named for a workspace rather than for the tree: "empty" was the tree's answer while
     /// it held exactly one workspace, and every caller of it meant this.
     pub(in crate::layout) fn workspace_is_empty(&self, workspace: NodeKey) -> bool {
         self.first_leaf_key(workspace).is_none()

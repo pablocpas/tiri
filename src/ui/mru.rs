@@ -544,7 +544,11 @@ impl WindowMru {
             let on_current_output = mon.output() == output;
             let on_current_workspace = on_current_output && mon.active_workspace_idx() == ws_idx;
 
-            for mapped in ws.windows(niri.layout.containers()) {
+            for mapped in niri
+                .layout
+                .containers()
+                .windows_in_workspace(ws.workspace_key())
+            {
                 let mut thumbnail = Thumbnail::from_mapped(mapped, niri.clock.clone(), config);
                 thumbnail.on_current_output = on_current_output;
                 thumbnail.on_current_workspace = on_current_workspace;

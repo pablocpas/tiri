@@ -12,9 +12,9 @@
 //! [`LayoutParentData::swap_child_slots`]. Two commands, two rules, and the difference is
 //! observable the moment the two slots are not the same size.
 
-use super::{ContainerArena, FloatingRootKind, Layout, LayoutElement, NodeKey};
+use super::{ContainerTree, FloatingRootKind, Layout, LayoutElement, NodeKey};
 
-impl<W: LayoutElement> ContainerArena<W> {
+impl<W: LayoutElement> ContainerTree<W> {
     fn focus_swap_node(&mut self, key: NodeKey) {
         if self.get_node(key).is_some_and(|node| node.is_view()) {
             self.focus_node_key(key);
@@ -28,10 +28,32 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// sway's `swap_focus` always focuses the same node again. When that node arrived from a
     /// tabbed/stacked parent, it first focuses the other swapped node so both switchers'
     /// active-child entries are updated in the same order as sway's global focus stack.
-    fn restore_swap_focus(&mut self, a: NodeKey, b: NodeKey, focused: Option<NodeKey>) {
+    fn restore_swap_focus(
+        &mut self,
+        a: NodeKey,
+        b: NodeKey,
+        workspace_a: NodeKey,
+        workspace_b: NodeKey,
+        focused: Option<NodeKey>,
+    ) {
         let Some(focused) = focused.filter(|key| self.holds_node(*key)) else {
             return;
         };
+
+        // sway keeps focus in the source slot when the focused leaf itself crosses a
+        // workspace boundary. The other node now occupies that slot, so preserving the
+        // focused identity would also switch workspace as an accidental side effect.
+        if workspace_a != workspace_b {
+            if focused == a {
+                self.focus_swap_node(b);
+                return;
+            }
+            if focused == b {
+                self.focus_swap_node(a);
+                return;
+            }
+        }
+
         let parent_is_switcher = |this: &Self, key| {
             this.parent_of(key)
                 .and_then(|parent| this.get_container(parent))
@@ -77,35 +99,37 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
     }
 
-    fn swap_fullscreen_slot(&mut self, a: NodeKey, b: NodeKey) {
-        let Some(workspace) = self.workspace_of(a) else {
-            return;
-        };
-        let replacement = if self.fullscreen_key(workspace) == Some(a) {
-            self.transfer_fullscreen_to_replacement(a, b);
-            Some(b)
-        } else if self.fullscreen_key(workspace) == Some(b) {
-            self.transfer_fullscreen_to_replacement(b, a);
-            Some(a)
-        } else {
-            None
-        };
-
-        let Some(replacement) = replacement else {
-            return;
-        };
+    fn swap_fullscreen_slots(
+        &mut self,
+        a: NodeKey,
+        b: NodeKey,
+        workspace_a: NodeKey,
+        workspace_b: NodeKey,
+    ) {
+        let mut replacements = [None, None];
+        if self.fullscreen_key(workspace_a) == Some(a) {
+            self.transfer_fullscreen_to_replacement_in(workspace_a, a, b);
+            replacements[0] = Some(b);
+        } else if workspace_a == workspace_b && self.fullscreen_key(workspace_a) == Some(b) {
+            self.transfer_fullscreen_to_replacement_in(workspace_a, b, a);
+            replacements[0] = Some(a);
+        }
+        if workspace_b != workspace_a && self.fullscreen_key(workspace_b) == Some(b) {
+            self.transfer_fullscreen_to_replacement_in(workspace_b, b, a);
+            replacements[1] = Some(a);
+        }
 
         // `container_swap` disables fullscreen before exchanging the slots and enables it on
-        // the replacement afterwards. Enabling workspace fullscreen calls
-        // `seat_set_focus_container` on its new owner. Descendant-only swaps never enter this
-        // path because the exact fullscreen node did not change.
-        if self
-            .get_node(replacement)
-            .is_some_and(|node| node.is_view())
-        {
-            self.focus_node_key(replacement);
-        } else {
-            self.select_container(replacement);
+        // each replacement afterwards. Enabling workspace fullscreen focuses its new owner.
+        for replacement in replacements.into_iter().flatten() {
+            if self
+                .get_node(replacement)
+                .is_some_and(|node| node.is_view())
+            {
+                self.focus_node_key(replacement);
+            } else {
+                self.select_container(replacement);
+            }
         }
     }
 
@@ -130,6 +154,10 @@ impl<W: LayoutElement> ContainerArena<W> {
             return false;
         }
         let (Some(parent_a), Some(parent_b)) = (self.parent_of(a), self.parent_of(b)) else {
+            return false;
+        };
+        let (Some(workspace_a), Some(workspace_b)) = (self.workspace_of(a), self.workspace_of(b))
+        else {
             return false;
         };
         let (Some(idx_a), Some(idx_b)) =
@@ -164,8 +192,8 @@ impl<W: LayoutElement> ContainerArena<W> {
             self.set_parent(b, Some(parent_a));
         }
 
-        self.restore_swap_focus(a, b, focused);
-        self.swap_fullscreen_slot(a, b);
+        self.restore_swap_focus(a, b, workspace_a, workspace_b, focused);
+        self.swap_fullscreen_slots(a, b, workspace_a, workspace_b);
 
         true
     }
@@ -174,14 +202,15 @@ impl<W: LayoutElement> ContainerArena<W> {
     ///
     /// Floating roots have the workspace as a semantic parent but are deliberately absent
     /// from its tiled child list. The ordinary parent/index exchange therefore cannot express
-    /// their slots. The authoritative floating stack lives in this arena, so topology, root
+    /// their slots. The authoritative floating stack lives in this tree, so topology, root
     /// identity and slot geometry change atomically.
     pub(in crate::layout) fn swap_nodes_at_floating_boundary(
         &mut self,
         a: NodeKey,
         b: NodeKey,
     ) -> bool {
-        let Some(workspace) = self.workspace_of(a) else {
+        let (Some(workspace_a), Some(workspace_b)) = (self.workspace_of(a), self.workspace_of(b))
+        else {
             return false;
         };
         if a == b || self.get_node(a).is_none() || self.get_node(b).is_none() {
@@ -202,25 +231,41 @@ impl<W: LayoutElement> ContainerArena<W> {
                 // `swap_places` pair. `FloatingGeometry` below transfers the target slot;
                 // this exchanges the independently observable pending boxes.
                 self.swap_node_geometries(a, b);
-                let Some(a_idx) = self.floating_slot_of(a) else {
+                let Some((a_workspace, a_idx)) = self.floating_slot_of(a) else {
                     return false;
                 };
-                let Some(b_idx) = self.floating_slot_of(b) else {
+                let Some((b_workspace, b_idx)) = self.floating_slot_of(b) else {
                     return false;
                 };
-                let (a_id, a_kind) = (
-                    self.floating_roots[a_idx].id,
-                    self.floating_roots[a_idx].kind,
-                );
-                self.floating_roots[a_idx].key = b;
-                self.floating_roots[a_idx].id = self.floating_roots[b_idx].id;
-                self.floating_roots[a_idx].kind = self.floating_roots[b_idx].kind;
-                self.floating_roots[b_idx].key = a;
-                self.floating_roots[b_idx].id = a_id;
-                self.floating_roots[b_idx].kind = a_kind;
+                let a_entry = self
+                    .floating_entries(a_workspace)
+                    .and_then(|roots| roots.get(a_idx))
+                    .copied()
+                    .expect("a floating root slot must exist");
+                let b_entry = self
+                    .floating_entries(b_workspace)
+                    .and_then(|roots| roots.get(b_idx))
+                    .copied()
+                    .expect("a floating root slot must exist");
+                self.floating_entries_mut(a_workspace)
+                    .expect("a floating root workspace must exist")[a_idx] = super::FloatingRoot {
+                    key: b,
+                    id: b_entry.id,
+                    kind: b_entry.kind,
+                    geometry: a_entry.geometry,
+                };
+                self.floating_entries_mut(b_workspace)
+                    .expect("a floating root workspace must exist")[b_idx] = super::FloatingRoot {
+                    key: a,
+                    id: a_entry.id,
+                    kind: a_entry.kind,
+                    geometry: b_entry.geometry,
+                };
+                self.set_parent(b, Some(a_workspace));
+                self.set_parent(a, Some(b_workspace));
                 self.swap_node_fractions(a, b);
-                self.restore_swap_focus(a, b, focused);
-                self.swap_fullscreen_slot(a, b);
+                self.restore_swap_focus(a, b, workspace_a, workspace_b, focused);
+                self.swap_fullscreen_slots(a, b, workspace_a, workspace_b);
                 true
             }
             _ => {
@@ -231,7 +276,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                 let Some(idx) = self.child_index(parent, node) else {
                     return false;
                 };
-                let Some(root_idx) = self.floating_slot_of(root) else {
+                let Some((root_workspace, root_idx)) = self.floating_slot_of(root) else {
                     return false;
                 };
 
@@ -242,15 +287,33 @@ impl<W: LayoutElement> ContainerArena<W> {
                 };
                 parent_data.children[idx] = root;
                 self.set_parent(root, Some(parent));
-                self.set_parent(node, Some(workspace));
-                self.floating_roots[root_idx].key = node;
-                self.floating_roots[root_idx].kind = if self.is_leaf(node) {
+                self.set_parent(node, Some(root_workspace));
+                let node_kind = if self.is_leaf(node) {
                     FloatingRootKind::ImplicitWindowGroup
                 } else {
                     FloatingRootKind::FloatedContainer
                 };
-                self.restore_swap_focus(root, node, focused);
-                self.swap_fullscreen_slot(root, node);
+                let entry = &mut self
+                    .floating_entries_mut(root_workspace)
+                    .expect("a floating root workspace must exist")[root_idx];
+                entry.key = node;
+                entry.kind = node_kind;
+                self.restore_swap_focus(a, b, workspace_a, workspace_b, focused);
+                // `container_swap` restores focus after exchanging the slots. When the
+                // focused node has just entered `ws->floating`, sway raises its new floating
+                // root as part of that focus operation. The seat and the floating stack are
+                // separate structures in Tiri, so make the same effect explicit here, while
+                // the mutation still owns both sides of the exchange.
+                if let Some(focused_root) = focused
+                    .filter(|key| self.is_in_floating_branch(*key))
+                    .map(|key| self.branch_root(key))
+                {
+                    let (workspace, from) = self
+                        .floating_slot_of(focused_root)
+                        .expect("a focused floating node must have a stack slot");
+                    assert!(self.move_floating_root(workspace, from, 0));
+                }
+                self.swap_fullscreen_slots(a, b, workspace_a, workspace_b);
 
                 true
             }

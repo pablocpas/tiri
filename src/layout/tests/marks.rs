@@ -127,7 +127,7 @@ fn marks_unique_across_windows() {
 }
 
 #[test]
-fn a_leaf_mark_survives_cross_workspace_detach_and_attach() {
+fn a_leaf_mark_survives_cross_workspace_reparenting() {
     let mut layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow {

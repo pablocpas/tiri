@@ -1,8 +1,8 @@
 //! Translation between tree paths, node keys and windows.
 
-use super::{ContainerArena, LayoutElement, NodeData, NodeKey};
+use super::{ContainerTree, LayoutElement, NodeData, NodeKey};
 
-impl<W: LayoutElement> ContainerArena<W> {
+impl<W: LayoutElement> ContainerTree<W> {
     /// Helper: get node key at path
     pub(super) fn get_node_key_at_path(
         &self,
@@ -129,23 +129,11 @@ impl<W: LayoutElement> ContainerArena<W> {
         Some(path_rev)
     }
 
-    pub(super) fn clear_focus_history(&mut self) {
-        // Focus history is the seat's order, kept by SeatFocus.
-    }
-
     /// Find a window by ID and return its node key.
     ///
     /// Internal callers use the stable identity directly rather than materializing a path only
     /// to resolve it back into the key they actually wanted.
     pub(in crate::layout) fn window_key(&self, window_id: &W::Id) -> Option<NodeKey> {
-        self.nodes.iter().find_map(|(key, node)| match node {
-            node if node
-                .as_tile()
-                .is_some_and(|tile| tile.window().id() == window_id) =>
-            {
-                Some(key)
-            }
-            _ => None,
-        })
+        self.window_nodes.get(window_id).copied()
     }
 }

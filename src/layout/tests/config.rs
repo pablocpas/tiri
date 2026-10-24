@@ -377,7 +377,7 @@ fn a_config_reload_re_derives_the_working_area_from_the_new_struts() {
 }
 
 #[test]
-fn struts_survive_a_workspace_being_parked_without_outputs() {
+fn struts_survive_a_workspace_being_outputless_without_outputs() {
     let mut config = Config::default();
     config.layout.struts.top = FloatOrInt(50.);
 
@@ -393,9 +393,9 @@ fn struts_survive_a_workspace_being_parked_without_outputs() {
         .unwrap()
         .working_area(layout.containers());
 
-    // Park the workspace by taking its output away, then give it one back. The area it comes
+    // Transfer the workspace by taking its output away, then give it one back. The area it comes
     // back with has to be the one it would have had all along, not one derived from the
-    // placeholder size it was holding while parked.
+    // placeholder size it was holding while transferred.
     Op::RemoveOutput(1).apply(&mut layout);
     Op::AddOutput(1).apply(&mut layout);
 

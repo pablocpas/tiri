@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use super::{ContainerArena, Layout, LayoutElement, LeafLayoutInfo, NodeData, NodeKey};
+use super::{ContainerTree, Layout, LayoutElement, LeafLayoutInfo, NodeData, NodeKey};
 
-impl<W: LayoutElement> ContainerArena<W> {
+impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn verify_workspace_invariants(&self, workspace: NodeKey) {
         assert!(
             self.nodes.contains_key(workspace),
@@ -12,11 +12,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             matches!(self.get_node(workspace), Some(NodeData::Workspace(_))),
             "workspace root must be a workspace node"
         );
-        assert_eq!(
-            self.parents.get(workspace).copied().flatten(),
-            None,
-            "root parent must be None"
-        );
+        assert_eq!(self.parent_of(workspace), None, "root parent must be None");
         if let Some(fullscreen_key) = self.fullscreen_key(workspace) {
             assert_ne!(
                 fullscreen_key, workspace,
@@ -58,23 +54,23 @@ impl<W: LayoutElement> ContainerArena<W> {
             self.verify_node(floating_root, Some(workspace), &mut visited, &mut leaves);
         }
 
-        // Reachability is a claim about the arena, not about this workspace, so it is made in
+        // Reachability is a claim about the tree, not about this workspace, so it is made in
         // `verify_all_invariants` where every workspace has been walked. Asserting it here was
-        // right only while an arena held one workspace, and would have read a second
+        // right only while a tree held one workspace, and would have read a second
         // workspace's nodes as unreachable garbage.
 
         if let Some(fullscreen_key) = self.fullscreen_key(workspace) {
             assert!(
                 self.holds_node(fullscreen_key),
-                "workspace fullscreen node must still be in the arena"
+                "workspace fullscreen node must still be in the tree"
             );
         }
 
-        // The seat is the arena's and holds one focused leaf for every workspace it has, so
+        // The seat is the tree's and holds one focused leaf for every workspace it has, so
         // where that leaf points is checked in `verify_all_invariants`. From here, a leaf
         // focused in another workspace is indistinguishable from a dangling one.
 
-        // The layout caches are the arena's, keyed by leaf identity across every workspace, so
+        // The layout caches are the tree's, keyed by leaf identity across every workspace, so
         // they are checked against the union of the leaves in `verify_all_invariants`. Checking
         // them here would read another workspace's cached leaf as an entry pointing at nothing.
 
@@ -84,7 +80,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         );
     }
 
-    /// The arena's layout caches describe leaves the arena actually holds.
+    /// The tree's layout caches describe leaves the tree actually holds.
     fn verify_leaf_layout_caches(&self, leaves: &HashSet<NodeKey>) {
         self.verify_leaf_layout_cache(&self.leaf_layouts, leaves, "leaf_layouts");
         for info in self.leaf_layouts.values() {
@@ -128,7 +124,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             "container tree must not contain cycles"
         );
         assert_eq!(
-            self.parents.get(key).copied().flatten(),
+            self.parent_of(key),
             expected_parent,
             "node parent pointer must match parent child list"
         );
@@ -183,10 +179,10 @@ impl<W: LayoutElement> ContainerArena<W> {
                     );
                 }
 
-                // Only where an arrange has run. A parked subtree is out of the tree waiting
+                // Only where an arrange has run. A transferred subtree is out of the tree waiting
                 // to be put back, and its shares are deliberately left for the destination's
                 // arrange to fill — see `resolved_percents` and `prepare_for_workspace_move`.
-                // Asking a parked node to be normalized asks it to have been arranged
+                // Asking a transferred node to be normalized asks it to have been arranged
                 // somewhere it is not.
                 if child_count > 0
                     && matches!(container.layout, Layout::SplitH | Layout::SplitV)
@@ -223,19 +219,28 @@ impl<W: LayoutElement> ContainerArena<W> {
                 self.verify_node(floating_root, Some(workspace), &mut visited, &mut leaves);
             }
         }
-        let mut parked_leaves = HashSet::new();
-        for parked in &self.parked_roots {
-            self.verify_node(*parked, None, &mut visited, &mut parked_leaves);
+        let mut transferred_leaves = HashSet::new();
+        for transferred in &self.transfer_roots {
+            self.verify_node(*transferred, None, &mut visited, &mut transferred_leaves);
         }
         assert_eq!(
             visited.len(),
             self.nodes.len(),
-            "every node must be reachable from a workspace, floating, or parked root"
+            "every node must be reachable from a workspace, floating, or transferred root"
+        );
+        let indexed_windows: HashMap<_, _> = self
+            .nodes
+            .iter()
+            .filter_map(|(key, node)| node.as_tile().map(|tile| (tile.window().id().clone(), key)))
+            .collect();
+        assert_eq!(
+            self.window_nodes, indexed_windows,
+            "the window-id index must be a bijection with live view nodes"
         );
         for key in self.nodes.keys() {
             assert!(
                 visited.contains(&key),
-                "node {key:?} exists in the arena but is unreachable"
+                "node {key:?} exists in the tree but is unreachable"
             );
         }
         self.verify_leaf_layout_caches(&leaves);
@@ -243,18 +248,18 @@ impl<W: LayoutElement> ContainerArena<W> {
         match self.seat_focused_key() {
             Some(key) => assert!(
                 leaves.contains(&key),
-                "focused_key must point to a leaf the arena holds"
+                "focused_key must point to a leaf the tree holds"
             ),
             None => assert!(
                 leaves.is_empty(),
-                "an arena with leaves must have a focused leaf"
+                "a tree with leaves must have a focused leaf"
             ),
         }
 
         if let Some(key) = self.selected_key() {
             assert!(
                 visited.contains(&key),
-                "selected_key must point to a node the arena holds"
+                "selected_key must point to a node the tree holds"
             );
         }
     }
@@ -284,7 +289,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 }
 
-impl<W: LayoutElement> ContainerArena<W> {
+impl<W: LayoutElement> ContainerTree<W> {
     /// The seat's order is the workspace's one focus cache, and everything reads through it.
     ///
     /// It is sway's `seat->focus_stack`, which its new-node and destroy listeners keep as
@@ -329,7 +334,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         }
     }
 
-    /// The floating side is in the same arena, and has to look like it.
+    /// The floating side is in the same tree, and has to look like it.
     ///
     /// Every floating root is a live node parented semantically by the workspace, listed once.
     /// holding both sides here is that a node keeps its key when it crosses, so a stale entry
@@ -338,18 +343,17 @@ impl<W: LayoutElement> ContainerArena<W> {
     fn verify_floating_region(&self, workspace: NodeKey) {
         let mut seen = HashSet::new();
         let mut seen_ids = HashSet::new();
-        for key in self.floating_roots_in(workspace) {
-            let root = self
-                .floating_roots
-                .iter()
-                .find(|root| root.key == key)
-                .expect("a listed floating root is in the stack");
+        let roots = self
+            .floating_entries(workspace)
+            .expect("the floating root owner must be a workspace");
+        for root in roots {
+            let key = root.key;
             assert!(
                 self.nodes.contains_key(key),
                 "a floating root must point to an existing node"
             );
             assert_eq!(
-                self.parents.get(key).copied().flatten(),
+                self.parent_of(key),
                 Some(workspace),
                 "a floating root must have the workspace as semantic parent"
             );

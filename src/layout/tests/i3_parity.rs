@@ -1820,9 +1820,9 @@ fn i3_135_deep_floating_roundtrip_from_other_workspace_preserves_focus_chain() {
 
     check_ops_on_layout(&mut layout, [Op::CloseWindow(5)]);
     // sway hands focus to `seat_get_focus_inactive` when the focused view goes. Floating has
-    // only detached and reattached window 4's node, so its place in that order still answers
+    // only reparented window 4's node, so its place in that order still answers
     // before window 3. Tiri now does the same in one workspace tree: `float_subtree` moves the
-    // same NodeKey between branches instead of rebuilding it in another arena.
+    // same NodeKey between branches instead of rebuilding it in another tree.
     //
     // sway/tree/container.c:1004-1059
     assert_eq!(

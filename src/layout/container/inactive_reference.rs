@@ -1,11 +1,11 @@
 //! Workspace-local inactive tiling focus, read directly from the seat order.
 
-use super::{ContainerArena, InactiveTilingReference, LayoutElement, NodeData, NodeKey};
+use super::{ContainerTree, InactiveTilingReference, LayoutElement, NodeData, NodeKey};
 
-impl<W: LayoutElement> ContainerArena<W> {
+impl<W: LayoutElement> ContainerTree<W> {
     /// The most recent node that still belongs to `ws->tiling`.
     ///
-    /// Tiling and floating share this arena and this seat order. Floating a subtree removes
+    /// Tiling and floating share this tree and this seat order. Floating a subtree removes
     /// it from the tiled branch without disturbing the relative order of the tiled nodes,
     /// which is exactly the state sway reads through `seat_get_focus_inactive_tiling`.
     pub(in crate::layout) fn inactive_tiling_key(&self, workspace: NodeKey) -> Option<NodeKey> {
