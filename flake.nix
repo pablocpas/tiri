@@ -43,6 +43,7 @@
             fileset = lib.fileset.unions [
               ./tiri-config
               ./tiri-ipc
+              ./tiri-parity
               ./tiri-visual-tests
               ./resources
               ./src
