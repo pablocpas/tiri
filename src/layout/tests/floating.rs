@@ -2582,7 +2582,7 @@ fn move_column_to_workspace_down_focus_false_on_floating_window() {
         unreachable!()
     };
 
-    assert_eq!(monitors[0].active_workspace_idx, 0);
+    assert_eq!(monitors[0].active_workspace_idx(&layout.containers), 0);
 }
 #[test]
 fn move_column_to_workspace_focus_false_on_floating_window() {
@@ -2604,7 +2604,7 @@ fn move_column_to_workspace_focus_false_on_floating_window() {
         unreachable!()
     };
 
-    assert_eq!(monitors[0].active_workspace_idx, 0);
+    assert_eq!(monitors[0].active_workspace_idx(&layout.containers), 0);
 }
 #[test]
 fn floating_interactive_resize_then_unfloat_clears_resize_state() {

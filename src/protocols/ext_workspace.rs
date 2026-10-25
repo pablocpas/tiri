@@ -158,7 +158,7 @@ pub fn refresh(state: &mut State) {
             let Some(visible_idx) = visible_workspace_idx(containers, mon, ws_idx) else {
                 continue;
             };
-            (visible_idx, mon.active_workspace_idx() == ws_idx)
+            (visible_idx, mon.active_workspace_idx(containers) == ws_idx)
         } else {
             (ws_idx, false)
         };

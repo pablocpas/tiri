@@ -70,8 +70,12 @@ pub struct Monitor<W: LayoutElement> {
     ///
     /// Always at least one.
     pub(super) output_key: OutputKey,
-    /// Index of the currently active workspace.
-    pub(super) active_workspace_idx: usize,
+    /// The workspace this output shows.
+    ///
+    /// The workspace and not its index: the output's workspaces are inserted, removed and
+    /// reordered all the time, and an index would have to be moved along by hand at every
+    /// one of those, which is where it goes wrong.
+    active_workspace: NodeKey,
     /// ID of the previously active workspace.
     pub(super) previous_workspace_id: Option<WorkspaceId>,
     /// In-progress switch between workspaces.
@@ -340,7 +344,7 @@ impl<W: LayoutElement> Monitor<W> {
 
         // Prepare the workspaces: set output, empty first, empty last.
         let output_key = containers.add_output(Some(output.clone()));
-        let mut active_workspace_idx = 0;
+        let mut active_workspace = None;
 
         let had_workspaces = !workspaces.is_empty();
         for (idx, ws) in workspaces.into_iter().enumerate() {
@@ -350,28 +354,31 @@ impl<W: LayoutElement> Monitor<W> {
             ws.update_config(containers, options.clone());
 
             if ws_id_to_activate.is_some_and(|id| ws.id() == id) {
-                active_workspace_idx = idx;
+                active_workspace = Some(ws.workspace_key());
             }
         }
 
         if options.layout.empty_workspace_above_first && had_workspaces {
             let ws = Workspace::new(containers, output.clone(), options.clone());
             ws.attach(containers, output_key, 0);
-            active_workspace_idx += 1;
         }
 
         let ws = Workspace::new(containers, output.clone(), options.clone());
         let end = containers.output_workspaces(output_key).len();
         ws.attach(containers, output_key, end);
-        let sticky_host =
-            WorkspaceId::of(containers.output_workspaces(output_key)[active_workspace_idx]);
+        // The first workspace, unless asked for another: with an empty one above the first,
+        // that is the one after it.
+        let first = usize::from(options.layout.empty_workspace_above_first && had_workspaces);
+        let active_workspace =
+            active_workspace.unwrap_or(containers.output_workspaces(output_key)[first]);
+        let sticky_host = WorkspaceId::of(active_workspace);
 
         Self {
             output_name: output.name(),
             output,
             working_area,
             output_key,
-            active_workspace_idx,
+            active_workspace,
             previous_workspace_id: None,
             insert_hint: None,
             insert_hint_element: InsertHintElement::new(options.layout.insert_hint),
@@ -444,6 +451,34 @@ impl<W: LayoutElement> Monitor<W> {
         ws
     }
 
+    /// Take the workspace at `idx` off this output because it is going back to its own.
+    ///
+    /// If it was the one shown, the one above it is shown instead, so as not to end up on the
+    /// last, empty, workspace. With an empty workspace above the first, the workspace at index
+    /// 1 (the first real one) is replaced by the one after it instead, for the same reason:
+    /// otherwise the first output to connect at startup, with named workspaces set up across
+    /// several outputs, can end up showing the empty workspace at the top rather than the first
+    /// named one.
+    ///
+    /// The sticky floats are left to the caller, which takes several workspaces off in a row.
+    pub(super) fn release_workspace_at(
+        &mut self,
+        containers: &mut ContainerTree<W>,
+        idx: usize,
+    ) -> Workspace<W> {
+        let ws = self.detach_workspace_at(containers, idx);
+        if ws.workspace_key() == self.active_workspace {
+            let replacement = if self.options.layout.empty_workspace_above_first && idx == 1 {
+                idx
+            } else {
+                idx.saturating_sub(1)
+            };
+            let replacement = replacement.min(self.workspace_count(containers) - 1);
+            self.active_workspace = self.ws(containers, replacement).workspace_key();
+        }
+        ws
+    }
+
     /// Drop the workspace at `idx`, which must hold nothing worth keeping.
     fn remove_workspace_at(&mut self, containers: &mut ContainerTree<W>, idx: usize) {
         let ws = self.ws(containers, idx);
@@ -458,8 +493,11 @@ impl<W: LayoutElement> Monitor<W> {
         &self.output_name
     }
 
-    pub fn active_workspace_idx(&self) -> usize {
-        self.active_workspace_idx
+    pub fn active_workspace_idx(&self, containers: &ContainerTree<W>) -> usize {
+        self.workspace_keys(containers)
+            .iter()
+            .position(|&key| key == self.active_workspace)
+            .expect("the active workspace must be on its output")
     }
 
     pub fn workspace_count(&self, containers: &ContainerTree<W>) -> usize {
@@ -473,7 +511,7 @@ impl<W: LayoutElement> Monitor<W> {
 
         // Keep the currently active empty workspace visible. It represents the "current"
         // workspace from the user's perspective.
-        if idx == self.active_workspace_idx {
+        if idx == self.active_workspace_idx(containers) {
             return false;
         }
 
@@ -485,7 +523,8 @@ impl<W: LayoutElement> Monitor<W> {
         let has_other_real_workspaces = self.workspaces(containers).enumerate().any(|(i, ws)| {
             i != idx
                 && (ws.has_windows_or_persistent_identity(containers)
-                    || (i == self.active_workspace_idx && ws.name(containers).is_some()))
+                    || (i == self.active_workspace_idx(containers)
+                        && ws.name(containers).is_some()))
         });
         if !has_other_real_workspaces {
             return false;
@@ -515,7 +554,7 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     pub fn active_workspace_ref(&self, containers: &ContainerTree<W>) -> Workspace<W> {
-        self.ws(containers, self.active_workspace_idx)
+        self.ws(containers, self.active_workspace_idx(containers))
     }
 
     pub fn find_named_workspace(
@@ -541,14 +580,16 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     pub fn active_workspace(&self, containers: &ContainerTree<W>) -> Workspace<W> {
-        self.ws(containers, self.active_workspace_idx)
+        self.ws(containers, self.active_workspace_idx(containers))
     }
 
     pub fn active_workspace_render_geo(
         &self,
         containers: &ContainerTree<W>,
     ) -> Option<Rectangle<f64, Logical>> {
-        let active_id = self.ws(containers, self.active_workspace_idx).id();
+        let active_id = self
+            .ws(containers, self.active_workspace_idx(containers))
+            .id();
         self.workspaces_with_render_geo(containers)
             .find(|(ws, _)| ws.id() == active_id)
             .map(|(_, geo)| geo)
@@ -564,7 +605,7 @@ impl<W: LayoutElement> Monitor<W> {
         tile: IncomingView<W>,
         activate: bool,
     ) {
-        let workspace_idx = self.active_workspace_idx;
+        let workspace_idx = self.active_workspace_idx(containers);
 
         {
             let workspace = self.ws(containers, workspace_idx);
@@ -627,16 +668,13 @@ impl<W: LayoutElement> Monitor<W> {
         containers.windows_mut_in_workspaces(&roots).into_iter()
     }
 
-    /// Make `idx` the active workspace, bringing the output's sticky floats along.
-    ///
-    /// Every write that can change *which* workspace is active goes through here; writes
-    /// that only follow the same workspace to a new index may assign the field directly.
+    /// Make the workspace at `idx` the active one, bringing the output's sticky floats along.
     pub(super) fn set_active_workspace_idx(
         &mut self,
         containers: &mut ContainerTree<W>,
         idx: usize,
     ) {
-        self.active_workspace_idx = idx;
+        self.active_workspace = self.ws(containers, idx).workspace_key();
         self.sync_sticky_host(containers);
     }
 
@@ -649,13 +687,13 @@ impl<W: LayoutElement> Monitor<W> {
     ///
     /// sway/input/seat.c:1209-1221
     pub(super) fn sync_sticky_host(&mut self, containers: &mut ContainerTree<W>) {
-        let active = self.ws(containers, self.active_workspace_idx).id();
+        let active = WorkspaceId::of(self.active_workspace);
         let previous = std::mem::replace(&mut self.sticky_host, active);
         if previous == active {
             return;
         }
         if let Some(from) = self.idx_of_ws(containers, previous) {
-            self.move_sticky_floats(containers, from, self.active_workspace_idx);
+            self.move_sticky_floats(containers, from, self.active_workspace_idx(containers));
         }
     }
 
@@ -692,7 +730,12 @@ impl<W: LayoutElement> Monitor<W> {
         from: usize,
         root: NodeKey,
     ) {
-        self.move_floats(containers, &[root], from, self.active_workspace_idx);
+        self.move_floats(
+            containers,
+            &[root],
+            from,
+            self.active_workspace_idx(containers),
+        );
         if self.workspace_switch.is_none() {
             self.clean_up_workspaces(containers);
         }
@@ -732,9 +775,6 @@ impl<W: LayoutElement> Monitor<W> {
     pub fn add_workspace_at(&mut self, containers: &mut ContainerTree<W>, idx: usize) {
         let ws = Workspace::new(containers, self.output.clone(), self.options.clone());
         ws.attach(containers, self.output_key, idx);
-        if idx <= self.active_workspace_idx {
-            self.active_workspace_idx += 1;
-        }
 
         if let Some(switch) = &mut self.workspace_switch {
             if idx as f64 <= switch.target_idx() {
@@ -797,7 +837,6 @@ impl<W: LayoutElement> Monitor<W> {
             return;
         }
 
-        let active_id = self.ws(containers, self.active_workspace_idx).id();
         let identities: std::collections::HashMap<NodeKey, WorkspaceIdentity> = self
             .workspace_keys(containers)
             .iter()
@@ -814,7 +853,6 @@ impl<W: LayoutElement> Monitor<W> {
                 _ => std::cmp::Ordering::Equal,
             });
         });
-        self.active_workspace_idx = self.idx_of_ws(containers, active_id).unwrap();
     }
 
     pub(super) fn set_initial_numeric_workspace(
@@ -825,7 +863,7 @@ impl<W: LayoutElement> Monitor<W> {
     ) {
         if self.options.layout.empty_workspace_above_first
             && self.workspace_count(containers) == 1
-            && self.active_workspace_idx == 0
+            && self.active_workspace_idx(containers) == 0
         {
             self.add_workspace_bottom(containers);
             self.ws(containers, 1)
@@ -835,7 +873,7 @@ impl<W: LayoutElement> Monitor<W> {
             return;
         }
 
-        let idx = self.active_workspace_idx;
+        let idx = self.active_workspace_idx(containers);
         self.ws(containers, idx)
             .set_numeric_identity(containers, number, lifetime);
 
@@ -889,17 +927,19 @@ impl<W: LayoutElement> Monitor<W> {
         idx: usize,
         config: Option<tiri_config::Animation>,
     ) {
-        let prev_active_id = self.ws(containers, self.active_workspace_idx).id();
-        if self.active_workspace_idx != idx {
+        let prev_active_id = self
+            .ws(containers, self.active_workspace_idx(containers))
+            .id();
+        if self.active_workspace_idx(containers) != idx {
             self.previous_workspace_id = Some(prev_active_id);
         }
 
         // Read back afterwards: sticky floats arriving on the empty workspace at the start
         // put a new one in front of it, which shifts every index including the switch's.
         self.set_active_workspace_idx(containers, idx);
-        let idx = self.active_workspace_idx;
+        let idx = self.active_workspace_idx(containers);
         // FIXME: also compute and use current velocity.
-        let current_idx = self.workspace_render_idx();
+        let current_idx = self.workspace_render_idx(containers);
 
         let config = config.unwrap_or(self.options.animations.workspace_switch.0);
 
@@ -940,9 +980,10 @@ impl<W: LayoutElement> Monitor<W> {
         target: MonitorAddWindowTarget<'a, W>,
     ) -> (usize, WorkspaceAddWindowTarget<'a, W>) {
         match target {
-            MonitorAddWindowTarget::Auto => {
-                (self.active_workspace_idx, WorkspaceAddWindowTarget::Auto)
-            }
+            MonitorAddWindowTarget::Auto => (
+                self.active_workspace_idx(containers),
+                WorkspaceAddWindowTarget::Auto,
+            ),
             MonitorAddWindowTarget::Workspace { id, root_index } => {
                 let idx = self.idx_of_ws(containers, id).unwrap();
                 let target = if let Some(root_index) = root_index {
@@ -1068,13 +1109,10 @@ impl<W: LayoutElement> Monitor<W> {
                 || (self.options.layout.empty_workspace_above_first && idx == 0);
             if self.ws(containers, idx).should_remove_when_empty(
                 containers,
-                self.active_workspace_idx == idx,
+                self.active_workspace_idx(containers) == idx,
                 is_internal_placeholder,
             ) {
                 self.remove_workspace_at(containers, idx);
-                if self.active_workspace_idx > idx {
-                    self.active_workspace_idx -= 1;
-                }
             }
         }
 
@@ -1089,11 +1127,10 @@ impl<W: LayoutElement> Monitor<W> {
                 .ws(containers, 1)
                 .has_windows_or_persistent_identity(containers));
             self.remove_workspace_at(containers, 1);
-            self.active_workspace_idx = 0;
+            self.active_workspace = self.ws(containers, 0).workspace_key();
         }
 
-        // Every reordering of the workspaces ends here, and some of them leave a different
-        // workspace at the active index; that one is what the output shows now.
+        // Every cleanup ends here, and the one above can change which workspace is shown.
         self.sync_sticky_host(containers);
     }
 
@@ -1127,11 +1164,11 @@ impl<W: LayoutElement> Monitor<W> {
 
         let ws = self.detach_workspace_at(containers, idx);
 
-        // For monitor current workspace removal, we focus previous rather than next (<= rather
-        // than <). This is different from columns and tiles, but it lets move-workspace-to-monitor
-        // back and forth to preserve position.
-        if idx <= self.active_workspace_idx && self.active_workspace_idx > 0 {
-            self.active_workspace_idx -= 1;
+        // For monitor current workspace removal, we focus previous rather than next. This is
+        // different from columns and tiles, but it lets move-workspace-to-monitor back and
+        // forth to preserve position.
+        if ws.workspace_key() == self.active_workspace {
+            self.active_workspace = self.ws(containers, idx.saturating_sub(1)).workspace_key();
         }
         // The removed workspace may have been the one shown; whichever is shown now holds the
         // output's sticky floats from here on. The removed one keeps its own.
@@ -1166,10 +1203,6 @@ impl<W: LayoutElement> Monitor<W> {
         ws.attach(containers, self.output_key, idx);
         ws.update_config(containers, self.options.clone());
 
-        if idx <= self.active_workspace_idx {
-            self.active_workspace_idx += 1;
-        }
-
         self.normalize_numeric_workspace_order(containers);
 
         if activate {
@@ -1191,8 +1224,6 @@ impl<W: LayoutElement> Monitor<W> {
             return;
         }
 
-        let empty_was_focused = self.active_workspace_idx == self.workspace_count(containers) - 1;
-
         // Push the workspaces from the removed monitor in the end, right before the
         // last, empty, workspace.
         for ws in workspaces {
@@ -1212,11 +1243,6 @@ impl<W: LayoutElement> Monitor<W> {
         }
 
         self.normalize_numeric_workspace_order(containers);
-
-        // If the empty workspace was focused on the primary monitor, keep it focused.
-        if empty_was_focused {
-            self.active_workspace_idx = self.workspace_count(containers) - 1;
-        }
 
         // FIXME: if we're adding workspaces to currently invisible positions
         // (outside the workspace switch), we don't need to cancel it.
@@ -1276,8 +1302,12 @@ impl<W: LayoutElement> Monitor<W> {
     ) -> Option<usize> {
         let last = self.workspace_count(containers) - 1;
         match target {
-            TransferTarget::WorkspaceUp => Some(self.active_workspace_idx.saturating_sub(1)),
-            TransferTarget::WorkspaceDown => Some(min(self.active_workspace_idx + 1, last)),
+            TransferTarget::WorkspaceUp => {
+                Some(self.active_workspace_idx(containers).saturating_sub(1))
+            }
+            TransferTarget::WorkspaceDown => {
+                Some(min(self.active_workspace_idx(containers) + 1, last))
+            }
             TransferTarget::WorkspaceIndex(idx) => Some(min(idx, last)),
             TransferTarget::Workspace(_) | TransferTarget::Output { .. } => None,
         }
@@ -1315,7 +1345,7 @@ impl<W: LayoutElement> Monitor<W> {
         let source_workspace_idx = if let Some(window) = window {
             self.workspace_idx_for_window(containers, window).unwrap()
         } else {
-            self.active_workspace_idx
+            self.active_workspace_idx(containers)
         };
         let source_id = self.ws(containers, source_workspace_idx).id();
 
@@ -1422,7 +1452,7 @@ impl<W: LayoutElement> Monitor<W> {
         new_idx: usize,
         activate: bool,
     ) {
-        let source_workspace_idx = self.active_workspace_idx;
+        let source_workspace_idx = self.active_workspace_idx(containers);
         if new_idx == source_workspace_idx {
             return;
         }
@@ -1452,7 +1482,7 @@ impl<W: LayoutElement> Monitor<W> {
         idx: usize,
         activate: bool,
     ) {
-        let source_workspace_idx = self.active_workspace_idx;
+        let source_workspace_idx = self.active_workspace_idx(containers);
 
         let new_idx = min(idx, self.workspace_count(containers) - 1);
         if new_idx == source_workspace_idx {
@@ -1492,16 +1522,18 @@ impl<W: LayoutElement> Monitor<W> {
         let idx = match target {
             WorkspaceTarget::Up => match dnd_idx {
                 Some(current) => (current.ceil() - 1.).clamp(0., last as f64) as usize,
-                None => self.active_workspace_idx.saturating_sub(1),
+                None => self.active_workspace_idx(containers).saturating_sub(1),
             },
             WorkspaceTarget::Down => match dnd_idx {
                 Some(current) => (current.floor() + 1.).clamp(0., last as f64) as usize,
-                None => min(self.active_workspace_idx + 1, last),
+                None => min(self.active_workspace_idx(containers) + 1, last),
             },
             WorkspaceTarget::Index(idx) => min(idx, last),
             // i3's `workspace_auto_back_and_forth`: asking for the workspace already shown
             // goes back to the previous one.
-            WorkspaceTarget::IndexOrBack(idx) if min(idx, last) != self.active_workspace_idx => {
+            WorkspaceTarget::IndexOrBack(idx)
+                if min(idx, last) != self.active_workspace_idx(containers) =>
+            {
                 min(idx, last)
             }
             WorkspaceTarget::IndexOrBack(_) | WorkspaceTarget::Previous => {
@@ -1690,10 +1722,11 @@ impl<W: LayoutElement> Monitor<W> {
         {
             if options.layout.empty_workspace_above_first {
                 self.add_workspace_top(containers);
-            } else if self.workspace_switch.is_none() && self.active_workspace_idx != 0 {
-                self.move_sticky_floats(containers, 0, self.active_workspace_idx);
+            } else if self.workspace_switch.is_none() && self.active_workspace_idx(containers) != 0
+            {
+                let active_idx = self.active_workspace_idx(containers);
+                self.move_sticky_floats(containers, 0, active_idx);
                 self.remove_workspace_at(containers, 0);
-                self.active_workspace_idx = self.active_workspace_idx.saturating_sub(1);
             }
         }
 
@@ -1754,7 +1787,7 @@ impl<W: LayoutElement> Monitor<W> {
 
     pub fn move_workspace_down(&mut self, containers: &mut ContainerTree<W>) {
         if self
-            .ws(containers, self.active_workspace_idx)
+            .ws(containers, self.active_workspace_idx(containers))
             .numeric_number(containers)
             .is_some()
         {
@@ -1763,14 +1796,14 @@ impl<W: LayoutElement> Monitor<W> {
         }
 
         let mut new_idx = min(
-            self.active_workspace_idx + 1,
+            self.active_workspace_idx(containers) + 1,
             self.workspace_count(containers) - 1,
         );
-        if new_idx == self.active_workspace_idx {
+        if new_idx == self.active_workspace_idx(containers) {
             return;
         }
 
-        let active_idx = self.active_workspace_idx;
+        let active_idx = self.active_workspace_idx(containers);
         containers.reorder_output_workspaces(self.output_key, |workspaces| {
             workspaces.swap(active_idx, new_idx)
         });
@@ -1780,7 +1813,7 @@ impl<W: LayoutElement> Monitor<W> {
             self.add_workspace_bottom(containers);
         }
 
-        if self.options.layout.empty_workspace_above_first && self.active_workspace_idx == 0 {
+        if self.options.layout.empty_workspace_above_first && active_idx == 0 {
             self.add_workspace_top(containers);
             new_idx += 1;
         }
@@ -1795,7 +1828,7 @@ impl<W: LayoutElement> Monitor<W> {
 
     pub fn move_workspace_up(&mut self, containers: &mut ContainerTree<W>) {
         if self
-            .ws(containers, self.active_workspace_idx)
+            .ws(containers, self.active_workspace_idx(containers))
             .numeric_number(containers)
             .is_some()
         {
@@ -1803,17 +1836,17 @@ impl<W: LayoutElement> Monitor<W> {
             return;
         }
 
-        let mut new_idx = self.active_workspace_idx.saturating_sub(1);
-        if new_idx == self.active_workspace_idx {
+        let mut new_idx = self.active_workspace_idx(containers).saturating_sub(1);
+        if new_idx == self.active_workspace_idx(containers) {
             return;
         }
 
-        let active_idx = self.active_workspace_idx;
+        let active_idx = self.active_workspace_idx(containers);
         containers.reorder_output_workspaces(self.output_key, |workspaces| {
             workspaces.swap(active_idx, new_idx)
         });
 
-        if self.active_workspace_idx == self.workspace_count(containers) - 1 {
+        if active_idx == self.workspace_count(containers) - 1 {
             // Insert a new empty workspace.
             self.add_workspace_bottom(containers);
         }
@@ -1841,7 +1874,7 @@ impl<W: LayoutElement> Monitor<W> {
             return;
         }
 
-        let mut new_idx = new_idx.clamp(0, self.workspace_count(containers) - 1);
+        let new_idx = new_idx.clamp(0, self.workspace_count(containers) - 1);
         if old_idx == new_idx {
             return;
         }
@@ -1867,7 +1900,6 @@ impl<W: LayoutElement> Monitor<W> {
 
             if self.options.layout.empty_workspace_above_first && old_idx == 0 {
                 self.add_workspace_top(containers);
-                new_idx += 1;
             }
         } else {
             if old_idx == self.workspace_count(containers) - 1 {
@@ -1877,19 +1909,7 @@ impl<W: LayoutElement> Monitor<W> {
 
             if self.options.layout.empty_workspace_above_first && new_idx == 0 {
                 self.add_workspace_top(containers);
-                new_idx += 1;
             }
-        }
-
-        // Only refocus the workspace if it was already focused
-        if self.active_workspace_idx == old_idx {
-            self.active_workspace_idx = new_idx;
-        // If the workspace order was switched so that the current workspace moved down the
-        // workspace stack, focus correctly
-        } else if new_idx <= self.active_workspace_idx && old_idx > self.active_workspace_idx {
-            self.active_workspace_idx += 1;
-        } else if new_idx >= self.active_workspace_idx && old_idx < self.active_workspace_idx {
-            self.active_workspace_idx = self.active_workspace_idx.saturating_sub(1);
         }
 
         self.workspace_switch = None;
@@ -1897,7 +1917,7 @@ impl<W: LayoutElement> Monitor<W> {
         if moved_had_numeric_identity {
             if self
                 .workspaces(containers)
-                .nth(self.active_workspace_idx)
+                .nth(self.active_workspace_idx(containers))
                 .is_some_and(|ws| ws.is_empty_transient_numeric(containers, 1))
             {
                 let idx = self
@@ -1957,10 +1977,14 @@ impl<W: LayoutElement> Monitor<W> {
         compute_overview_zoom(&self.options, progress)
     }
 
-    pub(super) fn set_overview_progress(&mut self, progress: Option<&super::OverviewProgress>) {
-        let prev_render_idx = self.workspace_render_idx();
+    pub(super) fn set_overview_progress(
+        &mut self,
+        containers: &ContainerTree<W>,
+        progress: Option<&super::OverviewProgress>,
+    ) {
+        let prev_render_idx = self.workspace_render_idx(containers);
         self.overview_progress = progress.map(OverviewProgress::from);
-        let new_render_idx = self.workspace_render_idx();
+        let new_render_idx = self.workspace_render_idx(containers);
 
         // If the view jumped (can happen when going from corrected to uncorrected render_idx, for
         // example when toggling the overview in the middle of an overview animation), then restart
@@ -1977,7 +2001,7 @@ impl<W: LayoutElement> Monitor<W> {
         self.overview_progress.as_ref().map(|p| p.value())
     }
 
-    pub fn workspace_render_idx(&self) -> f64 {
+    pub fn workspace_render_idx(&self, containers: &ContainerTree<W>) -> f64 {
         // If workspace switch and overview progress are matching animations, then compute a
         // correction term to make the movement appear monotonic.
         if let (
@@ -2048,7 +2072,7 @@ impl<W: LayoutElement> Monitor<W> {
         if let Some(switch) = &self.workspace_switch {
             switch.current_idx()
         } else {
-            self.active_workspace_idx as f64
+            self.active_workspace_idx(containers) as f64
         }
     }
 
@@ -2068,7 +2092,7 @@ impl<W: LayoutElement> Monitor<W> {
             .to_physical_precise_round(scale)
             .to_logical(scale);
 
-        let first_ws_y = -self.workspace_render_idx() * ws_height_with_gap;
+        let first_ws_y = -self.workspace_render_idx(containers) * ws_height_with_gap;
         let first_ws_y = round_logical_in_physical(scale, first_ws_y);
 
         // Return position for one-past-last workspace too.
@@ -2243,7 +2267,7 @@ impl<W: LayoutElement> Monitor<W> {
             return false;
         }
 
-        let ws = self.ws(containers, self.active_workspace_idx);
+        let ws = self.ws(containers, self.active_workspace_idx(containers));
         ws.render_above_top_layer(containers)
     }
 
@@ -2303,7 +2327,9 @@ impl<W: LayoutElement> Monitor<W> {
             )
         };
 
-        let active_ws_id = self.ws(containers, self.active_workspace_idx).id();
+        let active_ws_id = self
+            .ws(containers, self.active_workspace_idx(containers))
+            .id();
 
         // Where the active workspace rests. Its sticky floats are drawn here while it slides:
         // they belong to the output, so a workspace switch is not something they take part in.
@@ -2467,9 +2493,13 @@ impl<W: LayoutElement> Monitor<W> {
         }
     }
 
-    pub fn workspace_switch_gesture_begin(&mut self, is_touchpad: bool) {
-        let center_idx = self.active_workspace_idx;
-        let current_idx = self.workspace_render_idx();
+    pub fn workspace_switch_gesture_begin(
+        &mut self,
+        containers: &ContainerTree<W>,
+        is_touchpad: bool,
+    ) {
+        let center_idx = self.active_workspace_idx(containers);
+        let current_idx = self.workspace_render_idx(containers);
 
         let gesture = WorkspaceSwitchGesture {
             center_idx,
@@ -2485,7 +2515,7 @@ impl<W: LayoutElement> Monitor<W> {
         self.workspace_switch = Some(WorkspaceSwitch::Gesture(gesture));
     }
 
-    pub fn dnd_scroll_gesture_begin(&mut self) {
+    pub fn dnd_scroll_gesture_begin(&mut self, containers: &ContainerTree<W>) {
         if let Some(WorkspaceSwitch::Gesture(WorkspaceSwitchGesture {
             dnd_last_event_time: Some(_),
             ..
@@ -2500,8 +2530,8 @@ impl<W: LayoutElement> Monitor<W> {
             return;
         }
 
-        let center_idx = self.active_workspace_idx;
-        let current_idx = self.workspace_render_idx();
+        let center_idx = self.active_workspace_idx(containers);
+        let current_idx = self.workspace_render_idx(containers);
 
         let gesture = WorkspaceSwitchGesture {
             center_idx,
@@ -2709,14 +2739,17 @@ impl<W: LayoutElement> Monitor<W> {
 
         velocity *= rubber_band.clamp_derivative(min, max, gesture.start_idx + current_pos);
 
-        if self.active_workspace_idx != new_idx {
-            self.previous_workspace_id = Some(self.ws(containers, self.active_workspace_idx).id());
+        if self.active_workspace_idx(containers) != new_idx {
+            self.previous_workspace_id = Some(
+                self.ws(containers, self.active_workspace_idx(containers))
+                    .id(),
+            );
         }
 
         // Read back afterwards, as in `activate_workspace_with_anim_config`: the gesture is
         // still the current switch, so a workspace put in front of it offsets it too.
         self.set_active_workspace_idx(containers, new_idx);
-        let new_idx = self.active_workspace_idx;
+        let new_idx = self.active_workspace_idx(containers);
         let Some(WorkspaceSwitch::Gesture(gesture)) = &self.workspace_switch else {
             unreachable!("the gesture is replaced only below");
         };
@@ -2772,7 +2805,8 @@ impl<W: LayoutElement> Monitor<W> {
 
         assert_eq!(
             self.sticky_host,
-            self.ws(containers, self.active_workspace_idx).id(),
+            self.ws(containers, self.active_workspace_idx(containers))
+                .id(),
             "the active workspace must be the one holding the output's sticky floats"
         );
 
@@ -2780,7 +2814,7 @@ impl<W: LayoutElement> Monitor<W> {
             self.workspace_count(containers) > 0,
             "monitor must have at least one workspace"
         );
-        assert!(self.active_workspace_idx < self.workspace_count(containers));
+        assert!(self.active_workspace_idx(containers) < self.workspace_count(containers));
 
         if let Some(WorkspaceSwitch::Animation(anim)) = &self.workspace_switch {
             let before_idx = anim.from() as usize;
@@ -2836,7 +2870,7 @@ impl<W: LayoutElement> Monitor<W> {
                 // skip last
                 .skip(1)
             {
-                if idx != self.active_workspace_idx {
+                if idx != self.active_workspace_idx(containers) {
                     assert!(
                         ws.has_windows_or_persistent_identity(containers),
                         "non-active workspace can't be empty and unnamed except the last one"

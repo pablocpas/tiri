@@ -305,7 +305,7 @@ fn scratchpad_show_after_move_to_workspace_cleans_empty_non_active_workspace() {
 
     let monitor = monitors.into_iter().next().unwrap();
     for (idx, ws) in monitor.workspaces(&layout.containers).enumerate().skip(1) {
-        if idx != monitor.active_workspace_idx
+        if idx != monitor.active_workspace_idx(&layout.containers)
             && idx != monitor.workspace_count(&layout.containers) - 1
         {
             assert!(
@@ -389,7 +389,7 @@ fn move_to_scratchpad_cleans_empty_non_active_workspace() {
     let monitor = monitors.into_iter().next().unwrap();
     let last_idx = monitor.workspace_count(&layout.containers) - 1;
     for (idx, workspace) in monitor.workspaces(&layout.containers).enumerate() {
-        if idx != monitor.active_workspace_idx && idx != last_idx {
+        if idx != monitor.active_workspace_idx(&layout.containers) && idx != last_idx {
             assert!(workspace.has_windows_or_persistent_identity(&layout.containers));
         }
     }
@@ -467,7 +467,7 @@ fn a_sticky_float_occupies_the_workspace_it_arrives_on() {
     check_ops_on_layout(&mut layout, [Op::FocusWorkspaceDown]);
     let mon = layout.monitors().next().unwrap();
     assert_eq!(mon.workspace_count(&layout.containers), 3);
-    assert_eq!(mon.active_workspace_idx, 1);
+    assert_eq!(mon.active_workspace_idx(&layout.containers), 1);
     assert!(mon
         .ws(&layout.containers, 1)
         .has_window(&layout.containers, &1));

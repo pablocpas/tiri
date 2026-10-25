@@ -694,7 +694,8 @@ impl State {
             }
 
             // Check if this workspace became active.
-            let is_active = mon.is_some_and(|mon| mon.active_workspace_idx() == ws_idx);
+            let is_active =
+                mon.is_some_and(|mon| mon.active_workspace_idx(layout.containers()) == ws_idx);
             if is_active && !ipc_ws.is_active {
                 events.push(Event::WorkspaceActivated { id, focused: false });
             }
@@ -719,7 +720,9 @@ impl State {
                         name: ws.name(layout.containers()).cloned(),
                         output: mon.map(|mon| mon.output_name().clone()),
                         is_urgent: ws.is_urgent(layout.containers()),
-                        is_active: mon.is_some_and(|mon| mon.active_workspace_idx() == ws_idx),
+                        is_active: mon.is_some_and(|mon| {
+                            mon.active_workspace_idx(layout.containers()) == ws_idx
+                        }),
                         is_focused: Some(id) == focused_ws_id,
                         active_window_id: ws
                             .active_window(layout.containers())

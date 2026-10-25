@@ -205,8 +205,10 @@ impl<W: LayoutElement> Layout<W> {
             pointer_ratio_within_window,
         });
 
-        for mon in self.monitors_mut() {
-            mon.dnd_scroll_gesture_begin();
+        if let MonitorSet::Normal { monitors, .. } = &mut self.monitor_set {
+            for mon in monitors {
+                mon.dnd_scroll_gesture_begin(&self.containers);
+            }
         }
 
         true
@@ -975,8 +977,10 @@ impl<W: LayoutElement> Layout<W> {
         });
 
         if begin_gesture {
-            for mon in self.monitors_mut() {
-                mon.dnd_scroll_gesture_begin();
+            if let MonitorSet::Normal { monitors, .. } = &mut self.monitor_set {
+                for mon in monitors {
+                    mon.dnd_scroll_gesture_begin(&self.containers);
+                }
             }
         }
     }

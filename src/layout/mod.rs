@@ -996,8 +996,7 @@ impl<W: LayoutElement> Layout<W> {
                         .original_output(&self.containers)
                         .matches(&output)
                     {
-                        let ws = primary.ws(&self.containers, i);
-                        ws.detach(&mut self.containers);
+                        let ws = primary.release_workspace_at(&mut self.containers, i);
 
                         // FIXME: this can be coded in a way that the workspace switch won't be
                         // affected if the removed workspace is invisible. But this is good enough
@@ -1014,24 +1013,6 @@ impl<W: LayoutElement> Layout<W> {
                             workspaces.push(ws);
                         } else {
                             ws.remove_from_tree(&mut self.containers);
-                        }
-
-                        if i <= primary.active_workspace_idx
-                            // Generally when moving the currently active workspace, we want to
-                            // fall back to the workspace above, so as not to end up on the last
-                            // empty workspace. However, with empty workspace above first, when
-                            // moving the workspace at index 1 (first non-empty), we want to stay
-                            // at index 1, so as once again not to end up on an empty workspace.
-                            //
-                            // This comes into play at compositor startup when having named
-                            // workspaces set up across multiple monitors. Without this check, the
-                            // first monitor to connect can end up with the first empty workspace
-                            // focused instead of the first named workspace.
-                            && !(primary.options.layout.empty_workspace_above_first
-                                && primary.active_workspace_idx == 1)
-                        {
-                            primary.active_workspace_idx =
-                                primary.active_workspace_idx.saturating_sub(1);
                         }
                     }
                 }
@@ -1066,7 +1047,7 @@ impl<W: LayoutElement> Layout<W> {
                     layout_config,
                 );
                 monitor.overview_open = self.overview_open;
-                monitor.set_overview_progress(self.overview_progress.as_ref());
+                monitor.set_overview_progress(&self.containers, self.overview_progress.as_ref());
                 monitors.push(monitor);
 
                 MonitorSet::Normal {
@@ -1100,7 +1081,7 @@ impl<W: LayoutElement> Layout<W> {
                     );
                 }
                 monitor.overview_open = self.overview_open;
-                monitor.set_overview_progress(self.overview_progress.as_ref());
+                monitor.set_overview_progress(&self.containers, self.overview_progress.as_ref());
 
                 MonitorSet::Normal {
                     monitors: vec![monitor],
@@ -1128,7 +1109,10 @@ impl<W: LayoutElement> Layout<W> {
                 self.last_active_workspace_id.insert(
                     monitor.output_name().clone(),
                     monitor
-                        .ws(&self.containers, monitor.active_workspace_idx)
+                        .ws(
+                            &self.containers,
+                            monitor.active_workspace_idx(&self.containers),
+                        )
                         .id(),
                 );
 
@@ -1850,7 +1834,7 @@ impl<W: LayoutElement> Layout<W> {
             return true;
         }
 
-        workspace_idx == mon.active_workspace_idx
+        workspace_idx == mon.active_workspace_idx(&self.containers)
     }
 
     pub fn activate_window(&mut self, window: &W::Id) {
@@ -3402,7 +3386,7 @@ impl<W: LayoutElement> Layout<W> {
         match &mut self.monitor_set {
             MonitorSet::Normal { monitors, .. } => {
                 for mon in monitors {
-                    mon.set_overview_progress(self.overview_progress.as_ref());
+                    mon.set_overview_progress(&self.containers, self.overview_progress.as_ref());
                     mon.advance_animations(&mut self.containers);
                 }
             }
@@ -3521,7 +3505,7 @@ impl<W: LayoutElement> Layout<W> {
                         .interactive_move
                         .as_ref()
                         .is_some_and(InteractiveMoveState::is_moving);
-                mon.set_overview_progress(self.overview_progress.as_ref());
+                mon.set_overview_progress(&self.containers, self.overview_progress.as_ref());
                 mon.update_render_elements(&mut self.containers, is_active);
             }
         }
@@ -4185,7 +4169,7 @@ impl<W: LayoutElement> Layout<W> {
             };
             *active_monitor_idx = idx;
 
-            let ws_idx = monitors[idx].active_workspace_idx;
+            let ws_idx = monitors[idx].active_workspace_idx(&self.containers);
             let ws = monitors[idx].ws(&self.containers, ws_idx);
             target_has_tiling = !self.containers.tiled_is_empty(ws.workspace_key());
             if !target_has_tiling {
@@ -4287,10 +4271,11 @@ impl<W: LayoutElement> Layout<W> {
             } else {
                 let mon_idx = *active_monitor_idx;
                 let mon = &monitors[mon_idx];
-                (mon_idx, mon.active_workspace_idx)
+                (mon_idx, mon.active_workspace_idx(&self.containers))
             };
 
-            let workspace_idx = target_ws_idx.unwrap_or(monitors[new_idx].active_workspace_idx);
+            let workspace_idx =
+                target_ws_idx.unwrap_or(monitors[new_idx].active_workspace_idx(&self.containers));
             if mon_idx == new_idx && ws_idx == workspace_idx {
                 return;
             }
@@ -4405,7 +4390,7 @@ impl<W: LayoutElement> Layout<W> {
             subtree.prepare_for_workspace_move(&mut self.containers);
 
             let workspace_idx = target_ws_idx
-                .unwrap_or(monitors[new_idx].active_workspace_idx)
+                .unwrap_or(monitors[new_idx].active_workspace_idx(&self.containers))
                 .min(monitors[new_idx].workspace_count(&self.containers) - 1);
             self.add_root_tiling_subtree_by_idx(new_idx, workspace_idx, subtree, activate);
         }
@@ -4422,7 +4407,7 @@ impl<W: LayoutElement> Layout<W> {
             return false;
         };
 
-        let idx = monitors[*active_monitor_idx].active_workspace_idx;
+        let idx = monitors[*active_monitor_idx].active_workspace_idx(&self.containers);
         self.move_workspace_to_output_by_index(idx, None, output)
     }
 
@@ -4493,19 +4478,15 @@ impl<W: LayoutElement> Layout<W> {
 
         // Only switch active monitor if the workspace to be moved is the currently focused one on
         // the current monitor.
-        let activate =
-            current_idx == *active_monitor_idx && old_idx == current.active_workspace_idx;
+        let activate = current_idx == *active_monitor_idx
+            && old_idx == current.active_workspace_idx(&self.containers);
 
         let ws = current.remove_workspace_by_idx(&mut self.containers, old_idx);
         ws.set_original_output(&mut self.containers, new_output);
 
         let target = &mut monitors[target_idx];
-        target.insert_workspace(
-            &mut self.containers,
-            ws,
-            target.active_workspace_idx + 1,
-            activate,
-        );
+        let idx = target.active_workspace_idx(&self.containers) + 1;
+        target.insert_workspace(&mut self.containers, ws, idx, activate);
 
         if activate {
             *active_monitor_idx = target_idx;
@@ -4622,7 +4603,7 @@ impl<W: LayoutElement> Layout<W> {
                 continue;
             }
 
-            monitor.workspace_switch_gesture_begin(is_touchpad);
+            monitor.workspace_switch_gesture_begin(&self.containers, is_touchpad);
         }
     }
 
@@ -4887,7 +4868,7 @@ impl<W: LayoutElement> Layout<W> {
             let Some((monitor, containers)) = self.active_monitor_and_containers_mut() else {
                 return;
             };
-            let index = monitor.active_workspace_idx;
+            let index = monitor.active_workspace_idx(&*containers);
             (monitor, containers, index)
         };
 
@@ -4992,7 +4973,7 @@ impl<W: LayoutElement> Layout<W> {
 
         for mon in monitors {
             mon.overview_open = self.overview_open;
-            mon.set_overview_progress(self.overview_progress.as_ref());
+            mon.set_overview_progress(&self.containers, self.overview_progress.as_ref());
         }
     }
 
@@ -5326,14 +5307,15 @@ impl<W: LayoutElement> Layout<W> {
 
                     if ongoing_scrolling_dnd.is_some() && self.overview_open {
                         // Begin the scroll on new monitors and when opening the overview.
-                        mon.dnd_scroll_gesture_begin();
+                        mon.dnd_scroll_gesture_begin(&self.containers);
                     } else if !self.overview_open {
                         mon.dnd_scroll_gesture_end(&mut self.containers);
                     }
 
                     for (ws_idx, ws) in mon.workspace_list(&self.containers).into_iter().enumerate()
                     {
-                        let is_focused = is_active && ws_idx == mon.active_workspace_idx;
+                        let is_focused =
+                            is_active && ws_idx == mon.active_workspace_idx(&self.containers);
                         ws.refresh(&mut self.containers, is_active, is_focused);
                     }
                 }
@@ -5496,7 +5478,10 @@ impl<W: LayoutElement> Layout<W> {
                 floating: Vec::new(),
             };
         };
-        let workspace = monitor.ws(&self.containers, monitor.active_workspace_idx);
+        let workspace = monitor.ws(
+            &self.containers,
+            monitor.active_workspace_idx(&self.containers),
+        );
 
         LayoutTree {
             workspace_id: Some(workspace.id().get()),
