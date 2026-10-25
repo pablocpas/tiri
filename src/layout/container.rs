@@ -615,6 +615,9 @@ pub struct ContainerTree<W: LayoutElement> {
     ///
     /// Each is always a [`NodeData::Workspace`], empty tree included.
     ///
+    /// This says which workspaces exist, not where they are or in what order: that is the
+    /// outputs' (see [`outputs`]), and the scratchpad is here without being on any.
+    ///
     /// sway keeps `sway_workspace` and `sway_container` as separate structs, but the
     /// workspace carries the same `layout` and `prev_split_layout` and answers the same
     /// questions — it is a container's worth of state under another type, which is why i3,

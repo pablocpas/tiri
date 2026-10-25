@@ -627,23 +627,6 @@ enum MonitorSet<W: LayoutElement> {
     NoOutputs,
 }
 
-/// Where one workspace root sits: which list holds its handle, and at what index.
-///
-/// Window lookup stops at the root, and everything the workspace is or is doing is on that
-/// root. What it cannot say is the workspace's place among the output's workspaces, which the
-/// output's list holds; this is that answer, for the callers that go on to act on the output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WorkspaceOwner {
-    Scratchpad,
-    Monitor {
-        monitor_idx: usize,
-        workspace_idx: usize,
-    },
-    NoOutputs {
-        workspace_idx: usize,
-    },
-}
-
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Options {
     pub layout: tiri_config::Layout,
@@ -1210,10 +1193,13 @@ impl<W: LayoutElement> Layout<W> {
     ) -> Option<Output> {
         let tiling_height = height.map(SizeChange::from);
         let id = window.id().clone();
-        let next_to_owner = match &target {
-            AddWindowTarget::NextTo(next_to) => self.window_owner(next_to).map(|(_, owner)| owner),
+        let next_to_workspace = match &target {
+            AddWindowTarget::NextTo(next_to) => self.workspace_for_window(next_to),
             _ => None,
         };
+        let next_to_monitor = next_to_workspace
+            .and_then(|ws| self.monitor_location(ws.workspace_key()))
+            .map(|(monitor_idx, _)| monitor_idx);
 
         let output = match &mut self.monitor_set {
             MonitorSet::Normal {
@@ -1267,12 +1253,8 @@ impl<W: LayoutElement> Layout<W> {
 
                             (mon_idx, MonitorAddWindowTarget::Auto)
                         } else {
-                            let WorkspaceOwner::Monitor { monitor_idx, .. } =
-                                next_to_owner.expect("next_to window disappeared before mapping")
-                            else {
-                                panic!("next_to must name a normal workspace window")
-                            };
-                            let mon_idx = monitor_idx;
+                            let mon_idx = next_to_monitor
+                                .expect("next_to must name a window on a workspace of an output");
                             (mon_idx, MonitorAddWindowTarget::NextTo(next_to))
                         }
                     }
@@ -1283,22 +1265,6 @@ impl<W: LayoutElement> Layout<W> {
 
                 if activate.map_smart(|| false) {
                     *active_monitor_idx = mon_idx;
-                }
-
-                // Set the default height for tiling windows.
-                if !is_floating {
-                    if let Some(change) = tiling_height {
-                        let ws_idx = mon.workspace_idx_for_window(&self.containers, &id).unwrap();
-                        let ws = mon.ws(&self.containers, ws_idx);
-                        ws.size_command(
-                            &mut self.containers,
-                            Some(&id),
-                            SizeCommand::Resize(ResizeRequest::Axis {
-                                axis: ResizeAxis::Vertical,
-                                change,
-                            }),
-                        );
-                    }
                 }
 
                 Some(mon.output.clone())
@@ -1341,12 +1307,8 @@ impl<W: LayoutElement> Layout<W> {
                                 WorkspaceAddWindowTarget::Auto,
                             )
                         } else {
-                            let WorkspaceOwner::NoOutputs { workspace_idx } =
-                                next_to_owner.expect("next_to window disappeared before mapping")
-                            else {
-                                panic!("next_to must name an outputless workspace window")
-                            };
-                            let ws = self.outputless_workspaces()[workspace_idx];
+                            let ws = next_to_workspace
+                                .expect("next_to must name a window on a workspace");
                             (ws, WorkspaceAddWindowTarget::NextTo(next_to))
                         }
                     }
@@ -1361,23 +1323,27 @@ impl<W: LayoutElement> Layout<W> {
                     is_floating,
                 );
 
-                // Set the default height for tiling windows.
-                if !is_floating {
-                    if let Some(change) = tiling_height {
-                        ws.size_command(
-                            &mut self.containers,
-                            Some(&id),
-                            SizeCommand::Resize(ResizeRequest::Axis {
-                                axis: ResizeAxis::Vertical,
-                                change,
-                            }),
-                        );
-                    }
-                }
-
                 None
             }
         };
+
+        // Set the default height for tiling windows.
+        if !is_floating {
+            if let Some(change) = tiling_height {
+                let ws = self
+                    .workspace_for_window(&id)
+                    .expect("the window was just added to a workspace");
+                ws.size_command(
+                    &mut self.containers,
+                    Some(&id),
+                    SizeCommand::Resize(ResizeRequest::Axis {
+                        axis: ResizeAxis::Vertical,
+                        change,
+                    }),
+                );
+            }
+        }
+
         self.seat_focus_after_mutation();
         output
     }
@@ -1452,85 +1418,36 @@ impl<W: LayoutElement> Layout<W> {
             }
         }
 
-        let Some((_, owner)) = self.window_owner(window) else {
+        let tree = &self.containers;
+        let Some(workspace) = tree
+            .window_key(window)
+            .and_then(|key| tree.workspace_of(key))
+        else {
             return;
         };
-        match (&mut self.monitor_set, owner) {
-            (_, WorkspaceOwner::Scratchpad) => {
-                self.scratchpad
-                    .update_window(&mut self.containers, window, serial);
-            }
-            (
-                MonitorSet::Normal { monitors, .. },
-                WorkspaceOwner::Monitor {
-                    monitor_idx,
-                    workspace_idx,
-                },
-            ) => monitors[monitor_idx]
-                .ws(&self.containers, workspace_idx)
-                .update_window(&mut self.containers, window, serial),
-            (MonitorSet::NoOutputs, WorkspaceOwner::NoOutputs { workspace_idx }) => {
-                let workspaces = self.outputless_workspaces();
-                workspaces[workspace_idx].update_window(&mut self.containers, window, serial)
-            }
-            _ => unreachable!("window owner must match the current monitor set"),
-        }
+        Workspace::of(workspace).update_window(&mut self.containers, window, serial);
+    }
+
+    /// The workspace matching `predicate`, with its index on its output or among those waiting
+    /// for one.
+    fn find_workspace(
+        &self,
+        mut predicate: impl FnMut(Workspace<W>) -> bool,
+    ) -> Option<(usize, Workspace<W>)> {
+        self.workspaces()
+            .find(|&(_, _, ws)| predicate(ws))
+            .map(|(_, idx, ws)| (idx, ws))
     }
 
     pub fn find_workspace_by_id(&self, id: WorkspaceId) -> Option<(usize, Workspace<W>)> {
-        match &self.monitor_set {
-            MonitorSet::Normal { ref monitors, .. } => {
-                for mon in monitors {
-                    if let Some(index) = mon.idx_of_ws(&self.containers, id) {
-                        let workspace = mon.ws(&self.containers, index);
-                        return Some((index, workspace));
-                    }
-                }
-            }
-            MonitorSet::NoOutputs => {
-                let workspaces = self.outputless_workspaces();
-                if let Some((index, workspace)) = workspaces
-                    .iter()
-                    .copied()
-                    .enumerate()
-                    .find(|(_, w)| w.id() == id)
-                {
-                    return Some((index, workspace));
-                }
-            }
-        }
-
-        None
+        self.find_workspace(|ws| ws.id() == id)
     }
 
     pub fn find_workspace_by_name(&self, workspace_name: &str) -> Option<(usize, Workspace<W>)> {
-        match &self.monitor_set {
-            MonitorSet::Normal { ref monitors, .. } => {
-                for mon in monitors {
-                    if let Some((index, workspace)) =
-                        mon.workspaces(&self.containers).enumerate().find(|(_, w)| {
-                            w.name(&self.containers)
-                                .is_some_and(|name| name.eq_ignore_ascii_case(workspace_name))
-                        })
-                    {
-                        return Some((index, workspace));
-                    }
-                }
-            }
-            MonitorSet::NoOutputs => {
-                let workspaces = self.outputless_workspaces();
-                if let Some((index, workspace)) =
-                    workspaces.iter().copied().enumerate().find(|(_, w)| {
-                        w.name(&self.containers)
-                            .is_some_and(|name| name.eq_ignore_ascii_case(workspace_name))
-                    })
-                {
-                    return Some((index, workspace));
-                }
-            }
-        }
-
-        None
+        self.find_workspace(|ws| {
+            ws.name(&self.containers)
+                .is_some_and(|name| name.eq_ignore_ascii_case(workspace_name))
+        })
     }
 
     fn ensure_workspace_by_name_impl(
@@ -1584,32 +1501,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn find_workspace_by_number(&self, number: u32) -> Option<(usize, Workspace<W>)> {
-        match &self.monitor_set {
-            MonitorSet::Normal { ref monitors, .. } => {
-                for mon in monitors {
-                    if let Some((index, workspace)) = mon
-                        .workspaces(&self.containers)
-                        .enumerate()
-                        .find(|(_, w)| w.numeric_number(&self.containers) == Some(number))
-                    {
-                        return Some((index, workspace));
-                    }
-                }
-            }
-            MonitorSet::NoOutputs => {
-                let workspaces = self.outputless_workspaces();
-                if let Some((index, workspace)) = workspaces
-                    .iter()
-                    .copied()
-                    .enumerate()
-                    .find(|(_, w)| w.numeric_number(&self.containers) == Some(number))
-                {
-                    return Some((index, workspace));
-                }
-            }
-        }
-
-        None
+        self.find_workspace(|ws| ws.numeric_number(&self.containers) == Some(number))
     }
 
     pub fn ensure_numeric_workspace(&mut self, number: u32) -> Option<(Option<Output>, usize)> {
@@ -1817,13 +1709,7 @@ impl<W: LayoutElement> Layout<W> {
             return true;
         };
 
-        let Some((_, owner)) = self.window_owner(window) else {
-            return true;
-        };
-        let WorkspaceOwner::Monitor {
-            monitor_idx,
-            workspace_idx,
-        } = owner
+        let Some((monitor_idx, workspace_idx)) = self.monitor_workspace_indices_for_window(window)
         else {
             return true;
         };
@@ -1855,13 +1741,7 @@ impl<W: LayoutElement> Layout<W> {
             return;
         }
 
-        let Some((
-            _,
-            WorkspaceOwner::Monitor {
-                monitor_idx,
-                workspace_idx,
-            },
-        )) = self.window_owner(window)
+        let Some((monitor_idx, workspace_idx)) = self.monitor_workspace_indices_for_window(window)
         else {
             return;
         };
@@ -1938,42 +1818,22 @@ impl<W: LayoutElement> Layout<W> {
         Some((self.active_workspace()?, &mut self.containers))
     }
 
-    /// Resolve a tree workspace root to the object that owns its transient state.
-    fn workspace_owner(&self, root: NodeKey) -> Option<WorkspaceOwner> {
-        if self.scratchpad.workspace_key() == root {
-            return Some(WorkspaceOwner::Scratchpad);
-        }
-
-        match &self.monitor_set {
-            MonitorSet::Normal { monitors, .. } => {
-                let output = self.containers.workspace_output_key(root)?;
-                let monitor_idx = monitors.iter().position(|mon| mon.output_key == output)?;
-                let workspace_idx = self
-                    .containers
-                    .output_workspaces(output)
-                    .iter()
-                    .position(|&key| key == root)?;
-                Some(WorkspaceOwner::Monitor {
-                    monitor_idx,
-                    workspace_idx,
-                })
-            }
-            MonitorSet::NoOutputs => self
-                .containers
-                .output_workspaces(self.fallback_output)
-                .iter()
-                .position(|&key| key == root)
-                .map(|workspace_idx| WorkspaceOwner::NoOutputs { workspace_idx }),
-        }
-    }
-
-    /// Locate a window once in the tree and classify the root it belongs to.
-    fn window_owner(&self, window: &W::Id) -> Option<(NodeKey, WorkspaceOwner)> {
-        let tree = &self.containers;
-        let root = tree
-            .window_key(window)
-            .and_then(|key| tree.workspace_of(key))?;
-        Some((root, self.workspace_owner(root)?))
+    /// Which monitor shows the workspace `root`, and where among its workspaces.
+    ///
+    /// `None` for the scratchpad and for workspaces waiting for an output. The index is read
+    /// fresh from the output's list each time and is never kept.
+    fn monitor_location(&self, root: NodeKey) -> Option<(usize, usize)> {
+        let output = self.containers.workspace_output_key(root)?;
+        let MonitorSet::Normal { monitors, .. } = &self.monitor_set else {
+            return None;
+        };
+        let monitor_idx = monitors.iter().position(|mon| mon.output_key == output)?;
+        let workspace_idx = self
+            .containers
+            .output_workspaces(output)
+            .iter()
+            .position(|&key| key == root)?;
+        Some((monitor_idx, workspace_idx))
     }
 
     /// Where on `output` the workspace holding `window` sits, if it is still on that output.
@@ -1993,13 +1853,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     fn monitor_workspace_indices_for_window(&self, window: &W::Id) -> Option<(usize, usize)> {
-        match self.window_owner(window)?.1 {
-            WorkspaceOwner::Monitor {
-                monitor_idx,
-                workspace_idx,
-            } => Some((monitor_idx, workspace_idx)),
-            _ => None,
-        }
+        let tree = &self.containers;
+        self.monitor_location(
+            tree.window_key(window)
+                .and_then(|key| tree.workspace_of(key))?,
+        )
     }
 
     /// Transfer one leaf for reparenting without taking it out of the layout-wide tree.
@@ -2008,38 +1866,15 @@ impl<W: LayoutElement> Layout<W> {
         window: &W::Id,
         transaction: Transaction,
     ) -> Option<ViewTransfer> {
-        let (_, owner) = self.window_owner(window)?;
-        match owner {
-            WorkspaceOwner::Scratchpad => Some(self.scratchpad.take_tile_for_transfer(
-                &mut self.containers,
-                window,
-                transaction,
-            )),
-            WorkspaceOwner::Monitor {
-                monitor_idx,
-                workspace_idx,
-            } => {
-                let MonitorSet::Normal { monitors, .. } = &mut self.monitor_set else {
-                    unreachable!("monitor workspaces only exist with outputs")
-                };
-                let transferred = monitors[monitor_idx]
-                    .ws(&self.containers, workspace_idx)
-                    .take_tile_for_transfer(&mut self.containers, window, transaction);
-                if monitors[monitor_idx].workspace_switch.is_none() {
-                    monitors[monitor_idx].clean_up_workspaces(&mut self.containers);
-                }
-                Some(transferred)
-            }
-            WorkspaceOwner::NoOutputs { workspace_idx } => {
-                let workspace = self.outputless_workspaces()[workspace_idx];
-                let transferred =
-                    workspace.take_tile_for_transfer(&mut self.containers, window, transaction);
-                if !workspace.has_windows_or_persistent_identity(&self.containers) {
-                    workspace.remove_from_tree(&mut self.containers);
-                }
-                Some(transferred)
-            }
-        }
+        let tree = &self.containers;
+        let workspace = Workspace::of(
+            tree.window_key(window)
+                .and_then(|key| tree.workspace_of(key))?,
+        );
+        let transferred =
+            workspace.take_tile_for_transfer(&mut self.containers, window, transaction);
+        self.workspace_lost_window(workspace);
+        Some(transferred)
     }
 
     fn window_is_floating(&self, window: &W::Id) -> bool {
@@ -2055,6 +1890,49 @@ impl<W: LayoutElement> Layout<W> {
             .iter()
             .map(|&key| Workspace::of(key))
             .collect()
+    }
+
+    /// Where `workspace` is drawn on its output, or `None` while it waits for one.
+    fn workspace_render_loc(&self, workspace: Workspace<W>) -> Option<Point<f64, Logical>> {
+        let output = self
+            .containers
+            .workspace_output_key(workspace.workspace_key())?;
+        let MonitorSet::Normal { monitors, .. } = &self.monitor_set else {
+            return None;
+        };
+        let mon = monitors.iter().find(|mon| mon.output_key == output)?;
+        let idx = mon.idx_of_ws(&self.containers, workspace.id())?;
+        mon.workspaces_render_geo(&self.containers)
+            .nth(idx)
+            .map(|geo| geo.loc)
+    }
+
+    /// A window has just left `workspace`.
+    ///
+    /// On an output, the output keeps its empty workspaces at the ends (unless a switch is
+    /// showing them). Waiting for one, a workspace holding nothing worth keeping goes, since
+    /// none of the workspaces waiting for an output may be empty.
+    fn workspace_lost_window(&mut self, workspace: Workspace<W>) {
+        let Some(output) = self
+            .containers
+            .workspace_output_key(workspace.workspace_key())
+        else {
+            return;
+        };
+        if output == self.fallback_output {
+            if !workspace.has_windows_or_persistent_identity(&self.containers) {
+                workspace.remove_from_tree(&mut self.containers);
+            }
+            return;
+        }
+        let MonitorSet::Normal { monitors, .. } = &mut self.monitor_set else {
+            return;
+        };
+        if let Some(mon) = monitors.iter_mut().find(|mon| mon.output_key == output) {
+            if mon.workspace_switch.is_none() {
+                mon.clean_up_workspaces(&mut self.containers);
+            }
+        }
     }
 
     /// Put `ws` last among the workspaces waiting for an output; returns where it is.
@@ -2193,29 +2071,13 @@ impl<W: LayoutElement> Layout<W> {
             f(tile.window(), None, None, layout);
         }
 
-        match &self.monitor_set {
-            MonitorSet::Normal { monitors, .. } => {
-                for mon in monitors {
-                    for ws in mon.workspaces(&self.containers) {
-                        for (tile, layout) in self
-                            .containers
-                            .workspace_tiles_with_ipc_layouts(ws.workspace_key())
-                        {
-                            f(tile.window(), Some(&mon.output), Some(ws.id()), layout);
-                        }
-                    }
-                }
-            }
-            MonitorSet::NoOutputs => {
-                let workspaces = self.outputless_workspaces();
-                for ws in workspaces {
-                    for (tile, layout) in self
-                        .containers
-                        .workspace_tiles_with_ipc_layouts(ws.workspace_key())
-                    {
-                        f(tile.window(), None, Some(ws.id()), layout);
-                    }
-                }
+        for (_, _, ws) in self.workspaces() {
+            let output = ws.current_output(&self.containers);
+            for (tile, layout) in self
+                .containers
+                .workspace_tiles_with_ipc_layouts(ws.workspace_key())
+            {
+                f(tile.window(), output, Some(ws.id()), layout);
             }
         }
     }
@@ -2235,23 +2097,10 @@ impl<W: LayoutElement> Layout<W> {
             f(tile.window_mut(), None);
         }
 
-        match &mut self.monitor_set {
-            MonitorSet::Normal { monitors, .. } => {
-                for mon in monitors {
-                    for ws in mon.workspace_list(&self.containers) {
-                        for win in self.containers.windows_mut_in_workspace(ws.workspace_key()) {
-                            f(win, Some(&mon.output));
-                        }
-                    }
-                }
-            }
-            MonitorSet::NoOutputs => {
-                let workspaces = self.outputless_workspaces();
-                for ws in workspaces {
-                    for win in self.containers.windows_mut_in_workspace(ws.workspace_key()) {
-                        f(win, None);
-                    }
-                }
+        for ws in self.workspace_handles() {
+            let output = ws.current_output(&self.containers).cloned();
+            for win in self.containers.windows_mut_in_workspace(ws.workspace_key()) {
+                f(win, output.as_ref());
             }
         }
     }
@@ -2276,11 +2125,7 @@ impl<W: LayoutElement> Layout<W> {
         &mut self,
         window: &W::Id,
     ) -> Option<(&mut Monitor<W>, &mut ContainerTree<W>)> {
-        let (_, owner) = self.window_owner(window)?;
-        let monitor_idx = match owner {
-            WorkspaceOwner::Monitor { monitor_idx, .. } => monitor_idx,
-            WorkspaceOwner::Scratchpad | WorkspaceOwner::NoOutputs { .. } => return None,
-        };
+        let (monitor_idx, _) = self.monitor_workspace_indices_for_window(window)?;
         let containers = &mut self.containers;
         let MonitorSet::Normal { monitors, .. } = &mut self.monitor_set else {
             return None;
@@ -2885,16 +2730,8 @@ impl<W: LayoutElement> Layout<W> {
                 return None;
             }
 
-            let (
-                _,
-                WorkspaceOwner::Monitor {
-                    monitor_idx,
-                    workspace_idx,
-                },
-            ) = self.window_owner(&move_.window_id)?
-            else {
-                return None;
-            };
+            let (monitor_idx, workspace_idx) =
+                self.monitor_workspace_indices_for_window(&move_.window_id)?;
             let mon = self.monitors().nth(monitor_idx)?;
             let (ws, ws_geo) = mon
                 .workspaces_with_render_geo(&self.containers)
@@ -3383,19 +3220,14 @@ impl<W: LayoutElement> Layout<W> {
             }
         }
 
-        match &mut self.monitor_set {
-            MonitorSet::Normal { monitors, .. } => {
-                for mon in monitors {
-                    mon.set_overview_progress(&self.containers, self.overview_progress.as_ref());
-                    mon.advance_animations(&mut self.containers);
-                }
+        if let MonitorSet::Normal { monitors, .. } = &mut self.monitor_set {
+            for mon in monitors {
+                mon.set_overview_progress(&self.containers, self.overview_progress.as_ref());
+                mon.advance_animations(&mut self.containers);
             }
-            MonitorSet::NoOutputs => {
-                let workspaces = self.outputless_workspaces();
-                for ws in workspaces {
-                    ws.advance_animations(&mut self.containers);
-                }
-            }
+        }
+        for ws in self.workspace_handles() {
+            ws.advance_animations(&mut self.containers);
         }
 
         self.scratchpad.advance_animations(&mut self.containers);
@@ -3524,18 +3356,11 @@ impl<W: LayoutElement> Layout<W> {
                 .update_shaders();
         }
 
-        match &mut self.monitor_set {
-            MonitorSet::Normal { monitors, .. } => {
-                for mon in monitors {
-                    mon.update_shaders(&mut self.containers);
-                }
-            }
-            MonitorSet::NoOutputs => {
-                let workspaces = self.outputless_workspaces();
-                for ws in workspaces {
-                    ws.update_shaders(&mut self.containers);
-                }
-            }
+        for mon in self.monitors_mut() {
+            mon.update_shaders();
+        }
+        for ws in self.workspace_handles() {
+            ws.update_shaders(&mut self.containers);
         }
     }
 
@@ -3857,13 +3682,10 @@ impl<W: LayoutElement> Layout<W> {
             return;
         }
 
-        let Some(WorkspaceOwner::Monitor {
-            monitor_idx,
-            workspace_idx,
-        }) = self
+        let Some((monitor_idx, workspace_idx)) = self
             .containers
             .workspace_of(key)
-            .and_then(|workspace| self.workspace_owner(workspace))
+            .and_then(|workspace| self.monitor_location(workspace))
         else {
             return;
         };
@@ -3934,45 +3756,15 @@ impl<W: LayoutElement> Layout<W> {
             },
         };
 
-        let Some((_, owner)) = self.window_owner(&target) else {
+        let Some(workspace) = self.workspace_for_window(&target) else {
             return;
         };
-
-        match (&mut self.monitor_set, owner) {
-            (
-                MonitorSet::Normal { monitors, .. },
-                WorkspaceOwner::Monitor {
-                    monitor_idx,
-                    workspace_idx,
-                },
-            ) => {
-                let monitor = &mut monitors[monitor_idx];
-                let tile = monitor
-                    .ws(&self.containers, workspace_idx)
-                    .take_tile_for_hiding_in_scratchpad(&mut self.containers, &target)
-                    .expect("the resolved source workspace must still own the window");
-                self.scratchpad
-                    .hide_in_scratchpad(&mut self.containers, tile.into_incoming());
-
-                if monitor.workspace_switch.is_none() {
-                    monitor.clean_up_workspaces(&mut self.containers);
-                }
-            }
-            (MonitorSet::NoOutputs, WorkspaceOwner::NoOutputs { workspace_idx }) => {
-                let workspaces = self.outputless_workspaces();
-                let tile = workspaces[workspace_idx]
-                    .take_tile_for_hiding_in_scratchpad(&mut self.containers, &target)
-                    .expect("the resolved source workspace must still own the window");
-                self.scratchpad
-                    .hide_in_scratchpad(&mut self.containers, tile.into_incoming());
-                for idx in (0..workspaces.len()).rev() {
-                    if !workspaces[idx].has_windows_or_persistent_identity(&self.containers) {
-                        workspaces[idx].remove_from_tree(&mut self.containers);
-                    }
-                }
-            }
-            _ => return,
-        }
+        let tile = workspace
+            .take_tile_for_hiding_in_scratchpad(&mut self.containers, &target)
+            .expect("the resolved source workspace must still own the window");
+        self.scratchpad
+            .hide_in_scratchpad(&mut self.containers, tile.into_incoming());
+        self.workspace_lost_window(workspace);
         self.seat_focus_after_mutation();
     }
 
@@ -4724,29 +4516,10 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn interactive_resize_begin(&mut self, window: W::Id, edges: ResizeEdge) -> bool {
         self.request_refresh();
-        let Some((_, owner)) = self.window_owner(&window) else {
+        let Some(workspace) = self.workspace_for_window(&window) else {
             return false;
         };
-        match (&mut self.monitor_set, owner) {
-            (
-                MonitorSet::Normal { monitors, .. },
-                WorkspaceOwner::Monitor {
-                    monitor_idx,
-                    workspace_idx,
-                },
-            ) => monitors[monitor_idx]
-                .ws(&self.containers, workspace_idx)
-                .interactive_resize_begin(&mut self.containers, window, edges),
-            (MonitorSet::NoOutputs, WorkspaceOwner::NoOutputs { workspace_idx }) => {
-                let workspaces = self.outputless_workspaces();
-                workspaces[workspace_idx].interactive_resize_begin(
-                    &mut self.containers,
-                    window,
-                    edges,
-                )
-            }
-            _ => false,
-        }
+        workspace.interactive_resize_begin(&mut self.containers, window, edges)
     }
 
     pub fn interactive_resize_begin_at(
@@ -4757,43 +4530,25 @@ impl<W: LayoutElement> Layout<W> {
         pos_within_output: Point<f64, Logical>,
     ) -> bool {
         self.request_refresh();
-        let Some((_, owner)) = self.window_owner(&window) else {
+        let Some(workspace) = self.workspace_for_window(&window) else {
             return false;
         };
-        match (&mut self.monitor_set, owner) {
-            (
-                MonitorSet::Normal { monitors, .. },
-                WorkspaceOwner::Monitor {
-                    monitor_idx,
-                    workspace_idx,
-                },
-            ) if &monitors[monitor_idx].output == output => {
-                let Some(geo) = monitors[monitor_idx]
-                    .workspaces_render_geo(&self.containers)
-                    .nth(workspace_idx)
-                else {
+        let pos_within_workspace = match workspace.current_output(&self.containers) {
+            Some(on) if on != output => return false,
+            Some(_) => {
+                let Some(loc) = self.workspace_render_loc(workspace) else {
                     return false;
                 };
-                monitors[monitor_idx]
-                    .ws(&self.containers, workspace_idx)
-                    .interactive_resize_begin_at(
-                        &mut self.containers,
-                        window,
-                        edges,
-                        pos_within_output - geo.loc,
-                    )
+                pos_within_output - loc
             }
-            (MonitorSet::NoOutputs, WorkspaceOwner::NoOutputs { workspace_idx }) => {
-                let workspaces = self.outputless_workspaces();
-                workspaces[workspace_idx].interactive_resize_begin_at(
-                    &mut self.containers,
-                    window,
-                    edges,
-                    pos_within_output,
-                )
-            }
-            _ => false,
-        }
+            None => pos_within_output,
+        };
+        workspace.interactive_resize_begin_at(
+            &mut self.containers,
+            window,
+            edges,
+            pos_within_workspace,
+        )
     }
 
     pub fn interactive_resize_update(
@@ -5074,47 +4829,25 @@ impl<W: LayoutElement> Layout<W> {
             }
         }
 
-        let Some((_, owner)) = self.window_owner(window) else {
+        let Some(workspace) = self.workspace_for_window(window) else {
             return;
         };
-        match (&mut self.monitor_set, owner) {
-            (
-                MonitorSet::Normal { monitors, .. },
-                WorkspaceOwner::Monitor {
-                    monitor_idx,
-                    workspace_idx,
-                },
-            ) => {
-                let Some(geo) = monitors[monitor_idx]
-                    .workspaces_render_geo(&self.containers)
-                    .nth(workspace_idx)
-                else {
-                    return;
-                };
-                monitors[monitor_idx]
-                    .ws(&self.containers, workspace_idx)
-                    .store_unmap_snapshot_if_empty(
-                        &mut self.containers,
-                        renderer,
-                        xray,
-                        xray_has_blocked_out_layers,
-                        XrayPos::new(geo.loc, zoom),
-                        window,
-                    );
-            }
-            (MonitorSet::NoOutputs, WorkspaceOwner::NoOutputs { workspace_idx }) => {
-                let workspaces = self.outputless_workspaces();
-                workspaces[workspace_idx].store_unmap_snapshot_if_empty(
-                    &mut self.containers,
-                    renderer,
-                    xray,
-                    xray_has_blocked_out_layers,
-                    XrayPos::default(),
-                    window,
-                )
-            }
-            _ => {}
-        }
+        let xray_pos = if workspace.current_output(&self.containers).is_some() {
+            let Some(loc) = self.workspace_render_loc(workspace) else {
+                return;
+            };
+            XrayPos::new(loc, zoom)
+        } else {
+            XrayPos::default()
+        };
+        workspace.store_unmap_snapshot_if_empty(
+            &mut self.containers,
+            renderer,
+            xray,
+            xray_has_blocked_out_layers,
+            xray_pos,
+            window,
+        );
     }
 
     pub fn clear_unmap_snapshot(&mut self, window: &W::Id) {
@@ -5129,24 +4862,8 @@ impl<W: LayoutElement> Layout<W> {
             }
         }
 
-        let Some((_, owner)) = self.window_owner(window) else {
-            return;
-        };
-        match (&mut self.monitor_set, owner) {
-            (
-                MonitorSet::Normal { monitors, .. },
-                WorkspaceOwner::Monitor {
-                    monitor_idx,
-                    workspace_idx,
-                },
-            ) => monitors[monitor_idx]
-                .ws(&self.containers, workspace_idx)
-                .clear_unmap_snapshot(&mut self.containers, window),
-            (MonitorSet::NoOutputs, WorkspaceOwner::NoOutputs { workspace_idx }) => {
-                let workspaces = self.outputless_workspaces();
-                workspaces[workspace_idx].clear_unmap_snapshot(&mut self.containers, window)
-            }
-            _ => {}
+        if let Some(workspace) = self.workspace_for_window(window) {
+            workspace.clear_unmap_snapshot(&mut self.containers, window);
         }
     }
 
@@ -5194,29 +4911,13 @@ impl<W: LayoutElement> Layout<W> {
             }
         }
 
-        let Some((_, owner)) = self.window_owner(window) else {
-            return;
-        };
-        match (&mut self.monitor_set, owner) {
-            (
-                MonitorSet::Normal { monitors, .. },
-                WorkspaceOwner::Monitor {
-                    monitor_idx,
-                    workspace_idx,
-                },
-            ) => monitors[monitor_idx]
-                .ws(&self.containers, workspace_idx)
-                .start_close_animation_for_window(&mut self.containers, renderer, window, blocker),
-            (MonitorSet::NoOutputs, WorkspaceOwner::NoOutputs { workspace_idx }) => {
-                let workspaces = self.outputless_workspaces();
-                workspaces[workspace_idx].start_close_animation_for_window(
-                    &mut self.containers,
-                    renderer,
-                    window,
-                    blocker,
-                )
-            }
-            _ => {}
+        if let Some(workspace) = self.workspace_for_window(window) {
+            workspace.start_close_animation_for_window(
+                &mut self.containers,
+                renderer,
+                window,
+                blocker,
+            );
         }
     }
 

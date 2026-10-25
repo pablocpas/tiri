@@ -152,11 +152,8 @@ impl<W: LayoutElement> Layout<W> {
             return false;
         }
 
-        let found = match self.window_owner(&window_id).map(|(_, owner)| owner) {
-            Some(WorkspaceOwner::Monitor {
-                monitor_idx,
-                workspace_idx,
-            }) => {
+        let found = match self.monitor_workspace_indices_for_window(&window_id) {
+            Some((monitor_idx, workspace_idx)) => {
                 let Some(mon) = self.monitors().nth(monitor_idx) else {
                     return false;
                 };
@@ -343,22 +340,21 @@ impl<W: LayoutElement> Layout<W> {
                 //
                 // FIXME: when and if the layout code knows about monitor positions, this will be
                 // potentially animatable.
-                let tile_pos = match self.window_owner(window).map(|(_, owner)| owner) {
-                    Some(WorkspaceOwner::Monitor {
-                        monitor_idx,
-                        workspace_idx,
-                    }) => self.monitors().nth(monitor_idx).and_then(|mon| {
-                        (mon.output() == &output).then_some(mon).and_then(|mon| {
-                            let (ws, ws_geo) = mon
-                                .workspaces_with_render_geo(&self.containers)
-                                .nth(workspace_idx)?;
-                            let (_, tile_offset, _) = ws
-                                .tiles_with_render_positions(&self.containers)
-                                .find(|(tile, _, _)| tile.window().id() == window)?;
-                            let zoom = mon.overview_zoom();
-                            Some((ws_geo.loc + tile_offset.upscale(zoom), zoom))
+                let tile_pos = match self.monitor_workspace_indices_for_window(window) {
+                    Some((monitor_idx, workspace_idx)) => {
+                        self.monitors().nth(monitor_idx).and_then(|mon| {
+                            (mon.output() == &output).then_some(mon).and_then(|mon| {
+                                let (ws, ws_geo) = mon
+                                    .workspaces_with_render_geo(&self.containers)
+                                    .nth(workspace_idx)?;
+                                let (_, tile_offset, _) = ws
+                                    .tiles_with_render_positions(&self.containers)
+                                    .find(|(tile, _, _)| tile.window().id() == window)?;
+                                let zoom = mon.overview_zoom();
+                                Some((ws_geo.loc + tile_offset.upscale(zoom), zoom))
+                            })
                         })
-                    }),
+                    }
                     _ => None,
                 };
 

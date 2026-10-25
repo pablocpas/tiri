@@ -105,6 +105,11 @@ pub struct Monitor<W: LayoutElement> {
     /// reacting to each index write, makes the move depend on the active workspace changing
     /// identity and not on which of the many reorderings of the output's workspaces happened.
     sticky_host: WorkspaceId,
+    /// The kind of window the tree this output belongs to holds.
+    ///
+    /// The monitor stores nothing of that kind any more (its workspaces are the tree's), but
+    /// every method takes that tree, and keeping the type ties each monitor to trees of its
+    /// own kind at compile time.
     _element: PhantomData<fn() -> W>,
 }
 
@@ -1556,6 +1561,8 @@ impl<W: LayoutElement> Monitor<W> {
             .active_window(containers)
     }
 
+    /// Advance the workspace switch; the workspaces' own animations are advanced by the layout
+    /// with every other workspace's.
     pub fn advance_animations(&mut self, containers: &mut ContainerTree<W>) {
         match &mut self.workspace_switch {
             Some(WorkspaceSwitch::Animation(anim)) => {
@@ -1589,10 +1596,6 @@ impl<W: LayoutElement> Monitor<W> {
                 }
             }
             None => (),
-        }
-
-        for ws in self.workspace_list(containers) {
-            ws.advance_animations(containers);
         }
     }
 
@@ -1765,11 +1768,9 @@ impl<W: LayoutElement> Monitor<W> {
         true
     }
 
-    pub fn update_shaders(&mut self, containers: &mut ContainerTree<W>) {
-        for ws in self.workspace_list(containers) {
-            ws.update_shaders(containers);
-        }
-
+    /// The output's own shaders; its workspaces' are updated by the layout with every other
+    /// workspace's.
+    pub fn update_shaders(&mut self) {
         self.insert_hint_element.update_shaders();
     }
 
