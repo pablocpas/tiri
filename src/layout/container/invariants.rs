@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use super::{ContainerTree, Layout, LayoutElement, LeafLayoutInfo, NodeData, NodeKey};
+use super::{ContainerTree, LayoutElement, LayoutMode, LeafLayoutInfo, NodeData, NodeKey};
 
 impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn verify_workspace_invariants(&self, workspace: NodeKey) {
@@ -185,7 +185,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                 // Asking a transferred node to be normalized asks it to have been arranged
                 // somewhere it is not.
                 if child_count > 0
-                    && matches!(container.layout, Layout::SplitH | Layout::SplitV)
+                    && matches!(container.layout, LayoutMode::SplitH | LayoutMode::SplitV)
                     && self.workspace_of(key).is_some()
                 {
                     let percents = self.child_percents(key);
@@ -245,15 +245,25 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
         self.verify_leaf_layout_caches(&leaves);
 
-        match self.seat_focused_key() {
-            Some(key) => assert!(
+        // No focused leaf is a state of its own, not a gap: one tree holds every workspace, and
+        // a seat on an empty one is focused on that workspace node, as sway's is, while other
+        // workspaces still hold windows.
+        // The single-pass snapshot drawing uses must answer exactly what the per-parent rule
+        // does, or a frame would show a different tab than a command acts on.
+        let active = self.active_children();
+        for key in self.nodes.keys() {
+            assert_eq!(
+                active.of(self, key),
+                self.active_child(key),
+                "the active-children snapshot disagrees with active_child for {key:?}"
+            );
+        }
+
+        if let Some(key) = self.seat_focused_key() {
+            assert!(
                 leaves.contains(&key),
                 "focused_key must point to a leaf the tree holds"
-            ),
-            None => assert!(
-                leaves.is_empty(),
-                "a tree with leaves must have a focused leaf"
-            ),
+            );
         }
 
         if let Some(key) = self.selected_key() {

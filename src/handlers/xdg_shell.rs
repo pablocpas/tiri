@@ -39,7 +39,7 @@ use crate::input::resize_grab::ResizeGrab;
 use crate::input::{AnyStartData, DOUBLE_CLICK_TIME};
 use crate::layout::monitor::Monitor;
 use crate::layout::workspace::Workspace;
-use crate::layout::{ActivateWindow, Layout};
+use crate::layout::{ActivateWindow, Layout, SizeCommand, TransferSubject, TransferTarget};
 use crate::tiri::{CastTarget, PopupGrabState, State};
 use crate::utils::transaction::Transaction;
 use crate::utils::{
@@ -88,7 +88,7 @@ fn resolve_unmapped_workspace<'a>(
     workspace_name: Option<&str>,
 ) -> Option<&'a Workspace<crate::window::Mapped>> {
     workspace_name
-        .and_then(|name| mon.and_then(|mon| mon.find_named_workspace(name)))
+        .and_then(|name| mon.and_then(|mon| mon.find_named_workspace(layout.containers(), name)))
         .or_else(|| {
             mon.map(|mon| mon.active_workspace_ref())
                 .or_else(|| layout.active_workspace())
@@ -319,11 +319,15 @@ impl XdgShellHandler for State {
                     // FIXME: don't activate once we can pass specific windows to actions.
                     self.niri.layout.activate_window(&window);
                     self.niri.layer_shell_on_demand_focus = None;
-                    self.niri.layout.toggle_full_width();
+                    self.niri
+                        .layout
+                        .size_command(None, SizeCommand::ExpandRootToAvailableWidth);
                 }
                 if intersection.intersects(ResizeEdge::TOP_BOTTOM) {
                     self.niri.layer_shell_on_demand_focus = None;
-                    self.niri.layout.reset_window_height(Some(&window));
+                    self.niri
+                        .layout
+                        .size_command(Some(&window), SizeCommand::ResetHeight);
                 }
                 self.niri.invalidate_layout();
                 self.niri.queue_redraw_output_pair(output, None);
@@ -553,10 +557,12 @@ impl XdgShellHandler for State {
 
             if let Some(requested_output) = requested_output {
                 if Some(&requested_output) != current_output {
-                    self.niri.layout.move_to_output(
-                        Some(&window),
-                        &requested_output,
-                        None,
+                    self.niri.layout.transfer(
+                        TransferSubject::Window(Some(&window)),
+                        TransferTarget::Output {
+                            output: &requested_output,
+                            workspace: None,
+                        },
                         ActivateWindow::Smart,
                     );
                 }
@@ -991,7 +997,9 @@ impl State {
         let ws = rules
             .open_on_workspace
             .as_deref()
-            .and_then(|name| mon.map(|mon| mon.find_named_workspace(name)))
+            .and_then(|name| {
+                mon.map(|mon| mon.find_named_workspace(self.niri.layout.containers(), name))
+            })
             .unwrap_or_else(|| {
                 mon.map(|mon| mon.active_workspace_ref())
                     .or_else(|| self.niri.layout.active_workspace())
@@ -1037,7 +1045,7 @@ impl State {
             floating_width,
             floating_height,
             output,
-            workspace_name: ws.and_then(|w| w.name().cloned()),
+            workspace_name: ws.and_then(|w| w.name(self.niri.layout.containers()).cloned()),
         };
 
         trace!(surface = %toplevel.wl_surface().id(), "sending initial configure");

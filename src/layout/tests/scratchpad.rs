@@ -306,7 +306,7 @@ fn scratchpad_show_after_move_to_workspace_cleans_empty_non_active_workspace() {
     for (idx, ws) in monitor.workspaces.iter().enumerate().skip(1) {
         if idx != monitor.active_workspace_idx && idx != monitor.workspaces.len() - 1 {
             assert!(
-                ws.has_windows(&layout.containers) || ws.name().is_some(),
+                ws.has_windows(&layout.containers) || ws.name(&layout.containers).is_some(),
                 "workspace {idx} should not be left empty and unnamed"
             );
         }
@@ -391,74 +391,158 @@ fn move_to_scratchpad_cleans_empty_non_active_workspace() {
         }
     }
 }
+/// sway's `sticky` is a flag on the container that only counts while it floats.
 #[test]
-fn sticky_toggle_requires_floating() {
-    let options = Options::from_config(&Config::default());
-    let mut layout = Layout::with_options(Clock::with_time(Duration::ZERO), options);
-
-    let output = make_test_output("output-test");
-    layout.add_output(output.clone(), None);
-
-    let params = TestWindowParams::new(1);
-    let id = params.id;
-    layout.add_window(
-        TestWindow::new(params),
-        AddWindowTarget::Auto,
-        None,
-        false,
-        ActivateWindow::Yes,
-    );
+fn sticky_on_a_tiled_window_takes_effect_once_it_floats() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+    ]);
 
     layout.toggle_window_sticky(None);
+    let key = layout.containers.window_key(&1).unwrap();
+    assert!(layout.containers.sticky_flag(key));
+    assert!(!window_layout(&layout, 1).is_sticky);
 
-    let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.has_window(&layout.containers, &id));
-    assert!(!window_layout(&layout, id).is_sticky);
+    layout.set_window_floating(Some(&1), true);
+    assert!(window_layout(&layout, 1).is_sticky);
 }
+
 #[test]
 fn sticky_moves_across_workspaces_on_output() {
-    let options = Options::from_config(&Config::default());
-    let mut layout = Layout::with_options(Clock::with_time(Duration::ZERO), options);
+    let mut floating = TestWindowParams::new(1);
+    floating.is_floating = true;
+    let mut layout = check_ops([Op::AddOutput(1), Op::AddWindow { params: floating }]);
 
-    let output = make_test_output("output-test");
-    layout.add_output(output.clone(), None);
+    layout.toggle_window_sticky(None);
+    let origin = layout.active_workspace().unwrap().id();
+    assert!(window_layout(&layout, 1).is_sticky);
 
-    let params = TestWindowParams::new(1);
-    let id = params.id;
-    layout.add_window(
-        TestWindow::new(params),
-        AddWindowTarget::Auto,
-        None,
-        false,
-        ActivateWindow::Yes,
+    check_ops_on_layout(&mut layout, [Op::FocusWorkspaceDown]);
+    let workspace = layout.active_workspace().unwrap();
+    assert_ne!(workspace.id(), origin);
+    assert!(
+        workspace.has_window(&layout.containers, &1),
+        "the sticky float is on the workspace the output shows",
+    );
+    assert!(
+        layout
+            .find_workspace_by_id(origin)
+            .is_none_or(|(_, ws)| !ws.has_windows_or_persistent_identity(&layout.containers)),
+        "the workspace it left holds nothing any more",
     );
 
-    layout.set_window_floating(Some(&id), true);
-    layout.toggle_window_sticky(None);
-
-    let workspace = layout.active_workspace().expect("active workspace");
-    assert!(!workspace.has_window(&layout.containers, &id));
-    assert!(window_layout(&layout, id).is_sticky);
-
-    layout.switch_workspace(1);
-    let active_ws_id = layout.active_workspace().expect("active workspace").id();
-
-    assert!(window_layout(&layout, id).is_sticky);
-
-    // Ensure sticky window reports the active workspace id.
-    let mut reported_ws = None;
-    layout.with_windows(|win, _output, ws_id, _layout| {
-        if *win.id() == id {
-            reported_ws = ws_id;
-        }
-    });
-    assert_eq!(reported_ws, Some(active_ws_id));
-
-    layout.toggle_window_sticky(Some(&id));
-    let workspace = layout.active_workspace().expect("active workspace");
-    assert!(workspace.has_window(&layout.containers, &id));
-    assert!(!window_layout(&layout, id).is_sticky);
+    layout.toggle_window_sticky(Some(&1));
+    assert!(!window_layout(&layout, 1).is_sticky);
+    check_ops_on_layout(&mut layout, [Op::FocusWorkspaceUp]);
+    assert!(
+        !layout
+            .active_workspace()
+            .unwrap()
+            .has_window(&layout.containers, &1),
+        "an ordinary float stays where it is",
+    );
 }
+
+/// Arriving on the empty workspace at the end with a sticky float is like opening a window
+/// there: the output puts another empty one after it, and the one left behind goes.
+#[test]
+fn a_sticky_float_occupies_the_workspace_it_arrives_on() {
+    let mut floating = TestWindowParams::new(1);
+    floating.is_floating = true;
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::AddWindow { params: floating },
+    ]);
+    layout.toggle_window_sticky(Some(&1));
+
+    check_ops_on_layout(&mut layout, [Op::FocusWorkspaceDown]);
+    let mon = layout.monitors().next().unwrap();
+    assert_eq!(mon.workspaces.len(), 3);
+    assert_eq!(mon.active_workspace_idx, 1);
+    assert!(mon.workspaces[1].has_window(&layout.containers, &1));
+
+    check_ops_on_layout(&mut layout, [Op::FocusWorkspaceUp, Op::CompleteAnimations]);
+    let mon = layout.monitors().next().unwrap();
+    assert_eq!(mon.workspaces.len(), 2);
+    assert!(mon.workspaces[0].has_window(&layout.containers, &1));
+}
+
+/// sway/commands/move.c:542-545
+#[test]
+fn a_sticky_float_cannot_move_to_another_workspace_of_its_output() {
+    let mut floating = TestWindowParams::new(1);
+    floating.is_floating = true;
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::AddWindow { params: floating },
+    ]);
+    layout.toggle_window_sticky(Some(&1));
+    let workspace = layout.active_workspace().unwrap().id();
+
+    check_ops_on_layout(
+        &mut layout,
+        [Op::MoveWindowToWorkspace {
+            window_id: Some(1),
+            workspace_idx: 1,
+            focus: false,
+        }],
+    );
+    assert!(layout
+        .find_workspace_by_id(workspace)
+        .unwrap()
+        .1
+        .has_window(&layout.containers, &1));
+}
+
+/// A disconnected output used to take its sticky floats with it: they were on a root of the
+/// output's own, and the root went away with the monitor while their clients were still mapped.
+#[test]
+fn sticky_floats_survive_their_output_disconnecting() {
+    let mut floating = TestWindowParams::new(2);
+    floating.is_floating = true;
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddOutput(2),
+        Op::FocusOutput(2),
+        Op::AddWindow { params: floating },
+    ]);
+    layout.toggle_window_sticky(Some(&2));
+
+    check_ops_on_layout(&mut layout, [Op::RemoveOutput(2)]);
+    let workspace = layout.active_workspace().unwrap();
+    assert!(
+        workspace.has_window(&layout.containers, &2),
+        "a workspace holding only sticky floats is not kept; sway moves them to the workspace \
+         the remaining output shows",
+    );
+    assert!(window_layout(&layout, 2).is_sticky);
+}
+
+/// With no output left there is nowhere to evacuate to, and the workspace holding the float
+/// is kept rather than dropped with it.
+#[test]
+fn sticky_floats_survive_the_last_output_disconnecting() {
+    let mut floating = TestWindowParams::new(1);
+    floating.is_floating = true;
+    let mut layout = check_ops([Op::AddOutput(1), Op::AddWindow { params: floating }]);
+    layout.toggle_window_sticky(Some(&1));
+
+    check_ops_on_layout(&mut layout, [Op::RemoveOutput(1)]);
+    assert!(layout.has_window(&1));
+
+    check_ops_on_layout(&mut layout, [Op::AddOutput(1)]);
+    assert!(window_layout(&layout, 1).is_sticky);
+}
+
 #[test]
 fn scratchpad_show_hides_visible_then_shows_next() {
     let options = Options::from_config(&Config::default());

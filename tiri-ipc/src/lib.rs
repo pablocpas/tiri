@@ -264,7 +264,10 @@ pub struct LayoutTreeNode {
     /// Whether this node or one of its descendants requests attention.
     #[serde(default)]
     pub is_urgent: bool,
-    /// Whether this leaf window is sticky.
+    /// Whether this node carries the sticky flag (sway's `sticky`).
+    ///
+    /// The flag can be set on any container, but only takes effect while the container is a
+    /// floating root: then it follows its output's visible workspace.
     #[serde(default)]
     pub is_sticky: bool,
     /// Whether this leaf window is currently in the scratchpad.
@@ -1115,11 +1118,14 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg(long))]
         id: Option<u64>,
     },
-    /// Toggle sticky state for a floating window.
+    /// Toggle the sticky flag, as sway's `sticky toggle` does.
+    ///
+    /// A sticky floating container follows its output's visible workspace. The flag can be set
+    /// on a tiled window too; it takes effect once the window floats.
     ToggleWindowSticky {
         /// Id of the window to toggle.
         ///
-        /// If `None`, uses the focused window.
+        /// If `None`, uses the focused window, or the container selected with `focus-parent`.
         #[cfg_attr(feature = "clap", arg(long))]
         id: Option<u64>,
     },
@@ -1776,7 +1782,8 @@ pub struct WindowLayout {
     /// the distance from the corner of the black backdrop to the corner of the (centered) window
     /// contents.
     pub window_offset_in_tile: (f64, f64),
-    /// Whether this window is sticky (floating across workspaces on an output).
+    /// Whether this window is in a sticky floating container, which follows its output's
+    /// visible workspace.
     pub is_sticky: bool,
 }
 

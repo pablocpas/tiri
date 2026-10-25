@@ -8,7 +8,7 @@ use smithay::reexports::gbm::Format as Fourcc;
 use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Size, Transform};
 use tiri_config::{Color, TabBar};
 
-use super::container::{Layout, TabBarInfo, TabBarTab};
+use super::container::{LayoutMode, TabBarInfo, TabBarTab};
 use crate::render_helpers::texture::TextureBuffer;
 use crate::render_helpers::RenderTarget;
 use crate::utils::{round_logical_in_physical_max1, to_physical_precise_round};
@@ -152,7 +152,7 @@ pub struct TabBarTabState {
 /// Common tab bar state for caching
 #[derive(Debug, Clone, PartialEq)]
 pub struct TabBarState {
-    pub layout: Layout,
+    pub layout: LayoutMode,
     pub size: Size<f64, Logical>,
     pub row_height: f64,
     pub scale: f64,
@@ -210,7 +210,7 @@ pub struct TabBarRenderOutput {
 pub fn render_tab_bar(
     renderer: &mut GlesRenderer,
     config: &TabBar,
-    layout: Layout,
+    layout: LayoutMode,
     rect: Rectangle<f64, Logical>,
     row_height: f64,
     tabs: &[TabBarTab],
@@ -247,7 +247,7 @@ pub fn render_tab_bar(
         font.set_absolute_size(new_size);
     }
 
-    let tab_widths = if layout == Layout::Tabbed {
+    let tab_widths = if layout == LayoutMode::Tabbed {
         even_tab_widths_px(width_px, tab_count)
     } else {
         vec![width_px; tab_count]
@@ -268,7 +268,7 @@ pub fn render_tab_bar(
     // The strip below the rows is painted in the selected tab's color further down, so
     // that tab and the window's frame are one shape. Known here because the rim of the tab
     // that opens into it must not cut across the seam.
-    let row_count = if layout == Layout::Tabbed {
+    let row_count = if layout == LayoutMode::Tabbed {
         1
     } else {
         tab_count
@@ -278,7 +278,7 @@ pub fn render_tab_bar(
     let mut cursor_x = 0;
     for (idx, tab) in tabs.iter().enumerate() {
         let width = tab_widths[idx];
-        let (x, y, w, h) = if layout == Layout::Tabbed {
+        let (x, y, w, h) = if layout == LayoutMode::Tabbed {
             (cursor_x, 0, width, row_height_px)
         } else {
             (0, idx as i32 * row_height_px, width_px, row_height_px)
@@ -304,7 +304,7 @@ pub fn render_tab_bar(
             // line across the middle of that frame.
             let opens_into_strip = extra_height > 0
                 && tab.is_focused
-                && (layout == Layout::Tabbed || idx + 1 == tab_count);
+                && (layout == LayoutMode::Tabbed || idx + 1 == tab_count);
             if !opens_into_strip {
                 cr.rectangle(
                     f64::from(x),
@@ -343,7 +343,7 @@ pub fn render_tab_bar(
 
         if separator_width_px > 0 && idx + 1 < tab_count {
             set_source_color(&cr, config.separator_color);
-            if layout == Layout::Tabbed {
+            if layout == LayoutMode::Tabbed {
                 cr.rectangle(
                     f64::from(x + w - separator_width_px),
                     f64::from(y),
@@ -453,7 +453,7 @@ pub fn tab_bar_hit_index(
     let focused_idx = info.tabs.iter().position(|tab| tab.is_focused).unwrap_or(0);
 
     match info.layout {
-        Layout::Tabbed => {
+        LayoutMode::Tabbed => {
             if pos_px.y >= row_height_px {
                 return Some(focused_idx);
             }
@@ -474,7 +474,7 @@ pub fn tab_bar_hit_index(
             }
             Some(tab_count.saturating_sub(1))
         }
-        Layout::Stacked => {
+        LayoutMode::Stacked => {
             let stack_height_px = row_height_px * tab_count as i32;
             if pos_px.y >= stack_height_px {
                 return Some(focused_idx);
@@ -482,6 +482,6 @@ pub fn tab_bar_hit_index(
             let max_idx = tab_count.saturating_sub(1) as i32;
             Some(((pos_px.y / row_height_px).min(max_idx)) as usize)
         }
-        Layout::SplitH | Layout::SplitV => None,
+        LayoutMode::SplitH | LayoutMode::SplitV => None,
     }
 }

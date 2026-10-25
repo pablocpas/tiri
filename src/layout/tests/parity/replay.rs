@@ -9,8 +9,8 @@ use tiri_ipc::LayoutTreeRect;
 use tiri_parity::{erase_decoration, tiri as tiri_model, Layout as ModelLayout, Workspace};
 
 use crate::animation::Clock;
-use crate::layout::container::Layout as TreeLayout;
 use crate::layout::tests::{Op, TestWindow};
+use crate::layout::LayoutMode as TreeLayout;
 use crate::layout::{Layout, Options};
 use std::time::Duration;
 

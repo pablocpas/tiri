@@ -12,7 +12,7 @@
 //! [`LayoutParentData::swap_child_slots`]. Two commands, two rules, and the difference is
 //! observable the moment the two slots are not the same size.
 
-use super::{ContainerTree, FloatingRootKind, Layout, LayoutElement, NodeKey};
+use super::{ContainerTree, FloatingRootKind, LayoutElement, LayoutMode, NodeKey};
 
 impl<W: LayoutElement> ContainerTree<W> {
     fn focus_swap_node(&mut self, key: NodeKey) {
@@ -57,7 +57,9 @@ impl<W: LayoutElement> ContainerTree<W> {
         let parent_is_switcher = |this: &Self, key| {
             this.parent_of(key)
                 .and_then(|parent| this.get_container(parent))
-                .is_some_and(|parent| matches!(parent.layout(), Layout::Tabbed | Layout::Stacked))
+                .is_some_and(|parent| {
+                    matches!(parent.layout(), LayoutMode::Tabbed | LayoutMode::Stacked)
+                })
         };
 
         if focused == a && parent_is_switcher(self, b) {
@@ -146,6 +148,21 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// arriving subtree simply occupies its place. A floating root itself has no parent and
     /// is rejected by the ordinary root rule below; swapping roots requires coordinating the
     /// floating stack, not pretending the root has a parent slot.
+    /// A swap across workspaces lands each side's tiles in the other workspace, so they take
+    /// that workspace's box and options, as any other arrival does.
+    fn adopt_swapped_tile_config(
+        &mut self,
+        a: NodeKey,
+        b: NodeKey,
+        workspace_a: NodeKey,
+        workspace_b: NodeKey,
+    ) {
+        if workspace_a != workspace_b {
+            self.adopt_tile_config(workspace_b, a);
+            self.adopt_tile_config(workspace_a, b);
+        }
+    }
+
     pub(in crate::layout) fn swap_nodes(&mut self, a: NodeKey, b: NodeKey) -> bool {
         if a == b || self.get_node(a).is_none() || self.get_node(b).is_none() {
             return false;
@@ -194,6 +211,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         self.restore_swap_focus(a, b, workspace_a, workspace_b, focused);
         self.swap_fullscreen_slots(a, b, workspace_a, workspace_b);
+        self.adopt_swapped_tile_config(a, b, workspace_a, workspace_b);
 
         true
     }
@@ -266,6 +284,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                 self.swap_node_fractions(a, b);
                 self.restore_swap_focus(a, b, workspace_a, workspace_b, focused);
                 self.swap_fullscreen_slots(a, b, workspace_a, workspace_b);
+                self.adopt_swapped_tile_config(a, b, workspace_a, workspace_b);
                 true
             }
             _ => {
@@ -314,6 +333,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     assert!(self.move_floating_root(workspace, from, 0));
                 }
                 self.swap_fullscreen_slots(a, b, workspace_a, workspace_b);
+                self.adopt_swapped_tile_config(a, b, workspace_a, workspace_b);
 
                 true
             }

@@ -1,7 +1,7 @@
 //! Split, layout-toggle and root-wrapping commands.
 
 use super::{
-    ContainerData, ContainerTree, FloatingGeometry, Layout, LayoutElement, NodeData, NodeKey,
+    ContainerData, ContainerTree, FloatingGeometry, LayoutElement, LayoutMode, NodeData, NodeKey,
 };
 use crate::layout::LayoutCycleEntry;
 
@@ -95,7 +95,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(super) fn set_layout_for_container_target(
         &mut self,
         container_key: NodeKey,
-        layout: Layout,
+        layout: LayoutMode,
     ) -> bool {
         if self.get_real_container(container_key).is_none() {
             return false;
@@ -117,7 +117,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn set_branch_root_layout(
         &mut self,
         branch_root: NodeKey,
-        layout: Layout,
+        layout: LayoutMode,
     ) -> bool {
         let Some(root) = self.get_container_mut(branch_root) else {
             return false;
@@ -129,7 +129,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn set_root_container_layout(
         &mut self,
         workspace: NodeKey,
-        layout: Layout,
+        layout: LayoutMode,
     ) -> bool {
         self.set_branch_root_layout(workspace, layout)
     }
@@ -137,7 +137,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     fn set_branch_root_layout_from_command(
         &mut self,
         branch_root: NodeKey,
-        layout: Layout,
+        layout: LayoutMode,
     ) -> bool {
         let Some(root) = self.get_container_mut(branch_root) else {
             return false;
@@ -149,21 +149,21 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn set_root_layout_from_command(
         &mut self,
         workspace: NodeKey,
-        layout: Layout,
+        layout: LayoutMode,
     ) -> bool {
         self.set_branch_root_layout_from_command(workspace, layout)
     }
 
     pub(in crate::layout) fn set_layout_for_target(
         &mut self,
-        layout: Layout,
+        layout: LayoutMode,
         target: NodeKey,
     ) -> bool {
         self.flatten_layout_parent_once(target);
         self.set_layout_for_prepared_target(layout, target)
     }
 
-    fn set_layout_for_prepared_target(&mut self, layout: Layout, target: NodeKey) -> bool {
+    fn set_layout_for_prepared_target(&mut self, layout: LayoutMode, target: NodeKey) -> bool {
         let Some(workspace) = self.workspace_of(target) else {
             return false;
         };
@@ -250,8 +250,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    /// Layout of the container holding `key`.
-    pub(in crate::layout) fn parent_layout(&self, key: NodeKey) -> Option<Layout> {
+    /// LayoutMode of the container holding `key`.
+    pub(in crate::layout) fn parent_layout(&self, key: NodeKey) -> Option<LayoutMode> {
         let parent_key = self.parent_of(key)?;
         self.get_container(parent_key).map(|c| c.layout())
     }
@@ -266,11 +266,12 @@ impl<W: LayoutElement> ContainerTree<W> {
         let Some(parent) = self.parent_of(key) else {
             return false;
         };
-        self.get_container(parent)
-            .is_some_and(|container| matches!(container.layout, Layout::Tabbed | Layout::Stacked))
+        self.get_container(parent).is_some_and(|container| {
+            matches!(container.layout, LayoutMode::Tabbed | LayoutMode::Stacked)
+        })
     }
 
-    pub(in crate::layout) fn single_child_split_layout(&self, key: NodeKey) -> Option<Layout> {
+    pub(in crate::layout) fn single_child_split_layout(&self, key: NodeKey) -> Option<LayoutMode> {
         let parent_key = self.parent_of(key)?;
 
         let container = self.get_real_container(parent_key)?;
@@ -279,7 +280,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         match container.layout() {
-            Layout::SplitH | Layout::SplitV => Some(container.layout()),
+            LayoutMode::SplitH | LayoutMode::SplitV => Some(container.layout()),
             _ => None,
         }
     }
@@ -301,8 +302,8 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn wrap_branch_children(
         &mut self,
         branch_root: NodeKey,
-        wrapper_layout: Layout,
-        root_layout: Layout,
+        wrapper_layout: LayoutMode,
+        root_layout: LayoutMode,
     ) -> Option<NodeKey> {
         let workspace = self.workspace_of(branch_root)?;
         let root_key = branch_root;
@@ -341,8 +342,8 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn wrap_workspace_children(
         &mut self,
         workspace: NodeKey,
-        wrapper_layout: Layout,
-        root_layout: Layout,
+        wrapper_layout: LayoutMode,
+        root_layout: LayoutMode,
     ) -> Option<NodeKey> {
         self.wrap_branch_children(workspace, wrapper_layout, root_layout)
     }
@@ -350,7 +351,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(super) fn split_selected_container(
         &mut self,
         selected_key: NodeKey,
-        layout: Layout,
+        layout: LayoutMode,
     ) -> bool {
         if !matches!(self.get_node(selected_key), Some(NodeData::Container(_))) {
             return false;
@@ -379,7 +380,9 @@ impl<W: LayoutElement> ContainerTree<W> {
             None => return false,
         };
 
-        if parent_child_count == 1 && matches!(parent_layout, Layout::SplitH | Layout::SplitV) {
+        if parent_child_count == 1
+            && matches!(parent_layout, LayoutMode::SplitH | LayoutMode::SplitV)
+        {
             if let Some(container) = self.get_container_mut(parent_key) {
                 container.set_layout(layout);
             }
@@ -423,7 +426,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn split_workspace_container(
         &mut self,
         workspace: NodeKey,
-        layout: Layout,
+        layout: LayoutMode,
     ) -> bool {
         if self
             .get_container(workspace)
@@ -454,7 +457,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// Split an explicit command target.
-    pub(in crate::layout) fn split_target(&mut self, layout: Layout, target: NodeKey) -> bool {
+    pub(in crate::layout) fn split_target(&mut self, layout: LayoutMode, target: NodeKey) -> bool {
         let Some(workspace) = self.workspace_of(target) else {
             return false;
         };
@@ -476,7 +479,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn split_branch_root(
         &mut self,
         branch_root: NodeKey,
-        layout: Layout,
+        layout: LayoutMode,
     ) -> bool {
         let Some(container) = self.get_real_container_mut(branch_root) else {
             return false;
@@ -493,7 +496,11 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// goes through the branch-scoped [`Self::split_target`] instead; this is the tree's own
     /// tests asking the short question.
     #[cfg(test)]
-    pub(in crate::layout) fn split_focused(&mut self, workspace: NodeKey, layout: Layout) -> bool {
+    pub(in crate::layout) fn split_focused(
+        &mut self,
+        workspace: NodeKey,
+        layout: LayoutMode,
+    ) -> bool {
         if self.workspace_is_empty(workspace) {
             // Same rule as the workspace route: a split on an empty workspace only records
             // the orientation. The first window is a plain child of the workspace and gets
@@ -514,11 +521,10 @@ impl<W: LayoutElement> ContainerTree<W> {
     ///
     /// A window alone in a split has nothing to be separated from, so the command only
     /// (re)states that container's orientation; with siblings present, or a parent that is
-    /// tabbed or stacked, it builds a container. Measured, including when the parent already
-    /// has the requested orientation and regardless of how it got it — tiri used to treat a
-    /// parent whose layout had been set explicitly as already-split and do nothing, which the
-    /// differential fuzz caught on its first script.
-    pub(super) fn split_leaf(&mut self, key: NodeKey, layout: Layout) -> bool {
+    /// tabbed or stacked, it builds a container. Measured against sway, including when the
+    /// parent already has the requested orientation and regardless of how it got it: a parent
+    /// whose layout was set explicitly is not thereby already split.
+    pub(super) fn split_leaf(&mut self, key: NodeKey, layout: LayoutMode) -> bool {
         // A floating root never takes the shortcut. `container_split` reads the parent's layout
         // only to decide whether a lone child can be spared a wrapper, and for a floating child
         // it replaces that answer with `L_NONE` before comparing, which matches neither
@@ -544,7 +550,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let parent_layout = parent.layout();
         let is_lone_child = parent.child_count() == 1;
 
-        if matches!(parent_layout, Layout::SplitH | Layout::SplitV) && is_lone_child {
+        if matches!(parent_layout, LayoutMode::SplitH | LayoutMode::SplitV) && is_lone_child {
             if self.is_workspace(parent_key) {
                 if let Some(workspace) = self.get_container_mut(parent_key) {
                     workspace.set_layout(layout);
@@ -573,7 +579,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn set_focused_layout(
         &mut self,
         workspace: NodeKey,
-        layout: Layout,
+        layout: LayoutMode,
     ) -> bool {
         if self.workspace_is_empty(workspace) {
             return self.set_root_container_layout(workspace, layout);
@@ -596,7 +602,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     ///
     /// Restating the layout the workspace already has is the exception, and does nothing:
     /// there is no orientation to express that is not already expressed.
-    fn set_layout_of_parent_of(&mut self, key: NodeKey, layout: Layout) -> bool {
+    fn set_layout_of_parent_of(&mut self, key: NodeKey, layout: LayoutMode) -> bool {
         let Some(workspace) = self.workspace_of(key) else {
             return false;
         };
@@ -696,7 +702,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         };
         let matches_current = |entry: LayoutCycleEntry| match entry {
-            LayoutCycleEntry::Split => matches!(current, Layout::SplitH | Layout::SplitV),
+            LayoutCycleEntry::Split => matches!(current, LayoutMode::SplitH | LayoutMode::SplitV),
             LayoutCycleEntry::Layout(layout) => layout == current,
         };
         let start = cycle
@@ -728,7 +734,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Telling those two apart is `set_layout_for_target`'s job, so they go there.
     fn apply_toggled_layout(
         &mut self,
-        layout: Layout,
+        layout: LayoutMode,
         source_key: Option<NodeKey>,
         target: NodeKey,
     ) -> bool {
@@ -750,18 +756,18 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn toggled_split_layout(
         &self,
         workspace: NodeKey,
-        current: Layout,
+        current: LayoutMode,
         container_key: Option<NodeKey>,
-    ) -> Layout {
+    ) -> LayoutMode {
         match current {
-            Layout::SplitH => Layout::SplitV,
-            Layout::SplitV => Layout::SplitH,
-            Layout::Tabbed | Layout::Stacked => {
+            LayoutMode::SplitH => LayoutMode::SplitV,
+            LayoutMode::SplitV => LayoutMode::SplitH,
+            LayoutMode::Tabbed | LayoutMode::Stacked => {
                 let along_the_screen = if self.view_size(workspace).h > self.view_size(workspace).w
                 {
-                    Layout::SplitV
+                    LayoutMode::SplitV
                 } else {
-                    Layout::SplitH
+                    LayoutMode::SplitH
                 };
                 container_key
                     .and_then(|key| self.get_container(key))
@@ -775,8 +781,8 @@ impl<W: LayoutElement> ContainerTree<W> {
     ///
     /// A leaf sitting directly on the workspace has no container between it and the
     /// workspace, so the toggle reads the workspace's own orientation — and its memory of
-    /// the split it used to be, which is the same field on the same node as anywhere else.
-    fn toggle_source(&self, target: NodeKey) -> Option<(Option<NodeKey>, Layout)> {
+    /// its previous split, which is the same field on the same node as anywhere else.
+    fn toggle_source(&self, target: NodeKey) -> Option<(Option<NodeKey>, LayoutMode)> {
         let workspace = self.workspace_of(target)?;
         let key = self.layout_container_key_for_target(target);
         match key.and_then(|key| self.get_container(key)) {
@@ -790,13 +796,13 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    /// Layout of the container that owns `key` — or `key`'s own, when it is a branch root.
-    pub(in crate::layout) fn layout_owning(&self, key: NodeKey) -> Option<Layout> {
+    /// LayoutMode of the container that owns `key` — or `key`'s own, when it is a branch root.
+    pub(in crate::layout) fn layout_owning(&self, key: NodeKey) -> Option<LayoutMode> {
         let container_key = self.parent_of(key).unwrap_or(key);
         self.get_container(container_key).map(|c| c.layout())
     }
 
-    /// Layout of the container that currently owns the focused leaf (if any).
+    /// LayoutMode of the container that currently owns the focused leaf (if any).
     /// Whether the container holding `key` should accept new splits.
     pub(in crate::layout) fn container_of_allows_splits(&self, key: NodeKey) -> bool {
         let Some(container_key) = self.parent_of(key) else {

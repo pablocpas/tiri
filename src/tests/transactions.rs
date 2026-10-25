@@ -6,7 +6,7 @@ use wayland_client::protocol::wl_surface::WlSurface;
 
 use super::client::ClientId;
 use super::*;
-use crate::layout::LayoutElement;
+use crate::layout::{Direction, LayoutElement, SizeCommand};
 use crate::tiri::Niri;
 
 fn format_window_sizes(niri: &Niri) -> String {
@@ -52,7 +52,9 @@ fn column_resize_waits_for_both_windows() {
     let _ = f.client(id).window(&surface2).recent_configures();
 
     // Consume into one column.
-    f.niri().layout.consume_or_expel_window_left(None);
+    f.niri()
+        .layout
+        .consume_or_expel_window(None, Direction::Left);
     f.double_roundtrip(id);
 
     // Commit for the column consume.
@@ -79,7 +81,7 @@ fn column_resize_waits_for_both_windows() {
     // Issue a resize.
     f.niri()
         .layout
-        .set_column_width(SizeChange::AdjustFixed(10));
+        .size_command(None, SizeCommand::SetRootWidth(SizeChange::AdjustFixed(10)));
     f.double_roundtrip(id);
 
     // Commit window 1 in response to resize.

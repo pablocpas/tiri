@@ -7,7 +7,10 @@ use smithay::desktop::layer_map_for_output;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::utils::{Physical, Size};
 use tiri::animation::Clock;
-use tiri::layout::{ActivateWindow, AddWindowTarget, LayoutElement as _, Options, SizingMode};
+use tiri::layout::{
+    ActivateWindow, AddWindowTarget, Direction, FocusCommand, LayoutCommand, LayoutCycleEntry,
+    LayoutElement as _, LayoutMode, Options, SizingMode,
+};
 use tiri::render_helpers::{RenderCtx, RenderTarget};
 use tiri_config::{Color, OutputName, PresetSize};
 
@@ -171,10 +174,19 @@ impl Layout {
         rv.add_window(TestWindow::freeform(0), Some(PresetSize::Proportion(0.35)));
         rv.add_window(TestWindow::freeform(1), Some(PresetSize::Proportion(0.35)));
         rv.layout.activate_window(&0);
-        rv.layout.toggle_column_tabbed_display();
+        rv.layout.layout_command(LayoutCommand::ToggleCycle(&[
+            LayoutCycleEntry::Layout(LayoutMode::Tabbed),
+            LayoutCycleEntry::Layout(LayoutMode::SplitV),
+        ]));
 
-        rv.add_step(350, |l| l.layout.focus_window_down_or_top());
-        rv.add_step(700, |l| l.layout.focus_window_up_or_bottom());
+        rv.add_step(350, |l| {
+            l.layout
+                .focus_command(FocusCommand::DirectionOrEdge(Direction::Down))
+        });
+        rv.add_step(700, |l| {
+            l.layout
+                .focus_command(FocusCommand::DirectionOrEdge(Direction::Up))
+        });
 
         rv.add_step(1000, |l| {
             let win = TestWindow::freeform(2);
@@ -219,7 +231,10 @@ impl Layout {
             l.layout.start_open_animation_for_window(win.id());
         });
         rv.add_step(1000, |l| l.layout.toggle_fullscreen(&1));
-        rv.add_step(1300, |l| l.layout.focus_column_left_or_last());
+        rv.add_step(1300, |l| {
+            l.layout
+                .focus_command(FocusCommand::DirectionOrEdge(Direction::Left))
+        });
 
         rv
     }
@@ -242,7 +257,14 @@ impl Layout {
         let min_size = window.min_size();
         let max_size = window.max_size();
         window.request_size(
-            ws.new_window_size(width, None, false, window.rules(), (min_size, max_size)),
+            ws.new_window_size(
+                self.layout.containers(),
+                width,
+                None,
+                false,
+                window.rules(),
+                (min_size, max_size),
+            ),
             SizingMode::Normal,
             false,
             None,
@@ -269,7 +291,14 @@ impl Layout {
         let min_size = window.min_size();
         let max_size = window.max_size();
         window.request_size(
-            ws.new_window_size(width, None, false, window.rules(), (min_size, max_size)),
+            ws.new_window_size(
+                self.layout.containers(),
+                width,
+                None,
+                false,
+                window.rules(),
+                (min_size, max_size),
+            ),
             SizingMode::Normal,
             false,
             None,
@@ -349,7 +378,9 @@ impl TestCase for Layout {
         self.layout
             .monitor_for_output(&self.output)
             .unwrap()
-            .render_workspaces(ctx, true, &mut |elem| rv.push(Box::new(elem) as _));
+            .render_workspaces(self.layout.containers(), ctx, true, &mut |elem| {
+                rv.push(Box::new(elem) as _)
+            });
         rv
     }
 }

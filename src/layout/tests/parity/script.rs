@@ -13,7 +13,7 @@ use tiri_ipc::SizeChange;
 
 use crate::layout::tests::{Op, TestWindowParams};
 use crate::layout::MarkMode;
-use crate::layout::{ContainerLayout, Direction, LayoutCycleEntry};
+use crate::layout::{Direction, LayoutCycleEntry, LayoutMode};
 
 /// One line of a script: the text as written, and what tiri does with it.
 pub(crate) struct Step {
@@ -188,10 +188,10 @@ fn op_for(command: &str, next_id: &mut usize, client: (i32, i32)) -> Result<Op, 
                 .iter()
                 .filter_map(|entry| match *entry {
                     "split" => Some(LayoutCycleEntry::Split),
-                    "splith" => Some(LayoutCycleEntry::Layout(ContainerLayout::SplitH)),
-                    "splitv" => Some(LayoutCycleEntry::Layout(ContainerLayout::SplitV)),
-                    "tabbed" => Some(LayoutCycleEntry::Layout(ContainerLayout::Tabbed)),
-                    "stacking" => Some(LayoutCycleEntry::Layout(ContainerLayout::Stacked)),
+                    "splith" => Some(LayoutCycleEntry::Layout(LayoutMode::SplitH)),
+                    "splitv" => Some(LayoutCycleEntry::Layout(LayoutMode::SplitV)),
+                    "tabbed" => Some(LayoutCycleEntry::Layout(LayoutMode::Tabbed)),
+                    "stacking" => Some(LayoutCycleEntry::Layout(LayoutMode::Stacked)),
                     // sway silently ignores invalid entries in an explicit cycle.
                     _ => None,
                 })

@@ -127,7 +127,7 @@ impl Niri {
                     .unwrap();
 
                 let mut buf = format!("Workspace {}", idx + 1);
-                if let Some(name) = ws.name() {
+                if let Some(name) = ws.name(self.layout.containers()) {
                     buf.push(' ');
                     buf.push_str(name);
                 }

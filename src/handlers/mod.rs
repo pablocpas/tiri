@@ -67,7 +67,7 @@ use smithay::wayland::xdg_activation::{
 pub use crate::handlers::xdg_shell::KdeDecorationsModeState;
 use crate::input::click_grab::ClickGrab;
 use crate::layout::workspace::WorkspaceId;
-use crate::layout::{ActivateWindow, LayoutElement};
+use crate::layout::{ActivateWindow, LayoutElement, TransferSubject, TransferTarget};
 use crate::protocols::ext_workspace::{self, ExtWorkspaceHandler, ExtWorkspaceManagerState};
 use crate::protocols::foreign_toplevel::{
     self, ForeignToplevelHandler, ForeignToplevelManagerState,
@@ -560,10 +560,12 @@ impl ForeignToplevelHandler for State {
                 wl_output.and_then(|o| self.niri.output_from_resource(&o))
             {
                 if Some(&requested_output) != current_output {
-                    self.niri.layout.move_to_output(
-                        Some(&window),
-                        &requested_output,
-                        None,
+                    self.niri.layout.transfer(
+                        TransferSubject::Window(Some(&window)),
+                        TransferTarget::Output {
+                            output: &requested_output,
+                            workspace: None,
+                        },
                         ActivateWindow::Smart,
                     );
                 }

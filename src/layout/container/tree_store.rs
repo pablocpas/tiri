@@ -3,7 +3,7 @@
 use smithay::utils::{Logical, Point, Rectangle};
 
 use super::{
-    ContainerData, ContainerTree, Layout, LayoutElement, LayoutParentData, NewView, NodeData,
+    ContainerData, ContainerTree, LayoutElement, LayoutMode, LayoutParentData, NewView, NodeData,
     NodeKey, WorkspaceData,
 };
 use crate::layout::tile::Tile;
@@ -288,12 +288,12 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// How far a node reaches along an axis — sway's `con->pending.width`/`.height`.
-    pub(in crate::layout) fn node_span(&self, key: NodeKey, layout: Layout) -> Option<f64> {
+    pub(in crate::layout) fn node_span(&self, key: NodeKey, layout: LayoutMode) -> Option<f64> {
         let rect = self.node_geometry(key)?;
         match layout {
-            Layout::SplitH => Some(rect.size.w),
-            Layout::SplitV => Some(rect.size.h),
-            Layout::Tabbed | Layout::Stacked => None,
+            LayoutMode::SplitH => Some(rect.size.w),
+            LayoutMode::SplitV => Some(rect.size.h),
+            LayoutMode::Tabbed | LayoutMode::Stacked => None,
         }
     }
 
@@ -354,7 +354,12 @@ impl<W: LayoutElement> ContainerTree<W> {
         if !self.transfer_roots.remove(&key) {
             return false;
         }
+        self.adopt_tile_config(destination, key);
+        true
+    }
 
+    /// Give every tile under `key` the box and options of the workspace it now belongs to.
+    pub(super) fn adopt_tile_config(&mut self, destination: NodeKey, key: NodeKey) {
         let view_size = self.view_size(destination);
         let scale = self.scale(destination);
         let options = self.options(destination).clone();
@@ -363,7 +368,6 @@ impl<W: LayoutElement> ContainerTree<W> {
                 tile.update_config(view_size, scale, options.clone());
             }
         }
-        true
     }
 
     /// Insert a node that has not belonged to a tree before.
@@ -445,9 +449,9 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Structural callers still own child handling and where focus should land next. What they
     /// do not own is whether the seat still lists the node: sway drops it from `focus_stack` in
     /// the destroy listener, so it happens once, at the removal, and cannot be forgotten by a
-    /// caller who was thinking about something else. Twelve places remove a node here and only
-    /// some of them used to say so, which left the order ranking keys that had moved to another
-    /// workspace — where they still resolve, because the key is the same one.
+    /// caller who was thinking about something else. A stale entry would be worse than
+    /// useless: a key that moved to another workspace still resolves, so the order would go on
+    /// ranking it.
     ///
     /// sway/input/seat.c:261-324
     pub(super) fn remove_node_from_store(&mut self, key: NodeKey) -> Option<NodeData<W>> {
@@ -479,11 +483,10 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// Remove a node from the tree (and recursively all its children).
     pub(super) fn remove_node_recursive(&mut self, key: NodeKey) -> Option<NodeData<W>> {
-        // Read the children before the node leaves: a workspace lays out children exactly as a
-        // split container does, and matching on `NodeData::Container` alone walked past that —
-        // removing a workspace node would have left its whole subtree in the store, findable by
-        // `window_key` and owned by nothing. Nothing removed a workspace until now, which is
-        // why it never showed.
+        // Read the children before the node leaves. A workspace lays out children exactly as a
+        // split container does, so `get_container` covers both; matching on
+        // `NodeData::Container` alone would leave a removed workspace's subtree in the store,
+        // findable by `window_key` and owned by nothing.
         let children = self
             .get_container(key)
             .map(|container| container.children.clone())

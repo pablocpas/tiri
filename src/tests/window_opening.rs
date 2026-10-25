@@ -523,7 +523,7 @@ window-rule {{
             mapped.sizing_mode().is_fullscreen(),
             mapped.window.clone(),
             mon.unwrap().output_name().clone(),
-            ws.name().cloned().unwrap_or(String::from("unnamed")),
+            ws.name(containers).cloned().unwrap_or(String::from("unnamed")),
             ws_idx,
         )
     };

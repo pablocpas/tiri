@@ -1,15 +1,13 @@
 //! One branch of the tree, addressed as a unit.
 //!
-//! The tree holds two kinds of branch now: the workspace's tiled side, and one per floating
-//! group. Almost every operation that used to mean "the tree" meant "the tiled branch",
-//! because there was nothing else it could mean. This is the vocabulary for saying which.
+//! A workspace has two kinds of branch: its tiled side, and one per floating group. Operations
+//! that act within one branch take the branch's root, so the same code serves both sides.
 //!
 //! sway needs no such type: its operations take a container and walk from it, so the branch
-//! is wherever you started. Tiri's grew up around a single root and read it from `self`, so
-//! the root has to be handed to them instead — which is what this does, and nothing more.
+//! is wherever you started.
 
 #[cfg(test)]
-use super::Layout;
+use super::LayoutMode;
 use super::{ContainerData, ContainerTree, LayoutElement, NodeKey, TabBarInfo};
 use crate::layout::tile::Tile;
 
@@ -38,7 +36,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         branch_root: NodeKey,
     ) -> Vec<TabBarInfo> {
         let mut out = Vec::new();
-        self.collect_tab_bar_layouts(branch_root, &mut out, true);
+        self.collect_tab_bar_layouts(&self.active_children(), branch_root, &mut out, true);
         out
     }
 
@@ -86,7 +84,7 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// The layout of a branch's root container.
     #[cfg(test)]
-    pub(in crate::layout) fn branch_layout(&self, branch_root: NodeKey) -> Option<Layout> {
+    pub(in crate::layout) fn branch_layout(&self, branch_root: NodeKey) -> Option<LayoutMode> {
         self.get_container(branch_root).map(|c| c.layout())
     }
 

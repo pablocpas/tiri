@@ -4,7 +4,7 @@ use smithay::utils::{Logical, Point, Rectangle, Size};
 use smithay::wayland::compositor::{Blocker, BlockerState};
 
 use super::{
-    ContainerTree, Layout, LayoutElement, LeafLayoutInfo, LeafPresentation, NodeData, NodeKey,
+    ContainerTree, LayoutElement, LayoutMode, LeafLayoutInfo, LeafPresentation, NodeData, NodeKey,
 };
 use crate::layout::tab_bar::tab_bar_row_height;
 use crate::layout::tile::Tile;
@@ -347,9 +347,8 @@ impl<W: LayoutElement> ContainerTree<W> {
             self.set_pending_relayout(workspace, false);
         }
 
-        // This workspace, not the tree: arranging an empty workspace used to clear the caches
-        // of every other one, and the window on the workspace next door lost the box it had
-        // just been given.
+        // This workspace's caches, not the tree's: every workspace shares the tree, and clearing
+        // all of them would take the box from the windows on the workspace next door.
         if self.first_leaf_key(workspace).is_none()
             && self.floating_roots(workspace).next().is_none()
         {
@@ -522,14 +521,14 @@ impl<W: LayoutElement> ContainerTree<W> {
                 continue;
             };
             let layout = container.layout();
-            if !matches!(layout, Layout::SplitH | Layout::SplitV) {
+            if !matches!(layout, LayoutMode::SplitH | LayoutMode::SplitV) {
                 continue;
             }
             let children = container.children().to_vec();
             let span = match layout {
-                Layout::SplitH => rect.size.w,
-                Layout::SplitV => rect.size.h,
-                Layout::Tabbed | Layout::Stacked => unreachable!(),
+                LayoutMode::SplitH => rect.size.w,
+                LayoutMode::SplitV => rect.size.h,
+                LayoutMode::Tabbed | LayoutMode::Stacked => unreachable!(),
             };
             let gaps = self.gap_in(parent) * children.len().saturating_sub(1) as f64;
             let total = (span - gaps).max(0.0);
@@ -579,9 +578,9 @@ impl<W: LayoutElement> ContainerTree<W> {
     ///
     /// `cmd_focus` does not call `arrange_workspace`; focus changes the active child of a
     /// tabbed or stacked container without renormalizing any split fractions. Re-running the
-    /// full layout here used to add a division that sway never performs, enough to move an
-    /// exact half-pixel to the other end of a split. Rectangles stay as arranged; only the
-    /// switcher visibility derived from the seat's focus order changes.
+    /// full layout here would add a division sway never performs, enough to move an exact
+    /// half-pixel to the other end of a split. Rectangles stay as arranged; only the switcher
+    /// visibility derived from the seat's focus order changes.
     ///
     /// sway/commands/focus.c:270-321
     /// sway/input/seat.c:1192-1270
@@ -623,7 +622,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                 return false;
             };
             if self.get_container(parent).is_some_and(|container| {
-                matches!(container.layout(), Layout::Tabbed | Layout::Stacked)
+                matches!(container.layout(), LayoutMode::Tabbed | LayoutMode::Stacked)
             }) && self.active_child(parent) != Some(child)
             {
                 return false;
@@ -924,7 +923,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(super) fn child_rects_for_layout(
         &self,
         workspace: NodeKey,
-        layout: Layout,
+        layout: LayoutMode,
         rect: Rectangle<f64, Logical>,
         child_count: usize,
         percents: &[f64],
@@ -935,8 +934,8 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         match layout {
-            Layout::SplitH | Layout::SplitV => {
-                let horizontal = layout == Layout::SplitH;
+            LayoutMode::SplitH | LayoutMode::SplitV => {
+                let horizontal = layout == LayoutMode::SplitH;
                 let span = if horizontal { rect.size.w } else { rect.size.h };
                 let total_gap = if child_count > 1 {
                     gap * (child_count as f64 - 1.0)
@@ -992,7 +991,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                 }
                 (rects, 0.0)
             }
-            Layout::Tabbed | Layout::Stacked => {
+            LayoutMode::Tabbed | LayoutMode::Stacked => {
                 let tab_offset =
                     self.switcher_content_offset(workspace, layout, child_count, rect.size.h);
 
@@ -1014,7 +1013,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(super) fn switcher_content_offset(
         &self,
         workspace: NodeKey,
-        layout: Layout,
+        layout: LayoutMode,
         child_count: usize,
         height: f64,
     ) -> f64 {
@@ -1023,9 +1022,9 @@ impl<W: LayoutElement> ContainerTree<W> {
             return 0.0;
         }
         let bar_height = match layout {
-            Layout::Tabbed => row_height,
-            Layout::Stacked => row_height * child_count as f64,
-            Layout::SplitH | Layout::SplitV => return 0.0,
+            LayoutMode::Tabbed => row_height,
+            LayoutMode::Stacked => row_height * child_count as f64,
+            LayoutMode::SplitH | LayoutMode::SplitV => return 0.0,
         };
         (bar_height + self.tab_bar_spacing()).min(height).max(0.0)
     }
@@ -1089,7 +1088,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             self.child_rects_for_layout(workspace, layout, rect, child_count, &percents, walk.gap);
 
         match layout {
-            Layout::SplitH | Layout::SplitV => {
+            LayoutMode::SplitH | LayoutMode::SplitV => {
                 let split_bar_height = self.split_title_bar_height(workspace);
 
                 for (idx, &child_rect) in child_rects.iter().enumerate() {
@@ -1106,7 +1105,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     );
                 }
             }
-            Layout::Tabbed | Layout::Stacked => {
+            LayoutMode::Tabbed | LayoutMode::Stacked => {
                 let focused_idx = focused_idx.unwrap_or(0).min(child_count.saturating_sub(1));
 
                 for (idx, &child_rect) in child_rects.iter().enumerate() {
@@ -1333,7 +1332,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn tab_bar_rect(
         &self,
         workspace: NodeKey,
-        layout: Layout,
+        layout: LayoutMode,
         rect: Rectangle<f64, Logical>,
         tab_count: usize,
     ) -> Option<(Rectangle<f64, Logical>, f64)> {
@@ -1353,7 +1352,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         // children here are laid out below `switcher_content_offset`, which leaves their
         // border lane sitting between the bar and the window — two stacked decorations
         // where i3 has one. Growing the bar by that width covers the lane, and
-        // `edge_visibility_for_tile` stops drawing it. Layout is untouched: only what is
+        // `edge_visibility_for_tile` stops drawing it. LayoutMode is untouched: only what is
         // painted (and what a click on the bar hits) changes.
         let border_ext = if self.options(workspace).layout.border.off {
             0.0
@@ -1363,8 +1362,8 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         let spacing = self.tab_bar_spacing();
         let base_height = match layout {
-            Layout::Tabbed => row_height,
-            Layout::Stacked => row_height * tab_count as f64,
+            LayoutMode::Tabbed => row_height,
+            LayoutMode::Stacked => row_height * tab_count as f64,
             _ => 0.0,
         };
         let bar_height = (base_height + border_ext + spacing)

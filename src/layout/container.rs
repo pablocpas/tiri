@@ -27,6 +27,7 @@ use smithay::utils::{Logical, Point, Rectangle, Size};
 use tiri_config::BlockOutFrom;
 
 use super::tile::Tile;
+use super::workspace::WorkspaceProperties;
 use super::{Clock, LayoutElement, Options, SizeFrac};
 use crate::utils::id::IdCounter;
 use crate::utils::transaction::Transaction;
@@ -53,13 +54,16 @@ mod root_children;
 mod seat;
 mod split;
 mod state;
+mod sticky;
 mod swap;
 mod tab_bar_model;
 mod transfer;
 mod tree_store;
 
+pub use command::LayoutCommand;
 pub(super) use command::WorkspaceCommandTarget;
 pub(super) use floating_region::{floating_position_from_logical, scale_floating_position};
+pub(in crate::layout) use focus::ActiveChildren;
 use geometry::PendingLayout;
 pub(super) use resize::{InteractiveResizeState, ResizeTarget};
 
@@ -74,6 +78,10 @@ static NODE_ID_COUNTER: IdCounter = IdCounter::new();
 pub struct NodeKey(NonZeroU64);
 
 impl NodeKey {
+    pub(in crate::layout) fn get(self) -> u64 {
+        self.0.get()
+    }
+
     pub(super) fn next() -> Self {
         Self(NonZeroU64::new(NODE_ID_COUNTER.next()).expect("node key space exhausted"))
     }
@@ -83,9 +91,9 @@ impl NodeKey {
 // Container Types and Enums
 // ============================================================================
 
-/// Layout mode for a container (following i3 model)
+/// How a container arranges its children: i3's `layout`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum Layout {
+pub enum LayoutMode {
     /// Horizontal split - children arranged left to right
     #[default]
     SplitH,
@@ -177,33 +185,35 @@ pub(super) struct NodeSizing {
 }
 
 impl NodeSizing {
-    fn fraction(self, layout: Layout) -> f64 {
+    fn fraction(self, layout: LayoutMode) -> f64 {
         match layout {
-            Layout::SplitV => self.fractions.height,
-            Layout::SplitH | Layout::Tabbed | Layout::Stacked => self.fractions.width,
+            LayoutMode::SplitV => self.fractions.height,
+            LayoutMode::SplitH | LayoutMode::Tabbed | LayoutMode::Stacked => self.fractions.width,
         }
     }
 
-    fn set_fraction(&mut self, layout: Layout, fraction: f64) {
+    fn set_fraction(&mut self, layout: LayoutMode, fraction: f64) {
         match layout {
-            Layout::SplitV => self.fractions.height = fraction,
-            Layout::SplitH | Layout::Tabbed | Layout::Stacked => self.fractions.width = fraction,
+            LayoutMode::SplitV => self.fractions.height = fraction,
+            LayoutMode::SplitH | LayoutMode::Tabbed | LayoutMode::Stacked => {
+                self.fractions.width = fraction
+            }
         }
     }
 
-    fn child_total(self, layout: Layout) -> f64 {
+    fn child_total(self, layout: LayoutMode) -> f64 {
         match layout {
-            Layout::SplitH => self.child_total_width,
-            Layout::SplitV => self.child_total_height,
-            Layout::Tabbed | Layout::Stacked => 0.0,
+            LayoutMode::SplitH => self.child_total_width,
+            LayoutMode::SplitV => self.child_total_height,
+            LayoutMode::Tabbed | LayoutMode::Stacked => 0.0,
         }
     }
 
-    fn set_child_total(&mut self, layout: Layout, total: f64) {
+    fn set_child_total(&mut self, layout: LayoutMode, total: f64) {
         match layout {
-            Layout::SplitH => self.child_total_width = total,
-            Layout::SplitV => self.child_total_height = total,
-            Layout::Tabbed | Layout::Stacked => {}
+            LayoutMode::SplitH => self.child_total_width = total,
+            LayoutMode::SplitV => self.child_total_height = total,
+            LayoutMode::Tabbed | LayoutMode::Stacked => {}
         }
     }
 
@@ -240,7 +250,7 @@ pub struct TabBarTab {
 pub struct TabBarInfo {
     /// The container this bar belongs to.
     pub key: NodeKey,
-    pub layout: Layout,
+    pub layout: LayoutMode,
     pub rect: Rectangle<f64, Logical>,
     pub row_height: f64,
     pub tabs: Vec<TabBarTab>,
@@ -263,9 +273,9 @@ pub enum NodeData<W: LayoutElement> {
     /// Every other node: sway's `N_CONTAINER`.
     ///
     /// One `sway_container` is a view when `->view` is set and a split when it has children,
-    /// and it carries the same state either way. A separate leaf type is what left a window
-    /// unable to hold what a container holds — geometry above all, which is why floating a
-    /// window used to need a wrapper around it.
+    /// and it carries the same state either way. One type is what lets a window hold
+    /// everything a container holds — floating geometry above all — so floating a window
+    /// needs no wrapper around it.
     Container(ContainerData<W>),
 }
 
@@ -355,9 +365,9 @@ impl<W: LayoutElement> From<NewView<W>> for IncomingView<W> {
 /// Fields shared by the workspace and real containers because both lay out child nodes.
 #[derive(Debug)]
 pub struct LayoutParentData {
-    layout: Layout,
+    layout: LayoutMode,
     children: Vec<NodeKey>,
-    prev_split_layout: Option<Layout>,
+    prev_split_layout: Option<LayoutMode>,
     geometry: Rectangle<f64, Logical>,
 }
 
@@ -384,8 +394,9 @@ pub struct WorkspaceData {
     /// split: the box is `sway_output`'s and `arrange_output` walks it down.
     view_size: Size<f64, Logical>,
     working_area: Rectangle<f64, Logical>,
-    scale: f64,
     options: Rc<Options>,
+    /// What the workspace is: its name, its outputs, its own config.
+    pub(super) properties: WorkspaceProperties,
 }
 
 /// Container data stored under a stable node identity.
@@ -402,6 +413,9 @@ pub struct ContainerData<W: LayoutElement> {
     user_created: bool,
     /// The fractions and resize reference spans belonging to this node itself.
     sizing: NodeSizing,
+    /// sway's `is_sticky`: set by `sticky enable` on any container, but only in effect while
+    /// the container is a floating root. Read it through `ContainerTree::is_sticky`.
+    sticky: bool,
 }
 
 /// Semantic provenance of one entry in the workspace's floating stack.
@@ -492,7 +506,7 @@ pub struct LeafLayoutInfo {
 pub(super) struct InsertParentInfo {
     pub parent_path: Vec<usize>,
     pub insert_idx: usize,
-    pub layout: Layout,
+    pub layout: LayoutMode,
 }
 
 /// The tiling node chosen by the seat as the insertion context for an immediate unfloat.
@@ -525,7 +539,7 @@ struct NodeRecord<W: LayoutElement> {
     data: NodeData<W>,
 }
 
-/// Layout-wide ownership of globally identified nodes.
+/// LayoutMode-wide ownership of globally identified nodes.
 #[derive(Debug)]
 struct NodeStore<W: LayoutElement>(HashMap<NodeKey, NodeRecord<W>>);
 
@@ -610,9 +624,9 @@ pub struct ContainerTree<W: LayoutElement> {
     /// workspace carries the same `layout` and `prev_split_layout` and answers the same
     /// questions — it is a container's worth of state under another type, which is why i3,
     /// where a workspace is an ordinary `Con`, gets the same answers out of one code path.
-    /// Modelling it as a node here buys that same uniformity: every rule that used to ask
-    /// "is the parent the workspace?" was working around its absence, and each of those
-    /// workarounds disagreed with sway somewhere.
+    /// Modelling it as a node here buys that same uniformity: no rule has to special-case
+    /// "the parent is the workspace", and every such special case is a place to disagree
+    /// with sway.
     workspaces: Vec<NodeKey>,
     /// Roots temporarily owned by the layout but attached to no workspace.
     ///
@@ -623,10 +637,9 @@ pub struct ContainerTree<W: LayoutElement> {
     next_floating_root_id: u64,
     /// The seat's focus: what holds it, and the order everything was last in.
     ///
-    /// Behind a type with private fields because the three used to be loose values assigned
-    /// from thirty places, of which one also kept the order. Every rule that reads the order
-    /// — which tab a switcher shows, which window a descent lands on — was therefore right
-    /// for the commands whose authors remembered and wrong for the rest.
+    /// Behind a type with private fields so that focusing something and updating the order
+    /// cannot be done separately: every rule that reads the order — which tab a switcher
+    /// shows, which window a descent lands on — depends on the two agreeing.
     seat: seat::SeatFocus,
     /// Cached presentation by stable leaf identity.
     leaf_layouts: HashMap<NodeKey, LeafLayoutInfo>,
@@ -643,9 +656,9 @@ pub struct ContainerTree<W: LayoutElement> {
     pub(super) clock: Clock,
     /// Derived render data for the tree: tab bars already drawn, overview textures, scratch.
     ///
-    /// The one thing this type holds that is not the model. Before this refactor it lived on a
-    /// wrapper whose other methods mostly forwarded here — two vocabularies for one tree, and
-    /// every new operation written twice.
+    /// The one thing this type holds that is not the model. It lives here because its entries
+    /// are keyed by node and must go when their node does; the drawing itself is in
+    /// `container_tree::render`.
     pub(super) render: super::container_tree::ContainerRenderState,
 }
 
@@ -660,7 +673,7 @@ pub(super) struct PreviewLeafGeometry {
 // ============================================================================
 
 impl LayoutParentData {
-    fn new(layout: Layout) -> Self {
+    fn new(layout: LayoutMode) -> Self {
         Self {
             layout,
             children: Vec::new(),
@@ -670,18 +683,18 @@ impl LayoutParentData {
     }
 
     /// Get container layout
-    pub(super) fn layout(&self) -> Layout {
+    pub(super) fn layout(&self) -> LayoutMode {
         self.layout
     }
 
     /// Set container layout
-    pub(super) fn set_layout(&mut self, layout: Layout) {
+    pub(super) fn set_layout(&mut self, layout: LayoutMode) {
         self.layout = layout;
     }
 
     /// Apply `cmd_layout`'s history rule rather than a structural orientation change.
-    pub(super) fn set_layout_from_command(&mut self, layout: Layout) {
-        if self.layout != layout && matches!(self.layout, Layout::SplitH | Layout::SplitV) {
+    pub(super) fn set_layout_from_command(&mut self, layout: LayoutMode) {
+        if self.layout != layout && matches!(self.layout, LayoutMode::SplitH | LayoutMode::SplitV) {
             self.prev_split_layout = Some(self.layout);
         }
         self.layout = layout;
@@ -689,12 +702,12 @@ impl LayoutParentData {
 
     /// `workspace_split` is the one split path that writes workspace layout history, and it
     /// does so unconditionally when the workspace is empty.
-    pub(super) fn set_layout_from_empty_workspace_split(&mut self, layout: Layout) {
+    pub(super) fn set_layout_from_empty_workspace_split(&mut self, layout: LayoutMode) {
         self.prev_split_layout = Some(self.layout);
         self.layout = layout;
     }
 
-    pub(super) fn prev_split_layout(&self) -> Option<Layout> {
+    pub(super) fn prev_split_layout(&self) -> Option<LayoutMode> {
         self.prev_split_layout
     }
 
@@ -760,11 +773,11 @@ impl LayoutParentData {
 
 impl WorkspaceData {
     fn new(
-        layout: Layout,
+        layout: LayoutMode,
         view_size: Size<f64, Logical>,
         working_area: Rectangle<f64, Logical>,
-        scale: f64,
         options: Rc<Options>,
+        properties: WorkspaceProperties,
     ) -> Self {
         Self {
             common: LayoutParentData::new(layout),
@@ -773,8 +786,8 @@ impl WorkspaceData {
             pending_relayout: false,
             view_size,
             working_area,
-            scale,
             options,
+            properties,
         }
     }
 }
@@ -795,13 +808,14 @@ impl DerefMut for WorkspaceData {
 
 impl<W: LayoutElement> ContainerData<W> {
     /// Create a new split container with given layout.
-    pub(super) fn new(layout: Layout) -> Self {
+    pub(super) fn new(layout: LayoutMode) -> Self {
         Self {
             common: LayoutParentData::new(layout),
             marks: Vec::new(),
             tile: None,
             user_created: false,
             sizing: NodeSizing::default(),
+            sticky: false,
         }
     }
 
@@ -814,11 +828,12 @@ impl<W: LayoutElement> ContainerData<W> {
             tile,
         } = view;
         let node = Self {
-            common: LayoutParentData::new(Layout::SplitH),
+            common: LayoutParentData::new(LayoutMode::SplitH),
             marks,
             tile: Some(tile),
             user_created: false,
             sizing,
+            sticky: false,
         };
         (key, node)
     }
@@ -865,12 +880,12 @@ impl<W: LayoutElement> ContainerData<W> {
         &mut self.sizing
     }
 
-    pub(super) fn set_layout_explicit(&mut self, layout: Layout) {
+    pub(super) fn set_layout_explicit(&mut self, layout: LayoutMode) {
         self.set_layout(layout);
         self.user_created = true;
     }
 
-    pub(super) fn set_layout_explicit_from_command(&mut self, layout: Layout) {
+    pub(super) fn set_layout_explicit_from_command(&mut self, layout: LayoutMode) {
         self.set_layout_from_command(layout);
         self.user_created = true;
     }
@@ -882,6 +897,14 @@ impl<W: LayoutElement> ContainerData<W> {
 
     pub(super) fn mark_user_created(&mut self) {
         self.user_created = true;
+    }
+
+    pub(super) fn sticky_flag(&self) -> bool {
+        self.sticky
+    }
+
+    pub(super) fn set_sticky_flag(&mut self, sticky: bool) {
+        self.sticky = sticky;
     }
 }
 
@@ -970,11 +993,11 @@ impl<W: LayoutElement> ContainerTree<W> {
     ///
     pub(in crate::layout) fn add_workspace_node(
         &mut self,
-        layout: Layout,
+        layout: LayoutMode,
         view_size: Size<f64, Logical>,
         working_area: Rectangle<f64, Logical>,
-        scale: f64,
         options: Rc<Options>,
+        properties: WorkspaceProperties,
     ) -> NodeKey {
         let key = NodeKey::next();
         self.nodes.insert(
@@ -983,8 +1006,8 @@ impl<W: LayoutElement> ContainerTree<W> {
                 layout,
                 view_size,
                 working_area,
-                scale,
                 options,
+                properties,
             )),
             None,
         );
@@ -1008,11 +1031,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
         self.remove_node_recursive(workspace);
         self.workspaces.remove(idx);
+        // The seat forgets every node that went, and nothing is focused in its place: which
+        // workspace takes focus next is the layout's to decide, not this tree's.
         self.prune_focus_order();
-        match self.workspaces.first().copied() {
-            Some(remaining) => self.prune_leaf_layouts(remaining),
-            None => self.drop_stale_leaf_layouts(),
-        }
+        self.drop_stale_leaf_layouts();
         true
     }
 
@@ -1040,12 +1062,12 @@ impl<W: LayoutElement> ContainerTree<W> {
 // Additional helper implementations
 // ============================================================================
 
-impl Layout {
+impl LayoutMode {
     /// Whether children of a container with this layout are arranged left to right. Tabs
     /// count as horizontal and stacks as vertical: their titles run that way, and so does
     /// every question about them that has an axis in it.
     pub fn is_horizontal(self) -> bool {
-        matches!(self, Layout::SplitH | Layout::Tabbed)
+        matches!(self, LayoutMode::SplitH | LayoutMode::Tabbed)
     }
 
     /// Whether children of a container with this layout are arranged along `direction`'s axis,
@@ -1055,18 +1077,18 @@ impl Layout {
     }
 
     /// Whether two layouts arrange their children along the same axis.
-    pub fn is_parallel_to_layout(self, other: Layout) -> bool {
+    pub fn is_parallel_to_layout(self, other: LayoutMode) -> bool {
         self.is_horizontal() == other.is_horizontal()
     }
 
     /// Next layout in sway's `layout toggle all` cycle:
     /// SplitH -> SplitV -> Stacked -> Tabbed -> SplitH.
-    pub fn next_in_cycle(self) -> Layout {
+    pub fn next_in_cycle(self) -> LayoutMode {
         match self {
-            Layout::SplitH => Layout::SplitV,
-            Layout::SplitV => Layout::Stacked,
-            Layout::Stacked => Layout::Tabbed,
-            Layout::Tabbed => Layout::SplitH,
+            LayoutMode::SplitH => LayoutMode::SplitV,
+            LayoutMode::SplitV => LayoutMode::Stacked,
+            LayoutMode::Stacked => LayoutMode::Tabbed,
+            LayoutMode::Tabbed => LayoutMode::SplitH,
         }
     }
 }
@@ -1093,11 +1115,11 @@ impl Direction {
     }
 
     /// The split layout whose axis runs along this direction.
-    pub fn split_layout(self) -> Layout {
+    pub fn split_layout(self) -> LayoutMode {
         if self.is_horizontal() {
-            Layout::SplitH
+            LayoutMode::SplitH
         } else {
-            Layout::SplitV
+            LayoutMode::SplitV
         }
     }
 
@@ -1122,9 +1144,9 @@ impl Direction {
 /// A child whose fraction is unset — zero, which is what `cmd_move` writes over the ones it
 /// disturbs — takes the average of the children that still have one, and then the whole list
 /// is normalized to sum to 1. Nothing else is consulted: not how many children there are, not
-/// what the unset one used to hold. That average is why a container emptied by a move lands
-/// on exactly `1/n`, and why three of the four size divergences in the corpus were tiri
-/// deciding a share at the moment of the mutation instead of leaving it to be filled in.
+/// what the unset one held before. That average is why a container emptied by a move lands
+/// on exactly `1/n`, and why a share must not be decided at the moment of the mutation but
+/// left unset to be filled in here.
 pub(super) fn resolved_percents(percents: &[f64], count: usize) -> Vec<f64> {
     if count == 0 {
         return Vec::new();
@@ -1183,12 +1205,12 @@ pub(super) fn resolved_percents(percents: &[f64], count: usize) -> Vec<f64> {
 }
 
 #[cfg(test)]
-fn layout_label(layout: Layout) -> &'static str {
+fn layout_label(layout: LayoutMode) -> &'static str {
     match layout {
-        Layout::SplitH => "SplitH",
-        Layout::SplitV => "SplitV",
-        Layout::Tabbed => "Tabbed",
-        Layout::Stacked => "Stacked",
+        LayoutMode::SplitH => "SplitH",
+        LayoutMode::SplitV => "SplitV",
+        LayoutMode::Tabbed => "Tabbed",
+        LayoutMode::Stacked => "Stacked",
     }
 }
 

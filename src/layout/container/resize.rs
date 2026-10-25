@@ -3,8 +3,8 @@
 use smithay::utils::{Logical, Point};
 
 use super::ContainerTree;
-use super::Layout;
 use super::LayoutElement;
+use super::LayoutMode;
 use super::NodeKey;
 use crate::layout::InteractiveResizeData;
 use crate::utils::ResizeEdge;
@@ -66,7 +66,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             } else {
                 ResizeEdge::RIGHT
             };
-            horizontal = self.resize_target_for_edge(leaf_key, edge, Layout::SplitH, pos);
+            horizontal = self.resize_target_for_edge(leaf_key, edge, LayoutMode::SplitH, pos);
             if horizontal.is_none() {
                 edges.remove(ResizeEdge::LEFT_RIGHT);
             }
@@ -78,7 +78,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             } else {
                 ResizeEdge::BOTTOM
             };
-            vertical = self.resize_target_for_edge(leaf_key, edge, Layout::SplitV, pos);
+            vertical = self.resize_target_for_edge(leaf_key, edge, LayoutMode::SplitV, pos);
             if vertical.is_none() {
                 edges.remove(ResizeEdge::TOP_BOTTOM);
             }
@@ -96,7 +96,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         &self,
         leaf_key: NodeKey,
         edge: ResizeEdge,
-        layout: Layout,
+        layout: LayoutMode,
         pos: Point<f64, Logical>,
     ) -> bool {
         self.resize_target_for_edge(leaf_key, edge, layout, Some(pos))
@@ -109,7 +109,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         &self,
         leaf_key: NodeKey,
         edge: ResizeEdge,
-        layout: Layout,
+        layout: LayoutMode,
         pos: Option<Point<f64, Logical>>,
     ) -> Option<ResizeTarget> {
         let mut best: Option<(ResizeTarget, f64)> = None;
@@ -224,7 +224,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn resize_available_span(
         &self,
         target: &ResizeTarget,
-        layout: Layout,
+        layout: LayoutMode,
     ) -> Option<f64> {
         let container = self.get_container(target.parent)?;
         let child_count = container.child_count();
@@ -234,9 +234,9 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         let rect = container.geometry();
         let total = match layout {
-            Layout::SplitH => rect.size.w,
-            Layout::SplitV => rect.size.h,
-            Layout::Tabbed | Layout::Stacked => return None,
+            LayoutMode::SplitH => rect.size.w,
+            LayoutMode::SplitV => rect.size.h,
+            LayoutMode::Tabbed | LayoutMode::Stacked => return None,
         };
 
         let gap = self.gap_in(target.parent);
@@ -256,7 +256,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn apply_resize(
         &mut self,
         target: &ResizeTarget,
-        layout: Layout,
+        layout: LayoutMode,
         percent: f64,
     ) -> bool {
         let Some(child_idx) = self.child_index(target.parent, target.child) else {

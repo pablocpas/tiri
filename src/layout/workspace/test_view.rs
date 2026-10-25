@@ -2,7 +2,7 @@
 
 use smithay::utils::{Logical, Rectangle, Size};
 
-use super::{ContainerTree, Layout, LayoutElement, NodeKey, Tile, Workspace};
+use super::{ContainerTree, LayoutElement, LayoutMode, NodeKey, Tile, Workspace};
 
 impl<W: LayoutElement> Workspace<W> {
     pub fn has_windows(&self, containers: &ContainerTree<W>) -> bool {
@@ -92,7 +92,7 @@ impl<'a, W: LayoutElement> WorkspaceTreeView<'a, W> {
     }
 
     pub fn selected_is_container(&self) -> bool {
-        self.containers.selected_is_container(self.workspace)
+        self.containers.selected_container_in(self.workspace)
     }
 
     pub fn has_containers(&self) -> bool {
@@ -111,12 +111,14 @@ impl<'a, W: LayoutElement> WorkspaceTreeView<'a, W> {
         self.containers.debug_root_is_workspace_node(self.workspace)
     }
 
-    pub fn contains_layout(&self, layout: Layout) -> bool {
+    pub fn contains_layout(&self, layout: LayoutMode) -> bool {
         self.containers.contains_layout(self.workspace, layout)
     }
 
     pub fn active_root_index(&self) -> usize {
-        self.containers.active_root_index(self.workspace)
+        self.containers
+            .focused_root_index(self.workspace)
+            .unwrap_or(0)
     }
 
     pub fn parent_area(&self) -> Rectangle<f64, Logical> {
@@ -156,7 +158,7 @@ impl<'a, W: LayoutElement> FloatingTestView<'a, W> {
         self.containers.floating_tiles_in_workspace(self.workspace)
     }
 
-    pub fn root_layout_for_window(&self, id: &W::Id) -> Option<Layout> {
+    pub fn root_layout_for_window(&self, id: &W::Id) -> Option<LayoutMode> {
         let root = self.floating_root_for_window(id)?;
         self.containers.branch_layout(root)
     }

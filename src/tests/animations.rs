@@ -10,7 +10,9 @@ use wayland_client::protocol::wl_surface::WlSurface;
 
 use super::client::ClientId;
 use super::*;
-use crate::layout::ContainerLayout;
+use crate::layout::{
+    Direction, FocusCommand, LayoutCommand, LayoutMode, ResizeAxis, ResizeRequest, SizeCommand,
+};
 use crate::tiri::Niri;
 
 fn format_tiles(niri: &Niri) -> String {
@@ -99,9 +101,15 @@ fn set_up_two_in_column() -> (Fixture, ClientId, WlSurface, WlSurface) {
     let _ = f.client(id).window(&surface2).recent_configures();
 
     // Consume into one column.
-    f.niri().layout.focus_left();
-    f.niri().layout.consume_into_column();
-    f.niri().layout.set_layout_mode(ContainerLayout::SplitV);
+    f.niri()
+        .layout
+        .focus_command(FocusCommand::Direction(Direction::Left));
+    f.niri()
+        .layout
+        .layout_command(LayoutCommand::Split(LayoutMode::SplitV));
+    f.niri()
+        .layout
+        .layout_command(LayoutCommand::Set(LayoutMode::SplitV));
     f.double_roundtrip(id);
 
     // Commit for the column consume.
@@ -139,9 +147,13 @@ fn egl_height_resize_animates_next_y() {
     let (mut f, id, surface1, surface2) = set_up_two_in_column();
 
     // Issue a resize.
-    f.niri()
-        .layout
-        .set_window_height(None, SizeChange::AdjustFixed(-50));
+    f.niri().layout.size_command(
+        None,
+        SizeCommand::Resize(ResizeRequest::Axis {
+            axis: ResizeAxis::Vertical,
+            change: SizeChange::AdjustFixed(-50),
+        }),
+    );
     f.double_roundtrip(id);
 
     // Apply compositor configures for this resize.

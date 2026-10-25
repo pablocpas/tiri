@@ -1,7 +1,7 @@
 use smithay::utils::{Logical, Rectangle};
 use tiri_ipc::{LayoutTreeFloatingRootKind, LayoutTreeLayout, LayoutTreeNode, LayoutTreeRect};
 
-use super::{ContainerTree, FloatingRootKind, Layout, NodeData, NodeKey};
+use super::{ContainerTree, FloatingRootKind, LayoutMode, NodeData, NodeKey};
 use crate::layout::LayoutElement;
 
 impl<W: LayoutElement> ContainerTree<W> {
@@ -90,7 +90,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     floating_root_kind: None,
                     visible: self.leaf_layout(node_key).is_none_or(|info| info.visible),
                     is_urgent: window.is_urgent(),
-                    is_sticky: tile.is_sticky(),
+                    is_sticky: self.sticky_flag(node_key),
                     is_scratchpad: tile.is_scratchpad(),
                     marks: self.node_marks(node_key).unwrap_or_default().to_vec(),
                     rect: self.node_rect(node_key),
@@ -128,7 +128,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                     floating_root_kind: None,
                     visible: children.iter().any(|child| child.visible),
                     is_urgent: children.iter().any(|child| child.is_urgent),
-                    is_sticky: children.iter().any(|child| child.is_sticky),
+                    is_sticky: self.sticky_flag(node_key),
                     is_scratchpad: children.iter().any(|child| child.is_scratchpad),
                     marks: self.node_marks(node_key).unwrap_or_default().to_vec(),
                     rect: self.node_rect(node_key),
@@ -196,12 +196,12 @@ fn floating_root_kind_to_ipc(kind: FloatingRootKind) -> LayoutTreeFloatingRootKi
     }
 }
 
-fn layout_to_ipc(layout: Layout) -> LayoutTreeLayout {
+fn layout_to_ipc(layout: LayoutMode) -> LayoutTreeLayout {
     match layout {
-        Layout::SplitH => LayoutTreeLayout::SplitH,
-        Layout::SplitV => LayoutTreeLayout::SplitV,
-        Layout::Tabbed => LayoutTreeLayout::Tabbed,
-        Layout::Stacked => LayoutTreeLayout::Stacked,
+        LayoutMode::SplitH => LayoutTreeLayout::SplitH,
+        LayoutMode::SplitV => LayoutTreeLayout::SplitV,
+        LayoutMode::Tabbed => LayoutTreeLayout::Tabbed,
+        LayoutMode::Stacked => LayoutTreeLayout::Stacked,
     }
 }
 

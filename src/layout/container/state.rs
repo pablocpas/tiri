@@ -6,8 +6,9 @@ use std::rc::Rc;
 use smithay::utils::{Logical, Rectangle, Size};
 
 use super::{
-    ContainerTree, Layout, LayoutElement, LeafLayoutInfo, NodeData, NodeKey, WorkspaceData,
+    ContainerTree, LayoutElement, LayoutMode, LeafLayoutInfo, NodeData, NodeKey, WorkspaceData,
 };
+use crate::layout::workspace::WorkspaceProperties;
 use crate::layout::Options;
 use crate::utils::transaction::Transaction;
 
@@ -36,7 +37,25 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     pub(in crate::layout) fn scale(&self, workspace: NodeKey) -> f64 {
-        self.workspace_data(workspace).scale
+        self.workspace_data(workspace)
+            .properties
+            .output_scale
+            .fractional_scale()
+    }
+
+    /// What the workspace is: its name, its outputs, its own config.
+    pub(in crate::layout) fn workspace_properties(
+        &self,
+        workspace: NodeKey,
+    ) -> &WorkspaceProperties {
+        &self.workspace_data(workspace).properties
+    }
+
+    pub(in crate::layout) fn workspace_properties_mut(
+        &mut self,
+        workspace: NodeKey,
+    ) -> &mut WorkspaceProperties {
+        &mut self.workspace_data_mut(workspace).properties
     }
 
     pub(in crate::layout) fn options(&self, workspace: NodeKey) -> &Rc<Options> {
@@ -55,7 +74,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         workspace: NodeKey,
         view_size: Size<f64, Logical>,
         working_area: Rectangle<f64, Logical>,
-        scale: f64,
         options: Rc<Options>,
     ) {
         self.render
@@ -72,7 +90,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         let data = self.workspace_data_mut(workspace);
         data.view_size = view_size;
         data.working_area = working_area;
-        data.scale = scale;
         data.options = options.clone();
 
         let floating_roots: Vec<_> = self.floating_roots(workspace).collect();
@@ -83,6 +100,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         // Tile configuration is independent of the branch that currently owns the tile.
         // Walking the workspace once also guarantees a reparent cannot leave stale options
         // behind on either side.
+        let scale = self.scale(workspace);
         for tile in self.tiles_mut_in_workspace(workspace) {
             tile.update_config(view_size, scale, options.clone());
         }
@@ -217,12 +235,12 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// The workspace node carries it, empty workspace included, so there is nothing to
     /// remember on the side and nothing to reconcile: a `split` on an empty workspace is a
     /// `split` on the workspace node, and the first window arriving reads the same field.
-    pub(in crate::layout) fn workspace_layout(&self, workspace: NodeKey) -> Layout {
+    pub(in crate::layout) fn workspace_layout(&self, workspace: NodeKey) -> LayoutMode {
         self.root_container_layout(workspace)
     }
 
     /// The layout carried by the workspace node.
-    pub(in crate::layout) fn root_container_layout(&self, workspace: NodeKey) -> Layout {
+    pub(in crate::layout) fn root_container_layout(&self, workspace: NodeKey) -> LayoutMode {
         self.get_container(workspace)
             .expect("workspace node must provide child-layout data")
             .layout()

@@ -1,17 +1,16 @@
 use std::cmp::max;
 
 use log::warn;
-use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size};
 use tiri_config::utils::MergeWith as _;
 use tiri_config::{PresetSize, RelativeTo};
-use tiri_ipc::{ColumnDisplay, PositionChange, SizeChange};
+use tiri_ipc::{PositionChange, SizeChange};
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::container::{
     floating_position_from_logical, scale_floating_position, Direction, FloatingRootKind,
-    InactiveTilingReference, IncomingView, InsertParentInfo, Layout, NodeKey, TabBarInfo,
+    InactiveTilingReference, IncomingView, InsertParentInfo, LayoutMode, NodeKey, TabBarInfo,
 };
 use super::container_tree::{percent_from_size_change, ContainerTree, LeafFrameInfo, TileConfig};
 use super::focus_ring::{render_container_selection, FocusRingEdges, FocusRingRenderElement};
@@ -19,17 +18,13 @@ use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
 use super::workspace::{InteractiveResize, ResolvedSize};
 use super::{
     resize_edges_for_point, BranchRenderParams, ConfigureIntent, InteractiveResizeData,
-    LayoutCycleEntry, LayoutElement, ResizeAxis, ResizeRequest, SizeFrac, ViewTransfer,
+    LayoutElement, ResizeAxis, ResizeRequest, SizeFrac, ViewTransfer,
 };
 use crate::animation::Animation;
-use crate::layout::tab_bar::{
-    render_tab_bar, tab_bar_state_from_info, TabBarCacheEntry, TabBarRenderOutput,
-};
 use crate::layout::RenderLayer;
 use crate::niri_render_elements;
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
-use crate::render_helpers::texture::TextureRenderElement;
 use crate::render_helpers::xray::XrayPos;
 use crate::render_helpers::RenderCtx;
 use crate::utils::transaction::TransactionBlocker;
@@ -81,6 +76,32 @@ niri_render_elements! {
         TabBar = PrimaryGpuTextureRenderElement,
         ClosingWindow = ClosingWindowRenderElement,
         ContainerSelection = FocusRingRenderElement,
+    }
+}
+
+/// Which of a workspace's floating roots a render pass draws.
+///
+/// The output draws its sticky floats apart from the rest of the active workspace while that
+/// workspace slides in, so they stay where they are; otherwise every root is drawn together,
+/// in stacking order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FloatingRoots {
+    All,
+    Sticky,
+    NonSticky,
+}
+
+impl FloatingRoots {
+    fn includes<W: LayoutElement>(self, containers: &ContainerTree<W>, root: NodeKey) -> bool {
+        match self {
+            Self::All => true,
+            Self::Sticky => containers.is_sticky(root),
+            Self::NonSticky => !containers.is_sticky(root),
+        }
+    }
+
+    fn includes_node<W: LayoutElement>(self, containers: &ContainerTree<W>, key: NodeKey) -> bool {
+        self == Self::All || self.includes(containers, containers.branch_root(key))
     }
 }
 
@@ -255,6 +276,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         containers.apply_pending_layouts_and_deferred_relayout(workspace);
         let mut layouts = std::mem::take(&mut self.render_layout_scratch);
         let roots: Vec<_> = containers.floating_roots(self.workspace).collect();
+        let active_children = containers.active_children();
         for root in roots {
             layouts.clear();
             {
@@ -277,7 +299,8 @@ impl<W: LayoutElement> FloatingRuntime<W> {
             // windows inside it as it would anywhere else.
             let float_has_sublayout = containers.window_count_in_branch(root) > 1;
             for info in layouts.iter().copied() {
-                let is_focus_head = float_has_sublayout && containers.is_focus_head(info.key);
+                let is_focus_head =
+                    float_has_sublayout && active_children.is_focus_head(containers, info.key);
                 // Same rule as tiling: under a tab bar the tab is the top decoration.
                 let mut edges = FocusRingEdges::all();
                 if containers.parent_is_switcher(info.key) {
@@ -567,16 +590,6 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         }
         let workspace = self.workspace;
         containers.layout(workspace);
-    }
-
-    pub(super) fn close_window_ids_for_active_selection(
-        &self,
-        containers: &ContainerTree<W>,
-    ) -> Vec<W::Id> {
-        let Some(idx) = self.active_container_idx(containers) else {
-            return Vec::new();
-        };
-        containers.close_window_ids_in_branch(self.root(containers, idx))
     }
 
     pub(super) fn add_tile(
@@ -900,10 +913,8 @@ impl<W: LayoutElement> FloatingRuntime<W> {
 
     /// Whether the window named here sits in a container a new sibling can join.
     ///
-    /// It used to answer about the *focused* container instead, which is the same node only
-    /// when the named window happens to be the focused one. A floating window that is its own
-    /// root has no container to join, and reading someone else's answer for it sent a new tile
-    /// into a group that was not there.
+    /// About the named window, not the focused one: a floating window that is its own root has
+    /// no container to join, whatever the focused window's answer is.
     pub(super) fn container_allows_splits(
         &self,
         containers: &ContainerTree<W>,
@@ -1226,9 +1237,9 @@ impl<W: LayoutElement> FloatingRuntime<W> {
 
         // An implicit single-window group is registered under the window's own node, so once
         // that node is transferred the root has left with it and the branch count cannot say so:
-        // it still counts the transferred node's own window. Transferring used to destroy the node,
-        // which is what made the count enough. Leaving the stack entry behind means the next
-        // registration of the same key finds it already there.
+        // it still counts the transferred node's own window, because transferring keeps the node.
+        // Leaving the stack entry behind would mean the next registration of the same key finds
+        // it already there.
         if node != root && containers.window_count_in_branch(root) == 0 {
             assert!(containers.remove_empty_floating_root(root));
         }
@@ -1611,7 +1622,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         }
 
         let Some((parent_key, child_idx, available, child_count, _)) =
-            containers.container_metrics_for(key, Layout::SplitH)
+            containers.container_metrics_for(key, LayoutMode::SplitH)
         else {
             self.resize_container_around_center(containers, idx, change, ResizeAxis::Horizontal);
             return;
@@ -1627,11 +1638,11 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         let percent = percent_from_size_change(
             current_percent,
             available,
-            || containers.ppt_reference(key, Layout::SplitH),
+            || containers.ppt_reference(key, LayoutMode::SplitH),
             change,
         );
 
-        if containers.set_child_percent(parent_key, child_idx, Layout::SplitH, percent) {
+        if containers.set_child_percent(parent_key, child_idx, LayoutMode::SplitH, percent) {
             let _ = animate;
             let root = self.root(containers, idx);
             containers.layout_branch(root);
@@ -1759,7 +1770,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         }
 
         let Some((parent_key, child_idx, available, child_count, _)) =
-            containers.container_metrics_for(key, Layout::SplitV)
+            containers.container_metrics_for(key, LayoutMode::SplitV)
         else {
             self.resize_container_around_center(containers, idx, change, ResizeAxis::Vertical);
             return;
@@ -1775,11 +1786,11 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         let percent = percent_from_size_change(
             current_percent,
             available,
-            || containers.ppt_reference(key, Layout::SplitV),
+            || containers.ppt_reference(key, LayoutMode::SplitV),
             change,
         );
 
-        if containers.set_child_percent(parent_key, child_idx, Layout::SplitV, percent) {
+        if containers.set_child_percent(parent_key, child_idx, LayoutMode::SplitV, percent) {
             let _ = animate;
             let root = self.root(containers, idx);
             containers.layout_branch(root);
@@ -2094,138 +2105,55 @@ impl<W: LayoutElement> FloatingRuntime<W> {
                 .all(|root| containers.branch_root_is_lone_window(root))
     }
 
-    pub fn focus_left(&mut self, containers: &mut ContainerTree<W>) -> bool {
-        if self.focus_within_active_container(containers, Direction::Left, true) {
+    /// sway's `focus <direction>` from the floating side; `wrap` is `focus_wrapping`.
+    ///
+    /// Inside a floating group the tree walks the group as it walks the tiled side. Between
+    /// groups sway searches geometrically, except that a horizontal step with wrapping cycles
+    /// through the floating stack first.
+    pub(super) fn focus_in_direction(
+        &mut self,
+        containers: &mut ContainerTree<W>,
+        direction: Direction,
+        wrap: bool,
+    ) -> bool {
+        if self.focus_within_active_container(containers, direction, wrap) {
             return true;
         }
         if containers.fullscreen_key(self.workspace).is_some() {
             return false;
         }
-        if self.should_cycle_top_level_stable_order(containers) {
-            return self.focus_in_stable_container_order(containers, true);
+        if wrap && direction.is_horizontal() {
+            let leading = direction == Direction::Left;
+            if self.should_cycle_top_level_stable_order(containers) {
+                return self.focus_in_stable_container_order(containers, leading);
+            }
+            if self.focus_in_stack_order(containers, if leading { 1 } else { -1 }) {
+                return true;
+            }
         }
-        self.focus_in_stack_order(containers, 1)
-            || self.focus_directional(containers, |focus, other| focus.x - other.x)
+        self.focus_directional(containers, |focus, other| match direction {
+            Direction::Left => focus.x - other.x,
+            Direction::Right => other.x - focus.x,
+            Direction::Up => focus.y - other.y,
+            Direction::Down => other.y - focus.y,
+        })
     }
 
-    pub fn focus_left_no_wrap(&mut self, containers: &mut ContainerTree<W>) -> bool {
-        if self.focus_within_active_container(containers, Direction::Left, false) {
-            return true;
-        }
-        if containers.fullscreen_key(self.workspace).is_some() {
-            return false;
-        }
-        self.focus_directional(containers, |focus, other| focus.x - other.x)
-    }
-
-    pub fn focus_window_by_id(&mut self, containers: &mut ContainerTree<W>, id: &W::Id) -> bool {
-        let Some(_idx) = self.idx_of(containers, id) else {
-            return false;
+    /// Focus the window furthest towards `direction`.
+    pub(super) fn focus_edge(&mut self, containers: &mut ContainerTree<W>, direction: Direction) {
+        let coordinate = |pos: &Point<f64, Logical>| {
+            if direction.is_horizontal() {
+                pos.x
+            } else {
+                pos.y
+            }
         };
-
-        containers.clear_selection();
-        let _ = containers.focus_window_by_id(self.workspace, id);
-        true
-    }
-
-    pub fn focus_right(&mut self, containers: &mut ContainerTree<W>) -> bool {
-        if self.focus_within_active_container(containers, Direction::Right, true) {
-            return true;
-        }
-        if containers.fullscreen_key(self.workspace).is_some() {
-            return false;
-        }
-        if self.should_cycle_top_level_stable_order(containers) {
-            return self.focus_in_stable_container_order(containers, false);
-        }
-        self.focus_in_stack_order(containers, -1)
-            || self.focus_directional(containers, |focus, other| other.x - focus.x)
-    }
-
-    pub fn focus_right_no_wrap(&mut self, containers: &mut ContainerTree<W>) -> bool {
-        if self.focus_within_active_container(containers, Direction::Right, false) {
-            return true;
-        }
-        if containers.fullscreen_key(self.workspace).is_some() {
-            return false;
-        }
-        self.focus_directional(containers, |focus, other| other.x - focus.x)
-    }
-
-    pub fn focus_up(&mut self, containers: &mut ContainerTree<W>) -> bool {
-        if self.focus_within_active_container(containers, Direction::Up, true) {
-            return true;
-        }
-        if containers.fullscreen_key(self.workspace).is_some() {
-            return false;
-        }
-        self.focus_directional(containers, |focus, other| focus.y - other.y)
-    }
-
-    pub fn focus_up_no_wrap(&mut self, containers: &mut ContainerTree<W>) -> bool {
-        if self.focus_within_active_container(containers, Direction::Up, false) {
-            return true;
-        }
-        if containers.fullscreen_key(self.workspace).is_some() {
-            return false;
-        }
-        self.focus_directional(containers, |focus, other| focus.y - other.y)
-    }
-
-    pub fn focus_down(&mut self, containers: &mut ContainerTree<W>) -> bool {
-        if self.focus_within_active_container(containers, Direction::Down, true) {
-            return true;
-        }
-        if containers.fullscreen_key(self.workspace).is_some() {
-            return false;
-        }
-        self.focus_directional(containers, |focus, other| other.y - focus.y)
-    }
-
-    pub fn focus_down_no_wrap(&mut self, containers: &mut ContainerTree<W>) -> bool {
-        if self.focus_within_active_container(containers, Direction::Down, false) {
-            return true;
-        }
-        if containers.fullscreen_key(self.workspace).is_some() {
-            return false;
-        }
-        self.focus_directional(containers, |focus, other| other.y - focus.y)
-    }
-
-    pub fn focus_leftmost(&mut self, containers: &mut ContainerTree<W>) {
-        let result = self
-            .tiles_with_offsets_visible(containers)
-            .min_by(|(_, pos_a), (_, pos_b)| f64::total_cmp(&pos_a.x, &pos_b.x));
-        if let Some((tile, _)) = result {
-            let id = tile.window().id().clone();
-            self.activate_window(containers, &id);
-        }
-    }
-
-    pub fn focus_rightmost(&mut self, containers: &mut ContainerTree<W>) {
-        let result = self
-            .tiles_with_offsets_visible(containers)
-            .max_by(|(_, pos_a), (_, pos_b)| f64::total_cmp(&pos_a.x, &pos_b.x));
-        if let Some((tile, _)) = result {
-            let id = tile.window().id().clone();
-            self.activate_window(containers, &id);
-        }
-    }
-
-    pub fn focus_topmost(&mut self, containers: &mut ContainerTree<W>) {
-        let result = self
-            .tiles_with_offsets_visible(containers)
-            .min_by(|(_, pos_a), (_, pos_b)| f64::total_cmp(&pos_a.y, &pos_b.y));
-        if let Some((tile, _)) = result {
-            let id = tile.window().id().clone();
-            self.activate_window(containers, &id);
-        }
-    }
-
-    pub fn focus_bottommost(&mut self, containers: &mut ContainerTree<W>) {
-        let result = self
-            .tiles_with_offsets_visible(containers)
-            .max_by(|(_, pos_a), (_, pos_b)| f64::total_cmp(&pos_a.y, &pos_b.y));
+        let tiles = self.tiles_with_offsets_visible(containers);
+        let result = if direction.is_leading() {
+            tiles.min_by(|(_, a), (_, b)| f64::total_cmp(&coordinate(a), &coordinate(b)))
+        } else {
+            tiles.max_by(|(_, a), (_, b)| f64::total_cmp(&coordinate(a), &coordinate(b)))
+        };
         if let Some((tile, _)) = result {
             let id = tile.window().id().clone();
             self.activate_window(containers, &id);
@@ -2270,171 +2198,6 @@ impl<W: LayoutElement> FloatingRuntime<W> {
             && containers.select_child(workspace)
     }
 
-    fn consume_or_expel_window(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        window: Option<&W::Id>,
-        direction: Direction,
-    ) {
-        if let Some(id) = window {
-            if !self.activate_window(containers, id) {
-                return;
-            }
-        }
-
-        let Some(idx) = self.active_container_idx(containers) else {
-            return;
-        };
-
-        if self.move_tree_command_target(containers, idx, direction) {
-            return;
-        }
-
-        self.split_container(containers, idx, Layout::SplitV);
-    }
-
-    pub fn consume_or_expel_window_left(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        window: Option<&W::Id>,
-    ) {
-        self.consume_or_expel_window(containers, window, Direction::Left);
-    }
-
-    pub fn consume_or_expel_window_right(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        window: Option<&W::Id>,
-    ) {
-        self.consume_or_expel_window(containers, window, Direction::Right);
-    }
-
-    pub fn consume_into_container(&mut self, containers: &mut ContainerTree<W>) {
-        let Some(idx) = self.active_container_idx(containers) else {
-            return;
-        };
-        self.split_container(containers, idx, Layout::SplitV);
-    }
-
-    pub fn expel_from_container(&mut self, containers: &mut ContainerTree<W>) {
-        let Some(idx) = self.active_container_idx(containers) else {
-            return;
-        };
-        self.split_container(containers, idx, Layout::SplitH);
-    }
-
-    fn move_tree_command_target(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        idx: usize,
-        direction: Direction,
-    ) -> bool {
-        containers.move_in_branch(self.root(containers, idx), direction)
-    }
-
-    pub fn set_container_display(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        display: ColumnDisplay,
-    ) {
-        let target_layout = match display {
-            ColumnDisplay::Normal => Layout::SplitV,
-            ColumnDisplay::Tabbed => Layout::Tabbed,
-        };
-
-        let Some(idx) = self.active_container_idx(containers) else {
-            return;
-        };
-        containers.set_layout_in_branch(self.root(containers, idx), target_layout);
-    }
-
-    pub fn toggle_container_tabbed(&mut self, containers: &mut ContainerTree<W>) {
-        let Some(idx) = self.active_container_idx(containers) else {
-            return;
-        };
-        let root = self.root(containers, idx);
-        let target = match containers.selection_layout_in(root) {
-            Some(Layout::Tabbed) => Layout::SplitV,
-            _ => Layout::Tabbed,
-        };
-        containers.set_layout_in_branch(root, target);
-    }
-
-    pub fn split_horizontal(&mut self, containers: &mut ContainerTree<W>) {
-        let Some(idx) = self.active_container_idx(containers) else {
-            return;
-        };
-        self.split_container(containers, idx, Layout::SplitH);
-    }
-
-    pub fn split_vertical(&mut self, containers: &mut ContainerTree<W>) {
-        let Some(idx) = self.active_container_idx(containers) else {
-            return;
-        };
-        self.split_container(containers, idx, Layout::SplitV);
-    }
-
-    pub fn split_none(&mut self, containers: &mut ContainerTree<W>) {
-        let Some(idx) = self.active_container_idx(containers) else {
-            return;
-        };
-        let root = self.root(containers, idx);
-        let _ = containers.unsplit_in_branch(root);
-    }
-
-    fn split_container(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        idx: usize,
-        layout: Layout,
-    ) -> bool {
-        let root = self.root(containers, idx);
-        if !containers.split_in_branch(root, layout) {
-            return false;
-        }
-        // The tree replaces the authoritative root entry atomically when wrapping the old root.
-        true
-    }
-
-    pub fn set_layout_mode(&mut self, containers: &mut ContainerTree<W>, layout: Layout) {
-        let Some(idx) = self.active_container_idx(containers) else {
-            return;
-        };
-        containers.set_layout_in_branch(self.root(containers, idx), layout);
-    }
-
-    pub fn toggle_split_layout(&mut self, containers: &mut ContainerTree<W>) {
-        let Some(idx) = self.active_container_idx(containers) else {
-            return;
-        };
-        containers.toggle_split_in_branch(self.root(containers, idx));
-    }
-
-    pub fn toggle_layout_all(&mut self, containers: &mut ContainerTree<W>) {
-        let Some(idx) = self.active_container_idx(containers) else {
-            return;
-        };
-        containers.toggle_layout_all_in_branch(self.root(containers, idx));
-    }
-
-    pub fn set_default_layout(&mut self, containers: &mut ContainerTree<W>) {
-        let Some(idx) = self.active_container_idx(containers) else {
-            return;
-        };
-        containers.set_default_layout_in_branch(self.root(containers, idx));
-    }
-
-    pub(super) fn toggle_layout_cycle(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        cycle: &[LayoutCycleEntry],
-    ) {
-        let Some(idx) = self.active_container_idx(containers) else {
-            return;
-        };
-        containers.toggle_layout_cycle_in_branch(self.root(containers, idx), cycle);
-    }
-
     fn move_container_to(
         &mut self,
         containers: &mut ContainerTree<W>,
@@ -2467,20 +2230,20 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         self.move_container_to(containers, idx, new_pos, true)
     }
 
-    pub fn move_left(&mut self, containers: &mut ContainerTree<W>) {
-        self.move_by(containers, Point::from((-DIRECTIONAL_MOVE_PX, 0.)));
-    }
-
-    pub fn move_right(&mut self, containers: &mut ContainerTree<W>) {
-        self.move_by(containers, Point::from((DIRECTIONAL_MOVE_PX, 0.)));
-    }
-
-    pub fn move_up(&mut self, containers: &mut ContainerTree<W>) {
-        self.move_by(containers, Point::from((0., -DIRECTIONAL_MOVE_PX)));
-    }
-
-    pub fn move_down(&mut self, containers: &mut ContainerTree<W>) {
-        self.move_by(containers, Point::from((0., DIRECTIONAL_MOVE_PX)));
+    /// sway's `move <direction>` for a floating root: a translation by
+    /// [`DIRECTIONAL_MOVE_PX`].
+    pub(super) fn move_in_direction(
+        &mut self,
+        containers: &mut ContainerTree<W>,
+        direction: Direction,
+    ) {
+        let delta = match direction {
+            Direction::Left => Point::from((-DIRECTIONAL_MOVE_PX, 0.)),
+            Direction::Right => Point::from((DIRECTIONAL_MOVE_PX, 0.)),
+            Direction::Up => Point::from((0., -DIRECTIONAL_MOVE_PX)),
+            Direction::Down => Point::from((0., DIRECTIONAL_MOVE_PX)),
+        };
+        self.move_by(containers, delta);
     }
 
     pub fn move_window(
@@ -2535,6 +2298,19 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         }
 
         self.move_container_to(containers, idx, pos, animate);
+    }
+
+    /// Center one floating root in the working area, as sway's
+    /// `container_floating_move_to_center` does.
+    pub(super) fn center_root(&mut self, containers: &mut ContainerTree<W>, root: NodeKey) {
+        let Some(idx) = containers.floating_root_index(self.workspace, root) else {
+            return;
+        };
+        let new_pos = center_preferring_top_left_in_area(
+            containers.working_area(self.workspace),
+            self.container_area(containers, idx).size,
+        );
+        self.move_container_to(containers, idx, new_pos, false);
     }
 
     pub fn center_window(&mut self, containers: &mut ContainerTree<W>, id: Option<&W::Id>) {
@@ -2636,6 +2412,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         xray_pos: XrayPos,
         view_rect: Rectangle<f64, Logical>,
         params: BranchRenderParams,
+        roots: FloatingRoots,
     ) -> Vec<FloatingRenderElement<R>> {
         let BranchRenderParams {
             has_focus: floating_has_focus,
@@ -2657,7 +2434,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
             .closing_windows
             .iter()
             .rev()
-            .filter(|_| layer.is_normal())
+            .filter(|_| layer.is_normal() && roots != FloatingRoots::Sticky)
         {
             let elem = closing.render(ctx.as_gles(), view_rect, scale);
             elements.push(elem.into());
@@ -2671,11 +2448,18 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         let selection_is_container = self
             .active_container_idx(containers)
             .is_some_and(|idx| self.selected_is_container_in(containers, idx));
+        let selection_in_pass = self
+            .active_container_idx(containers)
+            .is_some_and(|idx| roots.includes(containers, self.root(containers, idx)));
 
         // Like tiling, push container selection before the regular window
         // contents so it stays visually on top after the global reverse-order
         // composition pass in the renderer.
-        if (focus_ring || floating_has_focus) && selection_is_container && fullscreen_id.is_none() {
+        if (focus_ring || floating_has_focus)
+            && selection_is_container
+            && selection_in_pass
+            && fullscreen_id.is_none()
+        {
             if let Some(idx) = self.active_container_idx(containers) {
                 if let Some((_, local_rect, _)) = self
                     .selected_key_in(containers, idx)
@@ -2697,18 +2481,16 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         }
 
         if !containers.options(self.workspace).layout.tab_bar.off && fullscreen_id.is_none() {
-            let mut cache = containers.tab_bar_cache_mut();
-            let gles = ctx.renderer.as_gles_renderer();
             let tab_bar_config = containers.options(self.workspace).layout.tab_bar.clone();
-            let is_active_workspace = floating_has_focus;
-            let target = ctx.target;
-
-            let roots: Vec<NodeKey> = if let Some(scope) = fullscreen_key {
+            let gles = ctx.renderer.as_gles_renderer();
+            let pass_roots: Vec<NodeKey> = if let Some(scope) = fullscreen_key {
                 vec![scope]
             } else {
-                tree.floating_roots(self.workspace).collect()
+                tree.floating_roots(self.workspace)
+                    .filter(|root| roots.includes(containers, *root))
+                    .collect()
             };
-            for root in roots {
+            for root in pass_roots {
                 let gap = containers.branch_gap(root);
                 for info in tree.tab_bar_layouts_in_branch(root) {
                     let mut info = info.clone();
@@ -2717,61 +2499,16 @@ impl<W: LayoutElement> FloatingRuntime<W> {
                         info.rect.loc.y -= gap;
                         info.rect.size.w = (info.rect.size.w + gap * 2.0).max(0.0);
                     }
-                    let state = tab_bar_state_from_info(
+                    if let Some(elem) = containers.tab_bar_element(
+                        gles,
+                        ctx.target,
                         &info,
                         &tab_bar_config,
-                        is_active_workspace,
+                        floating_has_focus,
                         containers.scale(self.workspace),
-                        target,
-                    );
-                    let (buffer, tab_widths_px) = match cache.get(&info.key) {
-                        Some(entry) if entry.state == state => {
-                            (entry.buffer.clone(), entry.tab_widths_px.clone())
-                        }
-                        _ => match render_tab_bar(
-                            gles,
-                            &tab_bar_config,
-                            info.layout,
-                            info.rect,
-                            info.row_height,
-                            &info.tabs,
-                            is_active_workspace,
-                            target,
-                            containers.scale(self.workspace),
-                        ) {
-                            Ok(TabBarRenderOutput {
-                                buffer,
-                                tab_widths_px,
-                            }) => (buffer, tab_widths_px),
-                            Err(err) => {
-                                warn!("tab bar render failed: {err}");
-                                continue;
-                            }
-                        },
-                    };
-
-                    let mut location = info.rect.loc;
-                    location = location.to_physical_precise_round(scale).to_logical(scale);
-                    let elem = TextureRenderElement::from_texture_buffer(
-                        buffer.clone(),
-                        location,
-                        1.0,
-                        None,
-                        None,
-                        Kind::Unspecified,
-                    );
-                    elements.push(FloatingRenderElement::TabBar(
-                        PrimaryGpuTextureRenderElement(elem),
-                    ));
-
-                    cache.insert(
-                        info.key,
-                        TabBarCacheEntry {
-                            state,
-                            buffer,
-                            tab_widths_px,
-                        },
-                    );
+                    ) {
+                        elements.push(FloatingRenderElement::TabBar(elem));
+                    }
                 }
             }
         }
@@ -2781,6 +2518,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
             if let Some(tile) = containers
                 .floating_tiles_in_workspace(self.workspace)
                 .find(|t| t.window().id() == fullscreen_id)
+                .filter(|_| fullscreen_key.is_some_and(|key| roots.includes_node(containers, key)))
             {
                 let is_focused = floating_has_focus;
                 let pos = Point::from((0.0, 0.0));
@@ -2802,6 +2540,9 @@ impl<W: LayoutElement> FloatingRuntime<W> {
                     continue;
                 }
                 if fullscreen_key.is_some_and(|scope| !tree.is_descendant(key, scope)) {
+                    continue;
+                }
+                if !roots.includes_node(containers, key) {
                     continue;
                 }
                 // Skip tiles entirely outside the viewport (culling)
@@ -2833,9 +2574,10 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         xray_pos: XrayPos,
         view_rect: Rectangle<f64, Logical>,
         params: BranchRenderParams,
+        roots: FloatingRoots,
         push: &mut dyn FnMut(FloatingRenderElement<R>),
     ) {
-        for elem in self.render_elements(containers, ctx, xray_pos, view_rect, params) {
+        for elem in self.render_elements(containers, ctx, xray_pos, view_rect, params, roots) {
             push(elem);
         }
     }

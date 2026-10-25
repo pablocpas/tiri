@@ -3,8 +3,8 @@
 #[cfg(test)]
 use super::NewView;
 use super::{
-    ContainerData, ContainerTree, Direction, IncomingView, InsertParentInfo, Layout, LayoutElement,
-    NodeData, NodeKey,
+    ContainerData, ContainerTree, Direction, IncomingView, InsertParentInfo, LayoutElement,
+    LayoutMode, NodeData, NodeKey,
 };
 
 impl<W: LayoutElement> ContainerTree<W> {
@@ -98,7 +98,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// `None` whenever the mode has nothing to say: it is off, the node is not on the tiled
     /// side, its parent is a switcher — where "beside" already means another tab — or it has
     /// no box to measure yet.
-    pub(super) fn autotile_layout_for(&self, key: NodeKey) -> Option<Layout> {
+    pub(super) fn autotile_layout_for(&self, key: NodeKey) -> Option<LayoutMode> {
         let workspace = self.workspace_of(key)?;
         if !self.options(workspace).layout.autotile {
             return None;
@@ -117,9 +117,9 @@ impl<W: LayoutElement> ContainerTree<W> {
 
         let ratio = self.options(workspace).layout.autotile_ratio;
         Some(if rect.size.w >= rect.size.h * ratio {
-            Layout::SplitH
+            LayoutMode::SplitH
         } else {
-            Layout::SplitV
+            LayoutMode::SplitV
         })
     }
 
@@ -212,7 +212,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             && children.len() == 1
             && matches!(
                 self.get_container(key)?.layout(),
-                Layout::SplitH | Layout::SplitV
+                LayoutMode::SplitH | LayoutMode::SplitV
             )
         {
             return Some(children[0]);
@@ -547,7 +547,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         };
 
         let parent_layout = parent.layout();
-        if matches!(parent_layout, Layout::SplitH | Layout::SplitV)
+        if matches!(parent_layout, LayoutMode::SplitH | LayoutMode::SplitV)
             && parent_layout == desired_layout
         {
             // The parent already splits along this axis: insert as a plain sibling.

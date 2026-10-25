@@ -1,6 +1,6 @@
 use insta::assert_snapshot;
 
-use super::super::container::Layout as ContainerLayout;
+use super::super::container::LayoutMode;
 use super::*;
 
 #[test]
@@ -8,7 +8,7 @@ fn i3_167_workspace_layout_tabbed_groups_second_open() {
     let mut layout = Layout::default();
     check_ops_on_layout(&mut layout, [Op::AddOutput(1)]);
 
-    layout.set_layout_mode(ContainerLayout::Tabbed);
+    layout.layout_command(LayoutCommand::Set(LayoutMode::Tabbed));
 
     layout.add_window(
         TestWindow::new(TestWindowParams::new(1)),
@@ -31,7 +31,7 @@ fn i3_167_workspace_layout_tabbed_groups_second_open() {
     let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_eq!(
         workspace.debug_workspace_layout(&layout.containers),
-        ContainerLayout::Tabbed
+        LayoutMode::Tabbed
     );
     assert!(
         !workspace
@@ -45,7 +45,7 @@ fn i3_167_workspace_layout_stacked_groups_second_open() {
     let mut layout = Layout::default();
     check_ops_on_layout(&mut layout, [Op::AddOutput(1)]);
 
-    layout.set_layout_mode(ContainerLayout::Stacked);
+    layout.layout_command(LayoutCommand::Set(LayoutMode::Stacked));
 
     layout.add_window(
         TestWindow::new(TestWindowParams::new(1)),
@@ -72,7 +72,7 @@ fn i3_167_workspace_layout_stacked_groups_second_open() {
     );
     assert_eq!(
         workspace.debug_workspace_layout(&layout.containers),
-        ContainerLayout::Stacked
+        LayoutMode::Stacked
     );
 }
 #[test]
@@ -80,7 +80,7 @@ fn i3_167_workspace_layout_stacked_reinserts_after_floating_roundtrip() {
     let mut layout = Layout::default();
     check_ops_on_layout(&mut layout, [Op::AddOutput(1)]);
 
-    layout.set_layout_mode(ContainerLayout::Stacked);
+    layout.layout_command(LayoutCommand::Set(LayoutMode::Stacked));
 
     layout.add_window(
         TestWindow::new(TestWindowParams::new(1)),
@@ -109,7 +109,7 @@ fn i3_167_workspace_layout_stacked_reinserts_after_floating_roundtrip() {
     );
     assert_eq!(
         workspace.debug_workspace_layout(&layout.containers),
-        ContainerLayout::Stacked
+        LayoutMode::Stacked
     );
 }
 #[test]
@@ -117,7 +117,7 @@ fn i3_167_empty_workspace_layout_can_switch_back_to_splith() {
     let mut layout = Layout::default();
     check_ops_on_layout(&mut layout, [Op::AddOutput(1)]);
 
-    layout.set_layout_mode(ContainerLayout::Stacked);
+    layout.layout_command(LayoutCommand::Set(LayoutMode::Stacked));
     layout.add_window(
         TestWindow::new(TestWindowParams::new(1)),
         AddWindowTarget::Auto,
@@ -135,7 +135,7 @@ fn i3_167_empty_workspace_layout_can_switch_back_to_splith() {
     layout.remove_window(&1, Transaction::new());
     layout.remove_window(&2, Transaction::new());
 
-    layout.set_layout_mode(ContainerLayout::SplitH);
+    layout.layout_command(LayoutCommand::Set(LayoutMode::SplitH));
     layout.add_window(
         TestWindow::new(TestWindowParams::new(3)),
         AddWindowTarget::Auto,
@@ -154,7 +154,7 @@ fn i3_167_empty_workspace_layout_can_switch_back_to_splith() {
     let workspace = layout.active_workspace().expect("active workspace");
     let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert!(
-        !workspace.container_tree(&layout.containers).contains_layout(ContainerLayout::Stacked),
+        !workspace.container_tree(&layout.containers).contains_layout(LayoutMode::Stacked),
         "after resetting empty workspace layout to splith, new opens should no longer land in stacked:\n{tree}",
     );
 }
@@ -163,7 +163,7 @@ fn i3_167_empty_workspace_layout_can_switch_back_to_splitv() {
     let mut layout = Layout::default();
     check_ops_on_layout(&mut layout, [Op::AddOutput(1)]);
 
-    layout.set_layout_mode(ContainerLayout::Tabbed);
+    layout.layout_command(LayoutCommand::Set(LayoutMode::Tabbed));
     layout.add_window(
         TestWindow::new(TestWindowParams::new(1)),
         AddWindowTarget::Auto,
@@ -181,7 +181,7 @@ fn i3_167_empty_workspace_layout_can_switch_back_to_splitv() {
     layout.remove_window(&1, Transaction::new());
     layout.remove_window(&2, Transaction::new());
 
-    layout.set_layout_mode(ContainerLayout::SplitV);
+    layout.layout_command(LayoutCommand::Set(LayoutMode::SplitV));
     layout.add_window(
         TestWindow::new(TestWindowParams::new(3)),
         AddWindowTarget::Auto,
@@ -207,10 +207,10 @@ fn i3_167_empty_workspace_layout_can_switch_back_to_splitv() {
     );
     assert_eq!(
         workspace.debug_workspace_layout(&layout.containers),
-        ContainerLayout::SplitV
+        LayoutMode::SplitV
     );
     assert!(
-        !workspace.container_tree(&layout.containers).contains_layout(ContainerLayout::Tabbed),
+        !workspace.container_tree(&layout.containers).contains_layout(LayoutMode::Tabbed),
         "after resetting empty workspace layout to splitv, new opens should no longer land in tabbed:\n{tree}",
     );
 }
@@ -716,7 +716,7 @@ fn i3_124_move_single_window_is_noop() {
     let after = workspace.container_tree(&layout.containers).debug_tree();
     assert_eq!(
         workspace.debug_workspace_layout(&layout.containers),
-        ContainerLayout::SplitV
+        LayoutMode::SplitV
     );
     assert_eq!(
         after.replace("SplitV", "SplitH"),
@@ -804,7 +804,7 @@ fn i3_124_move_container_right_moves_focused_leaf_out_of_nested_split() {
         },
     ]);
 
-    layout.move_container_right();
+    layout.move_in_direction(Direction::Right);
     layout.verify_invariants();
 
     let workspace = layout.active_workspace().expect("active workspace");
@@ -1948,7 +1948,7 @@ fn i3_152_focus_parent_then_toggle_floating_workspace_context_behaves_like_sway(
 
     {
         let workspace = layout.active_workspace().expect("active workspace");
-        assert!(workspace.floating_is_active());
+        assert!(workspace.floating_is_active(&layout.containers));
         assert_eq!(
             workspace.container_tree(&layout.containers).tiles().count(),
             0
@@ -1963,7 +1963,7 @@ fn i3_152_focus_parent_then_toggle_floating_workspace_context_behaves_like_sway(
 
     let workspace = layout.active_workspace().expect("active workspace");
     assert!(
-        workspace.floating_is_active(),
+        workspace.floating_is_active(&layout.containers),
         "workspace-context toggle_floating with empty tiling must be a no-op",
     );
     assert_eq!(
@@ -2007,7 +2007,7 @@ fn i3_218_floating_container_cannot_be_split_or_relayouted() {
         workspace
             .floating(&layout.containers)
             .root_layout_for_window(&1),
-        Some(ContainerLayout::SplitV),
+        Some(LayoutMode::SplitV),
         "split on floating leaf should create an explicit SplitV wrapper (sway parity)",
     );
 }
@@ -2030,7 +2030,7 @@ fn i3_192_toggle_layout_all_cycles_floating_container_layouts() {
         workspace
             .floating(&layout.containers)
             .root_layout_for_window(&1),
-        Some(ContainerLayout::SplitV),
+        Some(LayoutMode::SplitV),
     );
 
     check_ops_on_layout(&mut layout, [Op::ToggleLayoutAll]);
@@ -2039,7 +2039,7 @@ fn i3_192_toggle_layout_all_cycles_floating_container_layouts() {
         workspace
             .floating(&layout.containers)
             .root_layout_for_window(&1),
-        Some(ContainerLayout::Stacked),
+        Some(LayoutMode::Stacked),
         "toggle_layout_all should cycle floating container layout from SplitV to Stacked",
     );
 
@@ -2049,7 +2049,7 @@ fn i3_192_toggle_layout_all_cycles_floating_container_layouts() {
         workspace
             .floating(&layout.containers)
             .root_layout_for_window(&1),
-        Some(ContainerLayout::Tabbed),
+        Some(LayoutMode::Tabbed),
         "toggle_layout_all should cycle floating container layout from Stacked to Tabbed",
     );
 
@@ -2059,7 +2059,7 @@ fn i3_192_toggle_layout_all_cycles_floating_container_layouts() {
         workspace
             .floating(&layout.containers)
             .root_layout_for_window(&1),
-        Some(ContainerLayout::SplitH),
+        Some(LayoutMode::SplitH),
         "toggle_layout_all should cycle floating container layout from Tabbed to SplitH",
     );
 }
@@ -2107,7 +2107,7 @@ fn i3_192_set_layout_on_floating_container_with_children_retargets_wrapper() {
         workspace
             .floating(&layout.containers)
             .root_layout_for_window(&1),
-        Some(ContainerLayout::SplitV),
+        Some(LayoutMode::SplitV),
     );
 
     check_ops_on_layout(&mut layout, [Op::SetLayoutTabbed]);
@@ -2116,7 +2116,7 @@ fn i3_192_set_layout_on_floating_container_with_children_retargets_wrapper() {
         workspace
             .floating(&layout.containers)
             .root_layout_for_window(&1),
-        Some(ContainerLayout::Tabbed),
+        Some(LayoutMode::Tabbed),
         "set_layout should retarget the active floating container wrapper",
     );
 
@@ -2126,7 +2126,7 @@ fn i3_192_set_layout_on_floating_container_with_children_retargets_wrapper() {
         workspace
             .floating(&layout.containers)
             .root_layout_for_window(&1),
-        Some(ContainerLayout::Stacked),
+        Some(LayoutMode::Stacked),
         "set_layout should continue to mutate the same floating container wrapper",
     );
 }
@@ -2339,7 +2339,7 @@ fn i3_550_repeated_splits_on_a_lone_window_build_no_wrapper() {
     let workspace = layout.active_workspace().expect("active workspace");
     assert_eq!(
         workspace.debug_workspace_layout(&layout.containers),
-        ContainerLayout::SplitV
+        LayoutMode::SplitV
     );
     let tree = workspace.container_tree(&layout.containers).debug_tree();
     assert_snapshot!(

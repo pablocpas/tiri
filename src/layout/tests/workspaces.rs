@@ -38,7 +38,11 @@ fn moving_a_window_between_workspaces_keeps_its_node_identity() {
     ]);
     let key = workspace_node_key(&layout, 1);
 
-    layout.move_to_workspace_down(true);
+    layout.transfer(
+        TransferSubject::Window(None),
+        TransferTarget::WorkspaceDown,
+        ActivateWindow::following(true),
+    );
 
     assert_eq!(workspace_node_key(&layout, 1), key);
 }
@@ -72,7 +76,11 @@ fn moving_a_tiled_window_to_another_workspace_derives_a_new_share() {
     );
     let key = workspace_node_key(&layout, 1);
 
-    layout.move_to_workspace(Some(&1), 1, ActivateWindow::Yes);
+    layout.transfer(
+        TransferSubject::Window(Some(&1)),
+        TransferTarget::WorkspaceIndex(1),
+        ActivateWindow::Yes,
+    );
 
     assert_eq!(workspace_node_key(&layout, 1), key);
     let after = window_node_sizing(&layout, 1).0;
@@ -122,7 +130,11 @@ fn moving_a_container_between_workspaces_keeps_all_node_identities() {
         (first, second, container)
     };
 
-    layout.move_column_to_workspace_down(true);
+    layout.transfer(
+        TransferSubject::RootContainer,
+        TransferTarget::WorkspaceDown,
+        ActivateWindow::following(true),
+    );
 
     let workspace = layout
         .workspaces()
@@ -166,7 +178,7 @@ fn moving_a_container_to_an_empty_workspace_unwraps_it_like_sway() {
     let workspace = layout.active_workspace().expect("active workspace");
     assert_eq!(
         workspace.debug_workspace_layout(&layout.containers),
-        ContainerLayout::SplitV,
+        LayoutMode::SplitV,
         "the empty workspace takes the arriving container's layout"
     );
     assert_snapshot!(
@@ -180,7 +192,7 @@ fn moving_a_container_to_an_empty_workspace_unwraps_it_like_sway() {
 }
 
 fn assert_moving_window_out_of_workspace_group_moves_one(
-    layout_mode: ContainerLayout,
+    layout_mode: LayoutMode,
     container_action: bool,
 ) {
     let mut layout = check_ops([
@@ -192,12 +204,20 @@ fn assert_moving_window_out_of_workspace_group_moves_one(
             params: TestWindowParams::new(2),
         },
     ]);
-    layout.set_layout_mode(layout_mode);
+    layout.layout_command(LayoutCommand::Set(layout_mode));
 
     if container_action {
-        layout.move_container_to_workspace_down(false);
+        layout.transfer(
+            TransferSubject::Container,
+            TransferTarget::WorkspaceDown,
+            ActivateWindow::following(false),
+        );
     } else {
-        layout.move_to_workspace_down(false);
+        layout.transfer(
+            TransferSubject::Window(None),
+            TransferTarget::WorkspaceDown,
+            ActivateWindow::following(false),
+        );
     }
     layout.verify_invariants();
 
@@ -237,22 +257,22 @@ fn assert_moving_window_out_of_workspace_group_moves_one(
 
 #[test]
 fn moving_window_out_of_tabbed_workspace_moves_one_and_refreshes_tab_bar() {
-    assert_moving_window_out_of_workspace_group_moves_one(ContainerLayout::Tabbed, false);
+    assert_moving_window_out_of_workspace_group_moves_one(LayoutMode::Tabbed, false);
 }
 
 #[test]
 fn moving_window_out_of_stacked_workspace_moves_one_and_refreshes_tab_bar() {
-    assert_moving_window_out_of_workspace_group_moves_one(ContainerLayout::Stacked, false);
+    assert_moving_window_out_of_workspace_group_moves_one(LayoutMode::Stacked, false);
 }
 
 #[test]
 fn moving_focused_container_out_of_tabbed_workspace_moves_one_and_refreshes_tab_bar() {
-    assert_moving_window_out_of_workspace_group_moves_one(ContainerLayout::Tabbed, true);
+    assert_moving_window_out_of_workspace_group_moves_one(LayoutMode::Tabbed, true);
 }
 
 #[test]
 fn moving_focused_container_out_of_stacked_workspace_moves_one_and_refreshes_tab_bar() {
-    assert_moving_window_out_of_workspace_group_moves_one(ContainerLayout::Stacked, true);
+    assert_moving_window_out_of_workspace_group_moves_one(LayoutMode::Stacked, true);
 }
 
 #[test]
@@ -269,7 +289,11 @@ fn moving_selected_tabbed_parent_to_workspace_moves_the_group() {
         Op::FocusParent,
     ]);
 
-    layout.move_container_to_workspace_down(false);
+    layout.transfer(
+        TransferSubject::Container,
+        TransferTarget::WorkspaceDown,
+        ActivateWindow::following(false),
+    );
     layout.verify_invariants();
 
     let first_workspace = layout
@@ -310,14 +334,21 @@ fn moving_a_window_between_outputs_keeps_its_node_identity() {
         .cloned()
         .expect("second output");
 
-    layout.move_to_output(Some(&1), &output, None, ActivateWindow::Yes);
+    layout.transfer(
+        TransferSubject::Window(Some(&1)),
+        TransferTarget::Output {
+            output: &output,
+            workspace: None,
+        },
+        ActivateWindow::Yes,
+    );
 
     assert_eq!(workspace_node_key(&layout, 1), key);
     assert_eq!(
         layout
             .workspaces()
             .find(|(_, _, workspace)| workspace.has_window(&layout.containers, &1))
-            .and_then(|(_, _, workspace)| workspace.current_output())
+            .and_then(|(_, _, workspace)| workspace.current_output(&layout.containers))
             .map(Output::name),
         Some("output2".to_owned()),
     );
@@ -382,11 +413,7 @@ fn sticky_and_scratchpad_roundtrips_keep_node_identity() {
 
     layout.toggle_window_sticky(Some(&1));
     let sticky_key = layout.containers.window_key(&1).expect("sticky node");
-    let sticky_workspace = layout.monitors().next().expect("monitor").sticky_workspace;
-    assert_eq!(
-        layout.containers.workspace_of(sticky_key),
-        Some(sticky_workspace)
-    );
+    assert!(layout.containers.is_sticky(sticky_key));
     assert_eq!(sticky_key, key);
 
     layout.toggle_window_sticky(Some(&1));
@@ -414,7 +441,8 @@ fn discarded_workspace_handles_remove_their_roots_from_the_shared_tree() {
         },
     ]);
 
-    assert_eq!(layout.containers.workspace_count(), 4);
+    // The scratchpad, the workspace with the window and the empty one after it.
+    assert_eq!(layout.containers.workspace_count(), 3);
 
     check_ops_on_layout(&mut layout, [Op::RemoveOutput(1)]);
     assert_eq!(layout.containers.workspace_count(), 2);
@@ -433,9 +461,9 @@ fn empty_workspace_layout_commands_do_not_wrap_next_open() {
         Op::CloseWindow(1),
     ]);
 
-    layout.set_layout_mode(ContainerLayout::Tabbed);
-    layout.focus_child();
-    layout.set_layout_mode(ContainerLayout::SplitH);
+    layout.layout_command(LayoutCommand::Set(LayoutMode::Tabbed));
+    layout.focus_command(FocusCommand::Child);
+    layout.layout_command(LayoutCommand::Set(LayoutMode::SplitH));
     layout.toggle_fullscreen(&99999);
 
     layout.add_window(
@@ -477,8 +505,8 @@ fn empty_workspace_uses_workspace_command_context_like_sway() {
         );
     }
 
-    layout.split_horizontal();
-    layout.set_layout_mode(ContainerLayout::Tabbed);
+    layout.layout_command(LayoutCommand::Split(LayoutMode::SplitH));
+    layout.layout_command(LayoutCommand::Set(LayoutMode::Tabbed));
 
     layout.add_window(
         TestWindow::new(TestWindowParams::new(1)),
@@ -511,8 +539,8 @@ fn top_level_leaf_layout_noops_when_matching_workspace_layout_like_sway() {
     check_ops_on_layout(&mut layout, [Op::AddOutput(1)]);
 
     // Empty-workspace split commands set workspace layout state in sway.
-    layout.split_horizontal();
-    layout.split_vertical();
+    layout.layout_command(LayoutCommand::Split(LayoutMode::SplitH));
+    layout.layout_command(LayoutCommand::Split(LayoutMode::SplitV));
 
     layout.add_window(
         TestWindow::new(TestWindowParams::new(1)),
@@ -536,7 +564,7 @@ fn top_level_leaf_layout_noops_when_matching_workspace_layout_like_sway() {
         "precondition: first tiling window should remain a leaf root:\n{before}",
     );
 
-    layout.set_layout_mode(ContainerLayout::SplitV);
+    layout.layout_command(LayoutCommand::Set(LayoutMode::SplitV));
 
     let after = layout
         .active_workspace()
@@ -554,7 +582,7 @@ fn top_level_leaf_toggle_split_uses_workspace_layout_state_like_sway() {
     check_ops_on_layout(&mut layout, [Op::AddOutput(1)]);
 
     // Seed workspace split layout while empty.
-    layout.set_layout_mode(ContainerLayout::SplitH);
+    layout.layout_command(LayoutCommand::Set(LayoutMode::SplitH));
 
     layout.add_window(
         TestWindow::new(TestWindowParams::new(1)),
@@ -578,7 +606,7 @@ fn top_level_leaf_toggle_split_uses_workspace_layout_state_like_sway() {
         "precondition: single top-level window should be a leaf root:\n{before}",
     );
 
-    layout.toggle_split_layout();
+    layout.layout_command(LayoutCommand::ToggleSplit);
 
     let workspace = layout.active_workspace().expect("active workspace");
     let after = workspace
@@ -598,9 +626,9 @@ fn workspace_toggle_split_uses_prev_split_layout_like_sway() {
     let mut layout = Layout::default();
     check_ops_on_layout(&mut layout, [Op::AddOutput(1)]);
 
-    layout.set_layout_mode(ContainerLayout::SplitV);
-    layout.set_layout_mode(ContainerLayout::Tabbed);
-    layout.toggle_split_layout();
+    layout.layout_command(LayoutCommand::Set(LayoutMode::SplitV));
+    layout.layout_command(LayoutCommand::Set(LayoutMode::Tabbed));
+    layout.layout_command(LayoutCommand::ToggleSplit);
 
     layout.add_window(
         TestWindow::new(TestWindowParams::new(1)),
@@ -768,7 +796,7 @@ fn a_one_entry_layout_cycle_selects_that_entry_like_sway() {
     // `get_layout_toggle_list` runs over any non-empty list. With a single entry it selects
     // it whenever the current layout is not already it, and is a no-op once it is. Only the
     // bare and `split` spellings are separate toggles.
-    let cycle = vec![LayoutCycleEntry::Layout(ContainerLayout::Tabbed)];
+    let cycle = vec![LayoutCycleEntry::Layout(LayoutMode::Tabbed)];
     // The command lands on whatever holds the windows: the workspace node while they are its
     // direct children, and the wrapper `layout tabbed` builds for them afterwards.
     let owning_layout = |layout: &Layout<TestWindow>| {
@@ -792,7 +820,7 @@ fn a_one_entry_layout_cycle_selects_that_entry_like_sway() {
             params: TestWindowParams::new(2),
         },
     ]);
-    assert_eq!(owning_layout(&layout), ContainerLayout::SplitH);
+    assert_eq!(owning_layout(&layout), LayoutMode::SplitH);
 
     check_ops_on_layout(
         &mut layout,
@@ -800,12 +828,12 @@ fn a_one_entry_layout_cycle_selects_that_entry_like_sway() {
             cycle: cycle.clone(),
         }],
     );
-    assert_eq!(owning_layout(&layout), ContainerLayout::Tabbed);
+    assert_eq!(owning_layout(&layout), LayoutMode::Tabbed);
 
     check_ops_on_layout(&mut layout, [Op::ToggleLayoutCycle { cycle }]);
     assert_eq!(
         owning_layout(&layout),
-        ContainerLayout::Tabbed,
+        LayoutMode::Tabbed,
         "the only entry is already current, so the cycle has nowhere to go",
     );
 }
@@ -1070,9 +1098,9 @@ fn named_workspaces_dont_update_original_output_on_adding_window() {
     let layout = check_ops(ops);
     let (mon, _, ws) = layout
         .workspaces()
-        .find(|(_, _, ws)| ws.name().is_some())
+        .find(|(_, _, ws)| ws.name(&layout.containers).is_some())
         .unwrap();
-    assert!(ws.name().is_some()); // Sanity check.
+    assert!(ws.name(&layout.containers).is_some()); // Sanity check.
     let mon = mon.unwrap();
     assert_eq!(mon.output_name(), "output1");
 }
@@ -1094,9 +1122,9 @@ fn workspaces_update_original_output_on_moving_to_same_output() {
     let layout = check_ops(ops);
     let (mon, _, ws) = layout
         .workspaces()
-        .find(|(_, _, ws)| ws.name().is_some())
+        .find(|(_, _, ws)| ws.name(&layout.containers).is_some())
         .unwrap();
-    assert!(ws.name().is_some()); // Sanity check.
+    assert!(ws.name(&layout.containers).is_some()); // Sanity check.
     let mon = mon.unwrap();
     assert_eq!(mon.output_name(), "output2");
 }
@@ -1121,9 +1149,9 @@ fn workspaces_update_original_output_on_moving_to_same_monitor() {
     let layout = check_ops(ops);
     let (mon, _, ws) = layout
         .workspaces()
-        .find(|(_, _, ws)| ws.name().is_some())
+        .find(|(_, _, ws)| ws.name(&layout.containers).is_some())
         .unwrap();
-    assert!(ws.name().is_some()); // Sanity check.
+    assert!(ws.name(&layout.containers).is_some()); // Sanity check.
     let mon = mon.unwrap();
     assert_eq!(mon.output_name(), "output2");
 }
@@ -1913,7 +1941,7 @@ fn numeric_workspace_one_is_reused_after_switching_to_two() {
     let names: Vec<_> = mon
         .workspaces
         .iter()
-        .filter_map(|ws| ws.name().map(String::as_str))
+        .filter_map(|ws| ws.name(&layout.containers).map(String::as_str))
         .collect();
     assert_eq!(names, vec!["1", "2"]);
 }
@@ -1936,9 +1964,9 @@ fn initial_numeric_workspace_one_keeps_empty_above_first_invariant() {
     let mon = layout.monitor_for_output(&output).unwrap();
     assert_eq!(mon.workspace_count(), 3);
     assert_eq!(mon.active_workspace_idx(), 1);
-    assert_eq!(mon.workspaces[0].name(), None);
-    assert_eq!(mon.workspaces[1].name().map(String::as_str), Some("1"));
-    assert_eq!(mon.workspaces[2].name(), None);
+    assert_eq!(mon.workspaces[0].name(&layout.containers), None);
+    assert_eq!(mon.workspaces[1].name(&layout.containers).map(String::as_str), Some("1"));
+    assert_eq!(mon.workspaces[2].name(&layout.containers), None);
 }
 fn add_window_to_numeric_workspace(
     layout: &mut Layout<TestWindow>,
@@ -1972,7 +2000,7 @@ fn ensure_workspace_by_name_creates_named_workspace() {
 
     let (found_idx, ws) = layout.find_workspace_by_name("3").unwrap();
     assert_eq!(found_idx, 1);
-    assert_eq!(ws.name().map(String::as_str), Some("3"));
+    assert_eq!(ws.name(&layout.containers).map(String::as_str), Some("3"));
     assert!(layout.find_workspace_by_number(3).is_none());
 }
 #[test]
@@ -2047,7 +2075,7 @@ fn numeric_workspaces_are_inserted_in_number_order() {
     let names: Vec<_> = monitors[0]
         .workspaces
         .iter()
-        .filter_map(|ws| ws.name().cloned())
+        .filter_map(|ws| ws.name(&layout.containers).cloned())
         .collect();
     assert_eq!(
         names,
@@ -2080,7 +2108,7 @@ fn named_workspaces_are_inserted_after_numeric_workspaces() {
     let names: Vec<_> = monitors[0]
         .workspaces
         .iter()
-        .filter_map(|ws| ws.name().cloned())
+        .filter_map(|ws| ws.name(&layout.containers).cloned())
         .collect();
     assert_eq!(
         names,
@@ -2123,7 +2151,7 @@ fn empty_inactive_numeric_workspace_is_destroyed_without_renumbering() {
     let names: Vec<_> = mon
         .workspaces
         .iter()
-        .filter_map(|ws| ws.name().map(String::as_str))
+        .filter_map(|ws| ws.name(&layout.containers).map(String::as_str))
         .collect();
     assert_eq!(names, vec!["1"]);
 }
@@ -2191,10 +2219,10 @@ fn transient_numeric_workspace_is_cleaned_when_empty_and_unfocused() {
         };
         let mon = &mut monitors[0];
         let idx = mon
-            .find_named_workspace_index("93")
+            .find_named_workspace_index(&layout.containers, "93")
             .expect("workspace 93 must exist");
-        mon.activate_workspace(idx);
-        mon.activate_workspace(0);
+        mon.activate_workspace(&mut layout.containers, idx);
+        mon.activate_workspace(&mut layout.containers, 0);
         // Simulate workspace switch animation completion for cleanup.
         mon.workspace_switch = None;
         mon.clean_up_workspaces(&mut layout.containers);
@@ -2223,7 +2251,7 @@ fn move_workspace_to_output_by_workspace_id_moves_correct_workspace() {
         .find_workspace_by_number(10)
         .expect("workspace 10 must still exist");
     assert_eq!(
-        ws.current_output().map(|out| out.name()),
+        ws.current_output(&layout.containers).map(|out| out.name()),
         Some(output_b.name())
     );
 }
@@ -2250,7 +2278,7 @@ fn numeric_workspace_lookup_reuses_workspace_on_other_output() {
     let count = layout
         .monitors()
         .flat_map(|mon| mon.workspaces.iter())
-        .filter(|ws| ws.name().is_some_and(|name| name == "2"))
+        .filter(|ws| ws.name(&layout.containers).is_some_and(|name| name == "2"))
         .count();
 
     assert_eq!(
@@ -2296,7 +2324,7 @@ fn numeric_workspaces_keep_order_when_moved_between_outputs() {
         .unwrap()
         .workspaces
         .iter()
-        .filter_map(|ws| ws.name().cloned())
+        .filter_map(|ws| ws.name(&layout.containers).cloned())
         .collect();
 
     assert_eq!(names, vec!["2".to_owned(), "5".to_owned()]);
@@ -2320,7 +2348,7 @@ fn numeric_workspaces_keep_order_when_outputs_are_merged() {
         .unwrap()
         .workspaces
         .iter()
-        .filter_map(|ws| ws.name().cloned())
+        .filter_map(|ws| ws.name(&layout.containers).cloned())
         .collect();
 
     assert_eq!(names, vec!["1".to_owned(), "2".to_owned(), "5".to_owned()],);
@@ -2346,7 +2374,7 @@ fn move_workspace_to_idx_by_workspace_id_does_not_reorder_numeric_workspaces() {
     let names: Vec<_> = monitors[0]
         .workspaces
         .iter()
-        .filter_map(|ws| ws.name().cloned())
+        .filter_map(|ws| ws.name(&layout.containers).cloned())
         .collect();
     assert_eq!(
         names,
@@ -2425,7 +2453,7 @@ fn move_column_to_workspace_unfocused_with_multiple_monitors() {
 
     let layout = check_ops(ops);
 
-    assert_eq!(layout.active_workspace().unwrap().name().unwrap(), "ws102");
+    assert_eq!(layout.active_workspace().unwrap().name(&layout.containers).unwrap(), "ws102");
 
     for (mon, win) in layout.windows() {
         let mon = mon.unwrap();
@@ -2436,7 +2464,7 @@ fn move_column_to_workspace_unfocused_with_multiple_monitors() {
             .unwrap();
 
         assert_eq!(
-            ws.name().unwrap(),
+            ws.name(&layout.containers).unwrap(),
             match win.id() {
                 1 | 4 => "ws101",
                 2 => "ws102",
@@ -2543,7 +2571,7 @@ fn killing_workspace_selection_does_not_leave_new_windows_stuck_in_workspace_con
         assert_eq!(layout.focus().map(|win| *win.id()), Some(6));
     }
 
-    layout.focus_left();
+    layout.focus_command(FocusCommand::Direction(Direction::Left));
     assert_eq!(layout.focus().map(|win| *win.id()), Some(5));
 
     let selected_ids = layout.close_window_ids_for_active_selection();

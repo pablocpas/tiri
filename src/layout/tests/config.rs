@@ -190,7 +190,7 @@ fn preset_column_width_fixed_correct_with_border() {
     assert!(bordered_width <= base_width);
 
     // Preset widths are ignored in i3-style tiling, so toggling doesn't change size.
-    layout.toggle_width(true);
+    layout.size_command(None, SizeCommand::CycleRootPreset { forwards: true });
     let win = layout.windows().next().unwrap().1;
     assert_eq!(win.requested_size().unwrap().w, bordered_width);
 }

@@ -5,10 +5,9 @@
 //! `workspace_squash` over the workspace. Nothing else — sway normalizes per command rather
 //! than by a general walk, and which normalization runs where is most of the behaviour.
 //!
-//! Every rule that used to live here was an approximation of one of those: climb to the
-//! outermost parallel ancestor, give up when a window is alone all the way up, wrap the
-//! workspace's children by hand at the top level. Each disagreed with sway somewhere, and
-//! the disagreements did not share a cause, which is what made them look like eight bugs.
+//! Approximations of those — climbing to the outermost parallel ancestor, giving up when a
+//! window is alone all the way up, wrapping the workspace's children by hand — each disagree
+//! with sway somewhere, and for different reasons; keep to the port.
 
 use super::{ContainerTree, Direction, LayoutElement, NodeData, NodeKey};
 

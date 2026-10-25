@@ -85,10 +85,11 @@ See the [window effects](./Window-Effects.md) wiki page.
 
 ### Can I make a window sticky / pinned / always on top / appear on all workspaces?
 
-Not yet, follow/upvote [this issue](https://github.com/niri-wm/niri/issues/932).
+Yes, with `toggle-window-sticky`, which works like sway's `sticky toggle`.
+A sticky floating window follows its output: when the output switches workspace, the window moves to the new one.
+The flag can be set on a tiled window too, and takes effect once the window floats.
 
-You can emulate this with a script that uses the tiri IPC.
-For example, [nirius](https://git.sr.ht/~tsdh/nirius) seems to have this feature (`toggle-follow-mode`).
+Like in sway, a sticky window cannot be moved to another workspace on the same output, only to another output.
 
 ### How do I make the Bitwarden window in Firefox open as floating?
 

@@ -6,6 +6,7 @@ use tiri_ipc::LayoutTreeNode;
 use wayland_client::protocol::wl_surface::WlSurface;
 
 use super::*;
+use crate::layout::{FocusCommand, LayoutCommand, LayoutMode, WorkspaceTarget};
 
 fn set_up() -> (Fixture, ClientId) {
     let mut f = Fixture::new();
@@ -100,7 +101,7 @@ fn closing_a_whole_container_reflows_the_survivors() {
     // A window on the workspace ahead of the one under test.
     let mut elsewhere = Vec::new();
     add_window(&mut f, id, &mut elsewhere);
-    f.niri().layout.switch_workspace_down();
+    f.niri().layout.switch_workspace(WorkspaceTarget::Down);
     f.double_roundtrip(id);
 
     let mut surfaces = Vec::new();
@@ -108,7 +109,9 @@ fn closing_a_whole_container_reflows_the_survivors() {
     add_window(&mut f, id, &mut surfaces);
     let s3 = add_window(&mut f, id, &mut surfaces);
 
-    f.niri().layout.split_vertical();
+    f.niri()
+        .layout
+        .layout_command(LayoutCommand::Split(LayoutMode::SplitV));
     f.double_roundtrip(id);
     let s4 = add_window(&mut f, id, &mut surfaces);
     let s5 = add_window(&mut f, id, &mut surfaces);
@@ -121,7 +124,7 @@ fn closing_a_whole_container_reflows_the_survivors() {
     );
 
     // `focus parent` selects the split, and closing it closes all three of its windows.
-    f.niri().layout.focus_parent();
+    f.niri().layout.focus_command(FocusCommand::Parent);
     f.double_roundtrip(id);
     let closing = f.niri().layout.close_window_ids_for_active_selection();
     assert_eq!(

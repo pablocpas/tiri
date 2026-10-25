@@ -4,7 +4,7 @@
 //! that ownership boundary visible without storing runtime data inside the tree it operates on.
 
 use crate::layout::closing_window::ClosingWindow;
-use crate::layout::container::{InteractiveResizeState, LayoutLayer, NodeKey, SwapEffects};
+use crate::layout::container::{InteractiveResizeState, NodeKey, SwapEffects};
 use crate::layout::container_tree::ContainerTree;
 use crate::layout::floating::FloatingRuntime;
 use crate::layout::LayoutElement;
@@ -13,8 +13,14 @@ use crate::layout::LayoutElement;
 pub(super) struct WorkspaceRuntime<W: LayoutElement> {
     pub(super) tiled: TiledRuntime<W>,
     pub(super) floating: FloatingRuntime<W>,
-    /// Which branch owns focus, including the focus-without-raise render exception.
-    pub(super) layer: WorkspaceLayerState,
+    /// The seat generation at which focus moved to the tiled side without lowering the
+    /// floating one.
+    ///
+    /// Which side has focus is the seat's to say (see [`ContainerTree::focused_layer`]). This
+    /// is the one thing it cannot: focus-follows-mouse onto a tiled window leaves the floats
+    /// drawn above a tiled fullscreen until focus next changes, and the generation is how
+    /// "next" is noticed without every focus change having to clear it.
+    pub(super) floating_raised_at: Option<u64>,
     /// Whether this workspace owns compositor focus in the current render state.
     pub(super) is_active: bool,
 }
@@ -35,43 +41,14 @@ impl<W: LayoutElement> WorkspaceRuntime<W> {
                 closing_windows: Vec::new(),
             },
             floating: FloatingRuntime::new(workspace),
-            layer: WorkspaceLayerState::Tiled,
+            floating_raised_at: None,
             is_active: false,
         }
-    }
-
-    pub(super) fn layer_has_focus(&self, layer: LayoutLayer) -> bool {
-        self.is_active && self.layer.layer() == layer
     }
 
     pub(super) fn apply_swap_effects(&mut self, tree: &ContainerTree<W>, effects: SwapEffects) {
         if effects.floating_ownership_changed && effects.affects(self.floating.workspace()) {
             self.floating.cancel_resize_if_target_left(tree);
-        }
-    }
-}
-
-/// Focus/render-layer state for the two branches of a workspace tree.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum WorkspaceLayerState {
-    /// The tiled branch owns focus.
-    Tiled,
-    /// The tiled branch owns focus while floating remains raised for focus-follows-mouse.
-    TiledWithFloatingRaised,
-    /// The floating branch owns focus.
-    Floating,
-}
-
-impl WorkspaceLayerState {
-    pub(super) fn floating_has_focus(self) -> bool {
-        self == Self::Floating
-    }
-
-    fn layer(self) -> LayoutLayer {
-        if self.floating_has_focus() {
-            LayoutLayer::Floating
-        } else {
-            LayoutLayer::Tiled
         }
     }
 }

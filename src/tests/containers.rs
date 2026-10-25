@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use crate::layout::ContainerLayout;
+use crate::layout::{Direction, FocusCommand, LayoutCommand, LayoutMode};
 use client::ClientId;
 use tiri_ipc::{LayoutTreeLayout, LayoutTreeNode};
 use wayland_client::protocol::wl_surface::WlSurface;
@@ -171,7 +171,9 @@ fn split_vertical_creates_nested_splitv_subtree() {
     add_window(&mut f, id, (110, 110));
     add_window(&mut f, id, (220, 220));
 
-    f.niri().layout.split_vertical();
+    f.niri()
+        .layout
+        .layout_command(LayoutCommand::Split(LayoutMode::SplitV));
     f.double_roundtrip(id);
     add_window(&mut f, id, (330, 330));
 
@@ -198,7 +200,9 @@ fn split_horizontal_creates_three_root_leaf_children() {
     add_window(&mut f, id, (110, 110));
     add_window(&mut f, id, (220, 220));
 
-    f.niri().layout.split_horizontal();
+    f.niri()
+        .layout
+        .layout_command(LayoutCommand::Split(LayoutMode::SplitH));
     f.double_roundtrip(id);
     add_window(&mut f, id, (330, 330));
 
@@ -222,7 +226,9 @@ fn change_layout_to_tabbed_keeps_all_windows_and_moves_focus() {
     add_window(&mut f, id, (200, 200));
     add_window(&mut f, id, (300, 300));
 
-    f.niri().layout.set_layout_mode(ContainerLayout::Tabbed);
+    f.niri()
+        .layout
+        .layout_command(LayoutCommand::Set(LayoutMode::Tabbed));
     f.double_roundtrip(id);
 
     // Measured against sway 1.11: a layout command issued from a window builds a container
@@ -243,7 +249,9 @@ fn change_layout_to_stacked_keeps_all_windows_and_moves_focus() {
     add_window(&mut f, id, (200, 200));
     add_window(&mut f, id, (300, 300));
 
-    f.niri().layout.set_layout_mode(ContainerLayout::Stacked);
+    f.niri()
+        .layout
+        .layout_command(LayoutCommand::Set(LayoutMode::Stacked));
     f.double_roundtrip(id);
 
     // Measured against sway 1.11: see the tabbed test above — same rule.
@@ -268,7 +276,7 @@ fn toggle_split_layout_twice_restores_root_layout() {
 
     // Measured against sway 1.11: the toggle builds a container under the workspace and
     // then flips that container, so the workspace itself stays splith throughout.
-    f.niri().layout.toggle_split_layout();
+    f.niri().layout.layout_command(LayoutCommand::ToggleSplit);
     f.double_roundtrip(id);
     let toggled_root = layout_root(&mut f);
     assert_eq!(toggled_root.layout, Some(LayoutTreeLayout::SplitH));
@@ -279,7 +287,7 @@ fn toggle_split_layout_twice_restores_root_layout() {
     );
     assert_eq!(leaf_count(&toggled_root), 2);
 
-    f.niri().layout.toggle_split_layout();
+    f.niri().layout.layout_command(LayoutCommand::ToggleSplit);
     f.double_roundtrip(id);
     let restored_root = layout_root(&mut f);
     assert_eq!(restored_root.layout, Some(LayoutTreeLayout::SplitH));
@@ -298,14 +306,16 @@ fn focus_parent_then_child_in_split_preserves_focused_window() {
     add_window(&mut f, id, (100, 100));
     add_window(&mut f, id, (200, 200));
 
-    f.niri().layout.split_vertical();
+    f.niri()
+        .layout
+        .layout_command(LayoutCommand::Split(LayoutMode::SplitV));
     f.double_roundtrip(id);
     add_window(&mut f, id, (300, 300));
 
     let before = active_window_id(&mut f);
-    f.niri().layout.focus_parent();
+    f.niri().layout.focus_command(FocusCommand::Parent);
     f.double_roundtrip(id);
-    f.niri().layout.focus_child();
+    f.niri().layout.focus_command(FocusCommand::Child);
     f.double_roundtrip(id);
     let after = active_window_id(&mut f);
 
@@ -318,13 +328,15 @@ fn focus_parent_marks_nested_container_focused_in_layout_tree() {
     add_window(&mut f, id, (100, 100));
     add_window(&mut f, id, (200, 200));
 
-    f.niri().layout.split_vertical();
+    f.niri()
+        .layout
+        .layout_command(LayoutCommand::Split(LayoutMode::SplitV));
     f.double_roundtrip(id);
     add_window(&mut f, id, (300, 300));
 
     let focused_window_before = active_window_id(&mut f);
 
-    f.niri().layout.focus_parent();
+    f.niri().layout.focus_command(FocusCommand::Parent);
     f.double_roundtrip(id);
 
     let root = layout_root(&mut f);
@@ -347,20 +359,26 @@ fn focus_parent_twice_bubbles_from_nested_split_to_parent_split_in_layout_tree()
     add_window(&mut f, id, (100, 100));
     add_window(&mut f, id, (200, 200));
 
-    f.niri().layout.split_vertical();
+    f.niri()
+        .layout
+        .layout_command(LayoutCommand::Split(LayoutMode::SplitV));
     f.double_roundtrip(id);
     add_window(&mut f, id, (300, 300));
     add_window(&mut f, id, (400, 400));
 
-    f.niri().layout.focus_left();
+    f.niri()
+        .layout
+        .focus_command(FocusCommand::Direction(Direction::Left));
     f.double_roundtrip(id);
     add_window(&mut f, id, (500, 500));
 
-    f.niri().layout.focus_right();
+    f.niri()
+        .layout
+        .focus_command(FocusCommand::Direction(Direction::Right));
     f.double_roundtrip(id);
     let focused_window_before = active_window_id(&mut f);
 
-    f.niri().layout.focus_parent();
+    f.niri().layout.focus_command(FocusCommand::Parent);
     f.double_roundtrip(id);
 
     let after_first_parent = layout_root(&mut f);
@@ -375,7 +393,7 @@ fn focus_parent_twice_bubbles_from_nested_split_to_parent_split_in_layout_tree()
         "first focus_parent should expose the nested SplitV as the focused node in the layout tree",
     );
 
-    f.niri().layout.focus_parent();
+    f.niri().layout.focus_command(FocusCommand::Parent);
     f.double_roundtrip(id);
 
     let after_second_parent = layout_root(&mut f);
@@ -398,15 +416,25 @@ fn mixed_container_ops_keep_tree_leaf_ids_unique() {
     add_window(&mut f, id, (200, 200));
     add_window(&mut f, id, (280, 280));
 
-    f.niri().layout.split_vertical();
+    f.niri()
+        .layout
+        .layout_command(LayoutCommand::Split(LayoutMode::SplitV));
     f.double_roundtrip(id);
-    f.niri().layout.set_layout_mode(ContainerLayout::Tabbed);
+    f.niri()
+        .layout
+        .layout_command(LayoutCommand::Set(LayoutMode::Tabbed));
     f.double_roundtrip(id);
-    f.niri().layout.focus_window_down_or_top();
+    f.niri()
+        .layout
+        .focus_command(FocusCommand::DirectionOrEdge(Direction::Down));
     f.double_roundtrip(id);
-    f.niri().layout.set_layout_mode(ContainerLayout::SplitV);
+    f.niri()
+        .layout
+        .layout_command(LayoutCommand::Set(LayoutMode::SplitV));
     f.double_roundtrip(id);
-    f.niri().layout.split_horizontal();
+    f.niri()
+        .layout
+        .layout_command(LayoutCommand::Split(LayoutMode::SplitH));
     f.double_roundtrip(id);
     add_window(&mut f, id, (360, 360));
 

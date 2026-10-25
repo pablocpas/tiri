@@ -2,12 +2,12 @@
 
 use smithay::utils::{Logical, Rectangle};
 
-use super::{ContainerTree, Layout, LayoutElement, NodeKey, PreviewLeafGeometry};
+use super::{ContainerTree, LayoutElement, LayoutMode, NodeKey, PreviewLeafGeometry};
 
 /// The container a preview is being taken inside: everything `child_rects_for_layout` needs
 /// to lay its children out, which is what the preview is asking about.
 pub(super) struct PreviewContainer<'a> {
-    pub(super) layout: Layout,
+    pub(super) layout: LayoutMode,
     pub(super) rect: Rectangle<f64, Logical>,
     pub(super) child_count: usize,
     pub(super) percents: &'a [f64],
@@ -187,7 +187,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         let (child_rects, _) =
             self.child_rects_for_layout(workspace, layout, rect, child_count, percents, gap);
         match layout {
-            Layout::SplitH | Layout::SplitV => {
+            LayoutMode::SplitH | LayoutMode::SplitV => {
                 let Some(child_rect) = child_rects.get(child_idx).copied() else {
                     return (rect, 0.0);
                 };
@@ -199,7 +199,7 @@ impl<W: LayoutElement> ContainerTree<W> {
                 };
                 (child_rect, tab_bar_offset)
             }
-            Layout::Tabbed | Layout::Stacked => {
+            LayoutMode::Tabbed | LayoutMode::Stacked => {
                 let content_rect = child_rects.first().copied().unwrap_or(rect);
                 (content_rect, 0.0)
             }

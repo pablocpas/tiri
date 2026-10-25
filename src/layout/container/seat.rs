@@ -1,11 +1,9 @@
 //! Everything the seat knows about focus, and the only place it can be changed.
 //!
-//! The fields are private to this module on purpose. Focus used to be three loose values on
-//! the tree, assigned from some thirty places, and only one of those places also updated the
-//! order — so the order was right for the commands whose authors remembered it and quietly
-//! wrong for the rest. The divergences that came of it all looked different: a window focused
-//! but not shown, a tab that would not change, a `focus next` landing one window off. They
-//! were one omission, made repeatedly, in code that had no way to notice.
+//! The fields are private to this module on purpose: focusing something and updating the
+//! order must not be separable. When they can be, the order ends up right for some commands
+//! and quietly wrong for the rest, and the symptoms all look different — a window focused but
+//! not shown, a tab that will not change, a `focus next` landing one window off.
 //!
 //! sway does not have this problem because it has no place to make the mistake:
 //! `seat_set_focus` is a function, the stack is behind it, and there is nothing else to
@@ -31,6 +29,11 @@ pub(super) struct SeatFocus {
     leaf: Option<NodeKey>,
     /// The container `focus parent` selected, when one is selected.
     selected: Option<NodeKey>,
+    /// Counts every time something is focused or selected.
+    ///
+    /// For state that holds "until focus next changes" without every focus change having to
+    /// remember to clear it.
+    generation: u64,
 }
 
 impl SeatFocus {
@@ -44,6 +47,10 @@ impl SeatFocus {
 
     pub(super) fn order(&self) -> &[NodeKey] {
         &self.order
+    }
+
+    pub(super) fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// The node sway's seat is focused on: a selected container, or the keyboard-focus leaf.
@@ -91,6 +98,7 @@ impl SeatFocus {
         self.raise(chain);
         self.leaf = leaf;
         self.selected = None;
+        self.generation += 1;
     }
 
     /// The same, for a container `focus parent` left selected.
@@ -98,6 +106,7 @@ impl SeatFocus {
         self.raise(chain);
         self.leaf = leaf;
         self.selected = Some(container);
+        self.generation += 1;
     }
 
     /// Keyboard focus moves; the order does not.

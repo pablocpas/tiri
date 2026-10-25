@@ -7,11 +7,9 @@
 //! its place in the seat's focus order, its marks, its identity all survive because they were
 //! never attached to which list it was in.
 //!
-//! Tiri used to keep the two sides in separate trees, each with its own slotmap. Crossing
-//! meant taking a subtree apart and building it again from the other side's tree, with new
-//! keys — so anything keyed by node identity was lost in transit, most visibly the focus
-//! order. This module made the two branches one workspace tree; stable node identities make
-//! the same guarantee continue through workspace and output moves.
+//! Both sides are one tree here for the same reason: a crossing is a reparent, so anything
+//! keyed by node identity, the focus order above all, survives it. Stable node identities
+//! extend the same guarantee to workspace and output moves.
 //!
 //! sway/commands/move.c:198-239
 
@@ -19,7 +17,7 @@ use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
 
 use super::{
     ContainerData, ContainerTree, FloatingGeometry, FloatingRoot, FloatingRootKind,
-    InactiveTilingReference, IncomingView, Layout, LayoutElement, NodeData, NodeKey, Tile,
+    InactiveTilingReference, IncomingView, LayoutElement, LayoutMode, NodeData, NodeKey, Tile,
 };
 use crate::layout::SizeFrac;
 
@@ -241,14 +239,6 @@ impl<W: LayoutElement> ContainerTree<W> {
             .map(move |(idx, tile)| (tile, offsets[idx]))
     }
 
-    pub(in crate::layout) fn floating_tiles_with_render_positions(
-        &self,
-        workspace: NodeKey,
-    ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>)> + '_ {
-        self.floating_tiles_with_render_positions_keyed(workspace)
-            .map(|(_, tile, pos)| (tile, pos))
-    }
-
     pub(in crate::layout) fn floating_tiles_with_render_positions_keyed(
         &self,
         workspace: NodeKey,
@@ -285,10 +275,11 @@ impl<W: LayoutElement> ContainerTree<W> {
     ) -> impl Iterator<Item = (&Tile<W>, tiri_ipc::WindowLayout)> + '_ {
         let scale = Scale::from(self.scale(workspace));
         self.floating_tiles_with_offsets(workspace, false)
-            .map(move |(_, tile, offset)| {
+            .map(move |(key, tile, offset)| {
                 let pos = offset.to_physical_precise_round(scale).to_logical(scale);
                 let layout = tiri_ipc::WindowLayout {
                     tile_pos_in_workspace_view: Some(pos.into()),
+                    is_sticky: self.is_sticky_or_child(key),
                     ..tile.ipc_layout_template()
                 };
                 (tile, layout)
@@ -803,7 +794,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
         let container = self.get_real_container(group)?;
         if container.child_count() != 1
-            || !matches!(container.layout(), Layout::SplitH | Layout::SplitV)
+            || !matches!(container.layout(), LayoutMode::SplitH | LayoutMode::SplitV)
         {
             return None;
         }
@@ -813,8 +804,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Return a floating group to the tiled side, under `parent` at `index`.
     ///
     /// A group that is only the container built around one window goes back as the window:
-    /// materialising that container in the tiling would add a level sway does not have, and
-    /// the tiling side used to have to recognise and remove it on arrival.
+    /// materialising that container in the tiling would add a level sway does not have.
     ///
     /// Answers with the node that landed in the tiling.
     pub(in crate::layout) fn unfloat_group(
@@ -905,7 +895,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         // The two values are deliberately different when tabs/stacks or a vertical split
         // were selected: the wrapper carries that layout into floating while the workspace
         // goes back to its canonical horizontal orientation.
-        let wrapper = self.wrap_workspace_children(workspace, layout, Layout::SplitH)?;
+        let wrapper = self.wrap_workspace_children(workspace, layout, LayoutMode::SplitH)?;
         if let Some(container) = self.get_container_mut(wrapper) {
             container.prev_split_layout = prev_split_layout;
         }

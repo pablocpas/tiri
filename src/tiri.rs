@@ -1812,7 +1812,9 @@ impl State {
             }
         }
         for name in removed_workspaces {
-            self.niri.layout.unname_workspace(&name);
+            self.niri
+                .layout
+                .unset_workspace_name(Some(WorkspaceReference::Name(name)));
         }
 
         self.niri.layout.update_config(&config);

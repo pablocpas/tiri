@@ -11,6 +11,7 @@ use tiri_config::{Color, Config};
 use wayland_client::protocol::wl_surface::WlSurface;
 
 use super::*;
+use crate::layout::LayoutCommand;
 use crate::render_helpers::{render_to_vec, RenderCtx, RenderTarget};
 
 const BORDER_WIDTH: f64 = 6.;
@@ -286,7 +287,7 @@ fn three_tabbed_windows(f: &mut Fixture, id: ClientId, surfaces: &mut Vec<WlSurf
 
     f.niri()
         .layout
-        .set_layout_mode(crate::layout::ContainerLayout::Tabbed);
+        .layout_command(LayoutCommand::Set(crate::layout::LayoutMode::Tabbed));
     // The tabbed arrange resizes every window; two rounds because the first one only gets
     // the configures out.
     settle(f, id, surfaces);
@@ -409,7 +410,7 @@ fn the_selected_tab_runs_into_the_window_frame_without_a_seam() {
     // the selected one again.
     f.niri()
         .layout
-        .set_layout_mode(crate::layout::ContainerLayout::Stacked);
+        .layout_command(LayoutCommand::Set(crate::layout::LayoutMode::Stacked));
     settle(&mut f, id, &surfaces);
     settle(&mut f, id, &surfaces);
 

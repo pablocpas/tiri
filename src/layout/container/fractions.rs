@@ -1,7 +1,7 @@
 //! Size fractions and resize reference spans owned by the nodes they describe.
 
 use super::{
-    ChildFractions, ContainerTree, Layout, LayoutElement, NodeData, NodeKey, NodeSizing,
+    ChildFractions, ContainerTree, LayoutElement, LayoutMode, NodeData, NodeKey, NodeSizing,
     ResizeDelta, ResizeReach, ResizeSpace, MIN_CHILD_PERCENT,
 };
 
@@ -65,11 +65,11 @@ impl<W: LayoutElement> ContainerTree<W> {
         true
     }
 
-    fn node_fraction(&self, key: NodeKey, layout: Layout) -> Option<f64> {
+    fn node_fraction(&self, key: NodeKey, layout: LayoutMode) -> Option<f64> {
         Some(self.node_sizing(key)?.fraction(layout))
     }
 
-    fn set_node_fraction(&mut self, key: NodeKey, layout: Layout, fraction: f64) -> bool {
+    fn set_node_fraction(&mut self, key: NodeKey, layout: LayoutMode, fraction: f64) -> bool {
         let Some(sizing) = self.node_sizing_mut(key) else {
             return false;
         };
@@ -77,7 +77,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         true
     }
 
-    pub(super) fn node_child_total(&self, key: NodeKey, layout: Layout) -> Option<f64> {
+    pub(super) fn node_child_total(&self, key: NodeKey, layout: LayoutMode) -> Option<f64> {
         Some(self.node_sizing(key)?.child_total(layout))
     }
 
@@ -91,7 +91,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         &self,
         parent: NodeKey,
         child_idx: usize,
-        layout: Layout,
+        layout: LayoutMode,
     ) -> Option<f64> {
         let child = self.get_container(parent)?.child_key(child_idx)?;
         self.node_child_total(child, layout)
@@ -100,7 +100,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(super) fn set_node_child_total(
         &mut self,
         key: NodeKey,
-        layout: Layout,
+        layout: LayoutMode,
         total: f64,
     ) -> bool {
         let Some(sizing) = self.node_sizing_mut(key) else {
@@ -143,7 +143,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             return;
         };
         let layout = container.layout();
-        if !matches!(layout, Layout::SplitH | Layout::SplitV) {
+        if !matches!(layout, LayoutMode::SplitH | LayoutMode::SplitV) {
             return;
         }
         let children = container.children().to_vec();
@@ -185,7 +185,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         &mut self,
         parent: NodeKey,
         child_idx: usize,
-        layout: Layout,
+        layout: LayoutMode,
         percent: f64,
     ) -> bool {
         let Some(container) = self.get_container(parent) else {
@@ -246,7 +246,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         &mut self,
         parent: NodeKey,
         child_idx: usize,
-        layout: Layout,
+        layout: LayoutMode,
         reach: ResizeReach,
         delta: ResizeDelta,
         space: ResizeSpace,

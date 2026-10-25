@@ -1,6 +1,50 @@
 //! Focus and selection: state, queries and directional navigation.
 
-use super::{ContainerTree, Direction, LayoutElement, NodeData, NodeKey};
+use std::collections::HashMap;
+
+use super::{ContainerTree, Direction, LayoutElement, LayoutLayer, NodeData, NodeKey};
+
+/// A snapshot of [`ContainerTree::active_child`] for every parent; see
+/// [`ContainerTree::active_children`]. Only valid until the tree or the seat next changes.
+pub(in crate::layout) struct ActiveChildren(HashMap<NodeKey, NodeKey>);
+
+impl ActiveChildren {
+    /// [`ContainerTree::active_child`] of `parent`, including its first-child fallback.
+    pub(in crate::layout) fn of<W: LayoutElement>(
+        &self,
+        tree: &ContainerTree<W>,
+        parent: NodeKey,
+    ) -> Option<NodeKey> {
+        self.0.get(&parent).copied().or_else(|| {
+            tree.get_container(parent)?
+                .children()
+                .iter()
+                .copied()
+                .find(|key| !tree.is_workspace(parent) || tree.is_in_tiled_branch(*key))
+        })
+    }
+
+    /// Whether `key` is the child its parent would descend to — sway's
+    /// `seat_get_focus_inactive` answer, asked one level up.
+    ///
+    /// This is the whole of the `focused_inactive` decoration state. sway renders a level at
+    /// a time (`render_container_simple`) and compares each child against the focus-inactive
+    /// child of *that* level, so the question is local: a node is `focused_inactive` when its
+    /// own parent would come back to it, whatever is happening above the parent. The focus
+    /// head of a container nested inside a container nobody has focused still shows it,
+    /// because its parent still points at it.
+    ///
+    /// It is deliberately not "is anything in here focused": the globally focused leaf is
+    /// also its parent's active child, and callers pick `Focused` for it first.
+    pub(in crate::layout) fn is_focus_head<W: LayoutElement>(
+        &self,
+        tree: &ContainerTree<W>,
+        key: NodeKey,
+    ) -> bool {
+        tree.parent_of(key)
+            .is_some_and(|parent| self.of(tree, parent) == Some(key))
+    }
+}
 
 impl<W: LayoutElement> ContainerTree<W> {
     /// The leaf that is effectively focused.
@@ -435,10 +479,10 @@ impl<W: LayoutElement> ContainerTree<W> {
 
     /// sway's `seat_get_focus_inactive_view`: the most recently focused window under `key`.
     ///
-    /// One question of the seat's order, where tiri used to ask each container in turn for
-    /// its active child and follow the chain down. The two agree while the order runs through
-    /// every level, and part ways exactly where it does not — a subtree the focus left by
-    /// some route the per-level walk cannot retrace.
+    /// One question of the seat's order, not a walk asking each container for its active
+    /// child. The two agree while the order runs through every level, and part ways exactly
+    /// where it does not — a subtree the focus left by some route a per-level walk cannot
+    /// retrace.
     pub(in crate::layout) fn focus_inactive_view(&self, key: NodeKey) -> Option<NodeKey> {
         if self.get_node(key).is_some_and(|node| node.is_view()) {
             return Some(key);
@@ -799,6 +843,55 @@ impl<W: LayoutElement> ContainerTree<W> {
         chain
     }
 
+    /// The seat moved to this workspace without focusing anything in it.
+    ///
+    /// sway's `seat_set_focus_workspace` on a workspace with nothing to descend into, and what
+    /// any workspace switch records: the workspace becomes the most recent one while every node
+    /// inside it keeps its place, so the workspace still restores its own focus later.
+    pub(in crate::layout) fn raise_workspace(&mut self, workspace: NodeKey) {
+        debug_assert!(self.is_workspace(workspace));
+        self.seat.raw_focus(workspace);
+    }
+
+    /// The workspace the seat was most recently on, among those `include` accepts.
+    pub(in crate::layout) fn most_recent_workspace(
+        &self,
+        include: impl Fn(NodeKey) -> bool,
+    ) -> Option<NodeKey> {
+        self.seat
+            .order()
+            .iter()
+            .copied()
+            .find(|key| self.is_workspace(*key) && include(*key))
+    }
+
+    /// Counts every focus or selection the seat has made.
+    pub(in crate::layout) fn seat_focus_generation(&self) -> u64 {
+        self.seat.generation()
+    }
+
+    /// Which of the workspace's two root lists the seat was last in.
+    ///
+    /// sway asks `container_is_floating` of `seat_get_focus_inactive(ws)`, the most recent
+    /// node the seat focused in the workspace, and that is the answer here too. A workspace
+    /// with only one side populated answers with that side whatever the order says: there is
+    /// nothing on the other to be focused.
+    pub(in crate::layout) fn focused_layer(&self, workspace: NodeKey) -> LayoutLayer {
+        if self.floating_root_count(workspace) == 0 {
+            return LayoutLayer::Tiled;
+        }
+        if self.tiled_is_empty(workspace) {
+            return LayoutLayer::Floating;
+        }
+        let last = self.seat.order().iter().copied().find(|key| {
+            *key != workspace && self.holds_node(*key) && self.workspace_of(*key) == Some(workspace)
+        });
+        match last {
+            Some(key) if self.is_in_floating_branch(key) => LayoutLayer::Floating,
+            _ => LayoutLayer::Tiled,
+        }
+    }
+
     pub(in crate::layout) fn seat_focused_key(&self) -> Option<NodeKey> {
         self.seat.focused_leaf()
     }
@@ -841,23 +934,25 @@ impl<W: LayoutElement> ContainerTree<W> {
         })
     }
 
-    /// Whether `key` is the child its parent would descend to — sway's
-    /// `seat_get_focus_inactive` answer, asked one level up.
+    /// Every parent's active child, read off the seat's order in a single pass.
     ///
-    /// This is the whole of the `focused_inactive` decoration state. sway renders a level at
-    /// a time (`render_container_simple`) and compares each child against the focus-inactive
-    /// child of *that* level, so the question is local: a node is `focused_inactive` when its
-    /// own parent would come back to it, whatever is happening above the parent. The focus
-    /// head of a container nested inside a container nobody has focused still shows it,
-    /// because its parent still points at it.
-    ///
-    /// It is deliberately not "is anything in here focused": the globally focused leaf is
-    /// also its parent's active child, and callers pick `Focused` for it first.
-    pub(in crate::layout) fn is_focus_head(&self, key: NodeKey) -> bool {
-        let Some(parent) = self.parent_of(key) else {
-            return false;
-        };
-        self.active_child(parent) == Some(key)
+    /// [`Self::active_child`] answers for one parent by scanning the whole order. A pass that
+    /// asks it of every container — drawing tab bars, decorating every leaf — would scan it
+    /// once per container; this answers all of them from one scan, by the same rule.
+    pub(in crate::layout) fn active_children(&self) -> ActiveChildren {
+        let mut active = HashMap::new();
+        for &key in self.seat.order() {
+            let Some(parent) = self.parent_of(key) else {
+                continue;
+            };
+            if active.contains_key(&parent)
+                || (self.is_workspace(parent) && !self.is_in_tiled_branch(key))
+            {
+                continue;
+            }
+            active.insert(parent, key);
+        }
+        ActiveChildren(active)
     }
 
     /// Where [`Self::active_child`] sits in its parent's child list.

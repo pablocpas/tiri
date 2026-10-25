@@ -136,6 +136,24 @@ impl ResizeEdge {
             _ => CursorIcon::Default,
         }
     }
+
+    /// The cursor for dragging these edges outwards from inside the window: one-way arrows
+    /// pointing at the side being pulled, rather than the two-way arrows of a shared border.
+    pub fn outward_cursor_icon(self) -> CursorIcon {
+        let (top, bottom) = (self.contains(Self::TOP), self.contains(Self::BOTTOM));
+        let (left, right) = (self.contains(Self::LEFT), self.contains(Self::RIGHT));
+        match () {
+            _ if top && left => CursorIcon::NwResize,
+            _ if top && right => CursorIcon::NeResize,
+            _ if bottom && right => CursorIcon::SeResize,
+            _ if bottom && left => CursorIcon::SwResize,
+            _ if left => CursorIcon::WResize,
+            _ if right => CursorIcon::EResize,
+            _ if top => CursorIcon::NResize,
+            _ if bottom => CursorIcon::SResize,
+            _ => CursorIcon::Default,
+        }
+    }
 }
 
 pub fn version() -> String {

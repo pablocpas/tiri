@@ -10,10 +10,11 @@ use tiri_config::{
     Config, FloatOrInt, OutputName, Struts, TabIndicatorLength, TabIndicatorPosition,
     WorkspaceReference,
 };
+use tiri_ipc::ColumnDisplay;
 
 use smithay::wayland::compositor::{Blocker as _, BlockerState};
 
-use super::container::{Layout as ContainerLayout, LayoutLayer};
+use super::container::LayoutLayer;
 use super::*;
 
 mod animations;
@@ -715,6 +716,11 @@ enum Op {
         #[proptest(strategy = "proptest::option::of(1..=5usize)")]
         id: Option<usize>,
     },
+    /// sway's `sticky toggle`, on a window or on what commands are aimed at.
+    ToggleWindowSticky {
+        #[proptest(strategy = "proptest::option::of(1..=5usize)")]
+        id: Option<usize>,
+    },
     /// Close whatever the current selection addresses (i3's `kill`).
     CloseFocused,
     /// Toggle fullscreen on the focused window.
@@ -856,7 +862,7 @@ enum Op {
     SetLayoutDefault,
     ToggleLayoutCycle {
         #[proptest(
-            strategy = "Just(vec![LayoutCycleEntry::Split, LayoutCycleEntry::Layout(ContainerLayout::Tabbed)])"
+            strategy = "Just(vec![LayoutCycleEntry::Split, LayoutCycleEntry::Layout(LayoutMode::Tabbed)])"
         )]
         cycle: Vec<LayoutCycleEntry>,
     },
@@ -997,7 +1003,7 @@ impl Op {
                 });
             }
             Op::UnnameWorkspace { ws_name } => {
-                layout.unname_workspace(&format!("ws{ws_name}"));
+                layout.unset_workspace_name(Some(WorkspaceReference::Name(format!("ws{ws_name}"))));
             }
             Op::UpdateWorkspaceLayoutConfig {
                 ws_name,
@@ -1005,7 +1011,7 @@ impl Op {
             } => {
                 let ws_name = format!("ws{ws_name}");
                 let (mut workspaces, containers) = layout.workspaces_and_containers_mut();
-                let Some(ws) = workspaces.find(|ws| ws.name() == Some(&ws_name)) else {
+                let Some(ws) = workspaces.find(|ws| ws.name(&*containers) == Some(&ws_name)) else {
                     return;
                 };
 
@@ -1126,7 +1132,7 @@ impl Op {
                         for mon in monitors {
                             for ws in &mut mon.workspaces {
                                 if ws
-                                    .name()
+                                    .name(&layout.containers)
                                     .is_some_and(|name| name.eq_ignore_ascii_case(&ws_name))
                                 {
                                     ws_id = Some(ws.id());
@@ -1137,7 +1143,7 @@ impl Op {
                     MonitorSet::NoOutputs { workspaces, .. } => {
                         for ws in workspaces {
                             if ws
-                                .name()
+                                .name(&layout.containers)
                                 .is_some_and(|name| name.eq_ignore_ascii_case(&ws_name))
                             {
                                 ws_id = Some(ws.id());
@@ -1188,22 +1194,26 @@ impl Op {
                 if !layout.has_window(&id) {
                     return;
                 }
-                layout.toggle_windowed_fullscreen(&id);
+                layout.toggle_fullscreen(&id);
             }
-            Op::FocusColumnLeft => layout.focus_left(),
-            Op::FocusColumnRight => layout.focus_right(),
-            Op::FocusColumnFirst => layout.focus_column_first(),
-            Op::FocusColumnLast => layout.focus_column_last(),
-            Op::FocusColumnRightOrFirst => layout.focus_column_right_or_first(),
-            Op::FocusColumnLeftOrLast => layout.focus_column_left_or_last(),
-            Op::FocusColumn(index) => layout.focus_column(index),
+            Op::FocusColumnLeft => layout.focus_command(FocusCommand::Direction(Direction::Left)),
+            Op::FocusColumnRight => layout.focus_command(FocusCommand::Direction(Direction::Right)),
+            Op::FocusColumnFirst => layout.focus_command(FocusCommand::Edge(Direction::Left)),
+            Op::FocusColumnLast => layout.focus_command(FocusCommand::Edge(Direction::Right)),
+            Op::FocusColumnRightOrFirst => {
+                layout.focus_command(FocusCommand::DirectionOrEdge(Direction::Right))
+            }
+            Op::FocusColumnLeftOrLast => {
+                layout.focus_command(FocusCommand::DirectionOrEdge(Direction::Left))
+            }
+            Op::FocusColumn(index) => layout.focus_command(FocusCommand::RootContainer(index)),
             Op::FocusWindowOrMonitorUp(id) => {
                 let name = format!("output{id}");
                 let Some(output) = layout.outputs().find(|o| o.name() == name).cloned() else {
                     return;
                 };
 
-                layout.focus_window_up_or_output(&output);
+                layout.focus_in_direction_or_output(Direction::Up, &output);
             }
             Op::FocusWindowOrMonitorDown(id) => {
                 let name = format!("output{id}");
@@ -1211,7 +1221,7 @@ impl Op {
                     return;
                 };
 
-                layout.focus_window_down_or_output(&output);
+                layout.focus_in_direction_or_output(Direction::Down, &output);
             }
             Op::FocusColumnOrMonitorLeft(id) => {
                 let name = format!("output{id}");
@@ -1219,7 +1229,7 @@ impl Op {
                     return;
                 };
 
-                layout.focus_container_left_or_output(&output);
+                layout.focus_in_direction_or_output(Direction::Left, &output);
             }
             Op::FocusColumnOrMonitorRight(id) => {
                 let name = format!("output{id}");
@@ -1227,33 +1237,47 @@ impl Op {
                     return;
                 };
 
-                layout.focus_container_right_or_output(&output);
+                layout.focus_in_direction_or_output(Direction::Right, &output);
             }
-            Op::FocusWindowDown => layout.focus_down(),
-            Op::FocusWindowUp => layout.focus_up(),
-            Op::FocusWindowDownOrColumnLeft => layout.focus_down_or_left(),
-            Op::FocusWindowDownOrColumnRight => layout.focus_down_or_right(),
-            Op::FocusWindowUpOrColumnLeft => layout.focus_up_or_left(),
-            Op::FocusWindowUpOrColumnRight => layout.focus_up_or_right(),
-            Op::FocusWindowOrWorkspaceDown => layout.focus_window_or_workspace_down(),
-            Op::FocusWindowOrWorkspaceUp => layout.focus_window_or_workspace_up(),
+            Op::FocusWindowDown => layout.focus_command(FocusCommand::Direction(Direction::Down)),
+            Op::FocusWindowUp => layout.focus_command(FocusCommand::Direction(Direction::Up)),
+            Op::FocusWindowDownOrColumnLeft => {
+                layout.focus_command(FocusCommand::DirectionOr(Direction::Down, Direction::Left))
+            }
+            Op::FocusWindowDownOrColumnRight => {
+                layout.focus_command(FocusCommand::DirectionOr(Direction::Down, Direction::Right))
+            }
+            Op::FocusWindowUpOrColumnLeft => {
+                layout.focus_command(FocusCommand::DirectionOr(Direction::Up, Direction::Left))
+            }
+            Op::FocusWindowUpOrColumnRight => {
+                layout.focus_command(FocusCommand::DirectionOr(Direction::Up, Direction::Right))
+            }
+            Op::FocusWindowOrWorkspaceDown => layout.focus_vertically_or_workspace(Direction::Down),
+            Op::FocusWindowOrWorkspaceUp => layout.focus_vertically_or_workspace(Direction::Up),
             Op::FocusWindow(id) => layout.activate_window(&id),
-            Op::FocusWindowInColumn(index) => layout.focus_window_in_column(index),
-            Op::FocusWindowTop => layout.focus_window_top(),
-            Op::FocusWindowBottom => layout.focus_window_bottom(),
-            Op::FocusWindowDownOrTop => layout.focus_window_down_or_top(),
-            Op::FocusWindowUpOrBottom => layout.focus_window_up_or_bottom(),
-            Op::MoveColumnLeft => layout.move_left(),
-            Op::MoveColumnRight => layout.move_right(),
-            Op::MoveColumnToFirst => layout.move_column_to_first(),
-            Op::MoveColumnToLast => layout.move_column_to_last(),
+            Op::FocusWindowInColumn(index) => {
+                layout.focus_command(FocusCommand::WindowInRootContainer(index))
+            }
+            Op::FocusWindowTop => layout.focus_command(FocusCommand::Edge(Direction::Up)),
+            Op::FocusWindowBottom => layout.focus_command(FocusCommand::Edge(Direction::Down)),
+            Op::FocusWindowDownOrTop => {
+                layout.focus_command(FocusCommand::DirectionOrEdge(Direction::Down))
+            }
+            Op::FocusWindowUpOrBottom => {
+                layout.focus_command(FocusCommand::DirectionOrEdge(Direction::Up))
+            }
+            Op::MoveColumnLeft => layout.move_in_direction(Direction::Left),
+            Op::MoveColumnRight => layout.move_in_direction(Direction::Right),
+            Op::MoveColumnToFirst => layout.move_root_container(RootPosition::First),
+            Op::MoveColumnToLast => layout.move_root_container(RootPosition::Last),
             Op::MoveColumnLeftOrToMonitorLeft(id) => {
                 let name = format!("output{id}");
                 let Some(output) = layout.outputs().find(|o| o.name() == name).cloned() else {
                     return;
                 };
 
-                layout.move_column_left_or_to_output(&output);
+                layout.move_in_direction_or_to_output(Direction::Left, &output);
             }
             Op::MoveColumnRightOrToMonitorRight(id) => {
                 let name = format!("output{id}");
@@ -1261,23 +1285,31 @@ impl Op {
                     return;
                 };
 
-                layout.move_column_right_or_to_output(&output);
+                layout.move_in_direction_or_to_output(Direction::Right, &output);
             }
-            Op::MoveColumnToIndex(index) => layout.move_column_to_index(index),
-            Op::MoveWindowDown => layout.move_down(),
-            Op::MoveWindowUp => layout.move_up(),
-            Op::MoveWindowDownOrToWorkspaceDown => layout.move_down_or_to_workspace_down(),
-            Op::MoveWindowUpOrToWorkspaceUp => layout.move_up_or_to_workspace_up(),
+            Op::MoveColumnToIndex(index) => layout.move_root_container(RootPosition::Index(index)),
+            Op::MoveWindowDown => layout.move_in_direction(Direction::Down),
+            Op::MoveWindowUp => layout.move_in_direction(Direction::Up),
+            Op::MoveWindowDownOrToWorkspaceDown => {
+                layout.move_vertically_or_to_workspace(Direction::Down)
+            }
+            Op::MoveWindowUpOrToWorkspaceUp => {
+                layout.move_vertically_or_to_workspace(Direction::Up)
+            }
             Op::ConsumeOrExpelWindowLeft { id } => {
                 let id = id.filter(|id| layout.has_window(id));
-                layout.consume_or_expel_window_left(id.as_ref());
+                layout.consume_or_expel_window(id.as_ref(), Direction::Left);
             }
             Op::ConsumeOrExpelWindowRight { id } => {
                 let id = id.filter(|id| layout.has_window(id));
-                layout.consume_or_expel_window_right(id.as_ref());
+                layout.consume_or_expel_window(id.as_ref(), Direction::Right);
             }
-            Op::ConsumeWindowIntoColumn => layout.consume_into_column(),
-            Op::ExpelWindowFromColumn => layout.expel_from_column(),
+            Op::ConsumeWindowIntoColumn => {
+                layout.layout_command(LayoutCommand::Split(LayoutMode::SplitV))
+            }
+            Op::ExpelWindowFromColumn => {
+                layout.layout_command(LayoutCommand::Split(LayoutMode::SplitH))
+            }
             Op::SwapWithWindow(id) => {
                 if layout.has_window(&id) {
                     layout.swap_window_with(&id);
@@ -1286,21 +1318,41 @@ impl Op {
             Op::SwapWithMark(mark) => {
                 layout.swap_window_with_mark(&mark);
             }
-            Op::ToggleColumnTabbedDisplay => layout.toggle_column_tabbed_display(),
-            Op::SetColumnDisplay(display) => layout.set_column_display(display),
+            Op::ToggleColumnTabbedDisplay => layout.layout_command(LayoutCommand::ToggleCycle(&[
+                LayoutCycleEntry::Layout(LayoutMode::Tabbed),
+                LayoutCycleEntry::Layout(LayoutMode::SplitV),
+            ])),
+            Op::SetColumnDisplay(display) => {
+                layout.layout_command(LayoutCommand::Set(match display {
+                    ColumnDisplay::Normal => LayoutMode::SplitV,
+                    ColumnDisplay::Tabbed => LayoutMode::Tabbed,
+                }))
+            }
             Op::CenterWindow { id } => {
                 let id = id.filter(|id| layout.has_window(id));
                 layout.center_window(id.as_ref());
             }
-            Op::FocusWorkspaceDown => layout.switch_workspace_down(),
-            Op::FocusWorkspaceUp => layout.switch_workspace_up(),
-            Op::FocusWorkspace(idx) => layout.switch_workspace(idx),
+            Op::FocusWorkspaceDown => layout.switch_workspace(WorkspaceTarget::Down),
+            Op::FocusWorkspaceUp => layout.switch_workspace(WorkspaceTarget::Up),
+            Op::FocusWorkspace(idx) => layout.switch_workspace(WorkspaceTarget::Index(idx)),
             Op::FocusWorkspaceAutoBackAndForth(idx) => {
-                layout.switch_workspace_auto_back_and_forth(idx)
+                layout.switch_workspace(WorkspaceTarget::IndexOrBack(idx))
             }
-            Op::FocusWorkspacePrevious => layout.switch_workspace_previous(),
-            Op::MoveWindowToWorkspaceDown(focus) => layout.move_to_workspace_down(focus),
-            Op::MoveWindowToWorkspaceUp(focus) => layout.move_to_workspace_up(focus),
+            Op::FocusWorkspacePrevious => layout.switch_workspace(WorkspaceTarget::Previous),
+            Op::MoveWindowToWorkspaceDown(focus) => {
+                layout.transfer(
+                    TransferSubject::Window(None),
+                    TransferTarget::WorkspaceDown,
+                    ActivateWindow::following(focus),
+                );
+            }
+            Op::MoveWindowToWorkspaceUp(focus) => {
+                layout.transfer(
+                    TransferSubject::Window(None),
+                    TransferTarget::WorkspaceUp,
+                    ActivateWindow::following(focus),
+                );
+            }
             Op::MoveWindowToWorkspace {
                 window_id,
                 workspace_idx,
@@ -1312,13 +1364,39 @@ impl Op {
                 } else {
                     ActivateWindow::No
                 };
-                layout.move_to_workspace(window_id.as_ref(), workspace_idx, activate);
+                layout.transfer(
+                    TransferSubject::Window(window_id.as_ref()),
+                    TransferTarget::WorkspaceIndex(workspace_idx),
+                    activate,
+                );
             }
-            Op::MoveColumnToWorkspaceDown(focus) => layout.move_column_to_workspace_down(focus),
-            Op::MoveColumnToWorkspaceUp(focus) => layout.move_column_to_workspace_up(focus),
-            Op::MoveColumnToWorkspace(idx, focus) => layout.move_column_to_workspace(idx, focus),
+            Op::MoveColumnToWorkspaceDown(focus) => {
+                layout.transfer(
+                    TransferSubject::RootContainer,
+                    TransferTarget::WorkspaceDown,
+                    ActivateWindow::following(focus),
+                );
+            }
+            Op::MoveColumnToWorkspaceUp(focus) => {
+                layout.transfer(
+                    TransferSubject::RootContainer,
+                    TransferTarget::WorkspaceUp,
+                    ActivateWindow::following(focus),
+                );
+            }
+            Op::MoveColumnToWorkspace(idx, focus) => {
+                layout.transfer(
+                    TransferSubject::RootContainer,
+                    TransferTarget::WorkspaceIndex(idx),
+                    ActivateWindow::following(focus),
+                );
+            }
             Op::MoveContainerToWorkspace(idx, focus) => {
-                layout.move_container_to_workspace(idx, focus)
+                layout.transfer(
+                    TransferSubject::Container,
+                    TransferTarget::WorkspaceIndex(idx),
+                    ActivateWindow::following(focus),
+                );
             }
             Op::MoveWindowToOutput {
                 window_id,
@@ -1333,10 +1411,12 @@ impl Op {
 
                 let window_id = window_id.filter(|id| layout.has_window(id));
                 let target_ws_idx = target_ws_idx.filter(|idx| mon.workspaces.len() > *idx);
-                layout.move_to_output(
-                    window_id.as_ref(),
-                    &output,
-                    target_ws_idx,
+                layout.transfer(
+                    TransferSubject::Window(window_id.as_ref()),
+                    TransferTarget::Output {
+                        output: &output,
+                        workspace: target_ws_idx,
+                    },
                     ActivateWindow::Smart,
                 );
             }
@@ -1350,7 +1430,14 @@ impl Op {
                     return;
                 };
 
-                layout.move_column_to_output(&output, target_ws_idx, activate);
+                layout.transfer(
+                    TransferSubject::RootContainer,
+                    TransferTarget::Output {
+                        output: &output,
+                        workspace: target_ws_idx,
+                    },
+                    ActivateWindow::following(activate),
+                );
             }
             Op::MoveWorkspaceDown => layout.move_workspace_down(),
             Op::MoveWorkspaceUp => layout.move_workspace_up(),
@@ -1369,7 +1456,7 @@ impl Op {
                         .enumerate()
                         .find_map(|(i, ws)| {
                             if ws
-                                .name()
+                                .name(&layout.containers)
                                 .is_some_and(|name| name == &format!("ws{ws_name}"))
                             {
                                 Some(i)
@@ -1417,7 +1504,7 @@ impl Op {
                         .enumerate()
                         .find_map(|(i, ws)| {
                             if ws
-                                .name()
+                                .name(&layout.containers)
                                 .is_some_and(|name| name == &format!("ws{ws_name}"))
                             {
                                 Some(i)
@@ -1432,32 +1519,74 @@ impl Op {
 
                 layout.move_workspace_to_output_by_index(old_idx, Some(old_output), &output);
             }
-            Op::SwitchPresetColumnWidth => layout.toggle_width(true),
-            Op::SwitchPresetColumnWidthBack => layout.toggle_width(false),
+            Op::SwitchPresetColumnWidth => {
+                layout.size_command(None, SizeCommand::CycleRootPreset { forwards: true })
+            }
+            Op::SwitchPresetColumnWidthBack => {
+                layout.size_command(None, SizeCommand::CycleRootPreset { forwards: false })
+            }
             Op::SwitchPresetWindowWidth { id } => {
                 let id = id.filter(|id| layout.has_window(id));
-                layout.toggle_window_width(id.as_ref(), true);
+                layout.size_command(
+                    id.as_ref(),
+                    SizeCommand::CyclePreset {
+                        axis: ResizeAxis::Horizontal,
+                        forwards: true,
+                    },
+                );
             }
             Op::SwitchPresetWindowWidthBack { id } => {
                 let id = id.filter(|id| layout.has_window(id));
-                layout.toggle_window_width(id.as_ref(), false);
+                layout.size_command(
+                    id.as_ref(),
+                    SizeCommand::CyclePreset {
+                        axis: ResizeAxis::Horizontal,
+                        forwards: false,
+                    },
+                );
             }
             Op::SwitchPresetWindowHeight { id } => {
                 let id = id.filter(|id| layout.has_window(id));
-                layout.toggle_window_height(id.as_ref(), true);
+                layout.size_command(
+                    id.as_ref(),
+                    SizeCommand::CyclePreset {
+                        axis: ResizeAxis::Vertical,
+                        forwards: true,
+                    },
+                );
             }
             Op::SwitchPresetWindowHeightBack { id } => {
                 let id = id.filter(|id| layout.has_window(id));
-                layout.toggle_window_height(id.as_ref(), false);
+                layout.size_command(
+                    id.as_ref(),
+                    SizeCommand::CyclePreset {
+                        axis: ResizeAxis::Vertical,
+                        forwards: false,
+                    },
+                );
             }
-            Op::SetColumnWidth(change) => layout.set_column_width(change),
+            Op::SetColumnWidth(change) => {
+                layout.size_command(None, SizeCommand::SetRootWidth(change))
+            }
             Op::SetWindowWidth { id, change } => {
                 let id = id.filter(|id| layout.has_window(id));
-                layout.set_window_width(id.as_ref(), change);
+                layout.size_command(
+                    id.as_ref(),
+                    SizeCommand::Resize(ResizeRequest::Axis {
+                        axis: ResizeAxis::Horizontal,
+                        change,
+                    }),
+                );
             }
             Op::SetWindowHeight { id, change } => {
                 let id = id.filter(|id| layout.has_window(id));
-                layout.set_window_height(id.as_ref(), change);
+                layout.size_command(
+                    id.as_ref(),
+                    SizeCommand::Resize(ResizeRequest::Axis {
+                        axis: ResizeAxis::Vertical,
+                        change,
+                    }),
+                );
             }
             Op::ResizeWindowEdge {
                 id,
@@ -1465,16 +1594,25 @@ impl Op {
                 direction,
             } => {
                 let id = id.filter(|id| layout.has_window(id));
-                layout.resize_window(id.as_ref(), ResizeRequest::Edge { direction, amount });
+                layout.size_command(
+                    id.as_ref(),
+                    SizeCommand::Resize(ResizeRequest::Edge { direction, amount }),
+                );
             }
             Op::ResetWindowHeight { id } => {
                 let id = id.filter(|id| layout.has_window(id));
-                layout.reset_window_height(id.as_ref());
+                layout.size_command(id.as_ref(), SizeCommand::ResetHeight);
             }
-            Op::ExpandColumnToAvailableWidth => layout.expand_column_to_available_width(),
+            Op::ExpandColumnToAvailableWidth => {
+                layout.size_command(None, SizeCommand::ExpandRootToAvailableWidth)
+            }
             Op::ToggleWindowFloating { id } => {
                 let id = id.filter(|id| layout.has_window(id));
                 layout.toggle_window_floating(id.as_ref());
+            }
+            Op::ToggleWindowSticky { id } => {
+                let id = id.filter(|id| layout.has_window(id));
+                layout.toggle_window_sticky(id.as_ref());
             }
             Op::CloseFocused => {
                 for id in layout.close_window_ids_for_active_selection() {
@@ -1491,13 +1629,13 @@ impl Op {
                 layout.set_window_floating(id.as_ref(), floating);
             }
             Op::FocusFloating => {
-                layout.focus_floating();
+                layout.focus_command(FocusCommand::Floating);
             }
             Op::FocusTiling => {
-                layout.focus_tiling();
+                layout.focus_command(FocusCommand::Tiling);
             }
             Op::SwitchFocusFloatingTiling => {
-                layout.switch_focus_floating_tiling();
+                layout.focus_command(FocusCommand::ModeToggle);
             }
             Op::MoveFloatingWindow { id, x, y, animate } => {
                 let id = id.filter(|id| layout.has_window(id));
@@ -1752,24 +1890,26 @@ impl Op {
                 layout.update_options(options);
             }
             // Container tree operations (i3-like)
-            Op::FocusParent => layout.focus_parent(),
+            Op::FocusParent => layout.focus_command(FocusCommand::Parent),
             Op::FocusAlongParent { forward, descend } => {
-                layout.focus_along_parent(forward, descend)
+                layout.focus_command(FocusCommand::Sibling { forward, descend })
             }
-            Op::FocusChild => layout.focus_child(),
-            Op::SplitHorizontal => layout.split_horizontal(),
-            Op::SplitVertical => layout.split_vertical(),
-            Op::SplitToggle => layout.split_toggle(),
-            Op::SplitNone => layout.split_none(),
+            Op::FocusChild => layout.focus_command(FocusCommand::Child),
+            Op::SplitHorizontal => layout.layout_command(LayoutCommand::Split(LayoutMode::SplitH)),
+            Op::SplitVertical => layout.layout_command(LayoutCommand::Split(LayoutMode::SplitV)),
+            Op::SplitToggle => layout.layout_command(LayoutCommand::SplitToggle),
+            Op::SplitNone => layout.layout_command(LayoutCommand::Unsplit),
             Op::ToggleAutotile => layout.toggle_autotile(),
-            Op::SetLayoutSplitH => layout.set_layout_mode(ContainerLayout::SplitH),
-            Op::SetLayoutSplitV => layout.set_layout_mode(ContainerLayout::SplitV),
-            Op::SetLayoutTabbed => layout.set_layout_mode(ContainerLayout::Tabbed),
-            Op::SetLayoutStacked => layout.set_layout_mode(ContainerLayout::Stacked),
-            Op::ToggleSplitLayout => layout.toggle_split_layout(),
-            Op::ToggleLayoutAll => layout.toggle_layout_all(),
-            Op::SetLayoutDefault => layout.set_default_layout(),
-            Op::ToggleLayoutCycle { cycle } => layout.toggle_layout_cycle(&cycle),
+            Op::SetLayoutSplitH => layout.layout_command(LayoutCommand::Set(LayoutMode::SplitH)),
+            Op::SetLayoutSplitV => layout.layout_command(LayoutCommand::Set(LayoutMode::SplitV)),
+            Op::SetLayoutTabbed => layout.layout_command(LayoutCommand::Set(LayoutMode::Tabbed)),
+            Op::SetLayoutStacked => layout.layout_command(LayoutCommand::Set(LayoutMode::Stacked)),
+            Op::ToggleSplitLayout => layout.layout_command(LayoutCommand::ToggleSplit),
+            Op::ToggleLayoutAll => layout.layout_command(LayoutCommand::ToggleAll),
+            Op::SetLayoutDefault => layout.layout_command(LayoutCommand::Default),
+            Op::ToggleLayoutCycle { cycle } => {
+                layout.layout_command(LayoutCommand::ToggleCycle(&cycle))
+            }
             // Mark operations
             Op::MarkFocused { mark, mode } => {
                 layout.mark_focused(mark, mode);
@@ -2156,7 +2296,7 @@ fn single_leaf_stacked_layout_wraps_immediately() {
         ],
     );
 
-    layout.set_layout_mode(ContainerLayout::Stacked);
+    layout.layout_command(LayoutCommand::Set(LayoutMode::Stacked));
 
     // Measured against sway 1.11: the window gets a stacked container of its own and the
     // workspace keeps its orientation. The workspace is not what becomes stacked — only a
@@ -2186,10 +2326,10 @@ fn repeated_layout_split_on_nested_single_child_split_is_noop() {
         ],
     );
 
-    layout.set_layout_mode(ContainerLayout::SplitV);
-    layout.split_horizontal();
-    layout.set_layout_mode(ContainerLayout::SplitV);
-    layout.set_layout_mode(ContainerLayout::SplitV);
+    layout.layout_command(LayoutCommand::Set(LayoutMode::SplitV));
+    layout.layout_command(LayoutCommand::Split(LayoutMode::SplitH));
+    layout.layout_command(LayoutCommand::Set(LayoutMode::SplitV));
+    layout.layout_command(LayoutCommand::Set(LayoutMode::SplitV));
 
     // Measured against sway 1.11: one splitv container under the workspace, no matter how
     // many times the layout is restated. Repeating a layout never nests.
@@ -2224,7 +2364,7 @@ fn layout_splith_on_single_child_preserved_split_stays_flat() {
         ],
     );
 
-    layout.split_horizontal();
+    layout.layout_command(LayoutCommand::Split(LayoutMode::SplitH));
 
     {
         let workspace = layout.active_workspace().expect("active workspace");
@@ -2239,7 +2379,7 @@ fn layout_splith_on_single_child_preserved_split_stays_flat() {
         );
     }
 
-    layout.set_layout_mode(ContainerLayout::SplitH);
+    layout.layout_command(LayoutCommand::Set(LayoutMode::SplitH));
 
     let workspace = layout.active_workspace().expect("active workspace");
     let tree = workspace
@@ -2952,7 +3092,7 @@ fn interactive_resize_nested_split_targets_parent() {
     );
 
     layout.activate_window(&1);
-    layout.split_vertical();
+    layout.layout_command(LayoutCommand::Split(LayoutMode::SplitV));
     layout.add_window(
         TestWindow::new(TestWindowParams::new(3)),
         AddWindowTarget::Auto,
@@ -2960,7 +3100,7 @@ fn interactive_resize_nested_split_targets_parent() {
         false,
         ActivateWindow::Yes,
     );
-    layout.set_layout_mode(ContainerLayout::SplitH);
+    layout.layout_command(LayoutCommand::Set(LayoutMode::SplitH));
 
     let width_before_1 = requested_width(&layout, 1);
     let width_before_2 = requested_width(&layout, 2);

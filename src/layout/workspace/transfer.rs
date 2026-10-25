@@ -9,7 +9,7 @@ use crate::layout::container::InactiveTilingReference;
 pub(super) enum FloatTransfer<I> {
     Workspace,
     SelectedContainer,
-    Window { id: I, target_is_active: bool },
+    Window { id: I },
 }
 
 pub(super) enum UnfloatTransfer<I> {

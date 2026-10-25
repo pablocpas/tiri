@@ -6,25 +6,21 @@ use std::time::Duration;
 use smithay::backend::renderer::element::utils::{
     CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement,
 };
-use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::input::pointer::CursorIcon;
 use smithay::output::Output;
-use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 use tiri_config::{CornerRadius, LayoutPart};
 
 use super::container::{Direction, IncomingView, NodeKey};
 use super::container_tree::{ContainerTree, RootTilingSubtree};
-use super::floating::{FloatingResizeResult, FloatingRuntime};
+use super::floating::FloatingRoots;
 use super::insert_hint_element::{InsertHintElement, InsertHintRenderElement};
-use super::tile::Tile;
 use super::workspace::{
-    compute_working_area, OutputId, Workspace, WorkspaceAddWindowTarget, WorkspaceId,
-    WorkspaceIdentity, WorkspaceLifetime, WorkspaceRenderElement,
+    compute_working_area, Workspace, WorkspaceAddWindowTarget, WorkspaceId, WorkspaceIdentity,
+    WorkspaceLifetime, WorkspaceRenderElement,
 };
 use super::{
-    compute_overview_zoom, ActivateWindow, BranchRenderParams, HitType, LayoutElement, Options,
-    ResizeHit, ViewTransfer,
+    compute_overview_zoom, ActivateWindow, HitType, LayoutElement, Options, TransferSubject,
+    TransferTarget, WorkspaceTarget,
 };
 use crate::animation::{Animation, Clock};
 use crate::input::swipe_tracker::SwipeTracker;
@@ -36,10 +32,8 @@ use crate::render_helpers::solid_color::SolidColorRenderElement;
 use crate::render_helpers::xray::XrayPos;
 use crate::render_helpers::RenderCtx;
 use crate::rubber_band::RubberBand;
-use crate::utils::transaction::{Transaction, TransactionBlocker};
-use crate::utils::{
-    output_size, round_logical_in_physical, round_logical_in_physical_max1, ResizeEdge,
-};
+use crate::utils::transaction::Transaction;
+use crate::utils::{output_size, round_logical_in_physical, round_logical_in_physical_max1};
 
 /// Amount of touchpad movement to scroll the height of one workspace.
 const WORKSPACE_GESTURE_MOVEMENT: f64 = 300.;
@@ -97,19 +91,13 @@ pub struct Monitor<W: LayoutElement> {
     pub(super) options: Rc<Options>,
     /// Layout config overrides for this monitor.
     layout_config: Option<tiri_config::LayoutPart>,
-    /// The workspace root the sticky floating windows hang off.
+    /// The workspace that holds this output's sticky floating containers.
     ///
-    /// Sticky windows belong to the output rather than to any workspace, so they get a root
-    /// of their own in the layout's tree — the same kind an ordinary workspace has, with no
-    /// tiled side and no `Workspace` around it. It is a root and not a second tree because a
-    /// window becoming sticky is then a reparent, keeping its key, its marks and its place in
-    /// the seat's order.
-    pub(super) sticky_workspace: NodeKey,
-    pub(super) sticky_floating: FloatingRuntime<W>,
-    /// Whether sticky windows are focused on this monitor.
-    sticky_is_active: bool,
-    /// Derived focus state used by the render pass.
-    sticky_render_active: bool,
+    /// sway moves sticky floats from the workspace the output was showing to the one it shows
+    /// next (`seat_set_workspace_focus`). Remembering which workspace that was, rather than
+    /// reacting to each index write, makes the move depend on the active workspace changing
+    /// identity and not on which of the many reorderings of `workspaces` happened.
+    sticky_host: WorkspaceId,
 }
 
 #[derive(Debug)]
@@ -197,35 +185,6 @@ struct InsertHintRenderLoc {
 pub(super) enum OverviewProgress {
     Animation(Animation),
     Value(f64),
-}
-
-fn external_resize_cursor_icon(edges: ResizeEdge) -> CursorIcon {
-    if edges.contains(ResizeEdge::TOP) && edges.contains(ResizeEdge::LEFT) {
-        return CursorIcon::NwResize;
-    }
-    if edges.contains(ResizeEdge::TOP) && edges.contains(ResizeEdge::RIGHT) {
-        return CursorIcon::NeResize;
-    }
-    if edges.contains(ResizeEdge::BOTTOM) && edges.contains(ResizeEdge::RIGHT) {
-        return CursorIcon::SeResize;
-    }
-    if edges.contains(ResizeEdge::BOTTOM) && edges.contains(ResizeEdge::LEFT) {
-        return CursorIcon::SwResize;
-    }
-    if edges.contains(ResizeEdge::LEFT) {
-        return CursorIcon::WResize;
-    }
-    if edges.contains(ResizeEdge::RIGHT) {
-        return CursorIcon::EResize;
-    }
-    if edges.contains(ResizeEdge::TOP) {
-        return CursorIcon::NResize;
-    }
-    if edges.contains(ResizeEdge::BOTTOM) {
-        return CursorIcon::SResize;
-    }
-
-    CursorIcon::Default
 }
 
 /// Where to put a newly added window.
@@ -359,17 +318,6 @@ impl From<&super::OverviewProgress> for OverviewProgress {
 }
 
 impl<W: LayoutElement> Monitor<W> {
-    pub(super) fn apply_sticky_swap_effects(
-        &mut self,
-        containers: &ContainerTree<W>,
-        effects: super::container::SwapEffects,
-    ) {
-        if effects.floating_ownership_changed && effects.affects(self.sticky_workspace) {
-            self.sticky_floating
-                .cancel_resize_if_target_left(containers);
-        }
-    }
-
     pub fn new(
         containers: &mut ContainerTree<W>,
         output: Output,
@@ -383,16 +331,8 @@ impl<W: LayoutElement> Monitor<W> {
             Rc::new(Options::clone(&base_options).with_merged_layout(layout_config.as_ref()));
 
         let scale = output.current_scale();
-        let view_size = output_size(&output);
         let working_area =
             compute_working_area(&output, options.layout.struts, scale.fractional_scale());
-        let sticky_workspace = containers.add_workspace(
-            view_size,
-            working_area,
-            scale.fractional_scale(),
-            options.clone(),
-        );
-        let sticky_floating = FloatingRuntime::new(sticky_workspace);
 
         // Prepare the workspaces: set output, empty first, empty last.
         let mut active_workspace_idx = 0;
@@ -416,6 +356,7 @@ impl<W: LayoutElement> Monitor<W> {
 
         let ws = Workspace::new(containers, output.clone(), options.clone());
         workspaces.push(ws);
+        let sticky_host = workspaces[active_workspace_idx].id();
 
         Self {
             output_name: output.name(),
@@ -434,10 +375,7 @@ impl<W: LayoutElement> Monitor<W> {
             base_options,
             options,
             layout_config,
-            sticky_workspace,
-            sticky_floating,
-            sticky_is_active: false,
-            sticky_render_active: false,
+            sticky_host,
         }
     }
 
@@ -451,10 +389,6 @@ impl<W: LayoutElement> Monitor<W> {
         for ws in &mut self.workspaces {
             ws.set_output(containers, None);
         }
-
-        // The sticky layer belongs to this output. The old per-monitor tree disappeared with
-        // the monitor; its root must do the same now that all roots share the layout's tree.
-        assert!(containers.remove_workspace(self.sticky_workspace));
 
         self.workspaces
     }
@@ -494,7 +428,7 @@ impl<W: LayoutElement> Monitor<W> {
         let has_other_real_workspaces = self.workspaces.iter().enumerate().any(|(i, ws)| {
             i != idx
                 && (ws.has_windows_or_persistent_identity(containers)
-                    || (i == self.active_workspace_idx && ws.name().is_some()))
+                    || (i == self.active_workspace_idx && ws.name(containers).is_some()))
         });
         if !has_other_real_workspaces {
             return false;
@@ -527,16 +461,24 @@ impl<W: LayoutElement> Monitor<W> {
         &self.workspaces[self.active_workspace_idx]
     }
 
-    pub fn find_named_workspace(&self, workspace_name: &str) -> Option<&Workspace<W>> {
+    pub fn find_named_workspace(
+        &self,
+        containers: &ContainerTree<W>,
+        workspace_name: &str,
+    ) -> Option<&Workspace<W>> {
         self.workspaces.iter().find(|ws| {
-            ws.name()
+            ws.name(containers)
                 .is_some_and(|name| name.eq_ignore_ascii_case(workspace_name))
         })
     }
 
-    pub fn find_named_workspace_index(&self, workspace_name: &str) -> Option<usize> {
+    pub fn find_named_workspace_index(
+        &self,
+        containers: &ContainerTree<W>,
+        workspace_name: &str,
+    ) -> Option<usize> {
         self.workspaces.iter().position(|ws| {
-            ws.name()
+            ws.name(containers)
                 .is_some_and(|name| name.eq_ignore_ascii_case(workspace_name))
         })
     }
@@ -552,114 +494,8 @@ impl<W: LayoutElement> Monitor<W> {
             .map(|(_, geo)| geo)
     }
 
-    fn sticky_is_visible(&self, containers: &ContainerTree<W>) -> bool {
-        containers.floating_root_count(self.sticky_workspace) != 0
-            && self.active_workspace_ref().is_floating_visible(containers)
-    }
-
-    pub fn has_sticky_window(&self, containers: &ContainerTree<W>, window: &W::Id) -> bool {
-        let tree = containers;
-        tree.window_key(window)
-            .and_then(|key| tree.workspace_of(key))
-            == Some(self.sticky_workspace)
-    }
-
-    pub fn sticky_is_active(&self) -> bool {
-        self.sticky_is_active
-    }
-
     pub(super) fn active_mark_target_key(&self, containers: &ContainerTree<W>) -> Option<NodeKey> {
-        if self.sticky_is_active {
-            let key = containers
-                .selected_node_key(self.sticky_workspace)
-                .unwrap_or(self.sticky_workspace);
-            return (key != self.sticky_workspace).then_some(key);
-        }
         containers.workspace_command_node(self.active_workspace_ref().workspace_key())
-    }
-
-    pub fn sticky_active_window_id<'a>(
-        &'a self,
-        containers: &'a ContainerTree<W>,
-    ) -> Option<&'a W::Id> {
-        containers
-            .active_floating_window(self.sticky_workspace)
-            .map(|win| win.id())
-    }
-
-    pub fn clear_sticky_focus(&mut self) {
-        self.sticky_is_active = false;
-    }
-
-    pub fn activate_sticky_window(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        window: &W::Id,
-        raise: bool,
-    ) -> bool {
-        let activated = if raise {
-            self.sticky_floating.activate_window(containers, window)
-        } else {
-            self.sticky_floating
-                .activate_window_without_raising(containers, window)
-        };
-
-        if activated {
-            self.sticky_is_active = true;
-        }
-
-        activated
-    }
-
-    pub fn add_sticky_window(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        window: &W::Id,
-        activate: bool,
-    ) -> bool {
-        let Some(ws_idx) = self.workspace_idx_for_window(containers, window) else {
-            return false;
-        };
-
-        if !containers.window_is_floating_in(self.workspaces[ws_idx].workspace_key(), window) {
-            return false;
-        }
-
-        let transferred = {
-            let workspace = &mut self.workspaces[ws_idx];
-            workspace.take_tile_for_transfer(containers, window, Transaction::new())
-        };
-
-        transferred.tile_mut(containers).set_scratchpad(false);
-        transferred.tile_mut(containers).set_sticky(true);
-
-        self.sticky_floating
-            .add_tile(containers, transferred.into_incoming(), activate);
-        if activate {
-            self.sticky_is_active = true;
-        }
-
-        true
-    }
-
-    pub(super) fn add_sticky_tile(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        mut tile: IncomingView<W>,
-        activate: bool,
-    ) {
-        {
-            let tile = containers
-                .incoming_tile_mut(&mut tile)
-                .expect("a sticky insertion must own a valid incoming view");
-            tile.set_scratchpad(false);
-            tile.set_sticky(true);
-        }
-
-        self.sticky_floating.add_tile(containers, tile, activate);
-        if activate {
-            self.sticky_is_active = true;
-        }
     }
 
     pub(super) fn add_scratchpad_tile(
@@ -668,7 +504,7 @@ impl<W: LayoutElement> Monitor<W> {
         tile: IncomingView<W>,
         activate: bool,
     ) {
-        let mut workspace_idx = self.active_workspace_idx;
+        let workspace_idx = self.active_workspace_idx;
 
         {
             let workspace = &mut self.workspaces[workspace_idx];
@@ -680,160 +516,12 @@ impl<W: LayoutElement> Monitor<W> {
             workspace.clear_fullscreen(containers);
 
             workspace.add_scratchpad_tile(containers, tile, activate);
-
-            // After adding a new window, workspace becomes this output's own.
-            if !workspace.has_persistent_identity() {
-                workspace.original_output = OutputId::new(&self.output);
-            }
         }
-
-        if workspace_idx == self.workspaces.len() - 1 {
-            // Insert a new empty workspace.
-            self.add_workspace_bottom(containers);
-        }
-
-        if self.options.layout.empty_workspace_above_first && workspace_idx == 0 {
-            self.add_workspace_top(containers);
-            workspace_idx += 1;
-        }
+        let workspace_idx = self.claim_workspace(containers, workspace_idx);
 
         if activate {
-            self.activate_workspace(workspace_idx);
+            self.activate_workspace(containers, workspace_idx);
         }
-    }
-
-    pub fn remove_sticky_window(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        window: &W::Id,
-        activate: bool,
-    ) -> bool {
-        if !self.has_sticky_window(containers, window) {
-            return false;
-        }
-
-        let was_active = self.sticky_is_active
-            && containers
-                .active_floating_window(self.sticky_workspace)
-                .is_some_and(|win| win.id() == window);
-
-        let transferred = self
-            .sticky_floating
-            .take_tile_for_transfer(containers, window);
-        transferred.tile_mut(containers).set_sticky(false);
-
-        let ws_id = self.workspaces[self.active_workspace_idx].id();
-        let activate = if activate {
-            ActivateWindow::Yes
-        } else {
-            ActivateWindow::No
-        };
-        self.add_tile(
-            containers,
-            transferred.into_incoming(),
-            MonitorAddWindowTarget::Workspace {
-                id: ws_id,
-                root_index: None,
-            },
-            activate,
-            true,
-            true,
-        );
-
-        if was_active {
-            self.sticky_is_active = false;
-        }
-
-        true
-    }
-
-    pub(super) fn take_sticky_window_for_transfer(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        window: &W::Id,
-    ) -> Option<ViewTransfer> {
-        self.has_sticky_window(containers, window).then(|| {
-            self.sticky_floating
-                .take_tile_for_transfer(containers, window)
-        })
-    }
-
-    pub fn start_close_animation_for_sticky_window(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        renderer: &mut GlesRenderer,
-        window: &W::Id,
-        blocker: TransactionBlocker,
-    ) {
-        self.sticky_floating
-            .start_close_animation_for_window(containers, renderer, window, blocker);
-    }
-
-    pub fn move_sticky_window(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        id: Option<&W::Id>,
-        x: tiri_ipc::PositionChange,
-        y: tiri_ipc::PositionChange,
-        animate: bool,
-    ) {
-        self.sticky_floating
-            .move_window(containers, id, x, y, animate);
-    }
-
-    pub fn center_sticky_window(&mut self, containers: &mut ContainerTree<W>, id: Option<&W::Id>) {
-        self.sticky_floating.center_window(containers, id);
-    }
-
-    pub fn sticky_container_allows_splits(
-        &self,
-        containers: &ContainerTree<W>,
-        window: &W::Id,
-    ) -> bool {
-        self.sticky_floating
-            .container_allows_splits(containers, window)
-    }
-
-    pub fn sticky_container_pos(
-        &self,
-        containers: &ContainerTree<W>,
-        window: &W::Id,
-    ) -> Option<Point<f64, Logical>> {
-        self.sticky_floating.container_pos(containers, window)
-    }
-
-    pub fn move_sticky_container_for_window_to(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        window: &W::Id,
-        pos: Point<f64, Logical>,
-    ) -> bool {
-        self.sticky_floating
-            .move_container_for_window_to(containers, window, pos, false)
-    }
-
-    pub fn sticky_interactive_resize_begin(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        window: W::Id,
-        edges: ResizeEdge,
-    ) -> bool {
-        self.sticky_floating
-            .interactive_resize_begin(containers, window, edges)
-    }
-
-    pub fn sticky_interactive_resize_update(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        window: &W::Id,
-        delta: Point<f64, Logical>,
-    ) -> bool {
-        self.sticky_floating
-            .interactive_resize_update(containers, window, delta)
-    }
-
-    pub fn sticky_interactive_resize_end(&mut self, window: &W::Id) {
-        self.sticky_floating.interactive_resize_end(Some(window));
     }
 
     pub fn idx_of_ws(&self, id: WorkspaceId) -> Option<usize> {
@@ -862,20 +550,15 @@ impl<W: LayoutElement> Monitor<W> {
         &'a self,
         containers: &'a ContainerTree<W>,
     ) -> impl Iterator<Item = &'a W> + 'a {
-        let workspace_windows = self
-            .workspaces
+        self.workspaces
             .iter()
-            .flat_map(move |ws| containers.windows_in_workspace(ws.workspace_key()));
-        let sticky_windows = containers
-            .floating_tiles_in_workspace(self.sticky_workspace)
-            .map(|tile| tile.window());
-        workspace_windows.chain(sticky_windows)
+            .flat_map(move |ws| containers.windows_in_workspace(ws.workspace_key()))
     }
 
-    /// Every window on this output: the workspaces' and the sticky ones.
+    /// Every window on this output.
     ///
-    /// One pass over the tree, because the workspaces and the sticky root are all roots in
-    /// it and cannot each be handed a mutable borrow of it in turn.
+    /// One pass over the tree, because the workspaces are all roots in it and cannot each be
+    /// handed a mutable borrow of it in turn.
     pub fn windows_mut<'a>(
         &'a mut self,
         containers: &'a mut ContainerTree<W>,
@@ -884,55 +567,110 @@ impl<W: LayoutElement> Monitor<W> {
             .workspaces
             .iter()
             .map(|ws| ws.workspace_key())
-            .chain(std::iter::once(self.sticky_workspace))
             .collect();
         containers.windows_mut_in_workspaces(&roots).into_iter()
     }
 
-    pub fn sticky_windows<'a>(
-        &'a self,
-        containers: &'a ContainerTree<W>,
-    ) -> impl Iterator<Item = &'a W> + 'a {
-        containers
-            .floating_tiles_in_workspace(self.sticky_workspace)
-            .map(|tile| tile.window())
+    /// Make `idx` the active workspace, bringing the output's sticky floats along.
+    ///
+    /// Every write that can change *which* workspace is active goes through here; writes
+    /// that only follow the same workspace to a new index may assign the field directly.
+    pub(super) fn set_active_workspace_idx(
+        &mut self,
+        containers: &mut ContainerTree<W>,
+        idx: usize,
+    ) {
+        self.active_workspace_idx = idx;
+        self.sync_sticky_host(containers);
     }
 
-    pub fn sticky_windows_mut<'a>(
-        &'a mut self,
-        containers: &'a mut ContainerTree<W>,
-    ) -> impl Iterator<Item = &'a mut W> + 'a {
-        containers
-            .floating_tiles_mut_in_workspace(self.sticky_workspace)
-            .map(|tile| tile.window_mut())
+    /// sway's `seat_set_workspace_focus` tail: when the output starts showing another
+    /// workspace, the sticky floats of the one it was showing move across, keeping their
+    /// stacking order, above whatever the new one already holds.
+    ///
+    /// A host that is no longer on this output keeps its floats. They are on that workspace,
+    /// not on the output, and sway's `move workspace to output` takes them along the same way.
+    ///
+    /// sway/input/seat.c:1209-1221
+    pub(super) fn sync_sticky_host(&mut self, containers: &mut ContainerTree<W>) {
+        let active = self.workspaces[self.active_workspace_idx].id();
+        let previous = std::mem::replace(&mut self.sticky_host, active);
+        if previous == active {
+            return;
+        }
+        if let Some(from) = self.idx_of_ws(previous) {
+            self.move_sticky_floats(containers, from, self.active_workspace_idx);
+        }
     }
 
-    pub fn sticky_tiles_mut<'a>(
-        &'a mut self,
-        containers: &'a mut ContainerTree<W>,
-    ) -> impl Iterator<Item = &'a mut Tile<W>> + 'a {
-        containers.floating_tiles_mut_in_workspace(self.sticky_workspace)
+    fn move_sticky_floats(&mut self, containers: &mut ContainerTree<W>, from: usize, to: usize) {
+        let roots = containers.sticky_roots(self.workspaces[from].workspace_key());
+        self.move_floats(containers, &roots, from, to);
     }
 
-    pub fn find_sticky_wl_surface<'a>(
-        &'a self,
-        containers: &'a ContainerTree<W>,
-        wl_surface: &WlSurface,
-    ) -> Option<&'a W> {
-        containers
-            .floating_tiles_in_workspace(self.sticky_workspace)
-            .find(|tile| tile.window().is_wl_surface(wl_surface))
-            .map(|tile| tile.window())
+    fn move_floats(
+        &mut self,
+        containers: &mut ContainerTree<W>,
+        roots: &[NodeKey],
+        from: usize,
+        to: usize,
+    ) {
+        if roots.is_empty() || from == to {
+            return;
+        }
+        let destination = self.workspaces[to].workspace_key();
+        for (stack_index, root) in roots.iter().copied().enumerate() {
+            assert!(containers.move_floating_root_to_workspace(root, destination, stack_index));
+        }
+        self.workspaces[from].floats_left(containers);
+        self.keep_end_workspaces_empty(containers);
     }
 
-    pub fn sticky_tile_with_render_position<'a>(
-        &'a self,
-        containers: &'a ContainerTree<W>,
-        window: &W::Id,
-    ) -> Option<(&'a Tile<W>, Point<f64, Logical>)> {
-        containers
-            .floating_tiles_with_render_positions(self.sticky_workspace)
-            .find(|(tile, _)| tile.window().id() == window)
+    /// `sticky enable` on a float of a workspace this output is not showing: sway moves it to
+    /// the one it is, on top, and lets the workspace it left go if that emptied it.
+    ///
+    /// sway/commands/sticky.c:28-46
+    pub(super) fn bring_float_to_active_workspace(
+        &mut self,
+        containers: &mut ContainerTree<W>,
+        from: usize,
+        root: NodeKey,
+    ) {
+        self.move_floats(containers, &[root], from, self.active_workspace_idx);
+        if self.workspace_switch.is_none() {
+            self.clean_up_workspaces(containers);
+        }
+    }
+
+    /// Move the sticky floats of every workspace that holds nothing else to `destination`.
+    ///
+    /// sway's `output_evacuate`: such a workspace is empty as far as the user is concerned,
+    /// so it is destroyed rather than moved, and its sticky floats go to the workspace the
+    /// next output is showing, centered there.
+    ///
+    /// sway/tree/output.c:188-241
+    pub(super) fn evacuate_sticky_floats(
+        &mut self,
+        containers: &mut ContainerTree<W>,
+        destination: &mut Workspace<W>,
+    ) {
+        let target = destination.workspace_key();
+        for ws in &mut self.workspaces {
+            if ws.has_non_sticky_windows_or_persistent_identity(containers) {
+                continue;
+            }
+            let roots = containers.sticky_roots(ws.workspace_key());
+            if roots.is_empty() {
+                continue;
+            }
+            for (stack_index, root) in roots.iter().copied().enumerate() {
+                assert!(containers.move_floating_root_to_workspace(root, target, stack_index));
+            }
+            ws.floats_left(containers);
+            for root in roots {
+                destination.center_floating_root(containers, root);
+            }
+        }
     }
 
     pub fn add_workspace_at(&mut self, containers: &mut ContainerTree<W>, idx: usize) {
@@ -950,6 +688,41 @@ impl<W: LayoutElement> Monitor<W> {
         }
     }
 
+    /// Something was just put on `workspace_idx`. It becomes this output's own, and the output
+    /// keeps its empty workspaces at the ends. Returns where the workspace is afterwards.
+    fn claim_workspace(
+        &mut self,
+        containers: &mut ContainerTree<W>,
+        workspace_idx: usize,
+    ) -> usize {
+        let workspace = &self.workspaces[workspace_idx];
+        workspace.claim_for_output(containers, &self.output);
+        let id = workspace.id();
+        self.keep_end_workspaces_empty(containers);
+        self.idx_of_ws(id).unwrap()
+    }
+
+    /// Put an empty workspace back at each end that something now occupies.
+    ///
+    /// The output's sticky floats occupy a workspace like any window here: arriving on the
+    /// empty one at the end with them is like opening a window there, and leaving it empties
+    /// it again.
+    pub(super) fn keep_end_workspaces_empty(&mut self, containers: &mut ContainerTree<W>) {
+        if self
+            .workspaces
+            .last()
+            .unwrap()
+            .has_windows_or_persistent_identity(containers)
+        {
+            self.add_workspace_bottom(containers);
+        }
+        if self.options.layout.empty_workspace_above_first
+            && self.workspaces[0].has_windows_or_persistent_identity(containers)
+        {
+            self.add_workspace_top(containers);
+        }
+    }
+
     pub fn add_workspace_top(&mut self, containers: &mut ContainerTree<W>) {
         self.add_workspace_at(containers, 0);
     }
@@ -958,7 +731,7 @@ impl<W: LayoutElement> Monitor<W> {
         self.add_workspace_at(containers, self.workspaces.len());
     }
 
-    fn normalize_numeric_workspace_order(&mut self) {
+    fn normalize_numeric_workspace_order(&mut self, containers: &ContainerTree<W>) {
         let start = if self.options.layout.empty_workspace_above_first {
             1
         } else {
@@ -971,14 +744,19 @@ impl<W: LayoutElement> Monitor<W> {
 
         let active_id = self.workspaces[self.active_workspace_idx].id();
         let mut workspaces: Vec<_> = self.workspaces.drain(start..end).collect();
-        workspaces.sort_by(|a, b| match (a.identity(), b.identity()) {
-            (
-                WorkspaceIdentity::Numeric { number: a, .. },
-                WorkspaceIdentity::Numeric { number: b, .. },
-            ) => a.cmp(b),
-            (WorkspaceIdentity::Numeric { .. }, _) => std::cmp::Ordering::Less,
-            (_, WorkspaceIdentity::Numeric { .. }) => std::cmp::Ordering::Greater,
-            _ => std::cmp::Ordering::Equal,
+        workspaces.sort_by(|a, b| {
+            match (
+                &a.properties(containers).identity,
+                &b.properties(containers).identity,
+            ) {
+                (
+                    WorkspaceIdentity::Numeric { number: a, .. },
+                    WorkspaceIdentity::Numeric { number: b, .. },
+                ) => a.cmp(b),
+                (WorkspaceIdentity::Numeric { .. }, _) => std::cmp::Ordering::Less,
+                (_, WorkspaceIdentity::Numeric { .. }) => std::cmp::Ordering::Greater,
+                _ => std::cmp::Ordering::Equal,
+            }
         });
         self.workspaces.splice(start..start, workspaces);
         self.active_workspace_idx = self
@@ -999,14 +777,14 @@ impl<W: LayoutElement> Monitor<W> {
             && self.active_workspace_idx == 0
         {
             self.add_workspace_bottom(containers);
-            self.workspaces[1].set_numeric_identity(number, lifetime);
+            self.workspaces[1].set_numeric_identity(containers, number, lifetime);
             self.add_workspace_bottom(containers);
-            self.active_workspace_idx = 1;
+            self.set_active_workspace_idx(containers, 1);
             return;
         }
 
         let idx = self.active_workspace_idx;
-        self.workspaces[idx].set_numeric_identity(number, lifetime);
+        self.workspaces[idx].set_numeric_identity(containers, number, lifetime);
 
         if idx == self.workspaces.len() - 1 {
             self.add_workspace_bottom(containers);
@@ -1021,15 +799,15 @@ impl<W: LayoutElement> Monitor<W> {
     ) -> usize {
         let idx = self.workspaces.len().saturating_sub(1);
         self.add_workspace_at(containers, idx);
-        self.workspaces[idx].set_numeric_identity(number, lifetime);
-        self.normalize_numeric_workspace_order();
+        self.workspaces[idx].set_numeric_identity(containers, number, lifetime);
+        self.normalize_numeric_workspace_order(containers);
         self.workspaces
             .iter()
-            .position(|ws| ws.numeric_number() == Some(number))
+            .position(|ws| ws.numeric_number(containers) == Some(number))
             .unwrap_or(idx)
     }
 
-    pub(super) fn named_workspace_insert_idx(&self) -> usize {
+    pub(super) fn named_workspace_insert_idx(&self, containers: &ContainerTree<W>) -> usize {
         let start = if self.options.layout.empty_workspace_above_first {
             1
         } else {
@@ -1042,29 +820,32 @@ impl<W: LayoutElement> Monitor<W> {
 
         self.workspaces[start..end]
             .iter()
-            .position(|ws| ws.numeric_number().is_none())
+            .position(|ws| ws.numeric_number(containers).is_none())
             .map(|idx| start + idx)
             .unwrap_or(end)
     }
 
-    pub fn activate_workspace(&mut self, idx: usize) {
-        self.activate_workspace_with_anim_config(idx, None);
+    pub fn activate_workspace(&mut self, containers: &mut ContainerTree<W>, idx: usize) {
+        self.activate_workspace_with_anim_config(containers, idx, None);
     }
 
     pub fn activate_workspace_with_anim_config(
         &mut self,
+        containers: &mut ContainerTree<W>,
         idx: usize,
         config: Option<tiri_config::Animation>,
     ) {
-        // FIXME: also compute and use current velocity.
-        let current_idx = self.workspace_render_idx();
-
+        let prev_active_id = self.workspaces[self.active_workspace_idx].id();
         if self.active_workspace_idx != idx {
-            self.previous_workspace_id = Some(self.workspaces[self.active_workspace_idx].id());
+            self.previous_workspace_id = Some(prev_active_id);
         }
 
-        let prev_active_idx = self.active_workspace_idx;
-        self.active_workspace_idx = idx;
+        // Read back afterwards: sticky floats arriving on the empty workspace at the start
+        // put a new one in front of it, which shifts every index including the switch's.
+        self.set_active_workspace_idx(containers, idx);
+        let idx = self.active_workspace_idx;
+        // FIXME: also compute and use current velocity.
+        let current_idx = self.workspace_render_idx();
 
         let config = config.unwrap_or(self.options.animations.workspace_switch.0);
 
@@ -1084,7 +865,7 @@ impl<W: LayoutElement> Monitor<W> {
             }
             _ => {
                 // Don't animate if nothing changed.
-                if prev_active_idx == idx {
+                if prev_active_id == self.workspaces[idx].id() {
                     return;
                 }
 
@@ -1142,29 +923,17 @@ impl<W: LayoutElement> Monitor<W> {
     pub fn add_root_tiling_subtree(
         &mut self,
         containers: &mut ContainerTree<W>,
-        mut workspace_idx: usize,
+        workspace_idx: usize,
         subtree: RootTilingSubtree,
         activate: bool,
     ) {
         let workspace = &mut self.workspaces[workspace_idx];
 
         workspace.add_root_tiling_subtree(containers, subtree, activate);
-
-        // After adding a new window, workspace becomes this output's own.
-        if !workspace.has_persistent_identity() {
-            workspace.original_output = OutputId::new(&self.output);
-        }
-
-        if workspace_idx == self.workspaces.len() - 1 {
-            self.add_workspace_bottom(containers);
-        }
-        if self.options.layout.empty_workspace_above_first && workspace_idx == 0 {
-            self.add_workspace_top(containers);
-            workspace_idx += 1;
-        }
+        let workspace_idx = self.claim_workspace(containers, workspace_idx);
 
         if activate {
-            self.activate_workspace(workspace_idx);
+            self.activate_workspace(containers, workspace_idx);
         }
     }
 
@@ -1179,29 +948,15 @@ impl<W: LayoutElement> Monitor<W> {
         allow_to_activate_workspace: bool,
         is_floating: bool,
     ) {
-        let (mut workspace_idx, target) = self.resolve_add_window_target(containers, target);
+        let (workspace_idx, target) = self.resolve_add_window_target(containers, target);
 
         let workspace = &mut self.workspaces[workspace_idx];
 
         workspace.add_tile(containers, tile, target, activate, is_floating);
-
-        // After adding a new window, workspace becomes this output's own.
-        if !workspace.has_persistent_identity() {
-            workspace.original_output = OutputId::new(&self.output);
-        }
-
-        if workspace_idx == self.workspaces.len() - 1 {
-            // Insert a new empty workspace.
-            self.add_workspace_bottom(containers);
-        }
-
-        if self.options.layout.empty_workspace_above_first && workspace_idx == 0 {
-            self.add_workspace_top(containers);
-            workspace_idx += 1;
-        }
+        let workspace_idx = self.claim_workspace(containers, workspace_idx);
 
         if allow_to_activate_workspace && activate.map_smart(|| false) {
-            self.activate_workspace(workspace_idx);
+            self.activate_workspace(containers, workspace_idx);
         }
     }
 
@@ -1219,26 +974,11 @@ impl<W: LayoutElement> Monitor<W> {
         {
             let workspace = &mut self.workspaces[workspace_idx];
             workspace.add_tile_split(containers, target, direction, tile, activate)?;
-
-            // After adding a new window, workspace becomes this output's own.
-            if !workspace.has_persistent_identity() {
-                workspace.original_output = OutputId::new(&self.output);
-            }
         }
-
-        if workspace_idx == self.workspaces.len() - 1 {
-            // Insert a new empty workspace.
-            self.add_workspace_bottom(containers);
-        }
-
-        let mut workspace_idx = workspace_idx;
-        if self.options.layout.empty_workspace_above_first && workspace_idx == 0 {
-            self.add_workspace_top(containers);
-            workspace_idx += 1;
-        }
+        let workspace_idx = self.claim_workspace(containers, workspace_idx);
 
         if allow_to_activate_workspace && activate {
-            self.activate_workspace(workspace_idx);
+            self.activate_workspace(containers, workspace_idx);
         }
 
         Ok(())
@@ -1256,26 +996,11 @@ impl<W: LayoutElement> Monitor<W> {
         {
             let workspace = &mut self.workspaces[workspace_idx];
             workspace.add_tile_split_root(containers, direction, tile, activate)?;
-
-            // After adding a new window, workspace becomes this output's own.
-            if !workspace.has_persistent_identity() {
-                workspace.original_output = OutputId::new(&self.output);
-            }
         }
-
-        if workspace_idx == self.workspaces.len() - 1 {
-            // Insert a new empty workspace.
-            self.add_workspace_bottom(containers);
-        }
-
-        let mut workspace_idx = workspace_idx;
-        if self.options.layout.empty_workspace_above_first && workspace_idx == 0 {
-            self.add_workspace_top(containers);
-            workspace_idx += 1;
-        }
+        let workspace_idx = self.claim_workspace(containers, workspace_idx);
 
         if allow_to_activate_workspace && activate {
-            self.activate_workspace(workspace_idx);
+            self.activate_workspace(containers, workspace_idx);
         }
 
         Ok(())
@@ -1309,6 +1034,10 @@ impl<W: LayoutElement> Monitor<W> {
             assert!(containers.remove_workspace(removed.workspace_key()));
             self.active_workspace_idx = 0;
         }
+
+        // Every reordering of `workspaces` ends here, and some of them leave a different
+        // workspace at the active index; that one is what the output shows now.
+        self.sync_sticky_host(containers);
     }
 
     pub fn unname_workspace(&mut self, containers: &mut ContainerTree<W>, id: WorkspaceId) -> bool {
@@ -1317,7 +1046,7 @@ impl<W: LayoutElement> Monitor<W> {
         };
         let ws = &mut self.workspaces[idx];
 
-        ws.unname();
+        ws.unname(containers);
 
         if self.workspace_switch.is_none() {
             self.clean_up_workspaces(containers);
@@ -1348,6 +1077,9 @@ impl<W: LayoutElement> Monitor<W> {
         if idx <= self.active_workspace_idx && self.active_workspace_idx > 0 {
             self.active_workspace_idx -= 1;
         }
+        // The removed workspace may have been the one shown; whichever is shown now holds the
+        // output's sticky floats from here on. The removed one keeps its own.
+        self.sync_sticky_host(containers);
 
         self.workspace_switch = None;
         self.clean_up_workspaces(containers);
@@ -1362,7 +1094,7 @@ impl<W: LayoutElement> Monitor<W> {
         mut idx: usize,
         activate: bool,
     ) {
-        ws.make_identity_persistent();
+        ws.make_identity_persistent(containers);
         ws.set_output(containers, Some(self.output.clone()));
         ws.update_config(containers, self.options.clone());
         let inserted_id = ws.id();
@@ -1383,7 +1115,7 @@ impl<W: LayoutElement> Monitor<W> {
             self.active_workspace_idx += 1;
         }
 
-        self.normalize_numeric_workspace_order();
+        self.normalize_numeric_workspace_order(containers);
 
         if activate {
             let idx = self
@@ -1392,7 +1124,7 @@ impl<W: LayoutElement> Monitor<W> {
                 .position(|ws| ws.id() == inserted_id)
                 .unwrap();
             self.workspace_switch = None;
-            self.activate_workspace(idx);
+            self.activate_workspace(containers, idx);
         }
 
         self.workspace_switch = None;
@@ -1429,7 +1161,7 @@ impl<W: LayoutElement> Monitor<W> {
             self.add_workspace_top(containers);
         }
 
-        self.normalize_numeric_workspace_order();
+        self.normalize_numeric_workspace_order(containers);
 
         // If the empty workspace was focused on the primary monitor, keep it focused.
         if empty_was_focused {
@@ -1442,46 +1174,81 @@ impl<W: LayoutElement> Monitor<W> {
         self.clean_up_workspaces(containers);
     }
 
-    pub fn move_down_or_to_workspace_down(&mut self, containers: &mut ContainerTree<W>) {
-        if !self.active_workspace().move_down(containers) {
-            self.move_to_workspace_down(containers, ActivateWindow::Smart);
-        }
-    }
-
-    pub fn move_up_or_to_workspace_up(&mut self, containers: &mut ContainerTree<W>) {
-        if !self.active_workspace().move_up(containers) {
-            self.move_to_workspace_up(containers, ActivateWindow::Smart);
-        }
-    }
-
-    pub fn focus_window_or_workspace_down(&mut self, containers: &mut ContainerTree<W>) {
-        if !self.active_workspace().focus_down(containers) {
-            self.switch_workspace_down();
-        }
-    }
-
-    pub fn focus_window_or_workspace_up(&mut self, containers: &mut ContainerTree<W>) {
-        if !self.active_workspace().focus_up(containers) {
-            self.switch_workspace_up();
-        }
-    }
-
-    pub fn move_to_workspace_up(
+    /// Move up or down within the workspace, or, at its edge, to the workspace that way.
+    pub fn move_vertically_or_to_workspace(
         &mut self,
         containers: &mut ContainerTree<W>,
-        activate: ActivateWindow,
+        direction: Direction,
     ) {
-        let new_idx = self.active_workspace_idx.saturating_sub(1);
-        self.move_to_workspace(containers, None, new_idx, activate);
+        if self
+            .active_workspace()
+            .move_in_direction(containers, direction)
+        {
+            return;
+        }
+        match direction {
+            Direction::Up | Direction::Down => {
+                let target = if direction == Direction::Up {
+                    TransferTarget::WorkspaceUp
+                } else {
+                    TransferTarget::WorkspaceDown
+                };
+                let idx = self.workspace_idx_for(target).unwrap();
+                self.move_to_workspace(containers, None, idx, ActivateWindow::Smart);
+            }
+            Direction::Left | Direction::Right => {}
+        }
     }
 
-    pub fn move_to_workspace_down(
+    /// Focus up or down within the workspace, or, at its edge, switch to the workspace that way.
+    pub fn focus_vertically_or_workspace(
         &mut self,
         containers: &mut ContainerTree<W>,
+        direction: Direction,
+    ) {
+        if self
+            .active_workspace()
+            .focus_in_direction(containers, direction, true)
+        {
+            return;
+        }
+        match direction {
+            Direction::Up => self.switch_workspace(containers, WorkspaceTarget::Up),
+            Direction::Down => self.switch_workspace(containers, WorkspaceTarget::Down),
+            Direction::Left | Direction::Right => {}
+        }
+    }
+    /// The index a relative or absolute workspace target names on this output.
+    pub(super) fn workspace_idx_for(&self, target: TransferTarget<'_>) -> Option<usize> {
+        let last = self.workspaces.len() - 1;
+        match target {
+            TransferTarget::WorkspaceUp => Some(self.active_workspace_idx.saturating_sub(1)),
+            TransferTarget::WorkspaceDown => Some(min(self.active_workspace_idx + 1, last)),
+            TransferTarget::WorkspaceIndex(idx) => Some(min(idx, last)),
+            TransferTarget::Workspace(_) | TransferTarget::Output { .. } => None,
+        }
+    }
+
+    /// Move `subject` to the workspace at `idx` on this output.
+    pub(super) fn transfer_to_workspace(
+        &mut self,
+        containers: &mut ContainerTree<W>,
+        subject: TransferSubject<'_, W::Id>,
+        idx: usize,
         activate: ActivateWindow,
     ) {
-        let new_idx = min(self.active_workspace_idx + 1, self.workspaces.len() - 1);
-        self.move_to_workspace(containers, None, new_idx, activate);
+        let activate_container = !matches!(activate, ActivateWindow::No);
+        match subject {
+            TransferSubject::Window(window) => {
+                self.move_to_workspace(containers, window, idx, activate)
+            }
+            TransferSubject::Container => {
+                self.move_container_to_workspace_idx(containers, idx, activate_container)
+            }
+            TransferSubject::RootContainer => {
+                self.move_column_to_workspace(containers, idx, activate_container)
+            }
+        }
     }
 
     pub fn move_to_workspace(
@@ -1491,59 +1258,6 @@ impl<W: LayoutElement> Monitor<W> {
         idx: usize,
         activate: ActivateWindow,
     ) {
-        let sticky_target = window.cloned().or_else(|| {
-            if self.sticky_is_active {
-                self.sticky_active_window_id(containers).cloned()
-            } else {
-                None
-            }
-        });
-
-        if let Some(window_id) = sticky_target.as_ref() {
-            if self.has_sticky_window(containers, window_id) {
-                let new_idx = min(idx, self.workspaces.len() - 1);
-                let new_id = self.workspaces[new_idx].id();
-
-                let was_active = self.sticky_is_active
-                    && self
-                        .sticky_active_window_id(containers)
-                        .is_some_and(|id| id == window_id);
-
-                let activate = activate.map_smart(|| was_active);
-                let activate = if activate {
-                    ActivateWindow::Yes
-                } else {
-                    ActivateWindow::No
-                };
-
-                let transferred = self
-                    .sticky_floating
-                    .take_tile_for_transfer(containers, window_id);
-                transferred.tile_mut(containers).set_sticky(false);
-
-                self.add_tile(
-                    containers,
-                    transferred.into_incoming(),
-                    MonitorAddWindowTarget::Workspace {
-                        id: new_id,
-                        root_index: None,
-                    },
-                    activate,
-                    true,
-                    true,
-                );
-
-                if was_active {
-                    self.sticky_is_active = false;
-                }
-
-                if self.workspace_switch.is_none() {
-                    self.clean_up_workspaces(containers);
-                }
-                return;
-            }
-        }
-
         let source_workspace_idx = if let Some(window) = window {
             self.workspace_idx_for_window(containers, window).unwrap()
         } else {
@@ -1568,6 +1282,17 @@ impl<W: LayoutElement> Monitor<W> {
             return;
         };
         let window = window.clone();
+
+        // A sticky float is on whichever workspace this output shows, so another workspace
+        // of the same output is not somewhere it can be put. sway refuses the command.
+        //
+        // sway/commands/move.c:542-545
+        if containers
+            .window_key(&window)
+            .is_some_and(|key| containers.is_sticky_or_child(key))
+        {
+            return;
+        }
 
         // None when no arrange has described this window yet. `tiles_with_render_positions`
         // reads the layout cache, and a tile is in the tree from the moment it is added —
@@ -1649,7 +1374,7 @@ impl<W: LayoutElement> Monitor<W> {
         }
 
         let workspace = &mut self.workspaces[source_workspace_idx];
-        if workspace.floating_is_active() {
+        if workspace.floating_is_active(containers) {
             let activate = if activate {
                 ActivateWindow::Smart
             } else {
@@ -1667,53 +1392,7 @@ impl<W: LayoutElement> Monitor<W> {
         self.add_root_tiling_subtree(containers, new_idx, subtree, activate);
     }
 
-    pub fn move_container_to_workspace_up(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        activate: bool,
-    ) {
-        let new_idx = self.active_workspace_idx.saturating_sub(1);
-        self.move_container_to_workspace_idx(containers, new_idx, activate);
-    }
-
-    pub fn move_container_to_workspace_down(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        activate: bool,
-    ) {
-        let new_idx = min(self.active_workspace_idx + 1, self.workspaces.len() - 1);
-        self.move_container_to_workspace_idx(containers, new_idx, activate);
-    }
-
-    pub fn move_container_to_workspace(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        idx: usize,
-        activate: bool,
-    ) {
-        let new_idx = min(idx, self.workspaces.len() - 1);
-        self.move_container_to_workspace_idx(containers, new_idx, activate);
-    }
-
-    pub fn move_column_to_workspace_up(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        activate: bool,
-    ) {
-        let new_idx = self.active_workspace_idx.saturating_sub(1);
-        self.move_column_to_workspace(containers, new_idx, activate);
-    }
-
-    pub fn move_column_to_workspace_down(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        activate: bool,
-    ) {
-        let new_idx = min(self.active_workspace_idx + 1, self.workspaces.len() - 1);
-        self.move_column_to_workspace(containers, new_idx, activate);
-    }
-
-    pub fn move_column_to_workspace(
+    fn move_column_to_workspace(
         &mut self,
         containers: &mut ContainerTree<W>,
         idx: usize,
@@ -1727,7 +1406,7 @@ impl<W: LayoutElement> Monitor<W> {
         }
 
         let workspace = &mut self.workspaces[source_workspace_idx];
-        if workspace.floating_is_active() {
+        if workspace.floating_is_active(containers) {
             let activate = if activate {
                 ActivateWindow::Smart
             } else {
@@ -1745,32 +1424,40 @@ impl<W: LayoutElement> Monitor<W> {
         self.add_root_tiling_subtree(containers, new_idx, subtree, activate);
     }
 
-    pub fn switch_workspace_up(&mut self) {
-        let new_idx = match &self.workspace_switch {
-            // During a DnD scroll, select the prev apparent workspace.
+    /// Show another workspace on this output.
+    pub fn switch_workspace(&mut self, containers: &mut ContainerTree<W>, target: WorkspaceTarget) {
+        let last = self.workspaces.len() - 1;
+        // During a DnD scroll, up and down are relative to the workspace that appears to be
+        // shown rather than to the active one.
+        let dnd_idx = match &self.workspace_switch {
             Some(WorkspaceSwitch::Gesture(gesture)) if gesture.dnd_last_event_time.is_some() => {
-                let current = gesture.current_idx;
-                let new = current.ceil() - 1.;
-                new.clamp(0., (self.workspaces.len() - 1) as f64) as usize
+                Some(gesture.current_idx)
             }
-            _ => self.active_workspace_idx.saturating_sub(1),
+            _ => None,
         };
-
-        self.activate_workspace(new_idx);
-    }
-
-    pub fn switch_workspace_down(&mut self) {
-        let new_idx = match &self.workspace_switch {
-            // During a DnD scroll, select the next apparent workspace.
-            Some(WorkspaceSwitch::Gesture(gesture)) if gesture.dnd_last_event_time.is_some() => {
-                let current = gesture.current_idx;
-                let new = current.floor() + 1.;
-                new.clamp(0., (self.workspaces.len() - 1) as f64) as usize
+        let idx = match target {
+            WorkspaceTarget::Up => match dnd_idx {
+                Some(current) => (current.ceil() - 1.).clamp(0., last as f64) as usize,
+                None => self.active_workspace_idx.saturating_sub(1),
+            },
+            WorkspaceTarget::Down => match dnd_idx {
+                Some(current) => (current.floor() + 1.).clamp(0., last as f64) as usize,
+                None => min(self.active_workspace_idx + 1, last),
+            },
+            WorkspaceTarget::Index(idx) => min(idx, last),
+            // i3's `workspace_auto_back_and_forth`: asking for the workspace already shown
+            // goes back to the previous one.
+            WorkspaceTarget::IndexOrBack(idx) if min(idx, last) != self.active_workspace_idx => {
+                min(idx, last)
             }
-            _ => min(self.active_workspace_idx + 1, self.workspaces.len() - 1),
+            WorkspaceTarget::IndexOrBack(_) | WorkspaceTarget::Previous => {
+                let Some(idx) = self.previous_workspace_idx() else {
+                    return;
+                };
+                idx
+            }
         };
-
-        self.activate_workspace(new_idx);
+        self.activate_workspace(containers, idx);
     }
 
     fn previous_workspace_idx(&self) -> Option<usize> {
@@ -1778,34 +1465,7 @@ impl<W: LayoutElement> Monitor<W> {
         self.idx_of_ws(id)
     }
 
-    pub fn switch_workspace(&mut self, idx: usize) {
-        self.activate_workspace(min(idx, self.workspaces.len() - 1));
-    }
-
-    pub fn switch_workspace_auto_back_and_forth(&mut self, idx: usize) {
-        let idx = min(idx, self.workspaces.len() - 1);
-
-        if idx == self.active_workspace_idx {
-            if let Some(prev_idx) = self.previous_workspace_idx() {
-                self.switch_workspace(prev_idx);
-            }
-        } else {
-            self.switch_workspace(idx);
-        }
-    }
-
-    pub fn switch_workspace_previous(&mut self) {
-        if let Some(idx) = self.previous_workspace_idx() {
-            self.switch_workspace(idx);
-        }
-    }
-
     pub fn active_window<'a>(&'a self, containers: &'a ContainerTree<W>) -> Option<&'a W> {
-        if self.sticky_is_active {
-            if let Some(win) = containers.active_floating_window(self.sticky_workspace) {
-                return Some(win);
-            }
-        }
         self.active_workspace_ref().active_window(containers)
     }
 
@@ -1847,9 +1507,6 @@ impl<W: LayoutElement> Monitor<W> {
         for ws in &mut self.workspaces {
             ws.advance_animations(containers);
         }
-
-        containers.advance_animations(self.sticky_workspace);
-        self.sticky_floating.advance_closing_animations();
     }
 
     pub(super) fn are_animations_ongoing(&self, containers: &ContainerTree<W>) -> bool {
@@ -1860,8 +1517,6 @@ impl<W: LayoutElement> Monitor<W> {
                 .workspaces
                 .iter()
                 .any(|ws| ws.are_animations_ongoing(containers))
-            || containers.are_animations_ongoing(self.sticky_workspace)
-            || self.sticky_floating.has_closing_windows()
     }
 
     pub fn are_transitions_ongoing(&self, containers: &ContainerTree<W>) -> bool {
@@ -1870,8 +1525,6 @@ impl<W: LayoutElement> Monitor<W> {
                 .workspaces
                 .iter()
                 .any(|ws| ws.are_transitions_ongoing(containers))
-            || containers.are_transitions_ongoing(self.sticky_workspace)
-            || self.sticky_floating.has_closing_windows()
     }
 
     pub fn update_render_elements(&mut self, containers: &mut ContainerTree<W>, is_active: bool) {
@@ -1893,16 +1546,6 @@ impl<W: LayoutElement> Monitor<W> {
             }
         }
 
-        let sticky_active = is_active && self.sticky_is_active;
-        self.sticky_render_active = sticky_active;
-        let sticky_view_rect = Rectangle::from_size(self.view_size());
-        self.sticky_floating.update_render_elements(
-            containers,
-            sticky_active,
-            sticky_view_rect,
-            RenderLayer::Normal,
-        );
-
         self.insert_hint_render_loc = None;
         if let Some(hint) = &self.insert_hint {
             match hint.workspace {
@@ -1910,7 +1553,7 @@ impl<W: LayoutElement> Monitor<W> {
                     if let Some(idx) = self.idx_of_ws(ws_id) {
                         let ws = &self.workspaces[idx];
                         if let Some(mut area) = ws.insert_hint_area(containers, &hint.position) {
-                            let scale = ws.scale().fractional_scale();
+                            let scale = ws.scale(containers).fractional_scale();
                             let view_size = containers.view_size(ws.workspace_key());
 
                             // Make sure the hint is at least partially visible.
@@ -1983,11 +1626,6 @@ impl<W: LayoutElement> Monitor<W> {
         }
     }
 
-    pub fn refresh_sticky(&mut self, containers: &mut ContainerTree<W>, is_active: bool) {
-        self.sticky_floating
-            .refresh(containers, is_active, is_active);
-    }
-
     pub fn update_config(&mut self, containers: &mut ContainerTree<W>, base_options: Rc<Options>) {
         let options =
             Rc::new(Options::clone(&base_options).with_merged_layout(self.layout_config.as_ref()));
@@ -1999,6 +1637,7 @@ impl<W: LayoutElement> Monitor<W> {
             if options.layout.empty_workspace_above_first {
                 self.add_workspace_top(containers);
             } else if self.workspace_switch.is_none() && self.active_workspace_idx != 0 {
+                self.move_sticky_floats(containers, 0, self.active_workspace_idx);
                 let removed = self.workspaces.remove(0);
                 assert!(containers.remove_workspace(removed.workspace_key()));
                 self.active_workspace_idx = self.active_workspace_idx.saturating_sub(1);
@@ -2017,16 +1656,10 @@ impl<W: LayoutElement> Monitor<W> {
             ws.update_config(containers, options.clone());
         }
 
-        containers.update_config(
-            self.sticky_workspace,
-            self.view_size(),
-            self.working_area,
-            self.scale().fractional_scale(),
-            options.clone(),
-        );
         self.insert_hint_element
             .update_config(options.layout.insert_hint);
 
+        self.sync_sticky_host(containers);
         self.base_options = base_options;
         self.options = options;
     }
@@ -2051,8 +1684,6 @@ impl<W: LayoutElement> Monitor<W> {
             ws.update_shaders(containers);
         }
 
-        containers.update_shaders(self.sticky_workspace);
-
         self.insert_hint_element.update_shaders();
     }
 
@@ -2066,22 +1697,14 @@ impl<W: LayoutElement> Monitor<W> {
         for ws in &mut self.workspaces {
             ws.update_output_size(containers);
         }
-
-        containers.update_config(
-            self.sticky_workspace,
-            self.view_size(),
-            self.working_area,
-            self.scale().fractional_scale(),
-            self.options.clone(),
-        );
     }
 
     pub fn move_workspace_down(&mut self, containers: &mut ContainerTree<W>) {
         if self.workspaces[self.active_workspace_idx]
-            .numeric_number()
+            .numeric_number(containers)
             .is_some()
         {
-            self.normalize_numeric_workspace_order();
+            self.normalize_numeric_workspace_order(containers);
             return;
         }
 
@@ -2103,7 +1726,7 @@ impl<W: LayoutElement> Monitor<W> {
         }
 
         let previous_workspace_id = self.previous_workspace_id;
-        self.activate_workspace(new_idx);
+        self.activate_workspace(containers, new_idx);
         self.workspace_switch = None;
         self.previous_workspace_id = previous_workspace_id;
 
@@ -2112,10 +1735,10 @@ impl<W: LayoutElement> Monitor<W> {
 
     pub fn move_workspace_up(&mut self, containers: &mut ContainerTree<W>) {
         if self.workspaces[self.active_workspace_idx]
-            .numeric_number()
+            .numeric_number(containers)
             .is_some()
         {
-            self.normalize_numeric_workspace_order();
+            self.normalize_numeric_workspace_order(containers);
             return;
         }
 
@@ -2137,7 +1760,7 @@ impl<W: LayoutElement> Monitor<W> {
         }
 
         let previous_workspace_id = self.previous_workspace_id;
-        self.activate_workspace(new_idx);
+        self.activate_workspace(containers, new_idx);
         self.workspace_switch = None;
         self.previous_workspace_id = previous_workspace_id;
 
@@ -2160,7 +1783,9 @@ impl<W: LayoutElement> Monitor<W> {
         }
 
         let moved_workspace_id = self.workspaces[old_idx].id();
-        let moved_had_numeric_identity = self.workspaces[old_idx].numeric_number().is_some();
+        let moved_had_numeric_identity = self.workspaces[old_idx]
+            .numeric_number(containers)
+            .is_some();
         let ws = self.workspaces.remove(old_idx);
         self.workspaces.insert(new_idx, ws);
 
@@ -2205,16 +1830,20 @@ impl<W: LayoutElement> Monitor<W> {
                 .get(self.active_workspace_idx)
                 .is_some_and(|ws| ws.is_empty_transient_numeric(containers, 1))
             {
-                self.active_workspace_idx = self
+                let idx = self
                     .workspaces
                     .iter()
                     .position(|ws| ws.id() == moved_workspace_id)
                     .unwrap();
+                self.set_active_workspace_idx(containers, idx);
             }
 
             for ws in &mut self.workspaces {
-                if ws.numeric_number().is_some_and(|number| number != 1) {
-                    ws.make_identity_persistent();
+                if ws
+                    .numeric_number(containers)
+                    .is_some_and(|number| number != 1)
+                {
+                    ws.make_identity_persistent(containers);
                 }
             }
         }
@@ -2449,81 +2078,11 @@ impl<W: LayoutElement> Monitor<W> {
             .find_map(|(ws, geo)| geo.contains(pos_within_output).then_some(ws))
     }
 
-    fn sticky_window_under<'a>(
-        &'a self,
-        containers: &'a ContainerTree<W>,
-        pos_within_output: Point<f64, Logical>,
-    ) -> Option<(&'a W, HitType)> {
-        if !self.sticky_is_visible(containers) {
-            return None;
-        }
-
-        let geo = self.active_workspace_render_geo()?;
-
-        if self.overview_progress.is_some() {
-            let zoom = self.overview_zoom();
-            let pos_within_workspace = (pos_within_output - geo.loc).downscale(zoom);
-            let (win, hit) = containers
-                .floating_tiles_with_render_positions(self.sticky_workspace)
-                .find_map(|(tile, tile_pos)| {
-                    HitType::hit_tile(tile, tile_pos, pos_within_workspace)
-                })?;
-            // During the overview animation, we cannot do input hits because we cannot really
-            // represent scaled windows properly.
-            Some((win, hit.to_activate()))
-        } else {
-            let pos_within_workspace = pos_within_output - geo.loc;
-            let (win, hit) = containers
-                .floating_tiles_with_render_positions(self.sticky_workspace)
-                .find_map(|(tile, tile_pos)| {
-                    HitType::hit_tile(tile, tile_pos, pos_within_workspace)
-                })?;
-            Some((win, hit.offset_win_pos(geo.loc)))
-        }
-    }
-
-    fn sticky_resize_hit_under(
-        &self,
-        containers: &ContainerTree<W>,
-        pos_within_output: Point<f64, Logical>,
-    ) -> Option<ResizeHit<W::Id>> {
-        if !self.sticky_is_visible(containers) {
-            return None;
-        }
-
-        let geo = self.active_workspace_render_geo()?;
-        let pos_within_workspace = pos_within_output - geo.loc;
-
-        match self
-            .sticky_floating
-            .resize_hit_under(containers, pos_within_workspace)
-        {
-            FloatingResizeResult::Hit(hit) => {
-                let cursor = if !hit.external_edges.is_empty() {
-                    external_resize_cursor_icon(hit.external_edges)
-                } else {
-                    hit.edges.cursor_icon()
-                };
-                Some(ResizeHit {
-                    window: hit.window,
-                    edges: hit.edges,
-                    cursor,
-                    is_floating: true,
-                })
-            }
-            _ => None,
-        }
-    }
-
     pub fn window_under<'a>(
         &'a self,
         containers: &'a ContainerTree<W>,
         pos_within_output: Point<f64, Logical>,
     ) -> Option<(&'a W, HitType)> {
-        if let Some(hit) = self.sticky_window_under(containers, pos_within_output) {
-            return Some(hit);
-        }
-
         let (ws, geo) = self.workspace_under(pos_within_output)?;
 
         if self.overview_progress.is_some() {
@@ -2539,47 +2098,17 @@ impl<W: LayoutElement> Monitor<W> {
         }
     }
 
-    pub fn resize_edges_under(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        pos_within_output: Point<f64, Logical>,
-    ) -> Option<ResizeEdge> {
-        if self.overview_progress.is_some() {
-            return None;
-        }
-
-        if let Some(hit) = self.sticky_resize_hit_under(containers, pos_within_output) {
-            return Some(hit.edges);
-        }
-
-        let view_width = self.view_size().w;
-        for (ws, geo) in self.workspaces_with_render_geo_mut(true) {
-            let loc = Point::from((0., geo.loc.y));
-            let size = Size::from((view_width, geo.size.h));
-            let bounds = Rectangle::new(loc, size);
-            if bounds.contains(pos_within_output) {
-                return ws.resize_edges_under(containers, pos_within_output - geo.loc);
-            }
-        }
-
-        None
-    }
-
     pub fn resize_hit_under(
-        &mut self,
-        containers: &mut ContainerTree<W>,
+        &self,
+        containers: &ContainerTree<W>,
         pos_within_output: Point<f64, Logical>,
     ) -> Option<super::ResizeHit<W::Id>> {
         if self.overview_progress.is_some() {
             return None;
         }
 
-        if let Some(hit) = self.sticky_resize_hit_under(containers, pos_within_output) {
-            return Some(hit);
-        }
-
         let view_width = self.view_size().w;
-        for (ws, geo) in self.workspaces_with_render_geo_mut(true) {
+        for (ws, geo) in self.workspaces_with_render_geo() {
             let loc = Point::from((0., geo.loc.y));
             let size = Size::from((view_width, geo.size.h));
             let bounds = Rectangle::new(loc, size);
@@ -2708,7 +2237,8 @@ impl<W: LayoutElement> Monitor<W> {
 
         let active_ws_id = self.workspaces[self.active_workspace_idx].id();
 
-        // Pre-calculate sticky geometry outside the loop to use a fixed position
+        // Where the active workspace rests. Its sticky floats are drawn here while it slides:
+        // they belong to the output, so a workspace switch is not something they take part in.
         let ws_size = self.workspace_size(zoom);
         let static_offset = (self.view_size().to_point() - ws_size.to_point()).downscale(2.);
         let static_offset = static_offset
@@ -2773,41 +2303,40 @@ impl<W: LayoutElement> Monitor<W> {
                 let xray_pos = XrayPos::new(geo.loc, zoom);
 
                 if pass < 2 {
-                    ws.render_floating(containers, ctx.r(), xray_pos, focus_ring, layer, push!());
-
-                    // Render sticky windows in a fixed position for the active workspace only.
-                    // This must be done after floating but before tiling to maintain proper
-                    // z-order. Sticky windows never move between workspaces, so they belong to
-                    // the normal pass.
-                    if layer.is_normal()
-                        && ws.id() == active_ws_id
-                        && containers.floating_root_count(self.sticky_workspace) != 0
-                    {
-                        let view_rect = Rectangle::from_size(self.view_size());
-                        let sticky_focus_ring = focus_ring && self.sticky_is_active;
-
-                        self.sticky_floating.render(
+                    let pin_sticky =
+                        layer.is_normal() && ws.id() == active_ws_id && geo.loc != sticky_geo.loc;
+                    if pin_sticky {
+                        ws.render_floating(
                             containers,
                             ctx.r(),
-                            xray_pos,
-                            view_rect,
-                            BranchRenderParams {
-                                has_focus: self.sticky_render_active,
-                                focus_ring: sticky_focus_ring,
-                                layer: RenderLayer::Normal,
-                            },
+                            XrayPos::new(sticky_geo.loc, zoom),
+                            focus_ring,
+                            layer,
+                            FloatingRoots::Sticky,
                             &mut |elem| {
-                                let elem = WorkspaceRenderElement::from(elem);
                                 let elem =
                                     CropRenderElement::from_element(elem, scale, crop_bounds);
                                 if let Some(elem) = elem {
                                     let elem = MonitorInnerRenderElement::from(elem);
-                                    // Use sticky_geo instead of geo to avoid animation
                                     push(scale_relocate(sticky_geo, elem));
                                 }
                             },
                         );
                     }
+                    let roots = if pin_sticky {
+                        FloatingRoots::NonSticky
+                    } else {
+                        FloatingRoots::All
+                    };
+                    ws.render_floating(
+                        containers,
+                        ctx.r(),
+                        xray_pos,
+                        focus_ring,
+                        layer,
+                        roots,
+                        push!(),
+                    );
 
                     if layer.is_normal() {
                         if let Some(loc) = insert_hint_render_loc {
@@ -3057,7 +2586,11 @@ impl<W: LayoutElement> Monitor<W> {
         true
     }
 
-    pub fn workspace_switch_gesture_end(&mut self, is_touchpad: Option<bool>) -> bool {
+    pub fn workspace_switch_gesture_end(
+        &mut self,
+        containers: &mut ContainerTree<W>,
+        is_touchpad: Option<bool>,
+    ) -> bool {
         let Some(WorkspaceSwitch::Gesture(gesture)) = &self.workspace_switch else {
             return false;
         };
@@ -3102,10 +2635,17 @@ impl<W: LayoutElement> Monitor<W> {
             self.previous_workspace_id = Some(self.workspaces[self.active_workspace_idx].id());
         }
 
-        self.active_workspace_idx = new_idx;
+        // Read back afterwards, as in `activate_workspace_with_anim_config`: the gesture is
+        // still the current switch, so a workspace put in front of it offsets it too.
+        self.set_active_workspace_idx(containers, new_idx);
+        let new_idx = self.active_workspace_idx;
+        let Some(WorkspaceSwitch::Gesture(gesture)) = &self.workspace_switch else {
+            unreachable!("the gesture is replaced only below");
+        };
+        let from_idx = gesture.current_idx;
         self.workspace_switch = Some(WorkspaceSwitch::Animation(Animation::new(
             self.clock.clone(),
-            gesture.current_idx,
+            from_idx,
             new_idx as f64,
             velocity,
             self.options.animations.workspace_switch.0,
@@ -3114,7 +2654,7 @@ impl<W: LayoutElement> Monitor<W> {
         true
     }
 
-    pub fn dnd_scroll_gesture_end(&mut self) {
+    pub fn dnd_scroll_gesture_end(&mut self, containers: &mut ContainerTree<W>) {
         if !matches!(
             self.workspace_switch,
             Some(WorkspaceSwitch::Gesture(WorkspaceSwitchGesture {
@@ -3126,7 +2666,7 @@ impl<W: LayoutElement> Monitor<W> {
             return;
         };
 
-        self.workspace_switch_gesture_end(None);
+        self.workspace_switch_gesture_end(containers, None);
     }
 
     pub fn scale(&self) -> smithay::output::Scale {
@@ -3153,9 +2693,9 @@ impl<W: LayoutElement> Monitor<W> {
         assert_eq!(&*self.options, &options);
 
         assert_eq!(
-            self.sticky_workspace,
-            self.sticky_floating.workspace(),
-            "the sticky floating side must address the sticky workspace"
+            self.sticky_host,
+            self.workspaces[self.active_workspace_idx].id(),
+            "the active workspace must be the one holding the output's sticky floats"
         );
 
         assert!(
@@ -3184,12 +2724,12 @@ impl<W: LayoutElement> Monitor<W> {
         }
 
         assert!(
-            self.workspaces.last().unwrap().name().is_none(),
+            self.workspaces.last().unwrap().name(containers).is_none(),
             "monitor must have an unnamed workspace in the end"
         );
         if self.options.layout.empty_workspace_above_first {
             assert!(
-                self.workspaces.first().unwrap().name().is_none(),
+                self.workspaces.first().unwrap().name(containers).is_none(),
                 "first workspace must be unnamed when empty_workspace_above_first is set"
             )
         }
@@ -3231,11 +2771,11 @@ impl<W: LayoutElement> Monitor<W> {
         for workspace in &self.workspaces {
             assert_eq!(
                 self.scale().integer_scale(),
-                workspace.scale().integer_scale()
+                workspace.scale(containers).integer_scale()
             );
             assert_eq!(
                 self.scale().fractional_scale(),
-                workspace.scale().fractional_scale()
+                workspace.scale(containers).fractional_scale()
             );
             assert_eq!(
                 self.view_size(),
@@ -3256,7 +2796,8 @@ impl<W: LayoutElement> Monitor<W> {
             );
 
             assert_eq!(
-                workspace.base_options, self.options,
+                workspace.properties(containers).base_options,
+                self.options,
                 "workspace options must be synchronized with monitor"
             );
         }

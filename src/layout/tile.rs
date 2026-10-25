@@ -10,7 +10,7 @@ use tiri_config::utils::MergeWith as _;
 use tiri_config::{Color, CornerRadius, GradientInterpolation, TabBar};
 use tiri_ipc::WindowLayout;
 
-use super::container::{InsertParentInfo, Layout, TabBarTab};
+use super::container::{InsertParentInfo, LayoutMode, TabBarTab};
 use super::focus_ring::{
     FocusRing, FocusRingEdges, FocusRingIndicatorEdge, FocusRingRenderElement, FocusRingState,
 };
@@ -67,11 +67,8 @@ pub struct Tile<W: LayoutElement> {
     /// The black backdrop for fullscreen windows.
     fullscreen_backdrop: SolidColorBuffer,
 
-    /// Whether the tile should float upon unfullscreening.
     /// Whether this tile is in the scratchpad.
     pub(super) is_scratchpad: bool,
-    /// Whether this tile is sticky (floating across workspaces on an output).
-    pub(super) is_sticky: bool,
 
     /// The size that the window should assume when going floating.
     ///
@@ -328,7 +325,6 @@ impl<W: LayoutElement> Tile<W> {
             sizing_mode,
             fullscreen_backdrop: SolidColorBuffer::new((0., 0.), [0., 0., 0., 1.]),
             is_scratchpad: false,
-            is_sticky: false,
             floating_window_size: None,
             floating_pos: None,
             floating_reinsert_hint: None,
@@ -845,7 +841,7 @@ impl<W: LayoutElement> Tile<W> {
                 match render_tab_bar(
                     gles,
                     &state.config,
-                    Layout::Tabbed,
+                    LayoutMode::Tabbed,
                     rect,
                     state.row_height,
                     &tabs,
@@ -1026,14 +1022,6 @@ impl<W: LayoutElement> Tile<W> {
 
     pub(super) fn set_scratchpad(&mut self, scratchpad: bool) {
         self.is_scratchpad = scratchpad;
-    }
-
-    pub(super) fn is_sticky(&self) -> bool {
-        self.is_sticky
-    }
-
-    pub(super) fn set_sticky(&mut self, sticky: bool) {
-        self.is_sticky = sticky;
     }
 
     pub fn sizing_mode(&self) -> SizingMode {
@@ -1270,7 +1258,8 @@ impl<W: LayoutElement> Tile<W> {
 
     /// Returns a partially-filled [`WindowLayout`].
     ///
-    /// Only the sizing properties that a [`Tile`] can fill are filled.
+    /// Only the sizing properties that a [`Tile`] can fill are filled. Whether the window is
+    /// sticky is a property of its container, which the tree fills in.
     pub fn ipc_layout_template(&self) -> WindowLayout {
         WindowLayout {
             pos_in_tiling_layout: None,
@@ -1278,7 +1267,7 @@ impl<W: LayoutElement> Tile<W> {
             window_size: self.window().size().into(),
             tile_pos_in_workspace_view: None,
             window_offset_in_tile: self.window_loc().into(),
-            is_sticky: self.is_sticky(),
+            is_sticky: false,
         }
     }
 

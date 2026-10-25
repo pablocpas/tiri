@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Rectangle};
 
-use super::{ContainerTree, Layout, LayoutElement, NodeData, NodeKey, ResizeReach};
+use super::{ContainerTree, LayoutElement, LayoutMode, NodeData, NodeKey, ResizeReach};
 use crate::layout::tile::Tile;
 
 impl<W: LayoutElement> ContainerTree<W> {
@@ -233,23 +233,16 @@ impl<W: LayoutElement> ContainerTree<W> {
         })
     }
 
-    pub(in crate::layout) fn find_wl_surface_in_workspace(
+    /// The node of the window whose toplevel surface this is, wherever the window is: on a
+    /// workspace, in the scratchpad or being dragged.
+    pub(in crate::layout) fn window_key_for_wl_surface(
         &self,
-        workspace: NodeKey,
         surface: &WlSurface,
-    ) -> Option<&W> {
-        self.windows_in_workspace(workspace)
-            .find(|window| window.is_wl_surface(surface))
-    }
-
-    pub(in crate::layout) fn find_wl_surface_in_workspace_mut(
-        &mut self,
-        workspace: NodeKey,
-        surface: &WlSurface,
-    ) -> Option<&mut W> {
-        self.windows_mut_in_workspace(workspace)
-            .into_iter()
-            .find(|window| window.is_wl_surface(surface))
+    ) -> Option<NodeKey> {
+        self.window_nodes.values().copied().find(|key| {
+            self.get_tile(*key)
+                .is_some_and(|tile| tile.window().is_wl_surface(surface))
+        })
     }
 
     /// The window ids of one workspace, both sides, in visual order.
@@ -288,7 +281,11 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// built* — which is what every caller wants to know. Its own layout is
     /// [`Self::workspace_layout`].
     /// Whether one workspace holds a container with this layout, on either side.
-    pub(in crate::layout) fn contains_layout(&self, workspace: NodeKey, layout: Layout) -> bool {
+    pub(in crate::layout) fn contains_layout(
+        &self,
+        workspace: NodeKey,
+        layout: LayoutMode,
+    ) -> bool {
         self.nodes.iter().any(|(key, node)| match node {
             NodeData::Container(container) if !container.is_view() => {
                 !self.is_workspace(key)
@@ -335,11 +332,11 @@ impl<W: LayoutElement> ContainerTree<W> {
         out
     }
 
-    /// Layout, geometry and child count of a workspace or container node.
+    /// LayoutMode, geometry and child count of a workspace or container node.
     pub(in crate::layout) fn container_info(
         &self,
         key: NodeKey,
-    ) -> Option<(Layout, Rectangle<f64, Logical>, usize)> {
+    ) -> Option<(LayoutMode, Rectangle<f64, Logical>, usize)> {
         let container = self.get_container(key)?;
         Some((
             container.layout(),
@@ -377,7 +374,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn find_parent_with_layout(
         &self,
         key: NodeKey,
-        layout: Layout,
+        layout: LayoutMode,
     ) -> Option<(NodeKey, usize)> {
         let mut current = key;
         while let Some(parent_key) = self.parent_of(current) {
@@ -401,7 +398,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn find_resize_parent(
         &self,
         key: NodeKey,
-        layout: Layout,
+        layout: LayoutMode,
         reach: ResizeReach,
     ) -> Option<(NodeKey, usize)> {
         let mut current = key;

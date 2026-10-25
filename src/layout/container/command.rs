@@ -1,4 +1,29 @@
-use super::{ContainerTree, LayoutElement, NodeKey};
+use super::{ContainerTree, LayoutElement, LayoutMode, NodeKey};
+use crate::layout::LayoutCycleEntry;
+
+/// A `split` or `layout` command, as sway's `cmd_split` and `cmd_layout` take them.
+///
+/// What it acts on is resolved by the tree from the seat, the same way for the tiled side and
+/// for a floating group; see `ContainerTree::apply_layout_command`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayoutCommand<'a> {
+    /// `split horizontal|vertical`.
+    Split(LayoutMode),
+    /// `split toggle`: split the opposite way to the parent.
+    SplitToggle,
+    /// `split none`.
+    Unsplit,
+    /// `layout splith|splitv|tabbed|stacking`.
+    Set(LayoutMode),
+    /// `layout default`.
+    Default,
+    /// `layout toggle split`, or `layout toggle` with nothing after it.
+    ToggleSplit,
+    /// `layout toggle all`.
+    ToggleAll,
+    /// `layout toggle <layout>...`.
+    ToggleCycle(&'a [LayoutCycleEntry]),
+}
 
 /// Semantic target of a command resolved for one workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,8 +73,7 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// The workspace is not one: a command that lands there means the workspace, and sway
     /// reaches it through `workspace_*` rather than `container_*`. A floating group's root is
     /// one, because in sway it is an ordinary container that happens to hang off the other
-    /// list. This used to be a `RootPolicy` argument threaded through forty-three call sites
-    /// and it was never anything but this question, which the tree can now answer for itself.
+    /// list.
     pub(in crate::layout) fn branch_is_addressable(&self, key: NodeKey) -> bool {
         self.is_floating_root(key)
     }

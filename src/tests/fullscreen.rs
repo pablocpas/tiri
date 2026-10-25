@@ -4,7 +4,7 @@ use smithay::utils::Point;
 use wayland_client::protocol::wl_surface::WlSurface;
 
 use super::*;
-use crate::layout::LayoutElement as _;
+use crate::layout::{FocusCommand, LayoutElement as _};
 
 // Sets up a fixture with two outputs and 100×100 window.
 fn set_up() -> (Fixture, ClientId, WlSurface) {
@@ -44,7 +44,7 @@ fn fullscreen_binding_accepts_a_selected_floating_container() {
 
     {
         let niri = f.niri();
-        niri.layout.focus_parent();
+        niri.layout.focus_command(FocusCommand::Parent);
         niri.layout.toggle_window_floating(None);
         assert!(niri.layout.active_selection_is_container());
     }
@@ -89,7 +89,7 @@ fn windowed_fullscreen() {
     let window_id = mapped.window.clone();
 
     // Legacy entrypoint now maps to real fullscreen.
-    niri.layout.toggle_windowed_fullscreen(&window_id);
+    niri.layout.toggle_fullscreen(&window_id);
     f.double_roundtrip(id);
 
     // Should request real fullscreen.
@@ -113,7 +113,7 @@ fn windowed_fullscreen() {
     assert!(!mapped.is_windowed_fullscreen());
 
     // Disable fullscreen.
-    f.niri().layout.toggle_windowed_fullscreen(&window_id);
+    f.niri().layout.toggle_fullscreen(&window_id);
     f.double_roundtrip(id);
 
     // Should request without fullscreen state with the tiled size.
@@ -145,13 +145,13 @@ fn windowed_fullscreen_chain() {
     let mapped = f.niri().layout.windows().next().unwrap().1;
     let window_id = mapped.window.clone();
 
-    f.niri().layout.toggle_windowed_fullscreen(&window_id);
+    f.niri().layout.toggle_fullscreen(&window_id);
     f.roundtrip(id);
-    f.niri().layout.toggle_windowed_fullscreen(&window_id);
+    f.niri().layout.toggle_fullscreen(&window_id);
     f.roundtrip(id);
-    f.niri().layout.toggle_windowed_fullscreen(&window_id);
+    f.niri().layout.toggle_fullscreen(&window_id);
     f.roundtrip(id);
-    f.niri().layout.toggle_windowed_fullscreen(&window_id);
+    f.niri().layout.toggle_fullscreen(&window_id);
     f.double_roundtrip(id);
 
     // Should be four configures matching the four requests.

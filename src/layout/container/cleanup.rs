@@ -6,7 +6,7 @@
 //! `workspace_squash` only after a directional move. A container left holding one child by
 //! a `close` therefore stays, and the identical shape reached by a `move` does not.
 
-use super::{ContainerData, ContainerTree, Layout, LayoutElement, NodeData, NodeKey};
+use super::{ContainerData, ContainerTree, LayoutElement, LayoutMode, NodeData, NodeKey};
 
 impl<W: LayoutElement> ContainerTree<W> {
     /// sway's `container_reap_empty`: destroy a container the command has emptied, and any
@@ -209,8 +209,8 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         };
 
-        matches!(con_layout, Layout::SplitH | Layout::SplitV)
-            && matches!(child_layout, Layout::SplitH | Layout::SplitV)
+        matches!(con_layout, LayoutMode::SplitH | LayoutMode::SplitV)
+            && matches!(child_layout, LayoutMode::SplitH | LayoutMode::SplitV)
             && !con_layout.is_parallel_to_layout(child_layout)
             && grandparent_layout.is_parallel_to_layout(child_layout)
     }
@@ -219,7 +219,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         &mut self,
         branch_root: NodeKey,
         path: &[usize],
-        layout: Layout,
+        layout: LayoutMode,
     ) -> Option<NodeKey> {
         if path.is_empty() {
             return Some(branch_root);
