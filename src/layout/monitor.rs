@@ -573,6 +573,7 @@ impl<W: LayoutElement> Monitor<W> {
         })
     }
 
+    #[cfg(test)]
     pub fn find_named_workspace_index(
         &self,
         containers: &ContainerTree<W>,
@@ -586,18 +587,6 @@ impl<W: LayoutElement> Monitor<W> {
 
     pub fn active_workspace(&self, containers: &ContainerTree<W>) -> Workspace<W> {
         self.ws(containers, self.active_workspace_idx(containers))
-    }
-
-    pub fn active_workspace_render_geo(
-        &self,
-        containers: &ContainerTree<W>,
-    ) -> Option<Rectangle<f64, Logical>> {
-        let active_id = self
-            .ws(containers, self.active_workspace_idx(containers))
-            .id();
-        self.workspaces_with_render_geo(containers)
-            .find(|(ws, _)| ws.id() == active_id)
-            .map(|(_, geo)| geo)
     }
 
     pub(super) fn active_mark_target_key(&self, containers: &ContainerTree<W>) -> Option<NodeKey> {
@@ -659,18 +648,6 @@ impl<W: LayoutElement> Monitor<W> {
         self.workspace_keys(containers)
             .iter()
             .flat_map(move |&ws| containers.windows_in_workspace(ws))
-    }
-
-    /// Every window on this output.
-    ///
-    /// One pass over the tree, because the workspaces are all roots in it and cannot each be
-    /// handed a mutable borrow of it in turn.
-    pub fn windows_mut<'a>(
-        &'a mut self,
-        containers: &'a mut ContainerTree<W>,
-    ) -> impl Iterator<Item = &'a mut W> + 'a {
-        let roots = self.workspace_keys(containers).to_vec();
-        containers.windows_mut_in_workspaces(&roots).into_iter()
     }
 
     /// Make the workspace at `idx` the active one, bringing the output's sticky floats along.

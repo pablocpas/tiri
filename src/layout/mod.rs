@@ -2248,10 +2248,6 @@ impl<W: LayoutElement> Layout<W> {
         self.monitors().find(|mon| &mon.output == output)
     }
 
-    pub fn monitor_for_output_mut(&mut self, output: &Output) -> Option<&mut Monitor<W>> {
-        self.monitors_mut().find(|mon| &mon.output == output)
-    }
-
     fn find_workspace_location_by_id(&self, id: WorkspaceId) -> Option<(usize, usize)> {
         match &self.monitor_set {
             MonitorSet::Normal { monitors, .. } => {
@@ -2768,6 +2764,7 @@ impl<W: LayoutElement> Layout<W> {
         mon.window_under(&self.containers, pos_within_output)
     }
 
+    #[cfg(test)]
     pub fn resize_edges_under(
         &self,
         output: &Output,
@@ -3551,6 +3548,7 @@ impl<W: LayoutElement> Layout<W> {
         self.update_options(options);
     }
 
+    #[cfg(test)]
     /// Whether autotiling is currently on.
     pub fn is_autotile(&self) -> bool {
         self.options.layout.autotile

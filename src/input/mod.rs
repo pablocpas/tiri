@@ -435,16 +435,8 @@ impl<D: SeatHandler + TabletSeatHandler> AnyStartData<D> {
         }
     }
 
-    pub fn is_pointer(&self) -> bool {
-        matches!(self, Self::Pointer(_))
-    }
-
     pub fn is_touch(&self) -> bool {
         matches!(self, Self::Touch(_))
-    }
-
-    pub fn is_tablet_tool(&self) -> bool {
-        matches!(self, Self::TabletTool(_))
     }
 }
 
