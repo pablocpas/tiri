@@ -624,11 +624,11 @@ enum MonitorSet<W: LayoutElement> {
     },
 }
 
-/// Owner of one workspace root in the layout-wide container tree.
+/// Where one workspace root sits: which list holds its handle, and at what index.
 ///
-/// Window lookup stops at the root. This value bridges that structural answer to the
-/// presentation object which owns transient state for the root, without asking every monitor
-/// and workspace whether it contains the window again.
+/// Window lookup stops at the root, and everything the workspace is or is doing is on that
+/// root. What it cannot say is the workspace's place among the output's workspaces, which the
+/// output's list holds; this is that answer, for the callers that go on to act on the output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WorkspaceOwner {
     Scratchpad,
@@ -2068,45 +2068,6 @@ impl<W: LayoutElement> Layout<W> {
         }
     }
 
-    /// Reconcile the transient runtime state of every workspace touched by one tree swap.
-    ///
-    /// The topology mutation is global and returns its affected roots. Applying its effects
-    /// here keeps workspace/floating runtimes out of the model operation while still updating
-    /// both sides of a cross-workspace swap exactly once.
-    fn apply_swap_effects(&mut self, effects: container::SwapEffects) {
-        for root in [effects.source_workspace, effects.target_workspace]
-            .into_iter()
-            .take(if effects.source_workspace == effects.target_workspace {
-                1
-            } else {
-                2
-            })
-        {
-            let owner = self
-                .workspace_owner(root)
-                .expect("every tree workspace must have one layout runtime owner");
-            let containers = &self.containers;
-            match (&mut self.monitor_set, owner) {
-                (_, WorkspaceOwner::Scratchpad) => {
-                    self.scratchpad.apply_swap_effects(containers, effects);
-                }
-                (
-                    MonitorSet::Normal { monitors, .. },
-                    WorkspaceOwner::Monitor {
-                        monitor_idx,
-                        workspace_idx,
-                    },
-                ) => monitors[monitor_idx].workspaces[workspace_idx]
-                    .apply_swap_effects(containers, effects),
-                (
-                    MonitorSet::NoOutputs { workspaces },
-                    WorkspaceOwner::NoOutputs { workspace_idx },
-                ) => workspaces[workspace_idx].apply_swap_effects(containers, effects),
-                _ => unreachable!("workspace owner must match the monitor-set state"),
-            }
-        }
-    }
-
     /// Locate a window once in the tree and classify the root it belongs to.
     fn window_owner(&self, window: &W::Id) -> Option<(NodeKey, WorkspaceOwner)> {
         let tree = &self.containers;
@@ -2908,14 +2869,8 @@ impl<W: LayoutElement> Layout<W> {
         let Some(source_workspace) = self.active_workspace().map(Workspace::workspace_key) else {
             return false;
         };
-        let Some(effects) = self
-            .containers
+        self.containers
             .swap_selected_with_window(source_workspace, target)
-        else {
-            return false;
-        };
-        self.apply_swap_effects(effects);
-        true
     }
 
     pub fn center_window(&mut self, id: Option<&W::Id>) {
@@ -4219,14 +4174,8 @@ impl<W: LayoutElement> Layout<W> {
         let Some(source_workspace) = self.active_workspace().map(Workspace::workspace_key) else {
             return false;
         };
-        let Some(effects) = self
-            .containers
+        self.containers
             .swap_selected_with_mark(source_workspace, mark)
-        else {
-            return false;
-        };
-        self.apply_swap_effects(effects);
-        true
     }
 
     /// i3's `unmark`: named, it takes that mark off whichever container holds it; bare, it

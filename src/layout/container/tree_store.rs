@@ -80,14 +80,17 @@ impl<W: LayoutElement> ContainerTree<W> {
     ///
     /// Always present: the root is a workspace node for the tree's whole life. The `Option`
     /// is for callers that would rather ask than assert.
-    pub(super) fn get_workspace(&self, workspace: NodeKey) -> Option<&WorkspaceData> {
+    pub(super) fn get_workspace(&self, workspace: NodeKey) -> Option<&WorkspaceData<W>> {
         match self.nodes.get(workspace)? {
             NodeData::Workspace(workspace) => Some(workspace),
             _ => None,
         }
     }
 
-    pub(super) fn get_workspace_mut(&mut self, workspace: NodeKey) -> Option<&mut WorkspaceData> {
+    pub(super) fn get_workspace_mut(
+        &mut self,
+        workspace: NodeKey,
+    ) -> Option<&mut WorkspaceData<W>> {
         match self.nodes.get_mut(workspace)? {
             NodeData::Workspace(workspace) => Some(workspace),
             _ => None,

@@ -13,7 +13,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    pub(in crate::layout) fn root_container(&self, workspace: NodeKey) -> Option<&WorkspaceData> {
+    pub(in crate::layout) fn root_container(
+        &self,
+        workspace: NodeKey,
+    ) -> Option<&WorkspaceData<W>> {
         self.get_workspace(workspace)
     }
 

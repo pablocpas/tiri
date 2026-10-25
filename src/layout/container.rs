@@ -27,7 +27,7 @@ use smithay::utils::{Logical, Point, Rectangle, Size};
 use tiri_config::BlockOutFrom;
 
 use super::tile::Tile;
-use super::workspace::WorkspaceProperties;
+use super::workspace::{WorkspaceProperties, WorkspaceRuntime};
 use super::{Clock, LayoutElement, Options, SizeFrac};
 use crate::utils::id::IdCounter;
 use crate::utils::transaction::Transaction;
@@ -110,22 +110,6 @@ pub enum LayoutMode {
 pub(super) enum LayoutLayer {
     Tiled,
     Floating,
-}
-
-/// Runtime-relevant effects of a successful tree swap.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct SwapEffects {
-    /// Workspace whose command target initiated the swap.
-    pub source_workspace: NodeKey,
-    /// Workspace that owned the addressed target before the swap.
-    pub target_workspace: NodeKey,
-    pub floating_ownership_changed: bool,
-}
-
-impl SwapEffects {
-    pub(super) fn affects(self, workspace: NodeKey) -> bool {
-        workspace == self.source_workspace || workspace == self.target_workspace
-    }
 }
 
 /// Which siblings a resize takes the space from.
@@ -269,7 +253,7 @@ pub enum NodeData<W: LayoutElement> {
     /// sway's `N_WORKSPACE`: a struct of its own, unlike i3 where a workspace is an ordinary
     /// `Con`. Modelling it as a node anyway is what lets one code path answer the questions
     /// both of them answer the same way.
-    Workspace(WorkspaceData),
+    Workspace(WorkspaceData<W>),
     /// Every other node: sway's `N_CONTAINER`.
     ///
     /// One `sway_container` is a view when `->view` is set and a split when it has children,
@@ -373,7 +357,7 @@ pub struct LayoutParentData {
 
 /// Workspace data stored under its own stable node identity.
 #[derive(Debug)]
-pub struct WorkspaceData {
+pub struct WorkspaceData<W: LayoutElement> {
     common: LayoutParentData,
     /// Floating roots in render order, topmost first.
     ///
@@ -397,6 +381,9 @@ pub struct WorkspaceData {
     options: Rc<Options>,
     /// What the workspace is: its name, its outputs, its own config.
     pub(super) properties: WorkspaceProperties,
+    /// What the workspace is doing right now: animations, a resize in progress, its overview
+    /// shadow and background.
+    pub(super) runtime: WorkspaceRuntime<W>,
 }
 
 /// Container data stored under a stable node identity.
@@ -771,7 +758,7 @@ impl LayoutParentData {
     }
 }
 
-impl WorkspaceData {
+impl<W: LayoutElement> WorkspaceData<W> {
     fn new(
         layout: LayoutMode,
         view_size: Size<f64, Logical>,
@@ -784,6 +771,7 @@ impl WorkspaceData {
             floating_roots: Vec::new(),
             fullscreen_key: None,
             pending_relayout: false,
+            runtime: WorkspaceRuntime::new(view_size, &options),
             view_size,
             working_area,
             options,
@@ -792,7 +780,7 @@ impl WorkspaceData {
     }
 }
 
-impl Deref for WorkspaceData {
+impl<W: LayoutElement> Deref for WorkspaceData<W> {
     type Target = LayoutParentData;
 
     fn deref(&self) -> &Self::Target {
@@ -800,7 +788,7 @@ impl Deref for WorkspaceData {
     }
 }
 
-impl DerefMut for WorkspaceData {
+impl<W: LayoutElement> DerefMut for WorkspaceData<W> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.common
     }
@@ -1021,7 +1009,6 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// The last one may go too: a tree with no workspaces is the state a fresh one starts
     /// in, and nothing reads a root it was not given.
     pub(in crate::layout) fn remove_workspace(&mut self, workspace: NodeKey) -> bool {
-        self.render.overview.remove(&workspace);
         let Some(idx) = self.workspaces.iter().position(|key| *key == workspace) else {
             return false;
         };

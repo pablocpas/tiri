@@ -1965,7 +1965,12 @@ fn initial_numeric_workspace_one_keeps_empty_above_first_invariant() {
     assert_eq!(mon.workspace_count(), 3);
     assert_eq!(mon.active_workspace_idx(), 1);
     assert_eq!(mon.workspaces[0].name(&layout.containers), None);
-    assert_eq!(mon.workspaces[1].name(&layout.containers).map(String::as_str), Some("1"));
+    assert_eq!(
+        mon.workspaces[1]
+            .name(&layout.containers)
+            .map(String::as_str),
+        Some("1")
+    );
     assert_eq!(mon.workspaces[2].name(&layout.containers), None);
 }
 fn add_window_to_numeric_workspace(
@@ -2453,7 +2458,14 @@ fn move_column_to_workspace_unfocused_with_multiple_monitors() {
 
     let layout = check_ops(ops);
 
-    assert_eq!(layout.active_workspace().unwrap().name(&layout.containers).unwrap(), "ws102");
+    assert_eq!(
+        layout
+            .active_workspace()
+            .unwrap()
+            .name(&layout.containers)
+            .unwrap(),
+        "ws102"
+    );
 
     for (mon, win) in layout.windows() {
         let mon = mon.unwrap();

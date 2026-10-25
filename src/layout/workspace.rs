@@ -1,4 +1,5 @@
 use std::cmp::max;
+use std::marker::PhantomData;
 use std::rc::Rc;
 
 use smithay::backend::renderer::element::Kind;
@@ -15,14 +16,13 @@ use tiri_ipc::{LayoutTreeNode, PositionChange, SizeChange};
 
 use super::container::{
     Direction, InactiveTilingReference, IncomingView, InsertParentInfo, LayoutCommand, LayoutLayer,
-    LayoutMode, NewView, NodeKey, SwapEffects, WorkspaceCommandTarget,
+    LayoutMode, NewView, NodeKey, WorkspaceCommandTarget,
 };
 use super::container_tree::{ContainerTree, ContainerTreeRenderElement, RootTilingSubtree};
 pub(super) use super::floating::FloatingRoots;
 use super::floating::{
     compute_toplevel_bounds, FloatingRenderElement, FloatingResizeResult, FloatingRuntime,
 };
-use super::shadow::Shadow;
 use super::tile::{Tile, TileRenderSnapshot};
 use super::{
     ActivateWindow, BranchRenderParams, FocusCommand, HitType, InsertPosition,
@@ -34,7 +34,7 @@ use crate::niri_render_elements;
 use crate::render_helpers::offscreen::OffscreenRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::shadow::ShadowRenderElement;
-use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
+use crate::render_helpers::solid_color::SolidColorRenderElement;
 use crate::render_helpers::xray::{Xray, XrayPos};
 use crate::render_helpers::{RenderCtx, RenderTarget};
 use crate::utils::transaction::{Transaction, TransactionBlocker};
@@ -49,32 +49,30 @@ mod test_view;
 #[cfg(test)]
 use test_view::{FloatingTestView, WorkspaceTreeView};
 mod runtime;
-use runtime::WorkspaceRuntime;
+pub(super) use runtime::{FloatingRuntimeState, WorkspaceRuntime};
 mod state;
 pub use state::{OutputId, WorkspaceId};
 pub(super) use state::{WorkspaceIdentity, WorkspaceLifetime, WorkspaceProperties};
 mod transfer;
 use transfer::{FloatTransfer, FloatingTransfer, UnfloatTransfer};
 
-/// A workspace: a handle to its node in the layout's tree, and the state of what it is doing.
+/// A workspace: a handle to its node in the layout's tree.
 ///
-/// What the workspace *is* — its name, its outputs, its config — is on the node
-/// ([`WorkspaceProperties`]), and so is everything it holds. What stays here is transient: an
-/// interactive resize in progress, closing animations, and the render state of its shadow and
-/// background, none of which a tree operation reads.
-#[derive(Debug)]
+/// Everything about the workspace is on the node: what it *is* — its name, its outputs, its
+/// config ([`WorkspaceProperties`]) —, everything it holds, and what it is doing right now
+/// ([`WorkspaceRuntime`]). The handle is deliberately not `Clone`: exactly one list (an
+/// output's, the outputless set, the scratchpad slot) holds each workspace, and moving the
+/// handle is how a workspace moves between them.
 pub struct Workspace<W: LayoutElement> {
     /// This workspace's node in the layout's tree.
     workspace: NodeKey,
+    _element: PhantomData<fn() -> W>,
+}
 
-    /// Interaction, animation and render scratch that do not belong to tree topology.
-    runtime: WorkspaceRuntime<W>,
-
-    /// This workspace's shadow in the overview.
-    shadow: Shadow,
-
-    /// This workspace's background.
-    background_buffer: SolidColorBuffer,
+impl<W: LayoutElement> std::fmt::Debug for Workspace<W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Workspace").field(&self.workspace).finish()
+    }
 }
 
 niri_render_elements! {
@@ -199,19 +197,28 @@ impl<W: LayoutElement> Workspace<W> {
             },
         );
 
-        Self::with_node(workspace, view_size, &options)
+        Self::with_node(workspace)
     }
 
     /// The handle for a workspace node just added to the tree.
-    fn with_node(workspace: NodeKey, view_size: Size<f64, Logical>, options: &Options) -> Self {
-        let shadow_config =
-            compute_workspace_shadow_config(options.overview.workspace_shadow, view_size);
+    fn with_node(workspace: NodeKey) -> Self {
         Self {
             workspace,
-            runtime: WorkspaceRuntime::new(workspace),
-            shadow: Shadow::new(shadow_config),
-            background_buffer: SolidColorBuffer::new(view_size, options.layout.background_color),
+            _element: PhantomData,
         }
+    }
+
+    /// The floating side of this workspace.
+    fn floating_side(&self) -> FloatingRuntime<W> {
+        FloatingRuntime::new(self.workspace)
+    }
+
+    fn runtime<'a>(&self, containers: &'a ContainerTree<W>) -> &'a WorkspaceRuntime<W> {
+        containers.workspace_runtime(self.workspace)
+    }
+
+    fn runtime_mut<'a>(&self, containers: &'a mut ContainerTree<W>) -> &'a mut WorkspaceRuntime<W> {
+        containers.workspace_runtime_mut(self.workspace)
     }
 
     /// The scratchpad: a workspace that is never on an output.
@@ -282,7 +289,7 @@ impl<W: LayoutElement> Workspace<W> {
             },
         );
 
-        Self::with_node(workspace, view_size, &options)
+        Self::with_node(workspace)
     }
 
     pub fn new_no_outputs(containers: &mut ContainerTree<W>, options: Rc<Options>) -> Self {
@@ -434,8 +441,7 @@ impl<W: LayoutElement> Workspace<W> {
 
     /// Floating roots have just been moved off this workspace without going through it.
     pub(super) fn floats_left(&mut self, containers: &mut ContainerTree<W>) {
-        self.runtime
-            .floating
+        self.floating_side()
             .cancel_resize_if_target_left(containers);
         self.update_focus_floating_tiling_after_removing(containers, true);
     }
@@ -446,7 +452,7 @@ impl<W: LayoutElement> Workspace<W> {
         containers: &mut ContainerTree<W>,
         root: NodeKey,
     ) {
-        self.runtime.floating.center_root(containers, root);
+        self.floating_side().center_root(containers, root);
     }
 
     pub(super) fn should_remove_when_empty(
@@ -470,23 +476,17 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn advance_animations(&mut self, containers: &mut ContainerTree<W>) {
         containers.advance_animations(self.workspace);
-        self.runtime.tiled.closing_windows.retain_mut(|closing| {
-            closing.advance_animations();
-            closing.are_animations_ongoing()
-        });
-        self.runtime.floating.advance_closing_animations();
+        self.runtime_mut(containers).advance_closing_animations();
     }
 
     pub fn are_animations_ongoing(&self, containers: &ContainerTree<W>) -> bool {
         containers.are_animations_ongoing(self.workspace)
-            || !self.runtime.tiled.closing_windows.is_empty()
-            || self.runtime.floating.has_closing_windows()
+            || self.runtime(containers).has_closing_windows()
     }
 
     pub fn are_transitions_ongoing(&self, containers: &ContainerTree<W>) -> bool {
         containers.are_transitions_ongoing(self.workspace)
-            || !self.runtime.tiled.closing_windows.is_empty()
-            || self.runtime.floating.has_closing_windows()
+            || self.runtime(containers).has_closing_windows()
     }
 
     pub fn update_render_elements(
@@ -495,17 +495,13 @@ impl<W: LayoutElement> Workspace<W> {
         is_active: bool,
         layer: RenderLayer,
     ) {
-        self.runtime.is_active = is_active;
+        self.runtime_mut(containers).is_active = is_active;
         let tiling_has_focus = self.layer_has_focus(containers, LayoutLayer::Tiled);
         let floating_has_focus = self.layer_has_focus(containers, LayoutLayer::Floating);
-        containers.update_render_elements(
-            self.workspace,
-            tiling_has_focus,
-            &self.runtime.tiled.interactive_resize,
-        );
+        containers.update_render_elements(self.workspace, tiling_has_focus);
 
         let view_rect = Rectangle::from_size(containers.view_size(self.workspace));
-        self.runtime.floating.update_render_elements(
+        self.floating_side().update_render_elements(
             containers,
             floating_has_focus,
             view_rect,
@@ -513,11 +509,13 @@ impl<W: LayoutElement> Workspace<W> {
         );
 
         if layer.is_normal() {
-            self.shadow.update_render_elements(
-                containers.view_size(self.workspace),
+            let view_size = containers.view_size(self.workspace);
+            let scale = containers.scale(self.workspace);
+            self.runtime_mut(containers).shadow.update_render_elements(
+                view_size,
                 true,
                 CornerRadius::default(),
-                containers.scale(self.workspace),
+                scale,
                 1.,
             );
         }
@@ -555,10 +553,9 @@ impl<W: LayoutElement> Workspace<W> {
 
         let shadow_config =
             compute_workspace_shadow_config(options.overview.workspace_shadow, view_size);
-        self.shadow.update_config(shadow_config);
-
-        self.background_buffer
-            .set_color(options.layout.background_color);
+        self.runtime_mut(containers)
+            .shadow
+            .update_config(shadow_config);
 
         self.properties_mut(containers).base_options = base_options;
     }
@@ -580,7 +577,7 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn update_shaders(&mut self, containers: &mut ContainerTree<W>) {
         containers.update_shaders(self.workspace);
-        self.shadow.update_shaders();
+        self.runtime_mut(containers).shadow.update_shaders();
     }
 
     fn is_floating_target(&self, containers: &ContainerTree<W>, window: Option<&W::Id>) -> bool {
@@ -596,14 +593,6 @@ impl<W: LayoutElement> Workspace<W> {
     /// The one node commands address, for operations that do not branch on its layer.
     fn command_target_key(&self, containers: &ContainerTree<W>) -> NodeKey {
         self.command_target(containers).key(self.workspace)
-    }
-
-    pub(super) fn apply_swap_effects(
-        &mut self,
-        containers: &ContainerTree<W>,
-        effects: SwapEffects,
-    ) {
-        self.runtime.apply_swap_effects(containers, effects);
     }
 
     /// Route a focus command to the active layer.
@@ -640,7 +629,7 @@ impl<W: LayoutElement> Workspace<W> {
         let (moved, landed_in_tiling) = match self.command_target(containers) {
             WorkspaceCommandTarget::Workspace => (workspace(containers), true),
             WorkspaceCommandTarget::Floating(_) => {
-                (floating(&mut self.runtime.floating, containers), false)
+                (floating(&mut self.floating_side(), containers), false)
             }
             WorkspaceCommandTarget::Tiled(_) => (tiled(containers), true),
         };
@@ -667,7 +656,7 @@ impl<W: LayoutElement> Workspace<W> {
             WorkspaceCommandTarget::Workspace => false,
             WorkspaceCommandTarget::Floating(target) => {
                 if containers.is_floating_root(target) {
-                    floating(&mut self.runtime.floating, containers);
+                    floating(&mut self.floating_side(), containers);
                 } else {
                     let branch = containers.branch_root(target);
                     let _ = containers.move_in_branch(branch, direction);
@@ -687,7 +676,7 @@ impl<W: LayoutElement> Workspace<W> {
         tiled: impl FnOnce(&mut ContainerTree<W>) -> R,
     ) -> R {
         if self.floating_is_active(containers) {
-            floating(&mut self.runtime.floating, containers)
+            floating(&mut self.floating_side(), containers)
         } else {
             tiled(containers)
         }
@@ -702,7 +691,7 @@ impl<W: LayoutElement> Workspace<W> {
         tiled: impl FnOnce(&mut ContainerTree<W>) -> R,
     ) -> R {
         if self.is_floating_target(containers, window) {
-            floating(&mut self.runtime.floating, containers)
+            floating(&mut self.floating_side(), containers)
         } else {
             tiled(containers)
         }
@@ -897,10 +886,12 @@ impl<W: LayoutElement> Workspace<W> {
                 containers.options(self.workspace).overview.workspace_shadow,
                 size,
             );
-            self.shadow.update_config(shadow_config);
+            self.runtime_mut(containers)
+                .shadow
+                .update_config(shadow_config);
         }
 
-        self.background_buffer.resize(size);
+        self.runtime_mut(containers).background.resize(size);
 
         if scale_transform_changed {
             for window in containers.windows_in_workspace(self.workspace) {
@@ -981,15 +972,13 @@ impl<W: LayoutElement> Workspace<W> {
 
                 if wants_floating {
                     if has_floating_reinsert_hint {
-                        self.runtime
-                            .floating
+                        self.floating_side()
                             .add_tile_with_restore_hint(containers, tile, activate);
                     } else if grouped_floating {
-                        self.runtime
-                            .floating
+                        self.floating_side()
                             .add_tile_to_active_container(containers, tile, activate);
                     } else {
-                        self.runtime.floating.add_tile(containers, tile, activate);
+                        self.floating_side().add_tile(containers, tile, activate);
                     }
 
                     if activate || containers.tiled_is_empty(self.workspace) {
@@ -1021,8 +1010,7 @@ impl<W: LayoutElement> Workspace<W> {
                 let floating_has_window = containers.window_is_floating_in(self.workspace, next_to);
                 let grouped_floating_target = floating_has_window
                     && self
-                        .runtime
-                        .floating
+                        .floating_side()
                         .container_allows_splits(containers, next_to);
                 let wants_floating = is_floating || grouped_floating_target;
 
@@ -1033,16 +1021,14 @@ impl<W: LayoutElement> Workspace<W> {
 
                 if wants_floating {
                     if grouped_floating_target {
-                        self.runtime
-                            .floating
+                        self.floating_side()
                             .add_tile_to_container_of(containers, next_to, tile, activate);
                     } else if floating_has_window {
-                        self.runtime
-                            .floating
+                        self.floating_side()
                             .add_tile_above(containers, next_to, tile, activate);
                     } else {
                         self.center_new_incoming_floating_tile_on(containers, &mut tile, next_to);
-                        self.runtime.floating.add_tile(containers, tile, activate);
+                        self.floating_side().add_tile(containers, tile, activate);
                     }
 
                     if activate || containers.tiled_is_empty(self.workspace) {
@@ -1107,14 +1093,9 @@ impl<W: LayoutElement> Workspace<W> {
         let tile_size = tile.tile_size();
         let pos = render_pos + (next_to_size.to_point() - tile_size.to_point()).downscale(2.);
         let pos = self
-            .runtime
-            .floating
+            .floating_side()
             .clamp_within_working_area(working_area, pos, tile_size);
-        tile.floating_pos = Some(
-            self.runtime
-                .floating
-                .logical_to_size_frac(working_area, pos),
-        );
+        tile.floating_pos = Some(self.floating_side().logical_to_size_frac(working_area, pos));
     }
 
     pub(super) fn tiling_insert_parent_info(
@@ -1178,10 +1159,9 @@ impl<W: LayoutElement> Workspace<W> {
         raise: bool,
     ) -> bool {
         if raise {
-            self.runtime.floating.activate_window(containers, id)
+            self.floating_side().activate_window(containers, id)
         } else {
-            self.runtime
-                .floating
+            self.floating_side()
                 .activate_window_without_raising(containers, id)
         }
     }
@@ -1345,7 +1325,7 @@ impl<W: LayoutElement> Workspace<W> {
         assert_eq!(containers.workspace_of(key), Some(self.workspace));
         let from_floating = containers.is_in_floating_branch(key);
         let transferred = if from_floating {
-            self.runtime.floating.take_tile_for_transfer(containers, id)
+            self.floating_side().take_tile_for_transfer(containers, id)
         } else {
             containers.take_tile_for_transfer(self.workspace, id, transaction)
         };
@@ -1443,8 +1423,7 @@ impl<W: LayoutElement> Workspace<W> {
         (min_size, max_size): (Size<i32, Logical>, Size<i32, Logical>),
     ) -> Size<i32, Logical> {
         let mut size = if is_floating {
-            self.runtime
-                .floating
+            self.floating_side()
                 .new_window_size(containers, width, height, rules)
         } else {
             containers.new_window_size(self.workspace, width, height, rules)
@@ -1829,7 +1808,7 @@ impl<W: LayoutElement> Workspace<W> {
     /// sway says the same thing by refusing `move position` on a tiled container.
     pub fn center_window(&mut self, containers: &mut ContainerTree<W>, id: Option<&W::Id>) {
         if self.is_floating_target(containers, id) {
-            self.runtime.floating.center_window(containers, id);
+            self.floating_side().center_window(containers, id);
         }
     }
 
@@ -1899,8 +1878,7 @@ impl<W: LayoutElement> Workspace<W> {
         }
 
         if containers.is_floating_root(target) {
-            self.runtime
-                .floating
+            self.floating_side()
                 .resize_window(containers, window, request);
         } else {
             // A descendant of a floating root is tiled inside that root. sway takes the
@@ -1968,8 +1946,7 @@ impl<W: LayoutElement> Workspace<W> {
         match self.command_target(containers) {
             WorkspaceCommandTarget::Workspace => false,
             WorkspaceCommandTarget::Floating(_) => self
-                .runtime
-                .floating
+                .floating_side()
                 .focus_along_parent(containers, forward, descend),
             WorkspaceCommandTarget::Tiled(_) => {
                 containers.focus_along_parent(self.workspace, forward, descend)
@@ -1981,7 +1958,7 @@ impl<W: LayoutElement> Workspace<W> {
         match self.command_target(containers) {
             WorkspaceCommandTarget::Workspace => {}
             WorkspaceCommandTarget::Floating(_) => {
-                let _ = self.runtime.floating.focus_parent(containers);
+                let _ = self.floating_side().focus_parent(containers);
             }
             WorkspaceCommandTarget::Tiled(_) => {
                 let _ = containers.focus_parent(self.workspace);
@@ -2035,8 +2012,7 @@ impl<W: LayoutElement> Workspace<W> {
         }
 
         if containers.window_is_floating_in(self.workspace, window) {
-            self.runtime
-                .floating
+            self.floating_side()
                 .set_fullscreen(containers, window, is_fullscreen);
             return;
         }
@@ -2184,8 +2160,7 @@ impl<W: LayoutElement> Workspace<W> {
             // not a restore target; sway removed that parent link when the node became floating.
             if !explicit_window {
                 let was_workspace = self
-                    .runtime
-                    .floating
+                    .floating_side()
                     .active_container_is_workspace_floated(containers);
                 let tiling_was_empty = containers.tiled_is_empty(self.workspace);
                 let tiling_reference = if tiling_was_empty {
@@ -2229,8 +2204,7 @@ impl<W: LayoutElement> Workspace<W> {
                     return false;
                 };
                 if !self
-                    .runtime
-                    .floating
+                    .floating_side()
                     .add_subtree(containers, subtree, rect, true)
                 {
                     return false;
@@ -2242,8 +2216,7 @@ impl<W: LayoutElement> Workspace<W> {
                     return false;
                 };
                 if !self
-                    .runtime
-                    .floating
+                    .floating_side()
                     .add_subtree(containers, subtree, rect, false)
                 {
                     return false;
@@ -2261,8 +2234,7 @@ impl<W: LayoutElement> Workspace<W> {
                 }
 
                 if !self
-                    .runtime
-                    .floating
+                    .floating_side()
                     .add_subtree(containers, subtree, rect, false)
                 {
                     return false;
@@ -2289,7 +2261,7 @@ impl<W: LayoutElement> Workspace<W> {
                 was_workspace,
                 tiling_was_empty,
             } => {
-                if self.runtime.floating.unfloat_container(
+                if self.floating_side().unfloat_container(
                     containers,
                     &id,
                     tiling_reference.as_ref(),
@@ -2301,11 +2273,9 @@ impl<W: LayoutElement> Workspace<W> {
                     return false;
                 }
 
-                let unfloated = self.runtime.floating.unfloat_window(
-                    containers,
-                    &id,
-                    tiling_reference.as_ref(),
-                );
+                let unfloated =
+                    self.floating_side()
+                        .unfloat_window(containers, &id, tiling_reference.as_ref());
                 if unfloated && target_is_active {
                     self.finish_active_unfloat(containers);
                 }
@@ -2316,11 +2286,9 @@ impl<W: LayoutElement> Workspace<W> {
                 target_is_active,
                 tiling_reference,
             } => {
-                let unfloated = self.runtime.floating.unfloat_window(
-                    containers,
-                    &id,
-                    tiling_reference.as_ref(),
-                );
+                let unfloated =
+                    self.floating_side()
+                        .unfloat_window(containers, &id, tiling_reference.as_ref());
                 if unfloated && target_is_active {
                     self.finish_active_unfloat(containers);
                 }
@@ -2412,11 +2380,8 @@ impl<W: LayoutElement> Workspace<W> {
             let working_area = containers.working_area(self.workspace);
             let size_f = Size::from((size.w as f64, size.h as f64));
             let pos = center_preferring_top_left_in_area(working_area, size_f);
-            transferred.tile_mut(containers).floating_pos = Some(
-                self.runtime
-                    .floating
-                    .logical_to_size_frac(working_area, pos),
-            );
+            transferred.tile_mut(containers).floating_pos =
+                Some(self.floating_side().logical_to_size_frac(working_area, pos));
 
             let border_config = containers
                 .options(self.workspace)
@@ -2473,7 +2438,7 @@ impl<W: LayoutElement> Workspace<W> {
                 .expect("a scratchpad insertion must own a valid incoming view")
                 .window(),
         );
-        self.runtime.floating.add_tile(containers, tile, activate);
+        self.floating_side().add_tile(containers, tile, activate);
 
         if activate || containers.tiled_is_empty(self.workspace) {}
     }
@@ -2516,7 +2481,7 @@ impl<W: LayoutElement> Workspace<W> {
         if self.floating_is_active(containers) {
             self.activate_tiling_content(containers);
         } else if let Some(id) = containers.inactive_floating_window_id(self.workspace) {
-            self.runtime.floating.activate_window(containers, &id);
+            self.floating_side().activate_window(containers, &id);
         }
     }
 
@@ -2533,8 +2498,7 @@ impl<W: LayoutElement> Workspace<W> {
         animate: bool,
     ) {
         if self.is_floating_target(containers, id) {
-            self.runtime
-                .floating
+            self.floating_side()
                 .move_window(containers, id, x, y, animate);
         } else {
             // If the target tile isn't floating, set its stored floating position.
@@ -2551,8 +2515,7 @@ impl<W: LayoutElement> Workspace<W> {
             };
 
             let pos = self
-                .runtime
-                .floating
+                .floating_side()
                 .stored_or_default_tile_pos(working_area, tile);
 
             // If there's no stored floating position, we can only set both components at once, not
@@ -2605,10 +2568,7 @@ impl<W: LayoutElement> Workspace<W> {
                 }
             }
 
-            let pos = self
-                .runtime
-                .floating
-                .logical_to_size_frac(working_area, pos);
+            let pos = self.floating_side().logical_to_size_frac(working_area, pos);
             tile.floating_pos = Some(pos);
         }
     }
@@ -2678,7 +2638,6 @@ impl<W: LayoutElement> Workspace<W> {
         let tiling_focus_ring = focus_ring && !self.floating_is_active(containers);
         containers.render(
             self.workspace,
-            &self.runtime.tiled.closing_windows,
             ctx,
             xray_pos,
             BranchRenderParams {
@@ -2704,7 +2663,6 @@ impl<W: LayoutElement> Workspace<W> {
         let tiling_focus_ring = focus_ring && !self.floating_is_active(containers);
         if let Some(elem) = containers.render_as_offscreen(
             self.workspace,
-            &self.runtime.tiled.closing_windows,
             renderer,
             target,
             BranchRenderParams {
@@ -2734,7 +2692,7 @@ impl<W: LayoutElement> Workspace<W> {
 
         let view_rect = Rectangle::from_size(containers.view_size(self.workspace));
         let floating_focus_ring = focus_ring && self.floating_is_active(containers);
-        self.runtime.floating.render(
+        self.floating_side().render(
             containers,
             ctx,
             xray_pos,
@@ -2751,15 +2709,18 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn render_shadow<R: NiriRenderer>(
         &self,
+        containers: &ContainerTree<W>,
         renderer: &mut R,
         push: &mut dyn FnMut(ShadowRenderElement),
     ) {
-        self.shadow.render(renderer, Point::from((0., 0.)), push);
+        self.runtime(containers)
+            .shadow
+            .render(renderer, Point::from((0., 0.)), push);
     }
 
-    pub fn render_background(&self) -> SolidColorRenderElement {
+    pub fn render_background(&self, containers: &ContainerTree<W>) -> SolidColorRenderElement {
         SolidColorRenderElement::from_buffer(
-            &self.background_buffer,
+            &self.runtime(containers).background,
             Point::new(0., 0.),
             1.,
             Kind::Unspecified,
@@ -2839,17 +2800,10 @@ impl<W: LayoutElement> Workspace<W> {
         blocker: TransactionBlocker,
     ) {
         if containers.window_is_floating_in(self.workspace, window) {
-            self.runtime
-                .floating
+            self.floating_side()
                 .start_close_animation_for_window(containers, renderer, window, blocker);
         } else {
-            containers.start_close_animation_for_window(
-                self.workspace,
-                &mut self.runtime.tiled.closing_windows,
-                renderer,
-                window,
-                blocker,
-            );
+            containers.start_close_animation_for_window(self.workspace, renderer, window, blocker);
         }
     }
 
@@ -2862,14 +2816,14 @@ impl<W: LayoutElement> Workspace<W> {
         tile_pos: Point<f64, Logical>,
         blocker: TransactionBlocker,
     ) {
-        self.runtime.floating.start_close_animation_for_tile(
+        self.floating_side().start_close_animation_for_tile(
             containers, renderer, snapshot, tile_size, tile_pos, blocker,
         );
     }
 
     pub fn start_open_animation(&mut self, containers: &mut ContainerTree<W>, id: &W::Id) -> bool {
         containers.start_open_animation(self.workspace, id)
-            || self.runtime.floating.start_open_animation(containers, id)
+            || self.floating_side().start_open_animation(containers, id)
     }
 
     pub fn window_under<'a>(
@@ -2878,7 +2832,7 @@ impl<W: LayoutElement> Workspace<W> {
         pos: Point<f64, Logical>,
     ) -> Option<(&'a W, HitType)> {
         if self.is_floating_visible(containers) {
-            if let Some(rv) = self.runtime.floating.window_under(containers, pos) {
+            if let Some(rv) = self.floating_side().window_under(containers, pos) {
                 return Some(rv);
             }
         }
@@ -2896,7 +2850,7 @@ impl<W: LayoutElement> Workspace<W> {
         }
 
         if self.is_floating_visible(containers) {
-            match self.runtime.floating.resize_hit_under(containers, pos) {
+            match self.floating_side().resize_hit_under(containers, pos) {
                 FloatingResizeResult::Hit(hit) => {
                     let cursor = if !hit.external_edges.is_empty() {
                         hit.external_edges.outward_cursor_icon()
@@ -2922,7 +2876,7 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn descendants_added(&mut self, containers: &mut ContainerTree<W>, id: &W::Id) -> bool {
-        self.runtime.floating.descendants_added(containers, id)
+        self.floating_side().descendants_added(containers, id)
     }
 
     pub fn update_window(
@@ -2932,8 +2886,7 @@ impl<W: LayoutElement> Workspace<W> {
         serial: Option<Serial>,
     ) {
         if !self
-            .runtime
-            .floating
+            .floating_side()
             .update_window(containers, window, serial)
         {
             containers.update_window(self.workspace, window, serial);
@@ -2949,11 +2902,10 @@ impl<W: LayoutElement> Workspace<W> {
         let _span = tracy_client::span!("Workspace::refresh");
         containers.refresh(
             self.workspace,
-            &self.runtime.tiled.interactive_resize,
             is_active && !self.floating_is_active(containers),
             is_focused,
         );
-        self.runtime.floating.refresh(
+        self.floating_side().refresh(
             containers,
             is_active && self.floating_is_active(containers),
             is_focused,
@@ -2967,7 +2919,7 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn activate_window(&mut self, containers: &mut ContainerTree<W>, window: &W::Id) -> bool {
-        if self.runtime.floating.activate_window(containers, window) {
+        if self.floating_side().activate_window(containers, window) {
             true
         } else if containers.focus_window_by_id(self.workspace, window) {
             self.activate_tiling_content(containers);
@@ -2983,8 +2935,7 @@ impl<W: LayoutElement> Workspace<W> {
         window: &W::Id,
     ) -> bool {
         if self
-            .runtime
-            .floating
+            .floating_side()
             .activate_window_without_raising(containers, window)
         {
             true
@@ -2995,7 +2946,8 @@ impl<W: LayoutElement> Workspace<W> {
             }
             self.activate_tiling_content(containers);
             if floating_had_focus {
-                self.runtime.floating_raised_at = Some(containers.seat_focus_generation());
+                let generation = containers.seat_focus_generation();
+                self.runtime_mut(containers).floating_raised_at = Some(generation);
             }
             true
         }
@@ -3024,16 +2976,10 @@ impl<W: LayoutElement> Workspace<W> {
         edges: ResizeEdge,
     ) -> bool {
         if containers.window_is_floating_in(self.workspace, &window) {
-            self.runtime
-                .floating
+            self.floating_side()
                 .interactive_resize_begin(containers, window, edges)
         } else {
-            containers.interactive_resize_begin(
-                self.workspace,
-                &mut self.runtime.tiled.interactive_resize,
-                window,
-                edges,
-            )
+            containers.interactive_resize_begin(self.workspace, window, edges)
         }
     }
 
@@ -3045,17 +2991,10 @@ impl<W: LayoutElement> Workspace<W> {
         pos: Point<f64, Logical>,
     ) -> bool {
         if containers.window_is_floating_in(self.workspace, &window) {
-            self.runtime
-                .floating
+            self.floating_side()
                 .interactive_resize_begin(containers, window, edges)
         } else {
-            containers.interactive_resize_begin_at(
-                self.workspace,
-                &mut self.runtime.tiled.interactive_resize,
-                window,
-                edges,
-                pos,
-            )
+            containers.interactive_resize_begin_at(self.workspace, window, edges, pos)
         }
     }
 
@@ -3066,16 +3005,10 @@ impl<W: LayoutElement> Workspace<W> {
         delta: Point<f64, Logical>,
     ) -> bool {
         if containers.window_is_floating_in(self.workspace, window) {
-            self.runtime
-                .floating
+            self.floating_side()
                 .interactive_resize_update(containers, window, delta)
         } else {
-            containers.interactive_resize_update(
-                self.workspace,
-                &self.runtime.tiled.interactive_resize,
-                window,
-                delta,
-            )
+            containers.interactive_resize_update(self.workspace, window, delta)
         }
     }
 
@@ -3086,16 +3019,15 @@ impl<W: LayoutElement> Workspace<W> {
     ) {
         if let Some(window) = window {
             if containers.window_is_floating_in(self.workspace, window) {
-                self.runtime.floating.interactive_resize_end(Some(window));
+                self.floating_side()
+                    .interactive_resize_end(containers, Some(window));
             } else {
-                containers.interactive_resize_end(
-                    &mut self.runtime.tiled.interactive_resize,
-                    Some(window),
-                );
+                containers.interactive_resize_end(self.workspace, Some(window));
             }
         } else {
-            self.runtime.floating.interactive_resize_end(None);
-            containers.interactive_resize_end(&mut self.runtime.tiled.interactive_resize, None);
+            self.floating_side()
+                .interactive_resize_end(containers, None);
+            containers.interactive_resize_end(self.workspace, None);
         }
     }
 
@@ -3111,13 +3043,13 @@ impl<W: LayoutElement> Workspace<W> {
         containers: &ContainerTree<W>,
         layer: LayoutLayer,
     ) -> bool {
-        self.runtime.is_active && containers.focused_layer(self.workspace) == layer
+        self.runtime(containers).is_active && containers.focused_layer(self.workspace) == layer
     }
 
     /// Whether the floats stay drawn above a tiled fullscreen although focus went to the tiled
     /// side: true until focus next changes after a focus-follows-mouse move.
     fn floating_raised(&self, containers: &ContainerTree<W>) -> bool {
-        self.runtime.floating_raised_at == Some(containers.seat_focus_generation())
+        self.runtime(containers).floating_raised_at == Some(containers.seat_focus_generation())
     }
 
     pub fn floating_logical_to_size_frac(
@@ -3125,8 +3057,7 @@ impl<W: LayoutElement> Workspace<W> {
         containers: &ContainerTree<W>,
         logical_pos: Point<f64, Logical>,
     ) -> Point<f64, SizeFrac> {
-        self.runtime
-            .floating
+        self.floating_side()
             .logical_to_size_frac(containers.working_area(self.workspace), logical_pos)
     }
 
@@ -3135,9 +3066,7 @@ impl<W: LayoutElement> Workspace<W> {
         containers: &ContainerTree<W>,
         id: &W::Id,
     ) -> bool {
-        self.runtime
-            .floating
-            .container_allows_splits(containers, id)
+        self.floating_side().container_allows_splits(containers, id)
     }
 
     pub(super) fn floating_container_pos(
@@ -3145,7 +3074,7 @@ impl<W: LayoutElement> Workspace<W> {
         containers: &ContainerTree<W>,
         id: &W::Id,
     ) -> Option<Point<f64, Logical>> {
-        self.runtime.floating.container_pos(containers, id)
+        self.floating_side().container_pos(containers, id)
     }
 
     pub(super) fn move_floating_container_for_window_to(
@@ -3154,8 +3083,7 @@ impl<W: LayoutElement> Workspace<W> {
         id: &W::Id,
         pos: Point<f64, Logical>,
     ) -> bool {
-        self.runtime
-            .floating
+        self.floating_side()
             .move_container_for_window_to(containers, id, pos, false)
     }
 
@@ -3227,15 +3155,6 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn verify_invariants(&self, containers: &ContainerTree<W>, move_win_id: Option<&W::Id>) {
         use approx::assert_abs_diff_eq;
 
-        // The floating side holds the same key by construction and nothing reassigns either.
-        // Asserted rather than removed: see the field on `FloatingRuntime` for why threading it
-        // would cost more than the duplication does.
-        assert_eq!(
-            self.workspace,
-            self.runtime.floating.workspace(),
-            "a workspace's floating side must address that workspace"
-        );
-
         // sway's `ws->fullscreen` is one pointer for the whole workspace.
         let fullscreen = self.fullscreen_window_ids(containers);
         assert!(
@@ -3276,11 +3195,11 @@ impl<W: LayoutElement> Workspace<W> {
         assert!(containers.view_size(self.workspace).h > 0.);
 
         assert_eq!(
-            self.background_buffer.size(),
+            self.runtime(containers).background.size(),
             containers.view_size(self.workspace)
         );
         assert_eq!(
-            self.background_buffer.color().components(),
+            self.runtime(containers).background.color().components(),
             options.layout.background_color.to_array_unpremul(),
         );
 
@@ -3290,7 +3209,7 @@ impl<W: LayoutElement> Workspace<W> {
         );
         containers.verify_invariants(self.workspace);
 
-        self.runtime.floating.verify_runtime_invariants(containers);
+        self.floating_side().verify_runtime_invariants(containers);
 
         if containers.floating_root_count(self.workspace) == 0 {
             assert!(

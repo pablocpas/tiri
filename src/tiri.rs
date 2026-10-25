@@ -4982,7 +4982,7 @@ impl Niri {
                 state.xray.workspaces.clear();
                 let mon = self.layout.monitor_for_output(out).unwrap();
                 for (ws, geo) in mon.workspaces_with_render_geo() {
-                    let bg_color = ws.render_background().color();
+                    let bg_color = ws.render_background(self.layout.containers()).color();
                     state.xray.workspaces.push((geo, bg_color));
                 }
                 state.xray.backdrop_color = state.backdrop_buffer.color();
@@ -5253,7 +5253,7 @@ impl Niri {
 
             // We don't expect more than one workspace when render_above_top_layer().
             if let Some((ws, _geo)) = mon.workspaces_with_render_geo().next() {
-                push(ws.render_background().into());
+                push(ws.render_background(self.layout.containers()).into());
             }
         } else {
             push_popups_from_layer!(Layer::Top);
@@ -5300,11 +5300,13 @@ impl Niri {
                 push_normal_from_layer!(Layer::Bottom, ns, xray_pos, process!(geo));
                 push_normal_from_layer!(Layer::Background, ns, xray_pos, process!(geo));
 
-                process!(geo)(ws.render_background());
+                process!(geo)(ws.render_background(self.layout.containers()));
             }
         }
 
-        mon.render_workspace_shadows(ctx.renderer, &mut |elem| push(elem.into()));
+        mon.render_workspace_shadows(self.layout.containers(), ctx.renderer, &mut |elem| {
+            push(elem.into())
+        });
 
         // Then the backdrop.
         push_popups_from_layer!(Layer::Background, true);

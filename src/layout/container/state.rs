@@ -8,7 +8,7 @@ use smithay::utils::{Logical, Rectangle, Size};
 use super::{
     ContainerTree, LayoutElement, LayoutMode, LeafLayoutInfo, NodeData, NodeKey, WorkspaceData,
 };
-use crate::layout::workspace::WorkspaceProperties;
+use crate::layout::workspace::{WorkspaceProperties, WorkspaceRuntime};
 use crate::layout::Options;
 use crate::utils::transaction::Transaction;
 
@@ -18,12 +18,12 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Every reader goes through here rather than through a field beside the tree, so that the
     /// day a second workspace root joins the tree the question "whose view size?" has one
     /// place to be answered instead of forty.
-    pub(super) fn workspace_data(&self, workspace: NodeKey) -> &WorkspaceData {
+    pub(super) fn workspace_data(&self, workspace: NodeKey) -> &WorkspaceData<W> {
         self.get_workspace(workspace)
             .expect("the requested tree root is a workspace node")
     }
 
-    pub(super) fn workspace_data_mut(&mut self, workspace: NodeKey) -> &mut WorkspaceData {
+    pub(super) fn workspace_data_mut(&mut self, workspace: NodeKey) -> &mut WorkspaceData<W> {
         self.get_workspace_mut(workspace)
             .expect("the requested tree root is a workspace node")
     }
@@ -58,6 +58,18 @@ impl<W: LayoutElement> ContainerTree<W> {
         &mut self.workspace_data_mut(workspace).properties
     }
 
+    /// What the workspace is doing right now, as opposed to what it is.
+    pub(in crate::layout) fn workspace_runtime(&self, workspace: NodeKey) -> &WorkspaceRuntime<W> {
+        &self.workspace_data(workspace).runtime
+    }
+
+    pub(in crate::layout) fn workspace_runtime_mut(
+        &mut self,
+        workspace: NodeKey,
+    ) -> &mut WorkspaceRuntime<W> {
+        &mut self.workspace_data_mut(workspace).runtime
+    }
+
     pub(in crate::layout) fn options(&self, workspace: NodeKey) -> &Rc<Options> {
         &self.workspace_data(workspace).options
     }
@@ -76,18 +88,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         working_area: Rectangle<f64, Logical>,
         options: Rc<Options>,
     ) {
-        self.render
-            .overview
-            .entry(workspace)
-            .or_insert_with(|| {
-                super::super::container_tree::WorkspaceOverview::new(
-                    view_size,
-                    options.layout.background_color,
-                )
-            })
+        let data = self.workspace_data_mut(workspace);
+        data.runtime
             .background
             .update(view_size, options.layout.background_color);
-        let data = self.workspace_data_mut(workspace);
         data.view_size = view_size;
         data.working_area = working_area;
         data.options = options.clone();

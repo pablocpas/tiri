@@ -27,11 +27,6 @@ pub(in crate::layout) struct ContainerRenderState {
     /// their container leaves the tree, rather than when a frame does not redraw them: a
     /// fullscreen draws no bars at all and is not a reason to forget every one of them.
     pub(in crate::layout) tab_bar_cache: RefCell<HashMap<NodeKey, TabBarCacheEntry>>,
-    /// Per-workspace overview buffers.
-    ///
-    /// The overview draws every workspace in one frame, each into its own texture, so a
-    /// single offscreen would have every thumbnail overwrite the last.
-    pub(in crate::layout) overview: HashMap<NodeKey, WorkspaceOverview>,
     /// Copy-only state projection reused while mutably visiting tiles.
     pub(in crate::layout) state_layout_scratch: Vec<LeafFrameInfo>,
     /// Displayed geometry can differ from pending state while a transaction is open.
@@ -41,27 +36,10 @@ pub(in crate::layout) struct ContainerRenderState {
         Vec<(FocusRingEdges, Option<FocusRingIndicatorEdge>)>,
 }
 
-/// One workspace's overview thumbnail: its own texture and the ground under it.
-#[derive(Debug)]
-pub(in crate::layout) struct WorkspaceOverview {
-    offscreen: OffscreenBuffer,
-    pub(in crate::layout) background: SolidColorBuffer,
-}
-
-impl WorkspaceOverview {
-    pub(in crate::layout) fn new(view_size: Size<f64, Logical>, background_color: Color) -> Self {
-        Self {
-            offscreen: OffscreenBuffer::default(),
-            background: SolidColorBuffer::new(view_size, background_color),
-        }
-    }
-}
-
 impl ContainerRenderState {
     pub(in crate::layout) fn new() -> Self {
         Self {
             tab_bar_cache: RefCell::new(HashMap::new()),
-            overview: HashMap::new(),
             state_layout_scratch: Vec::new(),
             render_layout_scratch: Vec::new(),
             render_edges_scratch: Vec::new(),
@@ -84,7 +62,6 @@ impl<W: LayoutElement> ContainerTree<W> {
     fn render_elements<R: NiriRenderer>(
         &self,
         workspace: NodeKey,
-        closing: &[ClosingWindow],
         mut ctx: RenderCtx<R>,
         xray_pos: XrayPos,
         params: BranchRenderParams,
@@ -94,6 +71,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             focus_ring: tiling_focus_ring,
             layer,
         } = params;
+        let closing = &self.workspace_runtime(workspace).tiled.closing_windows;
         // Pre-allocate: ~4 elements per tile + closing windows + tab bars
         let tile_count = self.window_count();
         let estimated_capacity = tile_count * 4 + closing.len() + tile_count / 2;
@@ -215,13 +193,12 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn render<R: NiriRenderer>(
         &self,
         workspace: NodeKey,
-        closing: &[ClosingWindow],
         ctx: RenderCtx<R>,
         xray_pos: XrayPos,
         params: BranchRenderParams,
         push: &mut dyn FnMut(ContainerTreeRenderElement<R>),
     ) {
-        for elem in self.render_elements(workspace, closing, ctx, xray_pos, params) {
+        for elem in self.render_elements(workspace, ctx, xray_pos, params) {
             push(elem);
         }
     }
@@ -229,7 +206,6 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn render_as_offscreen(
         &self,
         workspace: NodeKey,
-        closing: &[ClosingWindow],
         renderer: &mut GlesRenderer,
         target: RenderTarget,
         params: BranchRenderParams,
@@ -245,7 +221,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         };
         let mut elements = self.render_elements(
             workspace,
-            closing,
             ctx,
             XrayPos::default(),
             BranchRenderParams {
@@ -257,17 +232,17 @@ impl<W: LayoutElement> ContainerTree<W> {
             return None;
         }
 
-        let overview = self.render.overview.get(&workspace)?;
+        let runtime = self.workspace_runtime(workspace);
         let background = SolidColorRenderElement::from_buffer(
-            &overview.background,
+            &runtime.background,
             Point::from((0., 0.)),
             1.,
             Kind::Unspecified,
         );
         elements.push(background.into());
 
-        overview
-            .offscreen
+        runtime
+            .overview_offscreen
             .render(renderer, Scale::from(self.scale(workspace)), &elements)
             .map(|(elem, _sync, data)| {
                 for tile in self.tiled_tiles(workspace) {
@@ -347,7 +322,6 @@ impl<W: LayoutElement> ContainerTree<W> {
         &mut self,
         workspace: NodeKey,
         is_active: bool,
-        resize: &Option<InteractiveResizeState<W>>,
     ) {
         let _span = tracy_client::span!("ContainerTree::update_render_elements");
         // Once a frame, and for both sides: a container that has left the tree will not be
@@ -446,7 +420,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         // from it would flush configures carrying its obsolete bounds. The deferred
         // relayout will run this pass again once the transaction resolves.
         let skip_state_pass = self.pending_layout_is_stale(workspace);
-        let resize_data = self.interactive_resize_data_by_leaf(resize, &state_layouts);
+        let resize_data = self.interactive_resize_data_by_leaf(workspace, &state_layouts);
         for info in &state_layouts {
             if skip_state_pass {
                 break;
@@ -514,7 +488,6 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(in crate::layout) fn start_close_animation_for_window<R: NiriRenderer>(
         &mut self,
         workspace: NodeKey,
-        closing: &mut Vec<ClosingWindow>,
         renderer: &mut R,
         window: &W::Id,
         blocker: crate::utils::transaction::TransactionBlocker,
@@ -567,7 +540,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         );
         match res {
             Ok(window) => {
-                closing.push(window);
+                self.workspace_runtime_mut(workspace)
+                    .tiled
+                    .closing_windows
+                    .push(window);
             }
             Err(err) => {
                 warn!("error creating a closing window animation: {err:?}");

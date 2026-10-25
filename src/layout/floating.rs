@@ -1,4 +1,5 @@
 use std::cmp::max;
+use std::marker::PhantomData;
 
 use log::warn;
 use smithay::backend::renderer::gles::GlesRenderer;
@@ -15,7 +16,7 @@ use super::container::{
 use super::container_tree::{percent_from_size_change, ContainerTree, LeafFrameInfo, TileConfig};
 use super::focus_ring::{render_container_selection, FocusRingEdges, FocusRingRenderElement};
 use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
-use super::workspace::{InteractiveResize, ResolvedSize};
+use super::workspace::{FloatingRuntimeState, InteractiveResize, ResolvedSize};
 use super::{
     resize_edges_for_point, BranchRenderParams, ConfigureIntent, InteractiveResizeData,
     LayoutElement, ResizeAxis, ResizeRequest, SizeFrac, ViewTransfer,
@@ -42,32 +43,34 @@ pub const DIRECTIONAL_MOVE_PX: f64 = 10.;
 
 /// Floating-layer behavior bound to one workspace in the shared tree.
 ///
-/// This is not a second space or tree. Root membership, topology, geometry, fullscreen and
-/// focus all live in [`ContainerTree`], beside the tiled roots of the same workspace. The
-/// layer keeps only state that is inherently specific to its interaction/render pass: an
-/// active floating resize, closing animations and reusable render scratch.
+/// A handle, not a second space or tree. Root membership, topology, geometry, fullscreen and
+/// focus all live in [`ContainerTree`], beside the tiled roots of the same workspace, and so
+/// does what the layer is doing right now (an active floating resize, closing animations,
+/// render scratch): on the workspace node, in [`FloatingRuntimeState`].
 ///
 /// Positional commands remain a separate behavior namespace because they are genuinely
 /// different operations: tiled `move_up` reparents a node, while floating `move_up` translates
-/// a root. Passing the shared tree is dependency access, never ownership transfer.
-#[derive(Debug)]
+/// a root.
 pub(super) struct FloatingRuntime<W: LayoutElement> {
-    /// Workspace whose floating roots this projection owns in the shared tree.
-    ///
-    /// The workspace beside it holds the same key, and that is a handle rather than a second
-    /// authority: it is written once at construction and never reassigned, on either side.
-    /// Threading it through instead would put it back into the hundred-odd signatures the
-    /// tree and the container tree just stopped carrying, to remove a value that cannot
-    /// disagree with itself. `verify_invariants` asserts the pairing so that stays true.
+    /// Workspace whose floating roots this handle names.
     workspace: NodeKey,
-    /// Ongoing interactive resize.
-    interactive_resize: Option<InteractiveResize<W>>,
+    _element: PhantomData<fn() -> W>,
+}
 
-    /// Windows in the closing animation.
-    closing_windows: Vec<ClosingWindow>,
+impl<W: LayoutElement> Clone for FloatingRuntime<W> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
 
-    /// Copy-only projection reused while rendering floating branches.
-    render_layout_scratch: Vec<LeafFrameInfo>,
+impl<W: LayoutElement> Copy for FloatingRuntime<W> {}
+
+impl<W: LayoutElement> std::fmt::Debug for FloatingRuntime<W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("FloatingRuntime")
+            .field(&self.workspace)
+            .finish()
+    }
 }
 
 niri_render_elements! {
@@ -194,9 +197,34 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     pub fn new(workspace: NodeKey) -> Self {
         Self {
             workspace,
-            interactive_resize: None,
-            closing_windows: Vec::new(),
-            render_layout_scratch: Vec::new(),
+            _element: PhantomData,
+        }
+    }
+
+    fn state<'a>(&self, containers: &'a ContainerTree<W>) -> &'a FloatingRuntimeState<W> {
+        &containers.workspace_runtime(self.workspace).floating
+    }
+
+    fn state_mut<'a>(
+        &self,
+        containers: &'a mut ContainerTree<W>,
+    ) -> &'a mut FloatingRuntimeState<W> {
+        &mut containers.workspace_runtime_mut(self.workspace).floating
+    }
+
+    /// End the interactive resize if it is resizing a window `ends` names.
+    fn end_resize_if(
+        &self,
+        containers: &mut ContainerTree<W>,
+        ends: impl FnOnce(&ContainerTree<W>, &W::Id) -> bool,
+    ) {
+        let ended = self
+            .state(containers)
+            .interactive_resize
+            .as_ref()
+            .is_some_and(|resize| ends(containers, &resize.window));
+        if ended {
+            self.state_mut(containers).interactive_resize = None;
         }
     }
 
@@ -239,22 +267,6 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         containers.set_floating_size(root, size)
     }
 
-    /// The workspace this floating side belongs to.
-    pub(super) fn workspace(&self) -> NodeKey {
-        self.workspace
-    }
-
-    pub(super) fn advance_closing_animations(&mut self) {
-        self.closing_windows.retain_mut(|closing| {
-            closing.advance_animations();
-            closing.are_animations_ongoing()
-        });
-    }
-
-    pub(super) fn has_closing_windows(&self) -> bool {
-        !self.closing_windows.is_empty()
-    }
-
     pub fn update_render_elements(
         &mut self,
         containers: &mut ContainerTree<W>,
@@ -274,7 +286,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         let floating_has_focus = is_active;
         let workspace = self.workspace;
         containers.apply_pending_layouts_and_deferred_relayout(workspace);
-        let mut layouts = std::mem::take(&mut self.render_layout_scratch);
+        let mut layouts = std::mem::take(&mut self.state_mut(containers).render_layout_scratch);
         let roots: Vec<_> = containers.floating_roots(self.workspace).collect();
         let active_children = containers.active_children();
         for root in roots {
@@ -348,7 +360,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
                 }
             }
         }
-        self.render_layout_scratch = layouts;
+        self.state_mut(containers).render_layout_scratch = layouts;
     }
 
     pub(super) fn resize_hit_under(
@@ -431,7 +443,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     fn tiles_with_offsets_visible<'a>(
-        &'a self,
+        &self,
         containers: &'a ContainerTree<W>,
     ) -> impl Iterator<Item = (&'a Tile<W>, Point<f64, Logical>)> + 'a {
         containers
@@ -440,7 +452,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     fn tab_bar_hit<'a>(
-        &'a self,
+        &self,
         containers: &'a ContainerTree<W>,
         pos: Point<f64, Logical>,
     ) -> Option<(&'a W, super::HitType)> {
@@ -452,7 +464,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     pub fn window_under<'a>(
-        &'a self,
+        &self,
         containers: &'a ContainerTree<W>,
         pos: Point<f64, Logical>,
     ) -> Option<(&'a W, super::HitType)> {
@@ -1137,11 +1149,9 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         };
         let root = self.root(containers, idx);
 
-        if let Some(resize) = &self.interactive_resize {
-            if self.idx_of(containers, &resize.window) == Some(idx) {
-                self.interactive_resize = None;
-            }
-        }
+        self.end_resize_if(containers, |containers, window| {
+            self.idx_of(containers, window) == Some(idx)
+        });
 
         for tile in containers.tiles_in_branch_mut(root) {
             Self::store_floating_size_for_restore(tile);
@@ -1188,13 +1198,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         let _ = group_empty;
         let workspace = self.workspace;
         containers.layout(workspace);
-        if self
-            .interactive_resize
-            .as_ref()
-            .is_some_and(|resize| &resize.window == id)
-        {
-            self.interactive_resize = None;
-        }
+        self.end_resize_if(containers, |_, window| window == id);
         true
     }
 
@@ -1229,11 +1233,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
             .expect("window must exist in floating container");
 
         // Stop interactive resize.
-        if let Some(resize) = &self.interactive_resize {
-            if id == &resize.window {
-                self.interactive_resize = None;
-            }
-        }
+        self.end_resize_if(containers, |_, window| window == id);
 
         // An implicit single-window group is registered under the window's own node, so once
         // that node is transferred the root has left with it and the branch count cannot say so:
@@ -1328,7 +1328,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
 
     pub fn start_close_animation_for_tile(
         &mut self,
-        containers: &ContainerTree<W>,
+        containers: &mut ContainerTree<W>,
         renderer: &mut GlesRenderer,
         snapshot: TileRenderSnapshot,
         tile_size: Size<f64, Logical>,
@@ -1353,7 +1353,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         );
         match res {
             Ok(closing) => {
-                self.closing_windows.push(closing);
+                self.state_mut(containers).closing_windows.push(closing);
             }
             Err(err) => {
                 warn!("error creating a closing window animation: {err:?}");
@@ -1445,7 +1445,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
             tile.floating_preset_width_idx = Some(preset_idx);
         }
 
-        self.interactive_resize_end(Some(&id));
+        self.interactive_resize_end(containers, Some(&id));
     }
 
     pub fn start_open_animation(&self, containers: &mut ContainerTree<W>, id: &W::Id) -> bool {
@@ -1494,7 +1494,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
             tile.floating_preset_height_idx = Some(preset_idx);
         }
 
-        self.interactive_resize_end(Some(&id));
+        self.interactive_resize_end(containers, Some(&id));
     }
 
     fn resize_container_dimension(
@@ -2214,7 +2214,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         let root = self.root(containers, idx);
         containers.layout_branch(root);
 
-        self.interactive_resize_end(None);
+        self.interactive_resize_end(containers, None);
     }
 
     fn move_by(&mut self, containers: &mut ContainerTree<W>, amount: Point<f64, Logical>) {
@@ -2349,6 +2349,12 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         };
 
         {
+            let resize_data = self
+                .state(containers)
+                .interactive_resize
+                .as_ref()
+                .filter(|resize| id == &resize.window)
+                .map(|resize| resize.data);
             let Some(key) = containers.window_key(id) else {
                 return false;
             };
@@ -2361,12 +2367,10 @@ impl<W: LayoutElement> FloatingRuntime<W> {
                 tile.window_mut().on_commit(serial);
             }
 
-            if let Some(resize) = &self.interactive_resize {
-                if id == &resize.window {
-                    tile.window_mut().set_interactive_resize(Some(resize.data));
-                    tile.stop_move_animations();
-                    tile.clear_resize_animation();
-                }
+            if let Some(data) = resize_data {
+                tile.window_mut().set_interactive_resize(Some(data));
+                tile.stop_move_animations();
+                tile.clear_resize_animation();
             }
 
             tile.update_window();
@@ -2423,7 +2427,8 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         let tile_count = containers
             .floating_tiles_in_workspace(self.workspace)
             .count();
-        let estimated_capacity = tile_count * 4 + self.closing_windows.len() + tile_count / 2;
+        let estimated_capacity =
+            tile_count * 4 + self.state(containers).closing_windows.len() + tile_count / 2;
         let mut elements = Vec::with_capacity(estimated_capacity);
         let scale = Scale::from(containers.scale(self.workspace));
 
@@ -2431,6 +2436,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         // the tree, and keeping a second, stale stacking model just for their animation would make
         // rendering disagree with the authoritative floating-root order.
         for closing in self
+            .state(containers)
             .closing_windows
             .iter()
             .rev()
@@ -2584,12 +2590,12 @@ impl<W: LayoutElement> FloatingRuntime<W> {
 
     pub fn interactive_resize_begin(
         &mut self,
-        containers: &ContainerTree<W>,
+        containers: &mut ContainerTree<W>,
         window: W::Id,
         edges: ResizeEdge,
     ) -> bool {
-        let tree = containers;
-        if self.interactive_resize.is_some() {
+        let tree = &*containers;
+        if self.state(tree).interactive_resize.is_some() {
             return false;
         }
 
@@ -2629,7 +2635,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
             resize_container_edges,
             data: InteractiveResizeData { edges },
         };
-        self.interactive_resize = Some(resize);
+        self.state_mut(containers).interactive_resize = Some(resize);
 
         true
     }
@@ -2651,7 +2657,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
             original_pos,
             resize_container_edges,
         ) = {
-            let Some(resize) = &self.interactive_resize else {
+            let Some(resize) = &self.state(containers).interactive_resize else {
                 return false;
             };
             if window != &resize.window {
@@ -2799,28 +2805,20 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     /// Consume a tree effect that may have moved the resize target to the tiled branch.
-    pub(super) fn cancel_resize_if_target_left(&mut self, containers: &ContainerTree<W>) {
-        if self
-            .interactive_resize
-            .as_ref()
-            .is_some_and(|resize| !self.contains(containers, &resize.window))
-        {
-            self.interactive_resize = None;
-        }
+    pub(super) fn cancel_resize_if_target_left(&mut self, containers: &mut ContainerTree<W>) {
+        self.end_resize_if(containers, |containers, window| {
+            !self.contains(containers, window)
+        });
     }
 
-    pub fn interactive_resize_end(&mut self, window: Option<&W::Id>) {
-        let Some(resize) = &self.interactive_resize else {
-            return;
-        };
-
-        if let Some(window) = window {
-            if window != &resize.window {
-                return;
-            }
-        }
-
-        self.interactive_resize = None;
+    pub fn interactive_resize_end(
+        &mut self,
+        containers: &mut ContainerTree<W>,
+        window: Option<&W::Id>,
+    ) {
+        self.end_resize_if(containers, |_, resizing| {
+            window.is_none_or(|window| window == resizing)
+        });
     }
 
     pub fn refresh(
@@ -2838,15 +2836,19 @@ impl<W: LayoutElement> FloatingRuntime<W> {
             containers.options(self.workspace).disable_resize_throttling;
         let border_base = containers.options(self.workspace).layout.border;
         let working_area_size = containers.working_area(self.workspace).size;
-        let resize_target = self.interactive_resize.as_ref().and_then(|resize| {
-            let idx = self.idx_of(containers, &resize.window)?;
-            let mut ids = Vec::new();
-            let root = self.root(containers, idx);
-            for tile in containers.tiles_in_branch(root) {
-                ids.push(tile.window().id().clone());
-            }
-            Some((resize.data, ids))
-        });
+        let resize_target = self
+            .state(containers)
+            .interactive_resize
+            .as_ref()
+            .and_then(|resize| {
+                let idx = self.idx_of(containers, &resize.window)?;
+                let mut ids = Vec::new();
+                let root = self.root(containers, idx);
+                for tile in containers.tiles_in_branch(root) {
+                    ids.push(tile.window().id().clone());
+                }
+                Some((resize.data, ids))
+            });
         for tile in containers.floating_tiles_mut_in_workspace(self.workspace) {
             let resize_data = resize_target.as_ref().and_then(|(data, ids)| {
                 ids.iter()
@@ -3019,7 +3021,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     pub(super) fn verify_runtime_invariants(&self, containers: &ContainerTree<W>) {
-        if let Some(resize) = &self.interactive_resize {
+        if let Some(resize) = &self.state(containers).interactive_resize {
             assert!(
                 self.contains(containers, &resize.window),
                 "interactive resize window must be present in tiles"

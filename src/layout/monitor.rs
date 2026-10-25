@@ -2370,6 +2370,7 @@ impl<W: LayoutElement> Monitor<W> {
 
     pub fn render_workspace_shadows<R: NiriRenderer>(
         &self,
+        containers: &ContainerTree<W>,
         renderer: &mut R,
         push: &mut dyn FnMut(MonitorRenderElement<R>),
     ) {
@@ -2384,7 +2385,7 @@ impl<W: LayoutElement> Monitor<W> {
         let zoom = self.overview_zoom();
 
         for (ws, geo) in self.workspaces_with_render_geo() {
-            ws.render_shadow(renderer, &mut |elem| {
+            ws.render_shadow(containers, renderer, &mut |elem| {
                 let elem = elem.with_alpha(alpha);
                 let elem = MonitorInnerRenderElement::Shadow(elem);
                 let elem = RescaleRenderElement::from_element(elem, Point::from((0, 0)), zoom);

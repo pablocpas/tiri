@@ -29,18 +29,18 @@ use std::rc::Rc;
 use smithay::backend::renderer::element::Kind;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
 use tiri_config::utils::MergeWith as _;
-use tiri_config::{Border, Color, HideEdgeBorders, PresetSize, TabBar};
+use tiri_config::{Border, HideEdgeBorders, PresetSize, TabBar};
 use tiri_ipc::{LayoutTreeNode, LayoutTreeRect, SizeChange};
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 pub use super::container::ContainerTree;
-pub(super) use render::{ContainerRenderState, ContainerTreeRenderElement, WorkspaceOverview};
+pub(super) use render::{ContainerRenderState, ContainerTreeRenderElement};
 
 mod render;
 use super::container::{
     ContainerMetrics, Direction, IncomingView, InteractiveResizeState, LayoutCommand, LayoutMode,
-    LeafLayoutInfo, NodeKey, ResizeDelta, ResizeReach, ResizeSpace, ResizeTarget, SwapEffects,
-    TabBarInfo, WorkspaceCommandTarget,
+    LeafLayoutInfo, NodeKey, ResizeDelta, ResizeReach, ResizeSpace, ResizeTarget, TabBarInfo,
+    WorkspaceCommandTarget,
 };
 use super::focus_ring::{
     render_container_selection, FocusRingEdges, FocusRingIndicatorEdge, FocusRingRenderElement,
@@ -58,8 +58,8 @@ use crate::layout::tab_bar::{
 };
 use crate::layout::RenderLayer;
 use crate::niri_render_elements;
-use crate::render_helpers::offscreen::{OffscreenBuffer, OffscreenRenderElement};
-use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
+use crate::render_helpers::offscreen::OffscreenRenderElement;
+use crate::render_helpers::solid_color::SolidColorRenderElement;
 use crate::render_helpers::xray::XrayPos;
 use crate::utils::transaction::Transaction;
 use crate::utils::{round_logical_in_physical_max1, ResizeEdge};
@@ -281,8 +281,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         &mut self,
         source_workspace: NodeKey,
         mark: &str,
-    ) -> Option<SwapEffects> {
-        let target = self.node_with_mark(mark)?;
+    ) -> bool {
+        let Some(target) = self.node_with_mark(mark) else {
+            return false;
+        };
         self.swap_selected_nodes(source_workspace, target)
     }
 
@@ -318,29 +320,45 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.refresh_focus_visibility();
     }
 
-    fn swap_selected_nodes(
-        &mut self,
-        source_workspace: NodeKey,
-        target: NodeKey,
-    ) -> Option<SwapEffects> {
-        let target_workspace = self.workspace_of(target)?;
-        let selected = self.workspace_command_node(source_workspace)?;
+    fn swap_selected_nodes(&mut self, source_workspace: NodeKey, target: NodeKey) -> bool {
+        let Some(target_workspace) = self.workspace_of(target) else {
+            return false;
+        };
+        let Some(selected) = self.workspace_command_node(source_workspace) else {
+            return false;
+        };
         let selected_was_floating = self.is_in_floating_branch(selected);
         let target_was_floating = self.is_in_floating_branch(target);
 
         if !self.swap_nodes(selected, target)
             && !self.swap_nodes_at_floating_boundary(selected, target)
         {
-            return None;
+            return false;
         }
         self.arrange_swapped_parents(selected, target);
-        Some(SwapEffects {
-            source_workspace,
-            target_workspace,
-            floating_ownership_changed: (selected_was_floating || target_was_floating)
-                && (source_workspace != target_workspace
-                    || selected_was_floating != target_was_floating),
-        })
+
+        // A floating resize follows its window only while the window stays a float of the
+        // same workspace; a swap that carried it elsewhere ends the resize.
+        let floating_ownership_changed = (selected_was_floating || target_was_floating)
+            && (source_workspace != target_workspace
+                || selected_was_floating != target_was_floating);
+        if floating_ownership_changed {
+            for workspace in [source_workspace, target_workspace] {
+                let resize = &self
+                    .workspace_runtime(workspace)
+                    .floating
+                    .interactive_resize;
+                if resize
+                    .as_ref()
+                    .is_some_and(|resize| !self.window_is_floating_in(workspace, &resize.window))
+                {
+                    self.workspace_runtime_mut(workspace)
+                        .floating
+                        .interactive_resize = None;
+                }
+            }
+        }
+        true
     }
 
     /// The tiled side's cached leaf layouts. The floating groups are branches of the same
@@ -839,10 +857,15 @@ impl<W: LayoutElement> ContainerTree<W> {
     /// Computed up front so the caller can hold mutable tile borrows while iterating.
     fn interactive_resize_data_by_leaf(
         &self,
-        resize: &Option<InteractiveResizeState<W>>,
+        workspace: NodeKey,
         layouts: &[LeafFrameInfo],
     ) -> HashMap<NodeKey, InteractiveResizeData> {
-        let Some(resize) = resize.as_ref() else {
+        let Some(resize) = self
+            .workspace_runtime(workspace)
+            .tiled
+            .interactive_resize
+            .as_ref()
+        else {
             return HashMap::new();
         };
 
@@ -901,19 +924,13 @@ impl<W: LayoutElement> ContainerTree<W> {
         options: Rc<Options>,
         properties: WorkspaceProperties,
     ) -> NodeKey {
-        let background_color = options.layout.background_color;
-        let workspace = self.add_workspace_node(
+        self.add_workspace_node(
             LayoutMode::SplitH,
             view_size,
             working_area,
             options,
             properties,
-        );
-        self.render.overview.insert(
-            workspace,
-            WorkspaceOverview::new(view_size, background_color),
-        );
-        workspace
+        )
     }
 
     /// Every window under the given workspace roots, in their order.
@@ -1151,40 +1168,38 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
     }
 
-    /// One tab bar's render element, drawn again only when what it shows has changed.
-    ///
-    /// Both sides of a workspace draw tab bars through here and keep them in the one cache: a
-    /// node key is unique across the tree, and a container can change sides.
     pub(super) fn interactive_resize_begin(
         &mut self,
         workspace: NodeKey,
-        resize: &mut Option<InteractiveResizeState<W>>,
         window: W::Id,
         edges: ResizeEdge,
     ) -> bool {
-        self.interactive_resize_begin_internal(workspace, resize, window, edges, None)
+        self.interactive_resize_begin_internal(workspace, window, edges, None)
     }
 
     pub(super) fn interactive_resize_begin_at(
         &mut self,
         workspace: NodeKey,
-        resize: &mut Option<InteractiveResizeState<W>>,
         window: W::Id,
         edges: ResizeEdge,
         pos: Point<f64, Logical>,
     ) -> bool {
-        self.interactive_resize_begin_internal(workspace, resize, window, edges, Some(pos))
+        self.interactive_resize_begin_internal(workspace, window, edges, Some(pos))
     }
 
     fn interactive_resize_begin_internal(
         &mut self,
         workspace: NodeKey,
-        resize: &mut Option<InteractiveResizeState<W>>,
         window: W::Id,
         edges: ResizeEdge,
         pos: Option<Point<f64, Logical>>,
     ) -> bool {
-        if resize.is_some() {
+        if self
+            .workspace_runtime(workspace)
+            .tiled
+            .interactive_resize
+            .is_some()
+        {
             return false;
         }
 
@@ -1194,7 +1209,9 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         };
 
-        *resize = Some(InteractiveResizeState {
+        self.workspace_runtime_mut(workspace)
+            .tiled
+            .interactive_resize = Some(InteractiveResizeState {
             window,
             data: InteractiveResizeData { edges },
             horizontal,
@@ -1207,11 +1224,10 @@ impl<W: LayoutElement> ContainerTree<W> {
     pub(super) fn interactive_resize_update(
         &mut self,
         workspace: NodeKey,
-        resize: &Option<InteractiveResizeState<W>>,
         window: &W::Id,
         delta: Point<f64, Logical>,
     ) -> bool {
-        let Some(resize) = &resize else {
+        let Some(resize) = &self.workspace_runtime(workspace).tiled.interactive_resize else {
             return false;
         };
 
@@ -1248,22 +1264,17 @@ impl<W: LayoutElement> ContainerTree<W> {
         true
     }
 
-    pub(super) fn interactive_resize_end(
-        &mut self,
-        resize: &mut Option<InteractiveResizeState<W>>,
-        window: Option<&W::Id>,
-    ) {
-        let Some(ongoing) = resize.as_ref() else {
-            return;
-        };
-
-        if let Some(window) = window {
-            if window != &ongoing.window {
-                return;
-            }
+    pub(super) fn interactive_resize_end(&mut self, workspace: NodeKey, window: Option<&W::Id>) {
+        let resize = &mut self
+            .workspace_runtime_mut(workspace)
+            .tiled
+            .interactive_resize;
+        if resize
+            .as_ref()
+            .is_some_and(|ongoing| window.is_none_or(|window| window == &ongoing.window))
+        {
+            *resize = None;
         }
-
-        *resize = None;
     }
 
     pub fn resize_hit_under(
@@ -2769,8 +2780,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         &mut self,
         source_workspace: NodeKey,
         target: &W::Id,
-    ) -> Option<SwapEffects> {
-        let target = self.window_key(target)?;
+    ) -> bool {
+        let Some(target) = self.window_key(target) else {
+            return false;
+        };
         self.swap_selected_nodes(source_workspace, target)
     }
 
@@ -2785,13 +2798,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         false
     }
 
-    pub(super) fn refresh(
-        &mut self,
-        workspace: NodeKey,
-        resize: &Option<InteractiveResizeState<W>>,
-        is_active: bool,
-        is_focused: bool,
-    ) {
+    pub(super) fn refresh(&mut self, workspace: NodeKey, is_active: bool, is_focused: bool) {
         let _span = tracy_client::span!("ContainerTree::refresh");
         self.apply_pending_layouts_and_deferred_relayout(workspace);
         let has_pending = self.has_pending_layouts(workspace);
@@ -2846,7 +2853,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         };
         // See the other state pass: never drive window state from a stale snapshot.
         let skip_state_pass = self.pending_layout_is_stale(workspace);
-        let resize_data = self.interactive_resize_data_by_leaf(resize, &layouts);
+        let resize_data = self.interactive_resize_data_by_leaf(workspace, &layouts);
         for info in &layouts {
             if skip_state_pass {
                 break;

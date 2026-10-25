@@ -2,8 +2,10 @@ use insta::assert_snapshot;
 
 use super::super::container::{ContainerData, ContainerTree, Direction, FloatingRootKind, NewView};
 use super::super::tile::Tile;
-use super::super::workspace::WorkspaceProperties;
+use super::super::workspace::{InteractiveResize, WorkspaceProperties};
+use super::super::InteractiveResizeData;
 use super::*;
+use crate::utils::ResizeEdge;
 
 #[test]
 fn removing_window_above_preserves_focused_window() {
@@ -303,13 +305,11 @@ fn command_swap_uses_the_source_workspace_target_across_workspaces() {
     let source_key = harness.tree.window_key(&1).expect("source leaf");
     let target_key = harness.tree.window_key(&3).expect("target leaf");
 
-    let effects = harness
-        .tree
-        .swap_selected_with_window(source, &3)
-        .expect("cross-workspace swap");
+    assert!(
+        harness.tree.swap_selected_with_window(source, &3),
+        "cross-workspace swap"
+    );
 
-    assert_eq!(effects.source_workspace, source);
-    assert_eq!(effects.target_workspace, target);
     assert_eq!(harness.tree.workspace_of(source_key), Some(target));
     assert_eq!(harness.tree.workspace_of(target_key), Some(source));
     assert_eq!(
@@ -350,10 +350,10 @@ fn marked_cross_workspace_swap_keeps_the_command_source_explicit() {
         .add_mark_to_node(target_key, String::from("remote")));
     assert!(harness.tree.focus_window_by_id(source, &1));
 
-    harness
-        .tree
-        .swap_selected_with_mark(source, "remote")
-        .expect("marked cross-workspace swap");
+    assert!(
+        harness.tree.swap_selected_with_mark(source, "remote"),
+        "marked cross-workspace swap"
+    );
 
     assert_eq!(harness.tree.workspace_of(source_key), Some(target));
     assert_eq!(harness.tree.workspace_of(target_key), Some(source));
@@ -374,10 +374,10 @@ fn cross_workspace_swap_transfers_both_fullscreen_slots() {
     assert!(harness.tree.set_fullscreen_key(target, Some(target_key)));
     assert!(harness.tree.focus_window_by_id(source, &1));
 
-    harness
-        .tree
-        .swap_selected_with_window(source, &2)
-        .expect("cross-workspace fullscreen swap");
+    assert!(
+        harness.tree.swap_selected_with_window(source, &2),
+        "cross-workspace fullscreen swap"
+    );
 
     assert_eq!(harness.tree.fullscreen_key(source), Some(target_key));
     assert_eq!(harness.tree.fullscreen_key(target), Some(source_key));
@@ -402,13 +402,33 @@ fn cross_workspace_swap_exchanges_tiled_and_floating_slots() {
         .float_as_group(target_key, area, 0, FloatingRootKind::ImplicitWindowGroup)
         .expect("target should become floating");
     assert!(harness.tree.focus_window_by_id(source, &1));
-
-    let effects = harness
+    harness
         .tree
-        .swap_selected_with_window(source, &2)
-        .expect("tiled/floating cross-workspace swap");
+        .workspace_runtime_mut(target)
+        .floating
+        .interactive_resize = Some(InteractiveResize {
+        window: 2,
+        original_window_size: area.size,
+        original_window_pos: Some(area.loc),
+        original_container_size: area.size,
+        resize_container_edges: ResizeEdge::empty(),
+        data: InteractiveResizeData {
+            edges: ResizeEdge::RIGHT,
+        },
+    });
 
-    assert!(effects.floating_ownership_changed);
+    assert!(
+        harness.tree.swap_selected_with_window(source, &2),
+        "tiled/floating cross-workspace swap"
+    );
+
+    // The window being resized is tiled on the other workspace now; its float's resize ends.
+    assert!(harness
+        .tree
+        .workspace_runtime(target)
+        .floating
+        .interactive_resize
+        .is_none());
     assert_eq!(harness.tree.workspace_of(source_key), Some(target));
     assert!(harness.tree.is_in_floating_branch(source_key));
     assert_eq!(harness.tree.workspace_of(target_key), Some(source));
