@@ -3922,7 +3922,10 @@ impl State {
                     // animations.
                     self.niri.output_under_cursor().and_then(|output| {
                         let mon = self.niri.layout.monitor_for_output(&output)?;
-                        Some((output, mon.active_workspace_ref()))
+                        Some((
+                            output,
+                            mon.active_workspace_ref(self.niri.layout.containers()),
+                        ))
                     })
                 };
 

@@ -46,6 +46,7 @@ mod invariants;
 mod ipc_projection;
 mod marks;
 mod movement;
+mod outputs;
 mod paths;
 mod preview;
 mod query;
@@ -59,6 +60,9 @@ mod swap;
 mod tab_bar_model;
 mod transfer;
 mod tree_store;
+
+pub use outputs::OutputKey;
+use outputs::Outputs;
 
 pub use command::LayoutCommand;
 pub(super) use command::WorkspaceCommandTarget;
@@ -381,6 +385,10 @@ pub struct WorkspaceData<W: LayoutElement> {
     options: Rc<Options>,
     /// What the workspace is: its name, its outputs, its own config.
     pub(super) properties: WorkspaceProperties,
+    /// The output the workspace is on, if any; sway's `sway_workspace->output`.
+    ///
+    /// Written only by [`outputs`], together with that output's list.
+    output: Option<OutputKey>,
     /// What the workspace is doing right now: animations, a resize in progress, its overview
     /// shadow and background.
     pub(super) runtime: WorkspaceRuntime<W>,
@@ -615,6 +623,8 @@ pub struct ContainerTree<W: LayoutElement> {
     /// "the parent is the workspace", and every such special case is a place to disagree
     /// with sway.
     workspaces: Vec<NodeKey>,
+    /// The outputs and the workspaces on each, in order.
+    outputs: Outputs,
     /// Roots temporarily owned by the layout but attached to no workspace.
     ///
     /// Interactive moves live here between pointer events. They stay in the one node store,
@@ -771,6 +781,7 @@ impl<W: LayoutElement> WorkspaceData<W> {
             floating_roots: Vec::new(),
             fullscreen_key: None,
             pending_relayout: false,
+            output: None,
             runtime: WorkspaceRuntime::new(view_size, &options),
             view_size,
             working_area,
@@ -956,6 +967,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             nodes,
             window_nodes: HashMap::new(),
             workspaces: Vec::new(),
+            outputs: Outputs::default(),
             transfer_roots: HashSet::new(),
             next_floating_root_id: 1,
             seat,
@@ -1013,6 +1025,7 @@ impl<W: LayoutElement> ContainerTree<W> {
             return false;
         };
 
+        self.detach_workspace_from_its_output(workspace);
         for root in self.floating_roots_in(workspace) {
             assert!(self.remove_floating_branch(root));
         }
@@ -1041,6 +1054,7 @@ impl<W: LayoutElement> ContainerTree<W> {
         for workspace in &self.workspaces {
             self.verify_workspace_invariants(*workspace);
         }
+        self.verify_outputs();
         self.verify_every_node_is_under_a_root();
     }
 }

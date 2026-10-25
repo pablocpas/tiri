@@ -3672,7 +3672,8 @@ impl Niri {
 
                     // Background and bottom layers move together with the workspaces.
                     let mon = self.layout.monitor_for_output(output)?;
-                    let (_, geo) = mon.workspace_under(pos_within_output)?;
+                    let (_, geo) =
+                        mon.workspace_under(self.layout.containers(), pos_within_output)?;
                     layer_pos_within_output += geo.loc;
 
                     let surface_type = WindowSurfaceType::POPUP | WindowSurfaceType::SUBSURFACE;
@@ -3696,7 +3697,7 @@ impl Niri {
         &self,
         extended_bounds: bool,
         pos: Point<f64, Logical>,
-    ) -> Option<(Output, &Workspace<Mapped>)> {
+    ) -> Option<(Output, Workspace<Mapped>)> {
         if self.exit_confirm_dialog.is_open() || self.is_locked() || self.screenshot_ui.is_open() {
             return None;
         }
@@ -3720,7 +3721,7 @@ impl Niri {
     pub fn workspace_under_cursor(
         &self,
         extended_bounds: bool,
-    ) -> Option<(Output, &Workspace<Mapped>)> {
+    ) -> Option<(Output, Workspace<Mapped>)> {
         let pos = self.seat.get_pointer().unwrap().current_location();
         self.workspace_under(extended_bounds, pos)
     }
@@ -3835,7 +3836,8 @@ impl Niri {
                     // Background and bottom layers move together with the workspaces.
                     if matches!(layer, Layer::Background | Layer::Bottom) {
                         let mon = self.layout.monitor_for_output(output)?;
-                        let (_, geo) = mon.workspace_under(pos_within_output)?;
+                        let (_, geo) =
+                            mon.workspace_under(self.layout.containers(), pos_within_output)?;
                         layer_pos_within_output += geo.loc;
                         // Don't need to deal with zoom here because in the overview background and
                         // bottom layers don't receive input.
@@ -4981,7 +4983,7 @@ impl Niri {
 
                 state.xray.workspaces.clear();
                 let mon = self.layout.monitor_for_output(out).unwrap();
-                for (ws, geo) in mon.workspaces_with_render_geo() {
+                for (ws, geo) in mon.workspaces_with_render_geo(self.layout.containers()) {
                     let bg_color = ws.render_background(self.layout.containers()).color();
                     state.xray.workspaces.push((geo, bg_color));
                 }
@@ -5252,7 +5254,10 @@ impl Niri {
             push_normal_from_layer!(Layer::Background);
 
             // We don't expect more than one workspace when render_above_top_layer().
-            if let Some((ws, _geo)) = mon.workspaces_with_render_geo().next() {
+            if let Some((ws, _geo)) = mon
+                .workspaces_with_render_geo(self.layout.containers())
+                .next()
+            {
                 push(ws.render_background(self.layout.containers()).into());
             }
         } else {
@@ -5275,7 +5280,7 @@ impl Niri {
                 }};
             }
 
-            for (ws, geo) in mon.workspaces_with_render_geo() {
+            for (ws, geo) in mon.workspaces_with_render_geo(self.layout.containers()) {
                 let ns = Some(ws.id().get() as usize);
                 let xray_pos = XrayPos::new(geo.loc, zoom);
                 push_popups_from_layer!(Layer::Bottom, ns, xray_pos, process!(geo));
@@ -5286,7 +5291,7 @@ impl Niri {
                 push(elem.into())
             });
 
-            for (ws, geo) in mon.workspaces_with_render_geo() {
+            for (ws, geo) in mon.workspaces_with_render_geo(self.layout.containers()) {
                 // The render element namespace. This will be set to the workspace index for
                 // elements duplicated across workspaces (i.e. background and bottom layers) in
                 // order to have their non-xray framebuffer effects separated from each other.

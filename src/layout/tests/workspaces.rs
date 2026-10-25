@@ -1053,7 +1053,9 @@ fn move_to_workspace_by_idx_does_not_leave_empty_workspaces() {
         unreachable!()
     };
 
-    assert!(monitors[0].workspaces[1].has_windows(&layout.containers));
+    assert!(monitors[0]
+        .ws(&layout.containers, 1)
+        .has_windows(&layout.containers));
 }
 #[test]
 fn empty_workspaces_dont_move_back_to_original_output() {
@@ -1243,11 +1245,15 @@ fn move_workspace_to_output() {
     };
 
     assert_eq!(active_monitor_idx, 1);
-    assert_eq!(monitors[0].workspaces.len(), 1);
-    assert!(!monitors[0].workspaces[0].has_windows(&layout.containers));
+    assert_eq!(monitors[0].workspace_count(&layout.containers), 1);
+    assert!(!monitors[0]
+        .ws(&layout.containers, 0)
+        .has_windows(&layout.containers));
     assert_eq!(monitors[1].active_workspace_idx, 0);
-    assert_eq!(monitors[1].workspaces.len(), 2);
-    assert!(monitors[1].workspaces[0].has_windows(&layout.containers));
+    assert_eq!(monitors[1].workspace_count(&layout.containers), 2);
+    assert!(monitors[1]
+        .ws(&layout.containers, 0)
+        .has_windows(&layout.containers));
 }
 #[test]
 fn open_right_of_on_different_workspace() {
@@ -1278,7 +1284,7 @@ fn open_right_of_on_different_workspace() {
         "the second workspace must remain active"
     );
     assert_eq!(
-        mon.workspaces[0]
+        mon.ws(&layout.containers, 0)
             .container_tree(&layout.containers)
             .active_root_index(),
         1,
@@ -1321,7 +1327,7 @@ fn open_right_of_on_different_workspace_ewaf() {
         "the second workspace must remain active"
     );
     assert_eq!(
-        mon.workspaces[1]
+        mon.ws(&layout.containers, 1)
             .container_tree(&layout.containers)
             .active_root_index(),
         1,
@@ -1885,7 +1891,7 @@ fn initial_numeric_workspace_one_is_seeded() {
     let workspace_count = layout
         .monitor_for_output(&output)
         .unwrap()
-        .workspace_count();
+        .workspace_count(&layout.containers);
     let (target_output, idx) = layout.ensure_numeric_workspace(1).unwrap();
 
     assert_eq!(
@@ -1901,7 +1907,7 @@ fn initial_numeric_workspace_one_is_seeded() {
         layout
             .monitor_for_output(&output)
             .unwrap()
-            .workspace_count(),
+            .workspace_count(&layout.containers),
         workspace_count,
     );
 }
@@ -1939,8 +1945,7 @@ fn numeric_workspace_one_is_reused_after_switching_to_two() {
 
     let mon = layout.monitor_for_output(&output).unwrap();
     let names: Vec<_> = mon
-        .workspaces
-        .iter()
+        .workspaces(&layout.containers)
         .filter_map(|ws| ws.name(&layout.containers).map(String::as_str))
         .collect();
     assert_eq!(names, vec!["1", "2"]);
@@ -1962,16 +1967,16 @@ fn initial_numeric_workspace_one_keeps_empty_above_first_invariant() {
     layout.verify_invariants();
 
     let mon = layout.monitor_for_output(&output).unwrap();
-    assert_eq!(mon.workspace_count(), 3);
+    assert_eq!(mon.workspace_count(&layout.containers), 3);
     assert_eq!(mon.active_workspace_idx(), 1);
-    assert_eq!(mon.workspaces[0].name(&layout.containers), None);
+    assert_eq!(mon.ws(&layout.containers, 0).name(&layout.containers), None);
     assert_eq!(
-        mon.workspaces[1]
+        mon.ws(&layout.containers, 1)
             .name(&layout.containers)
             .map(String::as_str),
         Some("1")
     );
-    assert_eq!(mon.workspaces[2].name(&layout.containers), None);
+    assert_eq!(mon.ws(&layout.containers, 2).name(&layout.containers), None);
 }
 fn add_window_to_numeric_workspace(
     layout: &mut Layout<TestWindow>,
@@ -2078,8 +2083,7 @@ fn numeric_workspaces_are_inserted_in_number_order() {
         unreachable!()
     };
     let names: Vec<_> = monitors[0]
-        .workspaces
-        .iter()
+        .workspaces(&layout.containers)
         .filter_map(|ws| ws.name(&layout.containers).cloned())
         .collect();
     assert_eq!(
@@ -2111,8 +2115,7 @@ fn named_workspaces_are_inserted_after_numeric_workspaces() {
         unreachable!()
     };
     let names: Vec<_> = monitors[0]
-        .workspaces
-        .iter()
+        .workspaces(&layout.containers)
         .filter_map(|ws| ws.name(&layout.containers).cloned())
         .collect();
     assert_eq!(
@@ -2154,8 +2157,7 @@ fn empty_inactive_numeric_workspace_is_destroyed_without_renumbering() {
     assert!(layout.find_workspace_by_number(3).is_none());
     let mon = layout.monitor_for_output(&output).unwrap();
     let names: Vec<_> = mon
-        .workspaces
-        .iter()
+        .workspaces(&layout.containers)
         .filter_map(|ws| ws.name(&layout.containers).map(String::as_str))
         .collect();
     assert_eq!(names, vec!["1"]);
@@ -2282,7 +2284,7 @@ fn numeric_workspace_lookup_reuses_workspace_on_other_output() {
 
     let count = layout
         .monitors()
-        .flat_map(|mon| mon.workspaces.iter())
+        .flat_map(|mon| mon.workspaces(&layout.containers))
         .filter(|ws| ws.name(&layout.containers).is_some_and(|name| name == "2"))
         .count();
 
@@ -2327,8 +2329,7 @@ fn numeric_workspaces_keep_order_when_moved_between_outputs() {
     let names: Vec<_> = layout
         .monitor_for_output(&output_b)
         .unwrap()
-        .workspaces
-        .iter()
+        .workspaces(&layout.containers)
         .filter_map(|ws| ws.name(&layout.containers).cloned())
         .collect();
 
@@ -2351,8 +2352,7 @@ fn numeric_workspaces_keep_order_when_outputs_are_merged() {
     let names: Vec<_> = layout
         .monitor_for_output(&output_a)
         .unwrap()
-        .workspaces
-        .iter()
+        .workspaces(&layout.containers)
         .filter_map(|ws| ws.name(&layout.containers).cloned())
         .collect();
 
@@ -2377,8 +2377,7 @@ fn move_workspace_to_idx_by_workspace_id_does_not_reorder_numeric_workspaces() {
         unreachable!()
     };
     let names: Vec<_> = monitors[0]
-        .workspaces
-        .iter()
+        .workspaces(&layout.containers)
         .filter_map(|ws| ws.name(&layout.containers).cloned())
         .collect();
     assert_eq!(
@@ -2470,8 +2469,7 @@ fn move_column_to_workspace_unfocused_with_multiple_monitors() {
     for (mon, win) in layout.windows() {
         let mon = mon.unwrap();
         let ws = mon
-            .workspaces
-            .iter()
+            .workspaces(&layout.containers)
             .find(|w| w.has_window(&layout.containers, win.id()))
             .unwrap();
 
@@ -2508,7 +2506,7 @@ fn workspace_render_geo_at_fractional_scale() {
     };
 
     let mon = &monitors[0];
-    let mut iter = mon.workspaces_with_render_geo();
+    let mut iter = mon.workspaces_with_render_geo(&layout.containers);
     let (_ws, geo) = iter.next().unwrap();
     assert!(
         iter.next().is_none(),

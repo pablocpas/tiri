@@ -293,7 +293,7 @@ fn refresh_workspace(
     mon: Option<&Monitor<Mapped>>,
     ws_idx: usize,
     is_active: bool,
-    ws: &Workspace<Mapped>,
+    ws: Workspace<Mapped>,
 ) -> bool {
     let mut state = ext_workspace_handle_v1::State::empty();
     if is_active {
@@ -345,7 +345,7 @@ fn refresh_workspace(
                 };
             let mut name_changed = false;
             if check {
-                let new_name = build_name(containers, ws, ws_idx);
+                let new_name = build_name(containers, &ws, ws_idx);
                 // This will likely be true, except if the workspace got named its index.
                 if data.name != new_name {
                     data.name = new_name;
@@ -410,7 +410,7 @@ fn refresh_workspace(
             // New workspace, start tracking it.
             let mut data = ExtWorkspaceData {
                 id: ws.name(containers).cloned(),
-                name: build_name(containers, ws, ws_idx),
+                name: build_name(containers, &ws, ws_idx),
                 coordinates: ArrayVec::from([0, ws_idx as u32]),
                 state,
                 instances: Vec::new(),

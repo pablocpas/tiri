@@ -160,7 +160,10 @@ impl<W: LayoutElement> Layout<W> {
                 let Some(mon) = self.monitors().nth(monitor_idx) else {
                     return false;
                 };
-                let Some((ws, ws_geo)) = mon.workspaces_with_render_geo().nth(workspace_idx) else {
+                let Some((ws, ws_geo)) = mon
+                    .workspaces_with_render_geo(&self.containers)
+                    .nth(workspace_idx)
+                else {
                     return false;
                 };
                 let Some((tile, tile_offset, _visible)) = ws
@@ -344,8 +347,9 @@ impl<W: LayoutElement> Layout<W> {
                         workspace_idx,
                     }) => self.monitors().nth(monitor_idx).and_then(|mon| {
                         (mon.output() == &output).then_some(mon).and_then(|mon| {
-                            let (ws, ws_geo) =
-                                mon.workspaces_with_render_geo().nth(workspace_idx)?;
+                            let (ws, ws_geo) = mon
+                                .workspaces_with_render_geo(&self.containers)
+                                .nth(workspace_idx)?;
                             let (_, tile_offset, _) = ws
                                 .tiles_with_render_positions(&self.containers)
                                 .find(|(tile, _, _)| tile.window().id() == window)?;
@@ -469,7 +473,8 @@ impl<W: LayoutElement> Layout<W> {
 
                 let mut ws_id = None;
                 if let Some(mon) = self.monitor_for_output(&output) {
-                    let (insert_ws, _) = mon.insert_position(move_.pointer_pos_within_output);
+                    let (insert_ws, _) =
+                        mon.insert_position(&self.containers, move_.pointer_pos_within_output);
                     if let InsertWorkspace::Existing(id) = insert_ws {
                         ws_id = Some(id);
                     }
@@ -669,17 +674,18 @@ impl<W: LayoutElement> Layout<W> {
                 {
                     let zoom = mon.overview_zoom();
 
-                    let (insert_ws, geo) = mon.insert_position(move_.pointer_pos_within_output);
+                    let (insert_ws, geo) =
+                        mon.insert_position(&self.containers, move_.pointer_pos_within_output);
                     let (position, offset) = match insert_ws {
                         InsertWorkspace::Existing(ws_id) => {
-                            let ws_idx = mon.idx_of_ws(ws_id).unwrap();
+                            let ws_idx = mon.idx_of_ws(&self.containers, ws_id).unwrap();
 
                             let position = if move_.is_floating {
                                 InsertPosition::Floating
                             } else {
                                 let pos_within_workspace =
                                     (move_.pointer_pos_within_output - geo.loc).downscale(zoom);
-                                let ws = &mut mon.workspaces[ws_idx];
+                                let ws = mon.ws(&self.containers, ws_idx);
                                 ws.tiling_insert_position(&self.containers, pos_within_workspace)
                             };
 
@@ -701,8 +707,8 @@ impl<W: LayoutElement> Layout<W> {
                     let mon = &mut monitors[*active_monitor_idx];
                     let zoom = mon.overview_zoom();
                     // No point in trying to use the pointer position on the wrong output.
-                    let ws = &mon.workspaces[0];
-                    let ws_geo = mon.workspaces_render_geo().next().unwrap();
+                    let ws = mon.ws(&self.containers, 0);
+                    let ws_geo = mon.workspaces_render_geo(&self.containers).next().unwrap();
 
                     let position = if move_.is_floating {
                         InsertPosition::Floating
@@ -719,14 +725,16 @@ impl<W: LayoutElement> Layout<W> {
                     move_.tile_render_location(transferred.tile(&self.containers), zoom);
 
                 let ws_idx = match insert_ws {
-                    InsertWorkspace::Existing(ws_id) => mon.idx_of_ws(ws_id).unwrap(),
+                    InsertWorkspace::Existing(ws_id) => {
+                        mon.idx_of_ws(&self.containers, ws_id).unwrap()
+                    }
                     InsertWorkspace::NewAt(ws_idx) => {
                         if mon.options.layout.empty_workspace_above_first && ws_idx == 0 {
                             // Reuse the top empty workspace.
                             0
-                        } else if mon.workspaces.len() - 1 <= ws_idx {
+                        } else if mon.workspace_count(&self.containers) - 1 <= ws_idx {
                             // Reuse the bottom empty workspace.
-                            mon.workspaces.len() - 1
+                            mon.workspace_count(&self.containers) - 1
                         } else {
                             mon.add_workspace_at(&mut self.containers, ws_idx);
                             ws_idx
@@ -736,7 +744,7 @@ impl<W: LayoutElement> Layout<W> {
 
                 match position {
                     InsertPosition::RootStart => {
-                        let ws_id = mon.workspaces[ws_idx].id();
+                        let ws_id = mon.ws(&self.containers, ws_idx).id();
                         mon.add_tile(
                             &mut self.containers,
                             transferred.into_incoming(),
@@ -752,14 +760,14 @@ impl<W: LayoutElement> Layout<W> {
                     InsertPosition::Swap { target, direction } => {
                         // Swapping is only possible back into the workspace the drag started
                         // from, where the vacated slot is still known.
-                        let ws_id = mon.workspaces[ws_idx].id();
+                        let ws_id = mon.ws(&self.containers, ws_idx).id();
                         let origin = (move_.origin_workspace == ws_id)
                             .then(|| move_.swap_origin.clone())
                             .flatten();
 
                         let tile = transferred.into_incoming();
                         let swap = match origin {
-                            Some(origin) => mon.workspaces[ws_idx].tiling_swap_tile(
+                            Some(origin) => mon.ws(&self.containers, ws_idx).tiling_swap_tile(
                                 &mut self.containers,
                                 target,
                                 tile,
@@ -771,7 +779,7 @@ impl<W: LayoutElement> Layout<W> {
                         match swap {
                             Ok(()) => {
                                 if allow_to_activate_workspace {
-                                    mon.workspaces[ws_idx]
+                                    mon.ws(&self.containers, ws_idx)
                                         .activate_window(&mut self.containers, &win_id);
                                 }
                             }
@@ -803,7 +811,7 @@ impl<W: LayoutElement> Layout<W> {
                     InsertPosition::Split {
                         target, direction, ..
                     } => {
-                        let ws_id = mon.workspaces[ws_idx].id();
+                        let ws_id = mon.ws(&self.containers, ws_idx).id();
                         if let Err(tile) = mon.add_tile_split(
                             &mut self.containers,
                             ws_idx,
@@ -827,7 +835,7 @@ impl<W: LayoutElement> Layout<W> {
                         }
                     }
                     InsertPosition::SplitRoot { direction, .. } => {
-                        let ws_id = mon.workspaces[ws_idx].id();
+                        let ws_id = mon.ws(&self.containers, ws_idx).id();
                         if let Err(tile) = mon.add_tile_split_root(
                             &mut self.containers,
                             ws_idx,
@@ -856,7 +864,8 @@ impl<W: LayoutElement> Layout<W> {
                             InsertWorkspace::Existing(_) => {
                                 if let Some(offset) = offset {
                                     let pos = (tile_render_loc - offset).downscale(zoom);
-                                    let pos = mon.workspaces[ws_idx]
+                                    let pos = mon
+                                        .ws(&self.containers, ws_idx)
                                         .floating_logical_to_size_frac(&self.containers, pos);
                                     transferred.tile_mut(&mut self.containers).floating_pos =
                                         Some(pos);
@@ -883,7 +892,7 @@ impl<W: LayoutElement> Layout<W> {
                                 .floating_window_size = Some(size);
                         }
 
-                        let ws_id = mon.workspaces[ws_idx].id();
+                        let ws_id = mon.ws(&self.containers, ws_idx).id();
                         mon.add_tile(
                             &mut self.containers,
                             transferred.into_incoming(),
@@ -902,13 +911,13 @@ impl<W: LayoutElement> Layout<W> {
                 let inserted_ws_idx = mon.workspace_idx_for_window(&self.containers, &win_id);
                 if let Some(inserted_ws_idx) = inserted_ws_idx {
                     let ws_geo = mon
-                        .workspaces_render_geo()
+                        .workspaces_render_geo(&self.containers)
                         .nth(inserted_ws_idx)
                         .expect("workspace geometry missing after interactive insertion");
                     // No render position when the insert's arrange is still waiting on the
                     // window's configure, the same reason `old_render_pos` above is an option:
                     // a tile that has not been laid out has no place to animate to yet.
-                    let workspace = mon.workspaces[inserted_ws_idx].workspace_key();
+                    let workspace = mon.ws(&self.containers, inserted_ws_idx).workspace_key();
                     let landed = self
                         .containers
                         .workspace_tiles_with_render_positions_mut(workspace, false)

@@ -86,11 +86,11 @@ fn resolve_unmapped_workspace<'a>(
     layout: &'a Layout<crate::window::Mapped>,
     mon: Option<&'a Monitor<crate::window::Mapped>>,
     workspace_name: Option<&str>,
-) -> Option<&'a Workspace<crate::window::Mapped>> {
+) -> Option<Workspace<crate::window::Mapped>> {
     workspace_name
         .and_then(|name| mon.and_then(|mon| mon.find_named_workspace(layout.containers(), name)))
         .or_else(|| {
-            mon.map(|mon| mon.active_workspace_ref())
+            mon.map(|mon| mon.active_workspace_ref(layout.containers()))
                 .or_else(|| layout.active_workspace())
         })
 }
@@ -1001,7 +1001,7 @@ impl State {
                 mon.map(|mon| mon.find_named_workspace(self.niri.layout.containers(), name))
             })
             .unwrap_or_else(|| {
-                mon.map(|mon| mon.active_workspace_ref())
+                mon.map(|mon| mon.active_workspace_ref(self.niri.layout.containers()))
                     .or_else(|| self.niri.layout.active_workspace())
             });
 

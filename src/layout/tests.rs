@@ -1072,7 +1072,7 @@ impl Op {
                 match &mut layout.monitor_set {
                     MonitorSet::Normal { monitors, .. } => {
                         for mon in monitors {
-                            for ws in &mut mon.workspaces {
+                            for ws in mon.workspace_list(&layout.containers) {
                                 for win in ws.windows(&layout.containers) {
                                     if win.0.id == next_to_id {
                                         found_next_to = true;
@@ -1130,7 +1130,7 @@ impl Op {
                 match &mut layout.monitor_set {
                     MonitorSet::Normal { monitors, .. } => {
                         for mon in monitors {
-                            for ws in &mut mon.workspaces {
+                            for ws in mon.workspace_list(&layout.containers) {
                                 if ws
                                     .name(&layout.containers)
                                     .is_some_and(|name| name.eq_ignore_ascii_case(&ws_name))
@@ -1410,7 +1410,8 @@ impl Op {
                 let mon = layout.monitor_for_output(&output).unwrap();
 
                 let window_id = window_id.filter(|id| layout.has_window(id));
-                let target_ws_idx = target_ws_idx.filter(|idx| mon.workspaces.len() > *idx);
+                let target_ws_idx =
+                    target_ws_idx.filter(|idx| mon.workspace_count(&layout.containers) > *idx);
                 layout.transfer(
                     TransferSubject::Window(window_id.as_ref()),
                     TransferTarget::Output {
@@ -1451,8 +1452,7 @@ impl Op {
 
                 let Some((old_idx, old_output)) = monitors.iter().find_map(|monitor| {
                     monitor
-                        .workspaces
-                        .iter()
+                        .workspaces(&layout.containers)
                         .enumerate()
                         .find_map(|(i, ws)| {
                             if ws
@@ -1499,8 +1499,7 @@ impl Op {
 
                 let Some((old_idx, old_output)) = monitors.iter().find_map(|monitor| {
                     monitor
-                        .workspaces
-                        .iter()
+                        .workspaces(&layout.containers)
                         .enumerate()
                         .find_map(|(i, ws)| {
                             if ws
@@ -1674,7 +1673,7 @@ impl Op {
                 match &mut layout.monitor_set {
                     MonitorSet::Normal { monitors, .. } => {
                         'outer: for mon in monitors {
-                            for ws in &mut mon.workspaces {
+                            for ws in mon.workspace_list(&layout.containers) {
                                 for win in ws.windows(&layout.containers) {
                                     if win.0.id == id {
                                         win.0.parent_id.set(new_parent_id);
@@ -1738,7 +1737,7 @@ impl Op {
                 match &mut layout.monitor_set {
                     MonitorSet::Normal { monitors, .. } => {
                         'outer: for mon in monitors {
-                            for ws in &mut mon.workspaces {
+                            for ws in mon.workspace_list(&layout.containers) {
                                 for win in ws.windows(&layout.containers) {
                                     if win.0.id == id {
                                         if win.communicate() {

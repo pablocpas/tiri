@@ -248,7 +248,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     fn set_container_logical_pos(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         idx: usize,
         logical_pos: Point<f64, Logical>,
@@ -258,7 +258,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     fn set_container_size(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         idx: usize,
         size: Size<f64, Logical>,
@@ -268,7 +268,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     pub fn update_render_elements(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         is_active: bool,
         view_rect: Rectangle<f64, Logical>,
@@ -539,7 +539,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     pub fn set_fullscreen(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         window: &W::Id,
         is_fullscreen: bool,
@@ -605,7 +605,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     pub(super) fn add_tile(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         tile: IncomingView<W>,
         activate: bool,
@@ -614,7 +614,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     pub(super) fn add_tile_with_restore_hint(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         mut tile: IncomingView<W>,
         activate: bool,
@@ -738,7 +738,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     fn add_tile_at(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         mut idx: usize,
         mut tile: IncomingView<W>,
@@ -837,7 +837,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     pub(super) fn add_tile_to_active_container(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         tile: IncomingView<W>,
         activate: bool,
@@ -849,7 +849,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     pub(super) fn add_tile_to_container_of(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         id: &W::Id,
         tile: IncomingView<W>,
@@ -863,7 +863,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     fn add_tile_to_container_idx(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         idx: usize,
         mut tile: IncomingView<W>,
@@ -897,7 +897,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     fn add_tile_to_container_idx_with_parent_info(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         idx: usize,
         mut tile: IncomingView<W>,
@@ -952,7 +952,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     pub(super) fn move_container_for_window_to(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         id: &W::Id,
         pos: Point<f64, Logical>,
@@ -966,7 +966,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     pub(super) fn add_tile_above(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         above: &W::Id,
         mut tile: IncomingView<W>,
@@ -993,7 +993,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     pub(super) fn add_subtree(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         key: NodeKey,
         mut rect: Rectangle<f64, Logical>,
@@ -1102,7 +1102,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         true
     }
 
-    fn bring_up_descendants_of(&mut self, containers: &mut ContainerTree<W>, idx: usize) {
+    fn bring_up_descendants_of(&self, containers: &mut ContainerTree<W>, idx: usize) {
         let tree = &*containers;
         let roots: Vec<_> = tree.floating_roots(self.workspace).collect();
         let base_windows = tree.windows_in_branch(roots[idx]);
@@ -1129,7 +1129,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     pub(super) fn take_tile_for_transfer(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         id: &W::Id,
     ) -> ViewTransfer {
@@ -1138,7 +1138,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     pub(super) fn unfloat_container(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         id: &W::Id,
         reference: Option<&InactiveTilingReference>,
@@ -1173,7 +1173,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     pub(super) fn unfloat_window(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         id: &W::Id,
         reference: Option<&InactiveTilingReference>,
@@ -1214,7 +1214,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     fn take_tile_from_container(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         idx: usize,
         id: &W::Id,
@@ -1267,7 +1267,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     pub fn start_close_animation_for_window(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         renderer: &mut GlesRenderer,
         id: &W::Id,
@@ -1290,7 +1290,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     pub fn activate_window_without_raising(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         id: &W::Id,
     ) -> bool {
@@ -1303,7 +1303,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         true
     }
 
-    pub fn activate_window(&mut self, containers: &mut ContainerTree<W>, id: &W::Id) -> bool {
+    pub fn activate_window(&self, containers: &mut ContainerTree<W>, id: &W::Id) -> bool {
         let Some(idx) = self.idx_of(containers, id) else {
             return false;
         };
@@ -1316,18 +1316,13 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         true
     }
 
-    fn raise_container(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        from_idx: usize,
-        to_idx: usize,
-    ) {
+    fn raise_container(&self, containers: &mut ContainerTree<W>, from_idx: usize, to_idx: usize) {
         assert!(to_idx <= from_idx);
         assert!(containers.move_floating_root(self.workspace, from_idx, to_idx));
     }
 
     pub fn start_close_animation_for_tile(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         renderer: &mut GlesRenderer,
         snapshot: TileRenderSnapshot,
@@ -1409,7 +1404,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     pub fn toggle_window_width(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         id: Option<&W::Id>,
         forwards: bool,
@@ -1458,7 +1453,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     pub fn toggle_window_height(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         id: Option<&W::Id>,
         forwards: bool,
@@ -1498,7 +1493,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     fn resize_container_dimension(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         idx: usize,
         change: SizeChange,
@@ -1572,7 +1567,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     fn resize_container_around_center(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         idx: usize,
         change: SizeChange,
@@ -1588,7 +1583,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     pub fn set_window_width(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         id: Option<&W::Id>,
         change: SizeChange,
@@ -1655,7 +1650,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     /// an edge drag, including anchoring the opposite edge, but remain a one-shot command rather
     /// than becoming interactive state owned by the input layer.
     pub fn resize_window(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         id: Option<&W::Id>,
         request: ResizeRequest,
@@ -1676,7 +1671,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     fn resize_window_edge(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         id: Option<&W::Id>,
         direction: Direction,
@@ -1736,7 +1731,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     pub fn set_window_height(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         id: Option<&W::Id>,
         change: SizeChange,
@@ -1831,12 +1826,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     /// `descend` is false when sway's directional search returned the floating root itself,
     /// and true when a tiling-style sibling step asks for its inactive view. A lone view is
     /// both the root and the leaf, so the distinction only becomes visible for groups.
-    fn focus_root_at(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        idx: usize,
-        descend: bool,
-    ) -> bool {
+    fn focus_root_at(&self, containers: &mut ContainerTree<W>, idx: usize, descend: bool) -> bool {
         let Some(root) = containers.floating_root_at(self.workspace, idx) else {
             return false;
         };
@@ -1858,7 +1848,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     fn focus_directional(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         distance: impl Fn(Point<f64, Logical>, Point<f64, Logical>) -> f64,
     ) -> bool {
@@ -1873,7 +1863,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
 
     /// sway's `focus next|prev [sibling]` from the floating side.
     pub(super) fn focus_along_parent(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         forward: bool,
         descend: bool,
@@ -1946,7 +1936,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     /// wrap always descends, because sway resolves its wrap candidate through
     /// `seat_get_focus_inactive_view`.
     fn step_root_sibling(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         active_idx: usize,
         direction: Direction,
@@ -1980,7 +1970,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     fn focus_within_active_container(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         direction: Direction,
         allow_wrap: bool,
@@ -2007,7 +1997,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         self.step_root_sibling(containers, idx, direction, true, allow_wrap)
     }
 
-    fn focus_in_stack_order(&mut self, containers: &mut ContainerTree<W>, delta: isize) -> bool {
+    fn focus_in_stack_order(&self, containers: &mut ContainerTree<W>, delta: isize) -> bool {
         if self.root_count(containers) <= 1 {
             return false;
         }
@@ -2041,7 +2031,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     fn focus_in_stable_container_order(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         descending: bool,
     ) -> bool {
@@ -2111,7 +2101,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     /// groups sway searches geometrically, except that a horizontal step with wrapping cycles
     /// through the floating stack first.
     pub(super) fn focus_in_direction(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         direction: Direction,
         wrap: bool,
@@ -2140,7 +2130,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     /// Focus the window furthest towards `direction`.
-    pub(super) fn focus_edge(&mut self, containers: &mut ContainerTree<W>, direction: Direction) {
+    pub(super) fn focus_edge(&self, containers: &mut ContainerTree<W>, direction: Direction) {
         let coordinate = |pos: &Point<f64, Logical>| {
             if direction.is_horizontal() {
                 pos.x
@@ -2160,7 +2150,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         }
     }
 
-    pub(super) fn focus_parent(&mut self, containers: &mut ContainerTree<W>) -> bool {
+    pub(super) fn focus_parent(&self, containers: &mut ContainerTree<W>) -> bool {
         let Some(idx) = self.active_container_idx(containers) else {
             return false;
         };
@@ -2186,7 +2176,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         containers.select_parent(workspace)
     }
 
-    pub fn focus_child(&mut self, containers: &mut ContainerTree<W>) -> bool {
+    pub fn focus_child(&self, containers: &mut ContainerTree<W>) -> bool {
         let Some(idx) = self.active_container_idx(containers) else {
             return false;
         };
@@ -2199,7 +2189,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     fn move_container_to(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         idx: usize,
         new_pos: Point<f64, Logical>,
@@ -2217,7 +2207,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         self.interactive_resize_end(containers, None);
     }
 
-    fn move_by(&mut self, containers: &mut ContainerTree<W>, amount: Point<f64, Logical>) {
+    fn move_by(&self, containers: &mut ContainerTree<W>, amount: Point<f64, Logical>) {
         let Some(active_id) = containers.active_floating_window_id(self.workspace) else {
             return;
         };
@@ -2233,7 +2223,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     /// sway's `move <direction>` for a floating root: a translation by
     /// [`DIRECTIONAL_MOVE_PX`].
     pub(super) fn move_in_direction(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         direction: Direction,
     ) {
@@ -2247,7 +2237,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     pub fn move_window(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         id: Option<&W::Id>,
         x: PositionChange,
@@ -2302,7 +2292,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
 
     /// Center one floating root in the working area, as sway's
     /// `container_floating_move_to_center` does.
-    pub(super) fn center_root(&mut self, containers: &mut ContainerTree<W>, root: NodeKey) {
+    pub(super) fn center_root(&self, containers: &mut ContainerTree<W>, root: NodeKey) {
         let Some(idx) = containers.floating_root_index(self.workspace, root) else {
             return;
         };
@@ -2313,7 +2303,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         self.move_container_to(containers, idx, new_pos, false);
     }
 
-    pub fn center_window(&mut self, containers: &mut ContainerTree<W>, id: Option<&W::Id>) {
+    pub fn center_window(&self, containers: &mut ContainerTree<W>, id: Option<&W::Id>) {
         let Some(id) = self.resolve_target_id(containers, id) else {
             return;
         };
@@ -2329,7 +2319,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         self.move_container_to(containers, idx, new_pos, true);
     }
 
-    pub fn descendants_added(&mut self, containers: &mut ContainerTree<W>, id: &W::Id) -> bool {
+    pub fn descendants_added(&self, containers: &mut ContainerTree<W>, id: &W::Id) -> bool {
         let Some(idx) = self.idx_of(containers, id) else {
             return false;
         };
@@ -2339,7 +2329,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     pub fn update_window(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         id: &W::Id,
         serial: Option<Serial>,
@@ -2589,7 +2579,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     pub fn interactive_resize_begin(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         window: W::Id,
         edges: ResizeEdge,
@@ -2641,7 +2631,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     pub fn interactive_resize_update(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         window: &W::Id,
         delta: Point<f64, Logical>,
@@ -2805,14 +2795,14 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     /// Consume a tree effect that may have moved the resize target to the tiled branch.
-    pub(super) fn cancel_resize_if_target_left(&mut self, containers: &mut ContainerTree<W>) {
+    pub(super) fn cancel_resize_if_target_left(&self, containers: &mut ContainerTree<W>) {
         self.end_resize_if(containers, |containers, window| {
             !self.contains(containers, window)
         });
     }
 
     pub fn interactive_resize_end(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         window: Option<&W::Id>,
     ) {
@@ -2821,12 +2811,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
         });
     }
 
-    pub fn refresh(
-        &mut self,
-        containers: &mut ContainerTree<W>,
-        is_active: bool,
-        is_focused: bool,
-    ) {
+    pub fn refresh(&self, containers: &mut ContainerTree<W>, is_active: bool, is_focused: bool) {
         let _span = tracy_client::span!("FloatingRuntime::refresh");
         let active = containers.active_floating_window_id(self.workspace);
         let deactivate_unfocused = containers
@@ -2919,7 +2904,7 @@ impl<W: LayoutElement> FloatingRuntime<W> {
     }
 
     fn move_container_and_animate(
-        &mut self,
+        &self,
         containers: &mut ContainerTree<W>,
         idx: usize,
         new_pos: Point<f64, Logical>,

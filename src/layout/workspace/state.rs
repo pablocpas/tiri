@@ -68,9 +68,10 @@ pub(in crate::layout) struct WorkspaceProperties {
     ///
     /// Usually the output it is on, but it outlives a disconnection.
     pub original_output: OutputId,
-    /// The output the workspace is on, if any.
-    pub output: Option<Output>,
     /// The latest scale and transform of its output, kept while it has none.
+    ///
+    /// Which output it is on is the tree's to say, together with that output's list of
+    /// workspaces; see `ContainerTree::workspace_output`.
     pub output_scale: smithay::output::Scale,
     pub transform: Transform,
     /// The workspace's own layout overrides.
@@ -87,7 +88,6 @@ impl WorkspaceProperties {
             identity: WorkspaceIdentity::Anonymous,
             lifetime: WorkspaceLifetime::Transient,
             original_output: OutputId(String::new()),
-            output: None,
             output_scale: smithay::output::Scale::Fractional(scale),
             transform: Transform::Normal,
             layout_config: None,
