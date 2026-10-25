@@ -2,8 +2,9 @@ use ::input as libinput;
 use smithay::backend::input;
 use smithay::backend::winit::WinitVirtualDevice;
 use smithay::output::Output;
+use smithay::wayland::virtual_keyboard::VirtualKeyboardDevice;
+use smithay::wayland::virtual_pointer::VirtualPointerDevice;
 
-use crate::protocols::virtual_pointer::VirtualPointer;
 use crate::tiri::State;
 
 pub trait NiriInputBackend: input::InputBackend<Device = Self::NiriDevice> {
@@ -44,8 +45,14 @@ impl NiriInputDevice for WinitVirtualDevice {
     }
 }
 
-impl NiriInputDevice for VirtualPointer {
+impl NiriInputDevice for VirtualPointerDevice {
     fn output(&self, _: &State) -> Option<Output> {
-        self.output().cloned()
+        self.output()
+    }
+}
+
+impl NiriInputDevice for VirtualKeyboardDevice {
+    fn output(&self, _: &State) -> Option<Output> {
+        None
     }
 }

@@ -119,6 +119,7 @@ pub enum Action {
     ToggleDebugTint,
     DebugToggleOpaqueRegions,
     DebugToggleDamage,
+    ToggleTouchpad,
     Spawn(#[knuffel(arguments)] Vec<String>),
     SpawnSh(#[knuffel(argument)] String),
     DoScreenTransition(#[knuffel(property(name = "delay-ms"))] Option<u16>),
@@ -463,6 +464,10 @@ pub enum Action {
     MruSetScope(MruScope),
     #[knuffel(skip)]
     MruCycleScope,
+
+    // Doesn't look like knuffel allows gating on #[cfg(test)]...
+    #[knuffel(skip)]
+    TestAction,
 }
 
 impl From<tiri_ipc::Action> for Action {
@@ -798,6 +803,7 @@ impl From<tiri_ipc::Action> for Action {
             tiri_ipc::Action::ToggleDebugTint {} => Self::ToggleDebugTint,
             tiri_ipc::Action::DebugToggleOpaqueRegions {} => Self::DebugToggleOpaqueRegions,
             tiri_ipc::Action::DebugToggleDamage {} => Self::DebugToggleDamage,
+            tiri_ipc::Action::ToggleTouchpad {} => Self::ToggleTouchpad,
             tiri_ipc::Action::ToggleWindowFloating { id: None } => Self::ToggleWindowFloating,
             tiri_ipc::Action::ToggleWindowFloating { id: Some(id) } => {
                 Self::ToggleWindowFloatingById(id)

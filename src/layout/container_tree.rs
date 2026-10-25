@@ -2877,17 +2877,37 @@ impl<W: LayoutElement> ContainerTree<W> {
                 .is_some_and(|tile| tile.window().is_pending_windowed_fullscreen())
     }
 
+    /// The window a tiled fullscreen shows: the fullscreen window itself, or the window focused
+    /// inside a fullscreen container. Windowed fullscreen does not count.
+    pub fn tiled_fullscreen_window(&self, workspace: NodeKey) -> Option<&W> {
+        if let Some(container) = self.render_fullscreen_container(workspace) {
+            return self.representative_window_for_node(container);
+        }
+        let id = self.render_fullscreen_window(workspace)?;
+        let key = self.tiled_window_key(workspace, &id)?;
+        self.get_tile(key).map(Tile::window)
+    }
+
+    /// Where a tiled window's popups may go, relative to the window's geometry.
+    ///
+    /// Within the window's width and the working area's height, so a popup stays over the
+    /// window it belongs to; `overflow` widens it to the whole working area (IME popups).
     pub fn popup_target_rect(
         &self,
         workspace: NodeKey,
         window: &W::Id,
+        overflow: bool,
     ) -> Option<Rectangle<f64, Logical>> {
-        // Find the tile for this window and return its popup target rectangle
         for info in self.display_layouts(workspace) {
             if let Some(tile) = self.get_tile(info.key) {
                 if tile.window().id() == window {
-                    // Similar to tiling layout: constrain horizontally to window,
-                    // vertically to the working area
+                    if overflow {
+                        let mut target = self.working_area(workspace);
+                        target.loc -= info.rect.loc;
+                        target.loc -= tile.window_loc();
+                        return Some(target);
+                    }
+
                     let width = tile.window_size().w;
                     let height = self.working_area(workspace).size.h;
 

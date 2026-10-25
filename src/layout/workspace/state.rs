@@ -22,7 +22,7 @@ pub(in crate::layout) enum WorkspaceLifetime {
     Transient,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputId(pub(super) String);
 
 impl OutputId {
@@ -34,6 +34,22 @@ impl OutputId {
     pub fn matches(&self, output: &Output) -> bool {
         let output_name = output.user_data().get::<OutputName>().unwrap();
         output_name.matches(&self.0)
+    }
+}
+
+/// Name `output` in `ids` the way it names itself now (make, model and serial rather than the
+/// connector), and drop the duplicates that leaves: a connector and a make/model/serial entry
+/// can both turn out to be this output.
+pub(super) fn normalize_output_ids(ids: &mut Vec<OutputId>, output: &Output) {
+    for id in &mut *ids {
+        if id.matches(output) {
+            *id = OutputId::new(output);
+        }
+    }
+    for idx in (0..ids.len()).rev() {
+        if ids[..idx].contains(&ids[idx]) {
+            ids.remove(idx);
+        }
     }
 }
 
@@ -64,10 +80,12 @@ pub(in crate::layout) struct WorkspaceProperties {
     pub identity: WorkspaceIdentity,
     /// Whether the workspace survives being empty and not shown.
     pub lifetime: WorkspaceLifetime,
-    /// The output the workspace belongs to, which it goes back to when that output connects.
+    /// The outputs the workspace belongs to, in order of preference.
     ///
-    /// Usually the output it is on, but it outlives a disconnection.
-    pub original_output: OutputId,
+    /// It goes to the first of them that is connected. Usually this is just the output it is
+    /// on, but it outlives a disconnection, and a named workspace can list fallbacks
+    /// (`open-on-output` given more than once).
+    pub original_outputs: Vec<OutputId>,
     /// The latest scale and transform of its output, kept while it has none.
     ///
     /// Which output it is on is the tree's to say, together with that output's list of
@@ -87,7 +105,7 @@ impl WorkspaceProperties {
         Self {
             identity: WorkspaceIdentity::Anonymous,
             lifetime: WorkspaceLifetime::Transient,
-            original_output: OutputId(String::new()),
+            original_outputs: Vec::new(),
             output_scale: smithay::output::Scale::Fractional(scale),
             transform: Transform::Normal,
             layout_config: None,
@@ -107,6 +125,16 @@ impl WorkspaceProperties {
             WorkspaceIdentity::Numeric { number, .. } => Some(*number),
             WorkspaceIdentity::Anonymous | WorkspaceIdentity::Named(_) => None,
         }
+    }
+
+    /// Which of `outputs` the workspace prefers, by position.
+    pub fn find_preferred_output<'a>(
+        &self,
+        outputs: impl Iterator<Item = &'a Output> + Clone,
+    ) -> Option<usize> {
+        self.original_outputs
+            .iter()
+            .find_map(|id| outputs.clone().position(|output| id.matches(output)))
     }
 
     pub fn has_persistent_identity(&self) -> bool {

@@ -1342,12 +1342,12 @@ fn removing_all_outputs_preserves_empty_named_workspaces() {
         Op::AddOutput(1),
         Op::AddNamedWorkspace {
             ws_name: 1,
-            output_name: None,
+            output_names: vec![],
             layout_config: None,
         },
         Op::AddNamedWorkspace {
             ws_name: 2,
-            output_name: None,
+            output_names: vec![],
             layout_config: None,
         },
         Op::RemoveOutput(1),
@@ -1537,7 +1537,7 @@ fn named_workspace_to_output() {
     let ops = [
         Op::AddNamedWorkspace {
             ws_name: 1,
-            output_name: None,
+            output_names: vec![],
             layout_config: None,
         },
         Op::AddOutput(1),
@@ -1551,7 +1551,7 @@ fn named_workspace_to_output_ewaf() {
     let ops = [
         Op::AddNamedWorkspace {
             ws_name: 1,
-            output_name: Some(2),
+            output_names: vec![2],
             layout_config: None,
         },
         Op::AddOutput(1),
@@ -1574,7 +1574,7 @@ fn named_workspace_insert_on_only_empty_workspace_ewaf() {
         Op::AdvanceAnimations { msec_delta: 1000 },
         Op::AddNamedWorkspace {
             ws_name: 1,
-            output_name: None,
+            output_names: vec![],
             layout_config: None,
         },
     ];
@@ -1750,7 +1750,7 @@ fn interactive_move_from_workspace_with_layout_config() {
     let ops = [
         Op::AddNamedWorkspace {
             ws_name: 1,
-            output_name: Some(2),
+            output_names: vec![2],
             layout_config: Some(Box::new(tiri_config::LayoutPart {
                 border: Some(tiri_config::BorderRule {
                     on: true,
@@ -2023,7 +2023,7 @@ fn numeric_config_workspace_has_numeric_identity() {
     config.workspaces.push(WorkspaceConfig {
         name: WorkspaceName("code".to_owned()),
         number: Some(2),
-        open_on_output: Some(output.name()),
+        open_on_output: vec![output.name()],
         layout: None,
     });
     let mut layout: Layout<TestWindow> = Layout::new(Clock::with_time(Duration::ZERO), &config);
@@ -2054,7 +2054,7 @@ fn sway_style_numeric_config_workspace_uses_prefix_as_number() {
     config.workspaces.push(WorkspaceConfig {
         name: WorkspaceName("5:files".to_owned()),
         number: None,
-        open_on_output: Some(output.name()),
+        open_on_output: vec![output.name()],
         layout: None,
     });
     let mut layout: Layout<TestWindow> = Layout::new(Clock::with_time(Duration::ZERO), &config);
@@ -2110,7 +2110,7 @@ fn named_workspaces_are_inserted_after_numeric_workspaces() {
     layout.ensure_named_workspace(&WorkspaceConfig {
         name: WorkspaceName("web".to_owned()),
         number: None,
-        open_on_output: None,
+        open_on_output: vec![],
         layout: None,
     });
 

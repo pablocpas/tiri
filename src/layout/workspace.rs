@@ -51,6 +51,7 @@ use test_view::{FloatingTestView, WorkspaceTreeView};
 mod runtime;
 pub(super) use runtime::{FloatingRuntimeState, WorkspaceRuntime};
 mod state;
+use state::normalize_output_ids;
 pub use state::{OutputId, WorkspaceId};
 pub(super) use state::{WorkspaceIdentity, WorkspaceLifetime, WorkspaceProperties};
 mod transfer;
@@ -169,11 +170,15 @@ impl<W: LayoutElement> Workspace<W> {
         mut config: Option<WorkspaceConfig>,
         base_options: Rc<Options>,
     ) -> Self {
-        let original_output = config
+        let mut original_outputs: Vec<OutputId> = config
             .as_ref()
-            .and_then(|c| c.open_on_output.clone())
-            .map(OutputId)
-            .unwrap_or(OutputId::new(&output));
+            .map(|c| c.open_on_output.iter().cloned().map(OutputId).collect())
+            .unwrap_or_default();
+        if original_outputs.is_empty() {
+            original_outputs.push(OutputId::new(&output));
+        } else {
+            normalize_output_ids(&mut original_outputs, &output);
+        }
 
         let identity = Self::identity_from_config(config.as_ref());
         let layout_config = config.as_mut().and_then(|c| c.layout.take().map(|x| x.0));
@@ -197,7 +202,7 @@ impl<W: LayoutElement> Workspace<W> {
             WorkspaceProperties {
                 identity,
                 lifetime: WorkspaceLifetime::Persistent,
-                original_output,
+                original_outputs,
                 output_scale: scale,
                 transform,
                 layout_config,
@@ -257,12 +262,10 @@ impl<W: LayoutElement> Workspace<W> {
         mut config: Option<WorkspaceConfig>,
         base_options: Rc<Options>,
     ) -> Self {
-        let original_output = OutputId(
-            config
-                .as_ref()
-                .and_then(|c| c.open_on_output.clone())
-                .unwrap_or_default(),
-        );
+        let original_outputs = config
+            .as_ref()
+            .map(|c| c.open_on_output.iter().cloned().map(OutputId).collect())
+            .unwrap_or_default();
 
         let identity = Self::identity_from_config(config.as_ref());
         let layout_config = config.as_mut().and_then(|c| c.layout.take().map(|x| x.0));
@@ -288,7 +291,7 @@ impl<W: LayoutElement> Workspace<W> {
             WorkspaceProperties {
                 identity,
                 lifetime: WorkspaceLifetime::Persistent,
-                original_output,
+                original_outputs,
                 output_scale: scale,
                 transform: Transform::Normal,
                 layout_config,
@@ -415,17 +418,22 @@ impl<W: LayoutElement> Workspace<W> {
     pub(super) fn claim_for_output(&self, containers: &mut ContainerTree<W>, output: &Output) {
         let properties = self.properties_mut(containers);
         if !properties.has_persistent_identity() {
-            properties.original_output = OutputId::new(output);
+            properties.original_outputs = vec![OutputId::new(output)];
         }
     }
 
     /// The workspace now belongs to `output`, whatever it belonged to before.
     pub(super) fn set_original_output(&self, containers: &mut ContainerTree<W>, output: &Output) {
-        self.properties_mut(containers).original_output = OutputId::new(output);
+        self.properties_mut(containers).original_outputs = vec![OutputId::new(output)];
     }
 
-    pub(super) fn original_output<'a>(&self, containers: &'a ContainerTree<W>) -> &'a OutputId {
-        &self.properties(containers).original_output
+    /// Which of `outputs` the workspace prefers, by position.
+    pub(super) fn find_preferred_output<'a>(
+        &self,
+        containers: &ContainerTree<W>,
+        outputs: impl Iterator<Item = &'a Output> + Clone,
+    ) -> Option<usize> {
+        self.properties(containers).find_preferred_output(outputs)
     }
 
     pub fn has_windows_or_persistent_identity(&self, containers: &ContainerTree<W>) -> bool {
@@ -800,8 +808,10 @@ impl<W: LayoutElement> Workspace<W> {
 
         let properties = self.properties_mut(containers);
         // Normalize original output: possibly replace connector with make/model/serial.
-        if properties.original_output.matches(&output) {
-            properties.original_output = OutputId::new(&output);
+        if properties.original_outputs.is_empty() {
+            properties.original_outputs.push(OutputId::new(&output));
+        } else {
+            normalize_output_ids(&mut properties.original_outputs, &output);
         }
 
         self.update_output_size(containers);
@@ -2614,11 +2624,12 @@ impl<W: LayoutElement> Workspace<W> {
         &self,
         containers: &ContainerTree<W>,
         window: &W::Id,
+        overflow: bool,
     ) -> Option<Rectangle<f64, Logical>> {
         if containers.window_is_floating_in(self.workspace, window) {
             containers.floating_popup_target_rect(self.workspace, window)
         } else {
-            containers.popup_target_rect(self.workspace, window)
+            containers.popup_target_rect(self.workspace, window, overflow)
         }
     }
 
@@ -2724,6 +2735,25 @@ impl<W: LayoutElement> Workspace<W> {
             1.,
             Kind::Unspecified,
         )
+    }
+
+    /// The window this workspace shows fullscreen above the top layer, if it shows one, on
+    /// either side.
+    pub fn fullscreen_window_above_top_layer<'a>(
+        &self,
+        containers: &'a ContainerTree<W>,
+    ) -> Option<&'a W> {
+        if let Some(window) = containers.tiled_fullscreen_window(self.workspace) {
+            return Some(window);
+        }
+        let key = containers.floating_fullscreen_key(self.workspace)?;
+        if containers.container_info(key).is_some() {
+            return containers.representative_window_for_node(key);
+        }
+        containers
+            .get_tile(key)
+            .map(Tile::window)
+            .filter(|window| window.sizing_mode().is_fullscreen())
     }
 
     pub fn render_above_top_layer(&self, containers: &ContainerTree<W>) -> bool {

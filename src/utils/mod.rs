@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::cmp::{max, min};
 use std::ffi::{CString, OsStr};
 use std::fmt::Display;
@@ -243,6 +244,13 @@ pub fn panel_orientation(output: &Output) -> Transform {
         .get::<PanelOrientation>()
         .map(|x| x.0)
         .unwrap_or(Transform::Normal)
+}
+
+// For winit-backed outputs.
+#[derive(Default)]
+pub struct WinitScale(pub Cell<f64>);
+pub fn winit_scale(output: &Output) -> Option<f64> {
+    output.user_data().get::<WinitScale>().map(|x| x.0.get())
 }
 
 pub fn ipc_transform_to_smithay(transform: tiri_ipc::Transform) -> Transform {

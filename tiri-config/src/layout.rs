@@ -39,6 +39,7 @@ pub struct Layout {
     /// 1.0 is the plain "wider than tall" rule. Above it the mode prefers stacking, below it
     /// the mode prefers columns.
     pub autotile_ratio: f64,
+    pub fullscreen_backdrop_color: Color,
 }
 
 impl Default for Layout {
@@ -70,6 +71,7 @@ impl Default for Layout {
             background_color: DEFAULT_BACKGROUND_COLOR,
             autotile: false,
             autotile_ratio: 1.,
+            fullscreen_backdrop_color: Color::from_array_unpremul([0., 0., 0., 1.]),
         }
     }
 }
@@ -97,6 +99,7 @@ impl MergeWith<LayoutPart> for Layout {
             default_column_display,
             struts,
             background_color,
+            fullscreen_backdrop_color,
         );
 
         if let Some(x) = part.default_column_width {
@@ -157,6 +160,7 @@ pub struct LayoutPart {
     pub autotile: Option<Flag>,
     #[knuffel(child, unwrap(argument))]
     pub autotile_ratio: Option<FloatOrInt<0, 65535>>,
+    pub fullscreen_backdrop_color: Option<Color>,
 }
 
 #[derive(knuffel::Decode, Debug, Clone, Copy, PartialEq)]

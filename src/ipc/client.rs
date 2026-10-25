@@ -1,4 +1,4 @@
-use std::io::ErrorKind;
+use std::io::{BufRead as _, ErrorKind};
 use std::iter::Peekable;
 use std::path::Path;
 use std::{env, slice};
@@ -16,7 +16,7 @@ use tiri_ipc::{
 use crate::cli::Msg;
 use crate::utils::version;
 
-pub fn handle_msg(mut msg: Msg, json: bool) -> anyhow::Result<()> {
+pub fn handle_msg(mut msg: Msg, json: bool, print_request: bool) -> anyhow::Result<()> {
     // For actions taking paths, prepend the niri CLI's working directory.
     if let Msg::Action {
         action:
@@ -51,8 +51,24 @@ pub fn handle_msg(mut msg: Msg, json: bool) -> anyhow::Result<()> {
         Msg::OverviewState => Request::OverviewState,
         Msg::LayoutTree => Request::LayoutTree,
         Msg::Casts => Request::Casts,
+        Msg::RawRequest => {
+            let mut buf = Vec::new();
+            let mut stdin = std::io::stdin().lock();
+            stdin
+                .read_until(b'\n', &mut buf)
+                .context("error reading from stdin")?;
+            serde_json::from_slice(&buf).context("error parsing request JSON from stdin")?
+        }
     };
 
+    if print_request {
+        let json_str =
+            serde_json::to_string(&request).context("error formatting request as JSON")?;
+        println!("{json_str}");
+        return Ok(());
+    }
+
+    let is_event_stream = matches!(request, Request::EventStream);
     let mut socket = Socket::connect().context("error connecting to the niri socket")?;
 
     let result = socket.send(request);
@@ -421,7 +437,7 @@ pub fn handle_msg(mut msg: Msg, json: bool) -> anyhow::Result<()> {
 
             let mut read_event = socket.read_events();
             loop {
-                let event = read_event().context("error reading event from niri")?;
+                let event = read_event().context("error reading event from tiri")?;
 
                 if json {
                     let event = serde_json::to_string(&event).context("error formatting event")?;
@@ -508,6 +524,9 @@ pub fn handle_msg(mut msg: Msg, json: bool) -> anyhow::Result<()> {
                     Event::CastStopped { stream_id } => {
                         println!("Cast stopped: stream id {stream_id}");
                     }
+                    Event::TouchpadToggled { on } => {
+                        println!("Touchpad enabled: {on}");
+                    }
                 }
             }
         }
@@ -563,6 +582,19 @@ pub fn handle_msg(mut msg: Msg, json: bool) -> anyhow::Result<()> {
             for cast in casts {
                 print_cast(&cast);
                 println!();
+            }
+        }
+        Msg::RawRequest => {
+            let output = serde_json::to_string(&response).context("error formatting response")?;
+            println!("{output}");
+
+            if is_event_stream {
+                let mut read_event = socket.read_events();
+                loop {
+                    let event = read_event().context("error reading event from tiri")?;
+                    let event = serde_json::to_string(&event).context("error formatting event")?;
+                    println!("{event}");
+                }
             }
         }
     }
@@ -862,6 +894,7 @@ fn print_cast(cast: &Cast) {
     let kind = match cast.kind {
         CastKind::PipeWire => "PipeWire",
         CastKind::WlrScreencopy => "wlr-screencopy",
+        CastKind::ExtImageCopyCapture => "ext-image-copy-capture",
     };
     println!("  Kind: {kind}");
 

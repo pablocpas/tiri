@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use smithay::backend::input::InputTime;
 use smithay::desktop::Window;
 use smithay::input::pointer::{CursorIcon, CursorImageStatus};
 use smithay::input::tablet::tool::{TabletToolGrab, TabletToolInnerHandle};
@@ -15,7 +16,6 @@ use smithay::utils::{IsAlive, Logical, Point, SERIAL_COUNTER};
 use crate::input::AnyStartData;
 use crate::layout::workspace::WorkspaceId;
 use crate::tiri::State;
-use crate::utils::get_monotonic_time;
 
 // When the touch is stationary for this much time, it becomes an interactive move.
 const INTERACTIVE_MOVE_THRESHOLD: Duration = Duration::from_millis(500);
@@ -261,7 +261,7 @@ impl TouchGrab<State> for TouchOverviewGrab {
         }
 
         self.new_location = event.location;
-        self.event_timestamp = Some(Duration::from_millis(u64::from(event.time)));
+        self.event_timestamp = Some(Duration::from_micros(event.time.micros()));
     }
 
     fn frame(&mut self, data: &mut State, handle: &mut TouchInnerHandle<'_, State>) {
@@ -330,7 +330,7 @@ impl TabletToolGrab<State> for TouchOverviewGrab {
         handle.motion(data, None, event);
 
         self.new_location = event.location;
-        self.event_timestamp = Some(Duration::from_millis(u64::from(event.time)));
+        self.event_timestamp = Some(Duration::from_micros(event.time.micros()));
     }
 
     fn down(
@@ -374,7 +374,7 @@ impl TabletToolGrab<State> for TouchOverviewGrab {
         &mut self,
         data: &mut State,
         handle: &mut TabletToolInnerHandle<'_, State>,
-        time: u32,
+        time: InputTime,
     ) {
         handle.frame(data, time);
 
@@ -384,7 +384,7 @@ impl TabletToolGrab<State> for TouchOverviewGrab {
                 self,
                 data,
                 SERIAL_COUNTER.next_serial(),
-                get_monotonic_time().as_millis() as u32,
+                InputTime::now(),
                 true,
             );
         }

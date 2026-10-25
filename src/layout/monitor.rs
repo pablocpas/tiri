@@ -2245,8 +2245,21 @@ impl<W: LayoutElement> Monitor<W> {
             return false;
         }
 
-        let ws = self.ws(containers, self.active_workspace_idx(containers));
-        ws.render_above_top_layer(containers)
+        self.active_workspace(containers)
+            .render_above_top_layer(containers)
+    }
+
+    /// The window shown fullscreen above the top layer, while the view is stationary.
+    pub fn fullscreen_window_above_top_layer<'a>(
+        &self,
+        containers: &'a ContainerTree<W>,
+    ) -> Option<&'a W> {
+        if self.workspace_switch.is_some() || self.overview_progress.is_some() {
+            return None;
+        }
+
+        self.active_workspace(containers)
+            .fullscreen_window_above_top_layer(containers)
     }
 
     pub fn render_insert_hint_between_workspaces<R: NiriRenderer>(

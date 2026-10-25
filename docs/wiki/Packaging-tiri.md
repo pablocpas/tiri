@@ -43,7 +43,7 @@ Set them as automatically-installed optional dependencies, if possible.
 - `xdg-desktop-portal-gnome`: required for screencasting.
 - `xdg-desktop-portal-gtk`: configured as the fallback portal in `tiri-portals.conf`.
 (This is in general the standard fallback portal that you want installed.)
-- `gnome-keyring`: configured as the Secret portal provider in `tiri-portals.conf`.
+- `oo7-portal` or `gnome-keyring`: configured as the Secret portal provider in `tiri-portals.conf`.
 - Your distro's GPU driver package, such as `mesa-dri-drivers` and `mesa-libEGL`.
 Working hardware acceleration is required for running tiri.
 - Some notification daemon like `mako`, generally required for apps to work correctly.

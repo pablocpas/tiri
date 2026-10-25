@@ -1,6 +1,8 @@
 pub mod background_effect;
 mod compositor;
+pub mod image_copy_capture;
 mod layer_shell;
+pub mod virtual_keyboard;
 mod xdg_shell;
 
 use std::fs::File;
@@ -39,7 +41,7 @@ use smithay::wayland::keyboard_shortcuts_inhibit::{
 };
 use smithay::wayland::output::OutputHandler;
 use smithay::wayland::pointer_constraints::{
-    with_pointer_constraint, PointerConstraint, PointerConstraintsHandler,
+    with_pointer_constraint, ConstraintRemove, PointerConstraintsHandler,
 };
 use smithay::wayland::security_context::{
     SecurityContext, SecurityContextHandler, SecurityContextListenerSource,
@@ -60,6 +62,8 @@ use smithay::wayland::selection::{SelectionHandler, SelectionTarget};
 use smithay::wayland::session_lock::{
     LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
 };
+use smithay::wayland::text_input::TextInputActivation;
+use smithay::wayland::virtual_pointer::{VirtualPointerBackend, VirtualPointerHandler};
 use smithay::wayland::xdg_activation::{
     XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
 };
@@ -76,11 +80,6 @@ use crate::protocols::gamma_control::{GammaControlHandler, GammaControlManagerSt
 use crate::protocols::mutter_x11_interop::MutterX11InteropHandler;
 use crate::protocols::output_management::{OutputManagementHandler, OutputManagementManagerState};
 use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
-use crate::protocols::virtual_pointer::{
-    VirtualPointerAxisEvent, VirtualPointerButtonEvent, VirtualPointerHandler,
-    VirtualPointerInputBackend, VirtualPointerManagerState, VirtualPointerMotionAbsoluteEvent,
-    VirtualPointerMotionEvent,
-};
 use crate::tiri::{DndIcon, NewClient, State};
 use crate::utils::{output_size, send_scale_transform};
 
@@ -112,16 +111,7 @@ impl SeatHandler for State {
     }
 
     fn led_state_changed(&mut self, _seat: &Seat<Self>, led_state: keyboard::LedState) {
-        let keyboards = self
-            .niri
-            .devices
-            .iter()
-            .filter(|device| device.has_capability(input::DeviceCapability::Keyboard))
-            .cloned();
-
-        for mut keyboard in keyboards {
-            keyboard.led_update(led_state.into());
-        }
+        self.update_keyboard_leds(led_state);
     }
 
     fn click_grab(
@@ -203,7 +193,7 @@ impl PointerConstraintsHandler for State {
         &mut self,
         _surface: &WlSurface,
         pointer: &PointerHandle<Self>,
-        _constraint: Option<&PointerConstraint>,
+        reason: ConstraintRemove,
     ) {
         // Since a pointer constraint is broken when a surface loses pointer focus, and one surface
         // can only have a single pointer constraint at once, assume there can be only one
@@ -216,11 +206,7 @@ impl PointerConstraintsHandler for State {
 
         // If the constraint was broken by the pointer forcibly leaving the surface (e.g. the user
         // opened the overview), then it doesn't make much sense to warp it.
-        //
-        // Furthermore, when the constraint is removed as part of the pointer leaving the surface,
-        // this call happens with locked pointer data, and calling set_location() will try to lock
-        // it again and deadlock.
-        if pointer.last_enter().is_none() {
+        if matches!(reason, ConstraintRemove::PointerLeave(_)) {
             return;
         }
 
@@ -271,6 +257,8 @@ impl InputMethodHandler for State {
             .unwrap_or_default()
     }
 }
+
+impl TextInputActivation for State {}
 
 impl KeyboardShortcutsInhibitHandler for State {
     fn keyboard_shortcuts_inhibit_state(&mut self) -> &mut KeyboardShortcutsInhibitState {
@@ -640,26 +628,8 @@ impl ScreencopyHandler for State {
 }
 
 impl VirtualPointerHandler for State {
-    fn virtual_pointer_manager_state(&mut self) -> &mut VirtualPointerManagerState {
-        &mut self.niri.virtual_pointer_state
-    }
-
-    fn on_virtual_pointer_motion(&mut self, event: VirtualPointerMotionEvent) {
-        self.process_input_event(InputEvent::<VirtualPointerInputBackend>::PointerMotion { event });
-    }
-
-    fn on_virtual_pointer_motion_absolute(&mut self, event: VirtualPointerMotionAbsoluteEvent) {
-        self.process_input_event(
-            InputEvent::<VirtualPointerInputBackend>::PointerMotionAbsolute { event },
-        );
-    }
-
-    fn on_virtual_pointer_button(&mut self, event: VirtualPointerButtonEvent) {
-        self.process_input_event(InputEvent::<VirtualPointerInputBackend>::PointerButton { event });
-    }
-
-    fn on_virtual_pointer_axis(&mut self, event: VirtualPointerAxisEvent) {
-        self.process_input_event(InputEvent::<VirtualPointerInputBackend>::PointerAxis { event });
+    fn process_virtual_pointer_event(&mut self, event: InputEvent<VirtualPointerBackend>) {
+        self.process_input_event(event);
     }
 }
 
@@ -796,20 +766,30 @@ impl XdgActivationHandler for State {
             if let Some((mapped, output)) = self.niri.layout.find_window_and_output_mut(&surface) {
                 let window = mapped.window.clone();
                 let output = output.cloned();
-                if token_data.user_data.get::<UrgentOnlyMarker>().is_some()
-                    || mapped.rules().focus_on_xdg_activate == Some(false)
-                {
-                    mapped.set_urgent(true);
-                    self.niri.invalidate_layout();
-                    self.niri.queue_redraw_output_pair(output, None);
-                } else {
-                    let previous_output = self.niri.layout.active_output().cloned();
-                    self.niri.layout.activate_window(&window);
-                    self.niri.layer_shell_on_demand_focus = None;
-                    self.niri.invalidate_layout();
-                    let current_output = self.niri.layout.active_output().cloned();
-                    self.niri
-                        .queue_redraw_output_pair(previous_output, current_output);
+                // `None`: leave the window as it is; `Some(false)`: mark it urgent;
+                // `Some(true)`: focus it.
+                let focus = match mapped.rules().on_xdg_activate {
+                    Some(tiri_config::OnXdgActivate::Ignore) => None,
+                    Some(tiri_config::OnXdgActivate::SetUrgent) => Some(false),
+                    Some(tiri_config::OnXdgActivate::Focus) => Some(true),
+                    None => Some(token_data.user_data.get::<UrgentOnlyMarker>().is_none()),
+                };
+                match focus {
+                    None => {}
+                    Some(false) => {
+                        mapped.set_urgent(true);
+                        self.niri.invalidate_layout();
+                        self.niri.queue_redraw_output_pair(output, None);
+                    }
+                    Some(true) => {
+                        let previous_output = self.niri.layout.active_output().cloned();
+                        self.niri.layout.activate_window(&window);
+                        self.niri.layer_shell_on_demand_focus = None;
+                        self.niri.invalidate_layout();
+                        let current_output = self.niri.layout.active_output().cloned();
+                        self.niri
+                            .queue_redraw_output_pair(previous_output, current_output);
+                    }
                 }
             } else if let Some(unmapped) = self.niri.unmapped_windows.get_mut(&surface) {
                 unmapped.activation_token_data = Some(token_data);

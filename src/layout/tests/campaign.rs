@@ -202,13 +202,13 @@ fn simpler_forms(op: &Op) -> Vec<Op> {
             .collect(),
         Op::AddNamedWorkspace {
             ws_name,
-            output_name,
+            output_names,
             layout_config,
         } => layout_config
             .is_some()
-            .then_some(Op::AddNamedWorkspace {
+            .then(|| Op::AddNamedWorkspace {
                 ws_name: *ws_name,
-                output_name: *output_name,
+                output_names: output_names.clone(),
                 layout_config: None,
             })
             .into_iter()

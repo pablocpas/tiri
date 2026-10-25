@@ -19,10 +19,10 @@
 //! 2. Connecting an output must not change the layout for any workspaces that were never on that
 //!    output.
 //!
-//! Therefore, we implement the following logic: every workspace keeps track of which output it
-//! originated on—its *original output*. When an output disconnects, its workspaces are appended to
-//! the (potentially new) primary output, but remember their original output. Then, if the original
-//! output connects again, all workspaces originally from there move back to that output.
+//! Therefore, we implement the following logic: every workspace keeps track of its ordered
+//! original output candidates. When an output disconnects, its workspaces move to the first
+//! connected candidate or the (potentially new) primary output. When a higher-priority candidate
+//! connects, matching workspaces move to it.
 //!
 //! In order to avoid surprising behavior, if the user creates or moves any new windows onto a
 //! workspace, it forgets its original output, and its current output becomes its original output.
@@ -968,25 +968,38 @@ impl<W: LayoutElement> Layout<W> {
                 primary_idx,
                 active_monitor_idx,
             } => {
-                let primary = &mut monitors[primary_idx];
-
-                let mut stopped_primary_ws_switch = false;
-
+                // Every workspace that prefers the new output over the one it is on goes to it,
+                // whichever output that is: with fallbacks, a workspace may be on its second
+                // choice, not only on the primary.
+                let new_output_idx = monitors.len();
                 let mut workspaces = vec![];
-                for i in (0..primary.workspace_count(&self.containers)).rev() {
-                    if primary
-                        .ws(&self.containers, i)
-                        .original_output(&self.containers)
-                        .matches(&output)
-                    {
-                        let ws = primary.release_workspace_at(&mut self.containers, i);
+                for source_idx in 0..monitors.len() {
+                    let mut stopped_ws_switch = false;
+
+                    for i in (0..monitors[source_idx].workspace_count(&self.containers)).rev() {
+                        let preferred = monitors[source_idx]
+                            .ws(&self.containers, i)
+                            .find_preferred_output(
+                                &self.containers,
+                                monitors
+                                    .iter()
+                                    .map(|monitor| &monitor.output)
+                                    .chain(std::iter::once(&output)),
+                            )
+                            == Some(new_output_idx);
+                        if !preferred {
+                            continue;
+                        }
+
+                        let source = &mut monitors[source_idx];
+                        let ws = source.release_workspace_at(&mut self.containers, i);
 
                         // FIXME: this can be coded in a way that the workspace switch won't be
                         // affected if the removed workspace is invisible. But this is good enough
                         // for now.
-                        if primary.workspace_switch.is_some() {
-                            primary.workspace_switch = None;
-                            stopped_primary_ws_switch = true;
+                        if source.workspace_switch.is_some() {
+                            source.workspace_switch = None;
+                            stopped_ws_switch = true;
                         }
 
                         // The user could've closed a window while remaining on this workspace, on
@@ -998,24 +1011,25 @@ impl<W: LayoutElement> Layout<W> {
                             ws.remove_from_tree(&mut self.containers);
                         }
                     }
+
+                    let source = &mut monitors[source_idx];
+
+                    // A workspace going back to its output may have been the one this output
+                    // showed; it takes its sticky floats along, and whichever is shown now holds
+                    // this output's from here on.
+                    source.sync_sticky_host(&mut self.containers);
+
+                    // If we stopped a workspace switch, then we might need to clean up workspaces.
+                    // Also if empty_workspace_above_first is set and there are only 2 workspaces
+                    // left, both will be empty and one of them needs to be removed.
+                    // clean_up_workspaces takes care of this.
+                    if stopped_ws_switch
+                        || (source.options.layout.empty_workspace_above_first
+                            && source.workspace_count(&self.containers) == 2)
+                    {
+                        source.clean_up_workspaces(&mut self.containers);
+                    }
                 }
-                // A workspace going back to its output may have been the one the primary
-                // output showed; it takes its sticky floats along, and whichever is shown now
-                // holds the primary output's from here on.
-                primary.sync_sticky_host(&mut self.containers);
-
-                // If we stopped a workspace switch, then we might need to clean up workspaces.
-                // Also if empty_workspace_above_first is set and there are only 2 workspaces left,
-                // both will be empty and one of them needs to be removed. clean_up_workspaces
-                // takes care of this.
-
-                if stopped_primary_ws_switch
-                    || (primary.options.layout.empty_workspace_above_first
-                        && primary.workspace_count(&self.containers) == 2)
-                {
-                    primary.clean_up_workspaces(&mut self.containers);
-                }
-
                 workspaces.reverse();
 
                 let ws_id_to_activate = self.last_active_workspace_id.remove(&output.name());
@@ -1105,9 +1119,10 @@ impl<W: LayoutElement> Layout<W> {
                     primary_idx = primary_idx.saturating_sub(1);
                 }
 
-                // The removed output's workspaces go to the primary one. Those that hold
-                // nothing but sticky floats do not survive the move, so the floats go to the
-                // workspace the primary output is showing instead, as sway's do.
+                // The removed output's workspaces go to the outputs they prefer next, or to the
+                // primary one. Those that hold nothing but sticky floats do not survive the
+                // move, so the floats go to the workspace the primary output is showing
+                // instead, as sway's do.
                 if let Some(primary) = monitors.get_mut(primary_idx) {
                     let destination = primary.active_workspace(&self.containers);
                     monitor.evacuate_sticky_floats(&mut self.containers, destination);
@@ -1134,8 +1149,23 @@ impl<W: LayoutElement> Layout<W> {
                         active_monitor_idx = active_monitor_idx.saturating_sub(1);
                     }
 
-                    let primary = &mut monitors[primary_idx];
-                    primary.append_workspaces(&mut self.containers, workspaces);
+                    // Each workspace goes to the connected output it prefers, or to the primary
+                    // one if it prefers none of them.
+                    let mut workspaces = workspaces;
+                    for target_idx in 0..monitors.len() {
+                        let (target_workspaces, rest) =
+                            workspaces.into_iter().partition::<Vec<_>, _>(|ws| {
+                                ws.find_preferred_output(
+                                    &self.containers,
+                                    monitors.iter().map(|monitor| &monitor.output),
+                                )
+                                .unwrap_or(primary_idx)
+                                    == target_idx
+                            });
+                        workspaces = rest;
+                        monitors[target_idx]
+                            .append_workspaces(&mut self.containers, target_workspaces);
+                    }
 
                     MonitorSet::Normal {
                         monitors,
@@ -1653,28 +1683,41 @@ impl<W: LayoutElement> Layout<W> {
     /// Computes the window-geometry-relative target rect for popup unconstraining.
     ///
     /// We will try to fit popups inside this rect.
-    pub fn popup_target_rect(&self, window: &W::Id) -> Rectangle<f64, Logical> {
+    ///
+    /// If `overflow` is true, return the whole working area even for a tiled window, whose popups
+    /// are otherwise kept within the window's width. This is used for IME popups, which people
+    /// expect to extend past the window, and which go away when focus changes anyway.
+    pub fn popup_target_rect(&self, window: &W::Id, overflow: bool) -> Rectangle<f64, Logical> {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
             if &move_.window_id == window {
                 let tile = self
                     .containers
                     .transferred_tile(move_.node)
                     .expect("moving view must remain transferred");
-                // Follow the tiling layout logic and fit the popup horizontally within the
-                // window geometry.
-                let width = tile.window_size().w;
-                let height = output_size(&move_.output).h;
-                let mut target = Rectangle::from_size(Size::from((width, height)));
+                let output_size = output_size(&move_.output);
                 // FIXME: ideally this shouldn't include the tile render offset, but the code
                 // duplication would be a bit annoying for this edge case.
-                target.loc.y -= move_.tile_render_location(tile, 1.).y;
-                target.loc.y -= tile.window_loc().y;
+                let tile_pos = move_.tile_render_location(tile, 1.);
+                let target = if overflow {
+                    let mut target = Rectangle::from_size(output_size);
+                    target.loc -= tile_pos;
+                    target.loc -= tile.window_loc();
+                    target
+                } else {
+                    // Follow the tiling layout logic and fit the popup horizontally within the
+                    // window geometry.
+                    let width = tile.window_size().w;
+                    let mut target = Rectangle::from_size(Size::from((width, output_size.h)));
+                    target.loc.y -= tile_pos.y;
+                    target.loc.y -= tile.window_loc().y;
+                    target
+                };
                 return target;
             }
         }
 
         self.workspaces()
-            .find_map(|(_, _, ws)| ws.popup_target_rect(&self.containers, window))
+            .find_map(|(_, _, ws)| ws.popup_target_rect(&self.containers, window, overflow))
             .unwrap()
     }
 
@@ -3031,37 +3074,24 @@ impl<W: LayoutElement> Layout<W> {
 
             monitor.verify_invariants(&self.containers);
 
-            if idx == primary_idx {
-                for ws in monitor.workspaces(&self.containers) {
-                    if ws
-                        .original_output(&self.containers)
-                        .matches(&monitor.output)
-                    {
-                        // This is the primary monitor's own workspace.
-                        continue;
-                    }
-
-                    let own_monitor_exists = monitors
-                        .iter()
-                        .any(|m| ws.original_output(&self.containers).matches(&m.output));
-                    assert!(
-                        !own_monitor_exists,
-                        "primary monitor cannot have workspaces for which their own monitor exists"
+            for workspace in monitor.workspaces(&self.containers) {
+                let preferred = workspace.find_preferred_output(
+                    &self.containers,
+                    monitors.iter().map(|monitor| &monitor.output),
+                );
+                let Some(preferred_idx) = preferred else {
+                    assert_eq!(
+                        idx, primary_idx,
+                        "workspace without a connected output candidate must be on the primary \
+                         monitor"
                     );
-                }
-            } else {
-                assert!(
-                    monitor
-                        .workspaces(&self.containers)
-                        .any(|workspace| workspace
-                            .original_output(&self.containers)
-                            .matches(&monitor.output)),
-                    "secondary monitor must not have any non-own workspaces"
+                    continue;
+                };
+                assert_eq!(
+                    idx, preferred_idx,
+                    "workspace must be on its preferred connected output"
                 );
             }
-
-            // FIXME: verify that primary doesn't have any workspaces for which their own monitor
-            // exists.
 
             for workspace in monitor.workspaces(&self.containers) {
                 assert!(
@@ -3442,16 +3472,19 @@ impl<W: LayoutElement> Layout<W> {
                 primary_idx,
                 active_monitor_idx,
             } => {
-                let mon_idx = ws_config
-                    .open_on_output
-                    .as_deref()
-                    .map(|name| {
-                        monitors
-                            .iter_mut()
-                            .position(|monitor| output_matches_name(&monitor.output, name))
-                            .unwrap_or(*primary_idx)
-                    })
-                    .unwrap_or(*active_monitor_idx);
+                let mon_idx = if ws_config.open_on_output.is_empty() {
+                    *active_monitor_idx
+                } else {
+                    ws_config
+                        .open_on_output
+                        .iter()
+                        .find_map(|name| {
+                            monitors
+                                .iter()
+                                .position(|monitor| output_matches_name(&monitor.output, name))
+                        })
+                        .unwrap_or(*primary_idx)
+                };
                 let mon = &mut monitors[mon_idx];
 
                 let ws = Workspace::new_with_config(

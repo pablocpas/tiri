@@ -43,6 +43,10 @@ If you're not using a display manager, you should run `tiri-session` (systemd/di
 The `--session` flag will make tiri import its environment variables globally into the system manager and D-Bus, and start its D-Bus services.
 The `tiri-session` script will additionally start tiri as a systemd/dinit service, which starts up a graphical session target required by some services like portals.
 
+> [!WARNING]
+> Running tiri directly from a TTY means that exiting or crashing tiri will put the user straight into an unlocked shell prompt.
+> Set up a display manager to avoid this.
+
 You can also run `tiri` inside an existing desktop session.
 Then it will open as a window, where you can give it a try.
 Note that this windowed mode is mainly meant for development, so it is a bit buggy (in particular, there are issues with hotkeys).
@@ -58,8 +62,16 @@ Some desktop environments and shells work with tiri/niri and can give a more out
 
 - [LXQt](https://lxqt-project.org/) officially supports niri, see [their wiki](https://github.com/lxqt/lxqt/wiki/ConfigWaylandSettings#general) for details on setting it up (may need adaptation for tiri).
 - Many [XFCE](https://www.xfce.org/) components work on Wayland, including niri-based compositors. See [their wiki](https://wiki.xfce.org/releng/wayland_roadmap#component_specific_status) for details.
-- There are complete desktop shells based on Quickshell that support niri, for example [DankMaterialShell](https://github.com/AvengeMedia/DankMaterialShell) and [Noctalia](https://github.com/noctalia-dev/noctalia-shell).
+- There are complete desktop shells that support niri, for example [DankMaterialShell](https://github.com/AvengeMedia/DankMaterialShell) and [Noctalia](https://github.com/noctalia-dev/noctalia-shell).
 - You can run a [COSMIC](https://system76.com/cosmic/) session with niri using [cosmic-ext-extra-sessions](https://github.com/Drakulix/cosmic-ext-extra-sessions).
+
+### Default applications
+
+If you install niri alongside GNOME or KDE and want to keep their default app associations (e.g. which image viewer or video player to use), symlink their `mimeapps.list` like so:
+
+```
+ln -s /usr/share/applications/gnome-mimeapps.list ~/.local/share/applications/niri-mimeapps.list
+```
 
 ### NVIDIA
 

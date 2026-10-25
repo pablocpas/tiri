@@ -47,17 +47,23 @@ $ socat STDIO "$TIRI_SOCKET"
 
 The reply is an `Ok` or an `Err` wrapping the same JSON object as you get from `tiri msg --json`.
 
-For more complex requests, you can use `socat` to find how `tiri msg` formats them:
+<sup>Upstream niri: next release</sup>
+For more complex requests, you can pass `--print-request` to `tiri msg` to see how the request should be formatted:
 
 ```sh
-$ socat STDIO UNIX-LISTEN:temp.sock
-# then, in a different terminal:
-$ env TIRI_SOCKET=./temp.sock tiri msg action focus-workspace 2
-# then, look in the socat terminal:
+$ tiri msg --print-request action focus-workspace 2
 {"Action":{"FocusWorkspace":{"reference":{"Index":2}}}}
 ```
 
-You can find all available requests and response types in upstream niri's [`niri-ipc` sub-crate documentation](https://yalter.github.io/niri/niri_ipc/).
+This is the format that you should use for communicating with the tiri socket directly.
+You can also use `tiri msg raw-request` to send a raw JSON request without `socat`:
+
+```sh
+$ echo '{"Action":{"FocusWorkspace":{"reference":{"Id":8}}}}' | tiri msg raw-request
+"Handled"
+```
+
+You can find all available requests and response types in upstream niri's [`niri-ipc` sub-crate documentation](https://niri-wm.github.io/niri/niri_ipc/).
 
 ### Backwards Compatibility
 
