@@ -1353,9 +1353,10 @@ fn removing_all_outputs_preserves_empty_named_workspaces() {
 
     let layout = check_ops(ops);
 
-    let MonitorSet::NoOutputs { workspaces } = layout.monitor_set else {
+    let MonitorSet::NoOutputs = layout.monitor_set else {
         unreachable!()
     };
+    let workspaces = layout.outputless_workspaces();
 
     assert_eq!(workspaces.len(), 2);
 }

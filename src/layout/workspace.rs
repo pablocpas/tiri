@@ -792,7 +792,11 @@ impl<W: LayoutElement> Workspace<W> {
     /// Put this workspace, which is on no output, on `output` at `idx` of its workspaces.
     pub(super) fn attach(&self, containers: &mut ContainerTree<W>, output: OutputKey, idx: usize) {
         containers.attach_workspace(output, idx, self.workspace);
-        let output = containers.workspace_output(self.workspace).unwrap().clone();
+        // The fallback is not an output anything is shown on: the workspace keeps the box and
+        // scale it last had, as sway's do on `root->fallback_output`.
+        let Some(output) = containers.workspace_output(self.workspace).cloned() else {
+            return;
+        };
 
         let properties = self.properties_mut(containers);
         // Normalize original output: possibly replace connector with make/model/serial.
@@ -809,12 +813,12 @@ impl<W: LayoutElement> Workspace<W> {
 
     /// Take this workspace off the output it is on, if any.
     pub(super) fn detach(&self, containers: &mut ContainerTree<W>) {
-        let Some(old) = containers.workspace_output(self.workspace).cloned() else {
-            return;
-        };
+        let old = containers.workspace_output(self.workspace).cloned();
         containers.detach_workspace_from_its_output(self.workspace);
-        for win in containers.windows_in_workspace(self.workspace) {
-            win.output_leave(&old);
+        if let Some(old) = old {
+            for win in containers.windows_in_workspace(self.workspace) {
+                win.output_leave(&old);
+            }
         }
     }
 

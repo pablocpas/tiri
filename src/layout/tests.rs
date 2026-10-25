@@ -1081,7 +1081,8 @@ impl Op {
                             }
                         }
                     }
-                    MonitorSet::NoOutputs { workspaces, .. } => {
+                    MonitorSet::NoOutputs => {
+                        let workspaces = layout.outputless_workspaces();
                         for ws in workspaces {
                             for win in ws.windows(&layout.containers) {
                                 if win.0.id == next_to_id {
@@ -1140,7 +1141,8 @@ impl Op {
                             }
                         }
                     }
-                    MonitorSet::NoOutputs { workspaces, .. } => {
+                    MonitorSet::NoOutputs => {
+                        let workspaces = layout.outputless_workspaces();
                         for ws in workspaces {
                             if ws
                                 .name(&layout.containers)
@@ -1684,7 +1686,8 @@ impl Op {
                             }
                         }
                     }
-                    MonitorSet::NoOutputs { workspaces, .. } => {
+                    MonitorSet::NoOutputs => {
+                        let workspaces = layout.outputless_workspaces();
                         'outer: for ws in workspaces {
                             for win in ws.windows(&layout.containers) {
                                 if win.0.id == id {
@@ -1749,7 +1752,8 @@ impl Op {
                             }
                         }
                     }
-                    MonitorSet::NoOutputs { workspaces, .. } => {
+                    MonitorSet::NoOutputs => {
+                        let workspaces = layout.outputless_workspaces();
                         'outer: for ws in workspaces {
                             for win in ws.windows(&layout.containers) {
                                 if win.0.id == id {

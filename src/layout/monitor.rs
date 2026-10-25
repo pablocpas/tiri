@@ -339,7 +339,7 @@ impl<W: LayoutElement> Monitor<W> {
             compute_working_area(&output, options.layout.struts, scale.fractional_scale());
 
         // Prepare the workspaces: set output, empty first, empty last.
-        let output_key = containers.add_output(output.clone());
+        let output_key = containers.add_output(Some(output.clone()));
         let mut active_workspace_idx = 0;
 
         let had_workspaces = !workspaces.is_empty();

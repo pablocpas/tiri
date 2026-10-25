@@ -930,14 +930,8 @@ impl<W: LayoutElement> Layout<W> {
                     }
                 }
             }
-            MonitorSet::NoOutputs { workspaces, .. } => {
-                if workspaces.is_empty() {
-                    workspaces.push(Workspace::new_no_outputs(
-                        &mut self.containers,
-                        self.options.clone(),
-                    ));
-                }
-                let ws = &mut workspaces[0];
+            MonitorSet::NoOutputs => {
+                let ws = self.first_outputless_workspace();
 
                 // No point in trying to use the pointer position without outputs.
                 ws.add_tile(

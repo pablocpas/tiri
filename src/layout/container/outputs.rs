@@ -30,7 +30,9 @@ impl OutputKey {
 /// One output's part of the model: the workspaces on it, in order.
 #[derive(Debug)]
 pub(in crate::layout) struct OutputEntry {
-    output: Output,
+    /// The output, or `None` for the fallback: sway's `root->fallback_output`, which holds the
+    /// workspaces while no output is connected.
+    output: Option<Output>,
     workspaces: Vec<NodeKey>,
 }
 
@@ -54,8 +56,8 @@ impl<W: LayoutElement> ContainerTree<W> {
             .expect("output key must name an output of this tree")
     }
 
-    /// Add an output with no workspaces on it yet.
-    pub(in crate::layout) fn add_output(&mut self, output: Output) -> OutputKey {
+    /// Add an output with no workspaces on it yet; `None` adds the fallback.
+    pub(in crate::layout) fn add_output(&mut self, output: Option<Output>) -> OutputKey {
         let key = OutputKey::next();
         self.outputs.entries.insert(
             key,
@@ -91,10 +93,10 @@ impl<W: LayoutElement> ContainerTree<W> {
         self.workspace_data(workspace).output
     }
 
-    /// The output `workspace` is on, if any.
+    /// The output `workspace` is on, if it is on a connected one.
     pub(in crate::layout) fn workspace_output(&self, workspace: NodeKey) -> Option<&Output> {
         self.workspace_output_key(workspace)
-            .map(|output| &self.output_entry(output).output)
+            .and_then(|output| self.output_entry(output).output.as_ref())
     }
 
     /// Put `workspace`, which is on no output, on `output` at `idx`.

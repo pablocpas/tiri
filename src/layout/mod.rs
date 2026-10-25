@@ -55,7 +55,7 @@ use workspace::{WorkspaceAddWindowTarget, WorkspaceId, WorkspaceLifetime};
 
 pub use self::container::LayoutCommand;
 pub use self::container::{Direction, LayoutMode};
-use self::container::{IncomingView, InsertParentInfo, NodeKey};
+use self::container::{IncomingView, InsertParentInfo, NodeKey, OutputKey};
 pub use self::interactive_move::DndData;
 use self::interactive_move::{DndHold, DndHoldTarget, InteractiveMoveState};
 pub use self::monitor::MonitorRenderElement;
@@ -597,6 +597,11 @@ pub struct Layout<W: LayoutElement> {
     /// and its client in step, so showing it is a move rather than a resize handshake with
     /// an idle client.
     scratchpad: Workspace<W>,
+    /// Where the workspaces are while no output is connected: sway's `root->fallback_output`.
+    ///
+    /// An output of the tree like any other, so that which workspaces exist and in what order
+    /// is the tree's to say whether or not an output is connected.
+    fallback_output: OutputKey,
     /// Configurable properties of the layout.
     options: Rc<Options>,
     /// A semantic layout mutation happened since the compositor last refreshed projections.
@@ -606,7 +611,7 @@ pub struct Layout<W: LayoutElement> {
     refresh_requested: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 enum MonitorSet<W: LayoutElement> {
     /// At least one output is connected.
     Normal {
@@ -617,11 +622,9 @@ enum MonitorSet<W: LayoutElement> {
         /// Index of the active monitor.
         active_monitor_idx: usize,
     },
-    /// No outputs are connected, and these are the workspaces.
-    NoOutputs {
-        /// The workspaces.
-        workspaces: Vec<Workspace<W>>,
-    },
+    /// No outputs are connected; the workspaces are on [`Layout::fallback_output`].
+    #[default]
+    NoOutputs,
 }
 
 /// Where one workspace root sits: which list holds its handle, and at what index.
@@ -639,22 +642,6 @@ enum WorkspaceOwner {
     NoOutputs {
         workspace_idx: usize,
     },
-}
-
-fn ensure_no_outputs_workspace_idx<W: LayoutElement>(
-    containers: &mut ContainerTree<W>,
-    workspaces: &mut Vec<Workspace<W>>,
-    options: Rc<Options>,
-) -> usize {
-    if let Some(idx) = workspaces
-        .iter()
-        .position(|ws| !ws.has_windows_or_persistent_identity(containers))
-    {
-        idx
-    } else {
-        workspaces.push(Workspace::new_no_outputs(containers, options));
-        workspaces.len() - 1
-    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -932,9 +919,11 @@ impl<W: LayoutElement> Layout<W> {
         let options = Rc::new(options);
         let mut containers = ContainerTree::new(clock.clone());
         let scratchpad = Workspace::new_scratchpad(&mut containers, options.clone());
+        let fallback_output = containers.add_output(None);
         Self {
             containers,
-            monitor_set: MonitorSet::NoOutputs { workspaces: vec![] },
+            monitor_set: MonitorSet::NoOutputs,
+            fallback_output,
             is_active: true,
             last_active_workspace_id: HashMap::new(),
             has_layout_focus: true,
@@ -956,21 +945,16 @@ impl<W: LayoutElement> Layout<W> {
         let mut containers = ContainerTree::new(clock.clone());
         let scratchpad = Workspace::new_scratchpad(&mut containers, opts.clone());
 
-        let workspaces = config
-            .workspaces
-            .iter()
-            .map(|ws| {
-                Workspace::new_with_config_no_outputs(
-                    &mut containers,
-                    Some(ws.clone()),
-                    opts.clone(),
-                )
-            })
-            .collect();
+        let fallback_output = containers.add_output(None);
+        for (idx, ws) in config.workspaces.iter().enumerate() {
+            Workspace::new_with_config_no_outputs(&mut containers, Some(ws.clone()), opts.clone())
+                .attach(&mut containers, fallback_output, idx);
+        }
 
         Self {
             containers,
-            monitor_set: MonitorSet::NoOutputs { workspaces },
+            monitor_set: MonitorSet::NoOutputs,
+            fallback_output,
             is_active: true,
             last_active_workspace_id: HashMap::new(),
             has_layout_focus: true,
@@ -1091,7 +1075,11 @@ impl<W: LayoutElement> Layout<W> {
                     active_monitor_idx,
                 }
             }
-            MonitorSet::NoOutputs { workspaces } => {
+            MonitorSet::NoOutputs => {
+                let workspaces = self.outputless_workspaces();
+                for ws in &workspaces {
+                    ws.detach(&mut self.containers);
+                }
                 let seed_initial_workspace = workspaces.is_empty();
                 let ws_id_to_activate = self.last_active_workspace_id.remove(&output.name());
 
@@ -1159,17 +1147,18 @@ impl<W: LayoutElement> Layout<W> {
                     primary.keep_end_workspaces_empty(&mut self.containers);
                 }
 
-                let mut workspaces = monitor.into_workspaces(&mut self.containers);
+                let workspaces = monitor.into_workspaces(&mut self.containers);
 
                 if monitors.is_empty() {
                     // Removed the last monitor.
 
-                    for ws in &mut workspaces {
+                    for (idx, ws) in workspaces.iter().enumerate() {
+                        ws.attach(&mut self.containers, self.fallback_output, idx);
                         // Reset base options to layout ones.
                         ws.update_config(&mut self.containers, self.options.clone());
                     }
 
-                    MonitorSet::NoOutputs { workspaces }
+                    MonitorSet::NoOutputs
                 } else {
                     if active_monitor_idx >= idx {
                         // Update active_monitor_idx to either still point at the same monitor, or
@@ -1188,7 +1177,7 @@ impl<W: LayoutElement> Layout<W> {
                     }
                 }
             }
-            MonitorSet::NoOutputs { .. } => {
+            MonitorSet::NoOutputs => {
                 panic!("tried to remove output when there were already none")
             }
         };
@@ -1330,24 +1319,22 @@ impl<W: LayoutElement> Layout<W> {
 
                 Some(mon.output.clone())
             }
-            MonitorSet::NoOutputs { workspaces } => {
-                let (ws_idx, target) = match target {
-                    AddWindowTarget::Auto => {
-                        if workspaces.is_empty() {
-                            workspaces.push(Workspace::new_no_outputs(
-                                &mut self.containers,
-                                self.options.clone(),
-                            ));
-                        }
-
-                        (0, WorkspaceAddWindowTarget::Auto)
-                    }
+            MonitorSet::NoOutputs => {
+                let (ws, target) = match target {
+                    AddWindowTarget::Auto => (
+                        self.first_outputless_workspace(),
+                        WorkspaceAddWindowTarget::Auto,
+                    ),
                     AddWindowTarget::Output(_) => {
                         panic!("cannot target an output for a new window when none are connected")
                     }
                     AddWindowTarget::Workspace(ws_id) => {
-                        let ws_idx = workspaces.iter().position(|ws| ws.id() == ws_id).unwrap();
-                        (ws_idx, WorkspaceAddWindowTarget::Auto)
+                        let ws = self
+                            .outputless_workspaces()
+                            .into_iter()
+                            .find(|ws| ws.id() == ws_id)
+                            .unwrap();
+                        (ws, WorkspaceAddWindowTarget::Auto)
                     }
                     AddWindowTarget::NextTo(next_to) => {
                         if self
@@ -1365,26 +1352,21 @@ impl<W: LayoutElement> Layout<W> {
                         {
                             // The next_to window is being interactively moved. If there are no
                             // other windows, we may have no workspaces at all.
-                            if workspaces.is_empty() {
-                                workspaces.push(Workspace::new_no_outputs(
-                                    &mut self.containers,
-                                    self.options.clone(),
-                                ));
-                            }
-
-                            (0, WorkspaceAddWindowTarget::Auto)
+                            (
+                                self.first_outputless_workspace(),
+                                WorkspaceAddWindowTarget::Auto,
+                            )
                         } else {
                             let WorkspaceOwner::NoOutputs { workspace_idx } =
                                 next_to_owner.expect("next_to window disappeared before mapping")
                             else {
                                 panic!("next_to must name an outputless workspace window")
                             };
-                            let ws_idx = workspace_idx;
-                            (ws_idx, WorkspaceAddWindowTarget::NextTo(next_to))
+                            let ws = self.outputless_workspaces()[workspace_idx];
+                            (ws, WorkspaceAddWindowTarget::NextTo(next_to))
                         }
                     }
                 };
-                let ws = &mut workspaces[ws_idx];
 
                 let tile = ws.make_tile(&self.containers, window);
                 ws.add_tile(
@@ -1464,29 +1446,9 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn descendants_added(&mut self, id: &W::Id) -> bool {
-        let containers = &mut self.containers;
-        match &mut self.monitor_set {
-            MonitorSet::Normal { monitors, .. } => {
-                let workspaces: Vec<_> = monitors
-                    .iter()
-                    .flat_map(|mon| mon.workspace_list(containers))
-                    .collect();
-                for ws in workspaces {
-                    if ws.descendants_added(containers, id) {
-                        return true;
-                    }
-                }
-            }
-            MonitorSet::NoOutputs { workspaces } => {
-                for ws in workspaces {
-                    if ws.descendants_added(containers, id) {
-                        return true;
-                    }
-                }
-            }
-        }
-
-        false
+        self.workspace_handles()
+            .into_iter()
+            .any(|ws| ws.descendants_added(&mut self.containers, id))
     }
 
     pub fn update_window(&mut self, window: &W::Id, serial: Option<Serial>) {
@@ -1523,7 +1485,8 @@ impl<W: LayoutElement> Layout<W> {
             ) => monitors[monitor_idx]
                 .ws(&self.containers, workspace_idx)
                 .update_window(&mut self.containers, window, serial),
-            (MonitorSet::NoOutputs { workspaces }, WorkspaceOwner::NoOutputs { workspace_idx }) => {
+            (MonitorSet::NoOutputs, WorkspaceOwner::NoOutputs { workspace_idx }) => {
+                let workspaces = self.outputless_workspaces();
                 workspaces[workspace_idx].update_window(&mut self.containers, window, serial)
             }
             _ => unreachable!("window owner must match the current monitor set"),
@@ -1540,7 +1503,8 @@ impl<W: LayoutElement> Layout<W> {
                     }
                 }
             }
-            MonitorSet::NoOutputs { workspaces } => {
+            MonitorSet::NoOutputs => {
+                let workspaces = self.outputless_workspaces();
                 if let Some((index, workspace)) = workspaces
                     .iter()
                     .copied()
@@ -1569,7 +1533,8 @@ impl<W: LayoutElement> Layout<W> {
                     }
                 }
             }
-            MonitorSet::NoOutputs { workspaces } => {
+            MonitorSet::NoOutputs => {
+                let workspaces = self.outputless_workspaces();
                 if let Some((index, workspace)) =
                     workspaces.iter().copied().enumerate().find(|(_, w)| {
                         w.name(&self.containers)
@@ -1618,18 +1583,14 @@ impl<W: LayoutElement> Layout<W> {
 
                 Some((Some(mon.output().clone()), idx))
             }
-            MonitorSet::NoOutputs { workspaces } => {
-                let idx = ensure_no_outputs_workspace_idx(
-                    &mut self.containers,
-                    workspaces,
-                    self.options.clone(),
-                );
+            MonitorSet::NoOutputs => {
+                let idx = self.empty_outputless_workspace_idx();
                 let lifetime = if transient {
                     WorkspaceLifetime::Transient
                 } else {
                     WorkspaceLifetime::Persistent
                 };
-                let key = workspaces[idx].workspace_key();
+                let key = self.outputless_workspaces()[idx].workspace_key();
                 self.containers
                     .workspace_properties_mut(key)
                     .set_name(name, lifetime);
@@ -1651,7 +1612,8 @@ impl<W: LayoutElement> Layout<W> {
                     }
                 }
             }
-            MonitorSet::NoOutputs { workspaces } => {
+            MonitorSet::NoOutputs => {
+                let workspaces = self.outputless_workspaces();
                 if let Some((index, workspace)) = workspaces
                     .iter()
                     .copied()
@@ -1685,13 +1647,9 @@ impl<W: LayoutElement> Layout<W> {
                 );
                 Some((Some(mon.output().clone()), idx))
             }
-            MonitorSet::NoOutputs { workspaces } => {
-                let idx = ensure_no_outputs_workspace_idx(
-                    &mut self.containers,
-                    workspaces,
-                    self.options.clone(),
-                );
-                workspaces[idx].set_numeric_identity(
+            MonitorSet::NoOutputs => {
+                let idx = self.empty_outputless_workspace_idx();
+                self.outputless_workspaces()[idx].set_numeric_identity(
                     &mut self.containers,
                     number,
                     WorkspaceLifetime::Transient,
@@ -1737,7 +1695,8 @@ impl<W: LayoutElement> Layout<W> {
             MonitorSet::Normal { monitors, .. } => monitors
                 .iter_mut()
                 .any(|mon| mon.unname_workspace(&mut self.containers, id)),
-            MonitorSet::NoOutputs { workspaces } => {
+            MonitorSet::NoOutputs => {
+                let workspaces = self.outputless_workspaces();
                 let Some(idx) = workspaces.iter().position(|ws| ws.id() == id) else {
                     return;
                 };
@@ -1748,9 +1707,7 @@ impl<W: LayoutElement> Layout<W> {
                     .containers
                     .workspace_has_windows(workspaces[idx].workspace_key())
                 {
-                    workspaces
-                        .remove(idx)
-                        .remove_from_tree(&mut self.containers);
+                    workspaces[idx].remove_from_tree(&mut self.containers);
                 }
                 true
             }
@@ -2017,9 +1974,11 @@ impl<W: LayoutElement> Layout<W> {
                     workspace_idx,
                 })
             }
-            MonitorSet::NoOutputs { workspaces } => workspaces
+            MonitorSet::NoOutputs => self
+                .containers
+                .output_workspaces(self.fallback_output)
                 .iter()
-                .position(|workspace| workspace.workspace_key() == root)
+                .position(|&key| key == root)
                 .map(|workspace_idx| WorkspaceOwner::NoOutputs { workspace_idx }),
         }
     }
@@ -2088,18 +2047,11 @@ impl<W: LayoutElement> Layout<W> {
                 Some(transferred)
             }
             WorkspaceOwner::NoOutputs { workspace_idx } => {
-                let MonitorSet::NoOutputs { workspaces } = &mut self.monitor_set else {
-                    unreachable!("outputless workspaces only exist without outputs")
-                };
-                let transferred = workspaces[workspace_idx].take_tile_for_transfer(
-                    &mut self.containers,
-                    window,
-                    transaction,
-                );
-                if !workspaces[workspace_idx].has_windows_or_persistent_identity(&self.containers) {
-                    workspaces
-                        .remove(workspace_idx)
-                        .remove_from_tree(&mut self.containers);
+                let workspace = self.outputless_workspaces()[workspace_idx];
+                let transferred =
+                    workspace.take_tile_for_transfer(&mut self.containers, window, transaction);
+                if !workspace.has_windows_or_persistent_identity(&self.containers) {
+                    workspace.remove_from_tree(&mut self.containers);
                 }
                 Some(transferred)
             }
@@ -2110,6 +2062,53 @@ impl<W: LayoutElement> Layout<W> {
         let tree = &self.containers;
         tree.window_key(window)
             .is_some_and(|key| tree.is_in_floating_branch(key))
+    }
+
+    /// The workspaces waiting for an output, in order.
+    fn outputless_workspaces(&self) -> Vec<Workspace<W>> {
+        self.containers
+            .output_workspaces(self.fallback_output)
+            .iter()
+            .map(|&key| Workspace::of(key))
+            .collect()
+    }
+
+    /// Put `ws` last among the workspaces waiting for an output; returns where it is.
+    fn push_outputless_workspace(&mut self, ws: Workspace<W>) -> usize {
+        let idx = self
+            .containers
+            .output_workspaces(self.fallback_output)
+            .len();
+        ws.attach(&mut self.containers, self.fallback_output, idx);
+        idx
+    }
+
+    /// The first workspace waiting for an output, made if there is none.
+    fn first_outputless_workspace(&mut self) -> Workspace<W> {
+        if let Some(&key) = self
+            .containers
+            .output_workspaces(self.fallback_output)
+            .first()
+        {
+            return Workspace::of(key);
+        }
+        let ws = Workspace::new_no_outputs(&mut self.containers, self.options.clone());
+        self.push_outputless_workspace(ws);
+        ws
+    }
+
+    /// The index of a workspace waiting for an output that holds nothing worth keeping, made
+    /// if there is none.
+    fn empty_outputless_workspace_idx(&mut self) -> usize {
+        if let Some(idx) = self
+            .outputless_workspaces()
+            .iter()
+            .position(|ws| !ws.has_windows_or_persistent_identity(&self.containers))
+        {
+            return idx;
+        }
+        let ws = Workspace::new_no_outputs(&mut self.containers, self.options.clone());
+        self.push_outputless_workspace(ws)
     }
 
     /// A normal output-backed or outputless workspace holding `window`.
@@ -2223,7 +2222,8 @@ impl<W: LayoutElement> Layout<W> {
                     }
                 }
             }
-            MonitorSet::NoOutputs { workspaces } => {
+            MonitorSet::NoOutputs => {
+                let workspaces = self.outputless_workspaces();
                 for ws in workspaces {
                     for (tile, layout) in self
                         .containers
@@ -2261,7 +2261,8 @@ impl<W: LayoutElement> Layout<W> {
                     }
                 }
             }
-            MonitorSet::NoOutputs { workspaces } => {
+            MonitorSet::NoOutputs => {
+                let workspaces = self.outputless_workspaces();
                 for ws in workspaces {
                     for win in self.containers.windows_mut_in_workspace(ws.workspace_key()) {
                         f(win, None);
@@ -2370,7 +2371,7 @@ impl<W: LayoutElement> Layout<W> {
         let containers = &mut self.containers;
         let monitors = match &mut self.monitor_set {
             MonitorSet::Normal { monitors, .. } => Some(monitors.iter_mut()),
-            MonitorSet::NoOutputs { .. } => None,
+            MonitorSet::NoOutputs => None,
         };
         (monitors.into_iter().flatten(), containers)
     }
@@ -2432,7 +2433,7 @@ impl<W: LayoutElement> Layout<W> {
                         .map(|(workspace_idx, _)| (monitor_idx, workspace_idx))
                 })
             }
-            MonitorSet::NoOutputs { .. } => None,
+            MonitorSet::NoOutputs => None,
         }
     }
 
@@ -2449,7 +2450,8 @@ impl<W: LayoutElement> Layout<W> {
             } => monitors[*active_monitor_idx]
                 .active_workspace_ref(&self.containers)
                 .workspace_key(),
-            MonitorSet::NoOutputs { workspaces } => {
+            MonitorSet::NoOutputs => {
+                let workspaces = self.outputless_workspaces();
                 let Some(ws) = workspaces.first() else {
                     return;
                 };
@@ -3115,6 +3117,10 @@ impl<W: LayoutElement> Layout<W> {
         );
         match &self.monitor_set {
             MonitorSet::Normal { monitors, .. } => {
+                assert!(
+                    self.outputless_workspaces().is_empty(),
+                    "with an output connected no workspace waits on the fallback"
+                );
                 for monitor in monitors {
                     for workspace in monitor.workspaces(&self.containers) {
                         assert!(runtime_workspace_roots.insert(workspace.workspace_key()));
@@ -3126,7 +3132,8 @@ impl<W: LayoutElement> Layout<W> {
                     }
                 }
             }
-            MonitorSet::NoOutputs { workspaces } => {
+            MonitorSet::NoOutputs => {
+                let workspaces = self.outputless_workspaces();
                 for workspace in workspaces {
                     assert!(runtime_workspace_roots.insert(workspace.workspace_key()));
                     assert!(
@@ -3152,7 +3159,8 @@ impl<W: LayoutElement> Layout<W> {
                 primary_idx,
                 active_monitor_idx,
             } => (monitors, primary_idx, active_monitor_idx),
-            MonitorSet::NoOutputs { workspaces } => {
+            MonitorSet::NoOutputs => {
+                let workspaces = self.outputless_workspaces();
                 for workspace in workspaces {
                     assert!(
                         workspace.has_windows_or_persistent_identity(&self.containers),
@@ -3398,7 +3406,8 @@ impl<W: LayoutElement> Layout<W> {
                     mon.advance_animations(&mut self.containers);
                 }
             }
-            MonitorSet::NoOutputs { workspaces, .. } => {
+            MonitorSet::NoOutputs => {
+                let workspaces = self.outputless_workspaces();
                 for ws in workspaces {
                     ws.advance_animations(&mut self.containers);
                 }
@@ -3537,7 +3546,8 @@ impl<W: LayoutElement> Layout<W> {
                     mon.update_shaders(&mut self.containers);
                 }
             }
-            MonitorSet::NoOutputs { workspaces, .. } => {
+            MonitorSet::NoOutputs => {
+                let workspaces = self.outputless_workspaces();
                 for ws in workspaces {
                     ws.update_shaders(&mut self.containers);
                 }
@@ -3647,13 +3657,13 @@ impl<W: LayoutElement> Layout<W> {
                 let idx = mon.named_workspace_insert_idx(&self.containers);
                 mon.insert_workspace(&mut self.containers, ws, idx, false);
             }
-            MonitorSet::NoOutputs { workspaces } => {
+            MonitorSet::NoOutputs => {
                 let ws = Workspace::new_with_config_no_outputs(
                     &mut self.containers,
                     Some(ws_config.clone()),
                     options,
                 );
-                workspaces.push(ws);
+                self.push_outputless_workspace(ws);
             }
         }
         // Monitor::insert_workspace() also normalizes the transient empty workspaces around
@@ -3700,7 +3710,8 @@ impl<W: LayoutElement> Layout<W> {
                     mon.update_config(&mut self.containers, options.clone());
                 }
             }
-            MonitorSet::NoOutputs { workspaces } => {
+            MonitorSet::NoOutputs => {
+                let workspaces = self.outputless_workspaces();
                 for ws in workspaces {
                     ws.update_config(&mut self.containers, options.clone());
                 }
@@ -3963,7 +3974,8 @@ impl<W: LayoutElement> Layout<W> {
                     monitor.clean_up_workspaces(&mut self.containers);
                 }
             }
-            (MonitorSet::NoOutputs { workspaces }, WorkspaceOwner::NoOutputs { workspace_idx }) => {
+            (MonitorSet::NoOutputs, WorkspaceOwner::NoOutputs { workspace_idx }) => {
+                let workspaces = self.outputless_workspaces();
                 let tile = workspaces[workspace_idx]
                     .take_tile_for_hiding_in_scratchpad(&mut self.containers, &target)
                     .expect("the resolved source workspace must still own the window");
@@ -3971,9 +3983,7 @@ impl<W: LayoutElement> Layout<W> {
                     .hide_in_scratchpad(&mut self.containers, tile.into_incoming());
                 for idx in (0..workspaces.len()).rev() {
                     if !workspaces[idx].has_windows_or_persistent_identity(&self.containers) {
-                        workspaces
-                            .remove(idx)
-                            .remove_from_tree(&mut self.containers);
+                        workspaces[idx].remove_from_tree(&mut self.containers);
                     }
                 }
             }
@@ -4142,7 +4152,7 @@ impl<W: LayoutElement> Layout<W> {
             MonitorSet::Normal { monitors, .. } => {
                 monitors.iter().position(|mon| &mon.output == output)
             }
-            MonitorSet::NoOutputs { .. } => None,
+            MonitorSet::NoOutputs => None,
         };
         let Some(target_monitor_idx) = target_monitor_idx else {
             return;
@@ -4602,7 +4612,7 @@ impl<W: LayoutElement> Layout<W> {
     pub fn workspace_switch_gesture_begin(&mut self, output: &Output, is_touchpad: bool) {
         let monitors = match &mut self.monitor_set {
             MonitorSet::Normal { monitors, .. } => monitors,
-            MonitorSet::NoOutputs { .. } => unreachable!(),
+            MonitorSet::NoOutputs => unreachable!(),
         };
 
         for monitor in monitors {
@@ -4624,7 +4634,7 @@ impl<W: LayoutElement> Layout<W> {
     ) -> Option<Option<Output>> {
         let monitors = match &mut self.monitor_set {
             MonitorSet::Normal { monitors, .. } => monitors,
-            MonitorSet::NoOutputs { .. } => return None,
+            MonitorSet::NoOutputs => return None,
         };
 
         for monitor in monitors {
@@ -4648,7 +4658,7 @@ impl<W: LayoutElement> Layout<W> {
     pub fn workspace_switch_gesture_end(&mut self, is_touchpad: Option<bool>) -> Option<Output> {
         let monitors = match &mut self.monitor_set {
             MonitorSet::Normal { monitors, .. } => monitors,
-            MonitorSet::NoOutputs { .. } => return None,
+            MonitorSet::NoOutputs => return None,
         };
 
         for monitor in monitors {
@@ -4746,7 +4756,8 @@ impl<W: LayoutElement> Layout<W> {
             ) => monitors[monitor_idx]
                 .ws(&self.containers, workspace_idx)
                 .interactive_resize_begin(&mut self.containers, window, edges),
-            (MonitorSet::NoOutputs { workspaces }, WorkspaceOwner::NoOutputs { workspace_idx }) => {
+            (MonitorSet::NoOutputs, WorkspaceOwner::NoOutputs { workspace_idx }) => {
+                let workspaces = self.outputless_workspaces();
                 workspaces[workspace_idx].interactive_resize_begin(
                     &mut self.containers,
                     window,
@@ -4791,7 +4802,8 @@ impl<W: LayoutElement> Layout<W> {
                         pos_within_output - geo.loc,
                     )
             }
-            (MonitorSet::NoOutputs { workspaces }, WorkspaceOwner::NoOutputs { workspace_idx }) => {
+            (MonitorSet::NoOutputs, WorkspaceOwner::NoOutputs { workspace_idx }) => {
+                let workspaces = self.outputless_workspaces();
                 workspaces[workspace_idx].interactive_resize_begin_at(
                     &mut self.containers,
                     window,
@@ -4902,14 +4914,21 @@ impl<W: LayoutElement> Layout<W> {
 
                 monitors[mon_idx].move_workspace_to_idx(&mut self.containers, old_idx, new_idx);
             }
-            MonitorSet::NoOutputs { workspaces } => {
+            MonitorSet::NoOutputs => {
+                let workspaces = self.outputless_workspaces();
                 let Some(old_idx) = workspaces.iter().position(|ws| ws.id() == workspace_id) else {
                     return;
                 };
 
-                let ws = workspaces.remove(old_idx);
-                let new_idx = new_idx.min(workspaces.len());
-                workspaces.insert(new_idx, ws);
+                let new_idx = new_idx.min(workspaces.len() - 1);
+                self.containers
+                    .reorder_output_workspaces(self.fallback_output, |workspaces| {
+                        if old_idx < new_idx {
+                            workspaces[old_idx..=new_idx].rotate_left(1);
+                        } else {
+                            workspaces[new_idx..=old_idx].rotate_right(1);
+                        }
+                    });
             }
         }
         self.seat_focus_after_mutation();
@@ -5102,7 +5121,8 @@ impl<W: LayoutElement> Layout<W> {
                         window,
                     );
             }
-            (MonitorSet::NoOutputs { workspaces }, WorkspaceOwner::NoOutputs { workspace_idx }) => {
+            (MonitorSet::NoOutputs, WorkspaceOwner::NoOutputs { workspace_idx }) => {
+                let workspaces = self.outputless_workspaces();
                 workspaces[workspace_idx].store_unmap_snapshot_if_empty(
                     &mut self.containers,
                     renderer,
@@ -5141,7 +5161,8 @@ impl<W: LayoutElement> Layout<W> {
             ) => monitors[monitor_idx]
                 .ws(&self.containers, workspace_idx)
                 .clear_unmap_snapshot(&mut self.containers, window),
-            (MonitorSet::NoOutputs { workspaces }, WorkspaceOwner::NoOutputs { workspace_idx }) => {
+            (MonitorSet::NoOutputs, WorkspaceOwner::NoOutputs { workspace_idx }) => {
+                let workspaces = self.outputless_workspaces();
                 workspaces[workspace_idx].clear_unmap_snapshot(&mut self.containers, window)
             }
             _ => {}
@@ -5205,7 +5226,8 @@ impl<W: LayoutElement> Layout<W> {
             ) => monitors[monitor_idx]
                 .ws(&self.containers, workspace_idx)
                 .start_close_animation_for_window(&mut self.containers, renderer, window, blocker),
-            (MonitorSet::NoOutputs { workspaces }, WorkspaceOwner::NoOutputs { workspace_idx }) => {
+            (MonitorSet::NoOutputs, WorkspaceOwner::NoOutputs { workspace_idx }) => {
+                let workspaces = self.outputless_workspaces();
                 workspaces[workspace_idx].start_close_animation_for_window(
                     &mut self.containers,
                     renderer,
@@ -5316,7 +5338,8 @@ impl<W: LayoutElement> Layout<W> {
                     }
                 }
             }
-            MonitorSet::NoOutputs { workspaces, .. } => {
+            MonitorSet::NoOutputs => {
+                let workspaces = self.outputless_workspaces();
                 for ws in workspaces {
                     ws.refresh(&mut self.containers, false, false);
                 }
@@ -5346,10 +5369,12 @@ impl<W: LayoutElement> Layout<W> {
 
                 (Some(it), None)
             }
-            MonitorSet::NoOutputs { workspaces } => {
-                let it = workspaces
+            MonitorSet::NoOutputs => {
+                let it = self
+                    .containers
+                    .output_workspaces(self.fallback_output)
                     .iter()
-                    .copied()
+                    .map(|&key| Workspace::of(key))
                     .enumerate()
                     .map(|(idx, ws)| (None, idx, ws));
 
@@ -5482,12 +5507,6 @@ impl<W: LayoutElement> Layout<W> {
                 .containers
                 .floating_layout_tree_nodes(workspace.workspace_key()),
         }
-    }
-}
-
-impl<W: LayoutElement> Default for MonitorSet<W> {
-    fn default() -> Self {
-        Self::NoOutputs { workspaces: vec![] }
     }
 }
 

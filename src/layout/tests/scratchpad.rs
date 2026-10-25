@@ -236,9 +236,10 @@ fn scratchpad_move_without_outputs_cleans_up_empty_workspace() {
         Op::MoveWindowToScratchpad { id: Some(4) },
     ]);
 
-    let MonitorSet::NoOutputs { workspaces } = layout.monitor_set else {
+    let MonitorSet::NoOutputs = layout.monitor_set else {
         unreachable!()
     };
+    let workspaces = layout.outputless_workspaces();
 
     assert!(workspaces.is_empty());
 }
