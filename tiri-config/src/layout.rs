@@ -160,6 +160,7 @@ pub struct LayoutPart {
     pub autotile: Option<Flag>,
     #[knuffel(child, unwrap(argument))]
     pub autotile_ratio: Option<FloatOrInt<0, 65535>>,
+    #[knuffel(child)]
     pub fullscreen_backdrop_color: Option<Color>,
 }
 
