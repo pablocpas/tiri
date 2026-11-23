@@ -1,3 +1,4 @@
+use smithay::backend::input::InputTime;
 use smithay::desktop::Window;
 use smithay::input::pointer::{
     AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
@@ -15,7 +16,6 @@ use smithay::utils::{IsAlive, Logical, Point, SERIAL_COUNTER};
 
 use crate::input::AnyStartData;
 use crate::tiri::State;
-use crate::utils::get_monotonic_time;
 
 pub struct ResizeGrab {
     start_data: AnyStartData<State>,
@@ -122,7 +122,7 @@ impl PointerGrab<State> for ResizeGrab {
                 self,
                 data,
                 SERIAL_COUNTER.next_serial(),
-                get_monotonic_time().as_millis() as u32,
+                InputTime::now(),
                 true,
             );
         }
@@ -360,7 +360,7 @@ impl TabletToolGrab<State> for ResizeGrab {
         &mut self,
         data: &mut State,
         handle: &mut TabletToolInnerHandle<'_, State>,
-        time: u32,
+        time: InputTime,
     ) {
         handle.frame(data, time);
 
@@ -370,7 +370,7 @@ impl TabletToolGrab<State> for ResizeGrab {
                 self,
                 data,
                 SERIAL_COUNTER.next_serial(),
-                get_monotonic_time().as_millis() as u32,
+                InputTime::now(),
                 true,
             );
         }

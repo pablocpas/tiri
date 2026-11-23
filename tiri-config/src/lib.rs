@@ -60,9 +60,9 @@ pub use crate::output::{Output, OutputName, Outputs, Position, Vrr};
 use crate::recent_windows::RecentWindowsPart;
 pub use crate::recent_windows::{MruDirection, MruFilter, MruPreviews, MruScope, RecentWindows};
 pub use crate::utils::FloatOrInt;
-use crate::utils::{Flag, MergeWith as _};
+use crate::utils::{expand_home_path, Flag, MergeWith as _};
 pub use crate::window_rule::{
-    FloatingPosition, PopupsRule, RelativeTo, ResolvedPopupsRules, WindowRule,
+    FloatingPosition, OnXdgActivate, PopupsRule, RelativeTo, ResolvedPopupsRules, WindowRule,
 };
 pub use crate::workspace::{Workspace, WorkspaceLayoutPart};
 use std::collections::HashMap;
@@ -121,8 +121,12 @@ pub enum ConfigPath {
 struct BasePath(PathBuf);
 struct RootBase(PathBuf);
 struct Recursion(u8);
+
+// FIXME: This is currently used to track all the files that needed to be watched. The name
+// `Includes` is not really correct and should be renamed in the future.
 #[derive(Default)]
 struct Includes(Vec<PathBuf>);
+
 #[derive(Default)]
 struct IncludeErrors(Vec<knuffel::Error>);
 // Used for recursive include detection.
@@ -321,8 +325,6 @@ where
                             "additional argument for include path is required",
                         )
                     })?;
-                    let path: PathBuf = knuffel::traits::DecodeScalar::decode(path_val, ctx)?;
-
                     // Check for extra arguments
                     if let Some(val) = iter_args.next() {
                         ctx.emit_error(DecodeError::unexpected(
@@ -361,21 +363,11 @@ where
                     // We use DecodeError::Missing throughout this block because it results in the
                     // least confusing error messages while still allowing to provide a span.
 
-                    // Expand ~ into the home dir
-                    let path = if let Ok(rest) = path.strip_prefix("~") {
-                        let Some(home) = std::env::home_dir() else {
-                            ctx.emit_error(DecodeError::missing(
-                                node,
-                                format!("error retrieving home directory to expand {path:?}"),
-                            ));
-                            continue;
-                        };
+                    let decoded_path = knuffel::traits::DecodeScalar::decode(path_val, ctx)?;
 
-                        home.join(rest)
-                    } else {
-                        // Otherwise, use the current include base dir
-                        let base = ctx.get::<BasePath>().unwrap();
-                        base.0.join(path)
+                    // Expand ~ into the home dir
+                    let Some(path) = expand_home_path(decoded_path, node, ctx) else {
+                        continue;
                     };
 
                     let recursion = ctx.get::<Recursion>().unwrap().0 + 1;
@@ -726,6 +718,30 @@ mod tests {
     }
 
     #[test]
+    fn parse_on_xdg_activate() {
+        let parsed = do_parse(
+            r#"
+            window-rule { on-xdg-activate "ignore"; }
+            window-rule { on-xdg-activate "set-urgent"; }
+            window-rule { on-xdg-activate "focus"; }
+            "#,
+        );
+
+        assert_eq!(
+            parsed
+                .window_rules
+                .iter()
+                .map(|rule| rule.on_xdg_activate)
+                .collect::<Vec<_>>(),
+            vec![
+                Some(OnXdgActivate::Ignore),
+                Some(OnXdgActivate::SetUrgent),
+                Some(OnXdgActivate::Focus),
+            ]
+        );
+    }
+
+    #[test]
     #[ignore]
     fn parse() {
         let parsed = do_parse(
@@ -755,6 +771,7 @@ mod tests {
                     tap-button-map "left-middle-right"
                     disabled-on-external-mouse
                     scroll-factor 0.9
+                    pinch-sensitivity 1.8
                 }
 
                 mouse {
@@ -959,6 +976,7 @@ mod tests {
                 default-window-height { fixed 500; }
                 default-column-display "tabbed"
                 default-floating-position x=100 y=-200 relative-to="bottom-left"
+                on-xdg-activate "ignore"
 
                 focus-ring {
                     off
@@ -973,6 +991,8 @@ mod tests {
                 tab-indicator {
                     active-color "#f00"
                 }
+
+                pinch-sensitivity 1.2
             }
 
             layer-rule {
@@ -1010,6 +1030,7 @@ mod tests {
 
             workspace "workspace-1" {
                 open-on-output "eDP-1"
+                open-on-output "DP-1"
             }
             workspace "workspace-2"
             workspace "workspace-3"
@@ -1096,6 +1117,11 @@ mod tests {
                             horizontal: None,
                             vertical: None,
                         },
+                    ),
+                    pinch_sensitivity: Some(
+                        FloatOrInt(
+                            1.8,
+                        ),
                     ),
                 },
                 mouse: Mouse {
@@ -1920,7 +1946,9 @@ mod tests {
                     open_focused: Some(
                         true,
                     ),
-                    focus_on_xdg_activate: None,
+                    on_xdg_activate: Some(
+                        Ignore,
+                    ),
                     min_width: None,
                     min_height: None,
                     max_width: None,
@@ -2022,6 +2050,11 @@ mod tests {
                         },
                     ),
                     scroll_factor: None,
+                    pinch_sensitivity: Some(
+                        FloatOrInt(
+                            1.2,
+                        ),
+                    ),
                     tiled_state: None,
                     background_effect: BackgroundEffectRule {
                         xray: None,
@@ -2403,6 +2436,7 @@ mod tests {
                     "/dev/dri/renderD130",
                 ],
                 force_pipewire_invalid_modifier: false,
+                disable_pipewire_dmabuf: false,
                 emulate_zero_presentation_time: false,
                 disable_resize_throttling: false,
                 disable_transactions: false,
@@ -2419,23 +2453,24 @@ mod tests {
                     name: WorkspaceName(
                         "workspace-1",
                     ),
-                    open_on_output: Some(
+                    open_on_output: [
                         "eDP-1",
-                    ),
+                        "DP-1",
+                    ],
                     layout: None,
                 },
                 Workspace {
                     name: WorkspaceName(
                         "workspace-2",
                     ),
-                    open_on_output: None,
+                    open_on_output: [],
                     layout: None,
                 },
                 Workspace {
                     name: WorkspaceName(
                         "workspace-3",
                     ),
-                    open_on_output: None,
+                    open_on_output: [],
                     layout: None,
                 },
             ],

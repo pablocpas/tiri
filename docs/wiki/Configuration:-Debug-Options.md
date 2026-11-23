@@ -22,6 +22,7 @@ debug {
     ignore-drm-device "/dev/dri/renderD128"
     ignore-drm-device "/dev/dri/renderD130"
     force-pipewire-invalid-modifier
+    disable-pipewire-dmabuf
     dbus-interfaces-in-non-session-instances
     wait-for-frame-completion-before-queueing
     emulate-zero-presentation-time
@@ -160,13 +161,28 @@ debug {
 }
 ```
 
+### `disable-pipewire-dmabuf`
+
+<sup>Since: next release</sup>
+
+Disable DMA-BUF sharing for PipeWire screencasts, forcing shared-memory buffers instead.
+
+Useful for testing shm screencasting.
+
+```kdl
+debug {
+    disable-pipewire-dmabuf
+}
+```
+
 ### `dbus-interfaces-in-non-session-instances`
 
 Make tiri create its D-Bus interfaces even if it's not running as a `--session`.
 
 Useful for testing screencasting changes without having to relogin.
 
-The main tiri instance will *not* currently take back the interfaces when you close the test instance, so you will need to relogin in the end to make screencasting work again.
+<sup>Upstream niri: next release</sup>
+The main tiri instance will automatically take back the interfaces once the new instance quits.
 
 ```kdl
 debug {
@@ -287,7 +303,7 @@ Most of the time, these fresh tokens will have invalid serials, because the app 
 By default, tiri ignores xdg-activation tokens with invalid serials, to prevent windows from randomly stealing focus.
 This debug flag makes tiri honor such tokens, making the aforementioned widely-used apps get focus when clicking on their tray icon or notification.
 
-Use the [`focus-on-xdg-activate` window rule](./Configuration:-Window-Rules.md#focus-on-xdg-activate) to control whether individual windows receive focus for accepted xdg-activation requests.
+Use the [`on-xdg-activate` window rule](./Configuration:-Window-Rules.md#on-xdg-activate) to control what niri does for individual windows when it accepts an xdg-activation request.
 
 Amusingly, clicking on a notification sends the app a perfectly valid activation token from the notification daemon, but these apps seem to simply ignore it.
 Maybe in the future these apps/toolkits (Electron, Qt) are fixed, making this debug flag unnecessary.

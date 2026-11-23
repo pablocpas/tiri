@@ -8,8 +8,8 @@ pub struct Workspace {
     pub name: WorkspaceName,
     #[knuffel(child, unwrap(argument))]
     pub number: Option<u32>,
-    #[knuffel(child, unwrap(argument))]
-    pub open_on_output: Option<String>,
+    #[knuffel(children(name = "open-on-output"), unwrap(argument))]
+    pub open_on_output: Vec<String>,
     #[knuffel(child)]
     pub layout: Option<WorkspaceLayoutPart>,
 }

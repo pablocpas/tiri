@@ -57,6 +57,9 @@ pub enum Sub {
         /// Format output as JSON.
         #[arg(short, long)]
         json: bool,
+        /// Print the IPC request as JSON instead of sending it.
+        #[arg(long)]
+        print_request: bool,
     },
     /// Validate the config file.
     Validate {
@@ -126,6 +129,8 @@ pub enum Msg {
     LayoutTree,
     /// List screencasts.
     Casts,
+    /// Send a raw JSON request to the compositor, reading from stdin.
+    RawRequest,
 }
 
 #[derive(Clone, Debug, clap::ValueEnum)]
