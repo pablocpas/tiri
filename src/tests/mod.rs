@@ -3,8 +3,10 @@ use fixture::Fixture;
 mod client;
 mod fixture;
 mod server;
+mod test_input_backend;
 
 mod animations;
+mod binds;
 mod containers;
 mod decorations;
 mod floating;

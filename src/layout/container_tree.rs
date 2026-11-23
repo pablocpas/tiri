@@ -3481,6 +3481,19 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
         self.render.state_layout_scratch = layouts;
     }
+    pub fn fullscreen_window_above_top_layer(&self) -> Option<&W> {
+        if let Some(id) = self.render_fullscreen_window() {
+            return self
+                .arena
+                .window_key(&id)
+                .and_then(|key| self.arena.get_tile(key))
+                .map(Tile::window);
+        }
+        self.focused_tile()
+            .filter(|tile| tile.window().is_pending_windowed_fullscreen())
+            .map(Tile::window)
+    }
+
     pub fn render_above_top_layer(&self) -> bool {
         // Render above the top layer (e.g. waybar) for either fullscreen authority.
         self.render_fullscreen_container().is_some()
@@ -3490,18 +3503,26 @@ impl<W: LayoutElement> ContainerTree<W> {
                 .is_some_and(|tile| tile.window().is_pending_windowed_fullscreen())
     }
 
-    pub fn popup_target_rect(&self, window: &W::Id) -> Option<Rectangle<f64, Logical>> {
+    pub fn popup_target_rect(
+        &self,
+        window: &W::Id,
+        overflow: bool,
+    ) -> Option<Rectangle<f64, Logical>> {
         let key = self.tiled_window_key(window)?;
         let tile = self.arena.get_tile(key)?;
         let info = self.display_layouts().find(|info| info.key == key)?;
 
-        // Similar to tiling layout: constrain horizontally to window,
-        // vertically to the working area
-        let width = tile.window_size().w;
-        let height = self.working_area().size.h;
-
-        let mut target = Rectangle::from_size(Size::from((width, height)));
-        target.loc.y += self.working_area().loc.y;
+        let working_area = self.working_area();
+        let mut target = if overflow {
+            let mut target = Rectangle::from_size(working_area.size);
+            target.loc.x += working_area.loc.x - info.rect.loc.x - tile.window_loc().x;
+            target
+        } else {
+            // Similar to tiling layout: constrain horizontally to window,
+            // vertically to the working area
+            Rectangle::from_size(Size::from((tile.window_size().w, working_area.size.h)))
+        };
+        target.loc.y += working_area.loc.y;
         target.loc.y -= info.rect.loc.y;
         target.loc.y -= tile.window_loc().y;
 

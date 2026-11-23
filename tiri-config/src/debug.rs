@@ -29,6 +29,7 @@ pub struct Debug {
     pub frame_schedule_margin_ms: Option<u16>,
     pub disable_10bit_output: bool,
     pub verify_layout_invariants: bool,
+    pub nested_show_host_cursor: bool,
 }
 
 #[derive(knuffel::Decode, Debug, Default, PartialEq)]
@@ -83,6 +84,8 @@ pub struct DebugPart {
     pub disable_10bit_output: Option<Flag>,
     #[knuffel(child)]
     pub verify_layout_invariants: Option<Flag>,
+    #[knuffel(child)]
+    pub nested_show_host_cursor: Option<Flag>,
 }
 
 impl MergeWith<DebugPart> for Debug {
@@ -110,6 +113,7 @@ impl MergeWith<DebugPart> for Debug {
             disable_frame_scheduling,
             disable_10bit_output,
             verify_layout_invariants,
+            nested_show_host_cursor,
         );
 
         merge_clone_opt!(

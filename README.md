@@ -135,6 +135,12 @@ Useful niri resources:
 - [niri: Making a Wayland compositor in Rust](https://youtu.be/Kmz8ODolnDg?list=PLRdS-n5seLRqrmWDQY4KDqtRMfIwU0U3T)
 - [A tour of the niri scrolling-tiling Wayland compositor](https://lwn.net/Articles/1025866/)
 
+[How to test a Wayland compositor?](https://youtu.be/w44fYK5z418?list=PLK4NE4dSsLlw) · *October 2026*
+
+My talk about some testing techniques used in niri: property-based tests, snapshot tests, client-server tests.
+The first half overlaps with my RustCon talk, the second half is new.
+The talk is in Russian, but I prepared full English subtitles that you can find in YouTube's subtitle language selector.
+
 ## Contributing
 
 Contributions are welcome, especially around i3/sway behavior parity, layout correctness, testing, documentation, packaging, and real-world bug reports.

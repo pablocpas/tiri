@@ -2762,11 +2762,15 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
-    pub fn popup_target_rect(&self, window: &W::Id) -> Option<Rectangle<f64, Logical>> {
+    pub fn popup_target_rect(
+        &self,
+        window: &W::Id,
+        overflow: bool,
+    ) -> Option<Rectangle<f64, Logical>> {
         if self.floating.has_window(&self.containers, window) {
             self.floating.popup_target_rect(&self.containers, window)
         } else {
-            self.containers.popup_target_rect(window)
+            self.containers.popup_target_rect(window, overflow)
         }
     }
 
@@ -2851,6 +2855,16 @@ impl<W: LayoutElement> Workspace<W> {
             1.,
             Kind::Unspecified,
         )
+    }
+
+    pub fn fullscreen_window_above_top_layer(&self) -> Option<&W> {
+        self.containers.fullscreen_window_above_top_layer().or_else(|| {
+            self.floating
+                .fullscreen_key(&self.containers)
+                .and_then(|key| self.containers.arena().get_tile(key))
+                .filter(|tile| tile.window().sizing_mode().is_fullscreen())
+                .map(Tile::window)
+        })
     }
 
     pub fn render_above_top_layer(&self) -> bool {

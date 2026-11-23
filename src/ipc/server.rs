@@ -14,6 +14,7 @@ use calloop::io::Async;
 use directories::BaseDirs;
 use futures_util::io::{AsyncReadExt, BufReader};
 use futures_util::{select_biased, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, FutureExt as _};
+use smithay::backend::input::InputTime;
 use smithay::desktop::layer_map_for_output;
 use smithay::input::pointer::{
     CursorIcon, CursorImageStatus, Focus, GrabStartData as PointerGrabStartData,
@@ -32,7 +33,7 @@ use tiri_ipc::{
 
 use crate::backend::IpcOutputMap;
 use crate::cursor::CursorOverride;
-use crate::handlers::image_copy_capture;
+use crate::handlers::image_copy_capture::{source_mapped_id, source_output};
 use crate::input::pick_window_grab::PickWindowGrab;
 use crate::layout::workspace::WorkspaceId;
 use crate::tiri::State;
@@ -403,7 +404,9 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
                 // Make sure some logic like workspace clean-up has a chance to run before doing
                 // actions.
                 state.niri.advance_animations();
-                state.do_action(action, false);
+                // This action didn't come from an input, so just use the current time.
+                let time = InputTime::now();
+                state.do_action(action, false, time);
                 let _ = tx.send_blocking(());
             });
 
@@ -959,19 +962,35 @@ impl State {
         // Unlike wlr-screencopy, a session is an explicit protocol object, so
         // the cast lifetime is tied to it. Dead sessions are already dropped by
         // refresh_image_copy_capture(), which runs before this.
-        let output_sessions = self
-            .niri
-            .image_copy_sessions
-            .iter()
-            .map(|s| (s.session_id, s.stream_id, s.session.source(), s.credentials));
-        let cursor_sessions = self
-            .niri
-            .image_copy_cursor_sessions
-            .iter()
-            .map(|s| (s.session_id, s.stream_id, s.session.source(), s.credentials));
-        for (session_id, stream_id, source, credentials) in output_sessions.chain(cursor_sessions) {
-            let Some(output) = image_copy_capture::source_output(&source) else {
-                continue;
+        let output_sessions = self.niri.image_copy_sessions.iter().map(|s| {
+            (
+                tiri_ipc::CastKind::ExtImageCopyCapture,
+                s.session_id,
+                s.stream_id,
+                s.session.source(),
+                s.credentials,
+            )
+        });
+        let cursor_sessions = self.niri.image_copy_cursor_sessions.iter().map(|s| {
+            (
+                tiri_ipc::CastKind::ExtImageCopyCaptureCursor,
+                s.session_id,
+                s.stream_id,
+                s.session.source(),
+                s.credentials,
+            )
+        });
+        for (kind, session_id, stream_id, source, credentials) in
+            output_sessions.chain(cursor_sessions)
+        {
+            let target = if let Some(output) = source_output(&source) {
+                tiri_ipc::CastTarget::Output {
+                    name: output.name(),
+                }
+            } else if let Some(id) = source_mapped_id(&source) {
+                tiri_ipc::CastTarget::Window { id: id.get() }
+            } else {
+                tiri_ipc::CastTarget::Nothing {}
             };
 
             let stream_id = stream_id.get();
@@ -981,10 +1000,8 @@ impl State {
                 let cast = tiri_ipc::Cast {
                     session_id: session_id.get(),
                     stream_id,
-                    kind: tiri_ipc::CastKind::ExtImageCopyCapture,
-                    target: tiri_ipc::CastTarget::Output {
-                        name: output.name(),
-                    },
+                    kind,
+                    target,
                     is_dynamic_target: false,
                     is_active: true,
                     pid: credentials.map(|creds| creds.pid),
@@ -1007,6 +1024,24 @@ impl State {
             state.apply(event.clone());
             server.send_event(event);
         }
+    }
+
+    pub fn ipc_refresh_touchpad(&mut self) {
+        let Some(server) = &self.niri.ipc_server else {
+            return;
+        };
+
+        let mut state = server.event_stream_state.borrow_mut();
+        let state = &mut state.touchpad;
+        let on = !self.niri.touchpad_disabled_by_toggle;
+
+        if state.on == on {
+            return;
+        }
+
+        let event = Event::TouchpadToggled { on };
+        state.apply(event.clone());
+        server.send_event(event);
     }
 
     pub fn ipc_config_loaded(&mut self, failed: bool) {

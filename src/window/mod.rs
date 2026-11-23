@@ -7,7 +7,7 @@ use smithay::wayland::shell::xdg::{
     SurfaceCachedState, ToplevelSurface, XdgToplevelSurfaceRoleAttributes,
 };
 use tiri_config::utils::MergeWith as _;
-use tiri_config::window_rule::{Match, OnXdgActivate, WindowRule};
+use tiri_config::window_rule::{Match, OnXdgActivate, VrrRule, WindowRule};
 use tiri_config::{
     BackgroundEffect, BlockOutFrom, BorderRule, CornerRadius, FloatingPosition, PresetSize,
     ResolvedPopupsRules, ShadowRule, TabIndicatorRule,
@@ -109,7 +109,7 @@ pub struct ResolvedWindowRules {
     pub block_out_from: Option<BlockOutFrom>,
 
     /// Whether to enable VRR on this window's primary output if it is on-demand.
-    pub variable_refresh_rate: Option<bool>,
+    pub variable_refresh_rate: Option<VrrRule>,
 
     /// Multiplier for all scroll events sent to this window.
     pub scroll_factor: Option<f64>,

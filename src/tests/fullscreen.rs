@@ -51,8 +51,11 @@ fn fullscreen_binding_accepts_a_selected_floating_container() {
 
     // Exercise the same entrypoint as `Mod+F { fullscreen-window; }`, including its target
     // acceptance gate. Calling the layout method directly would miss the runtime regression.
-    f.niri_state()
-        .do_action(tiri_config::Action::FullscreenWindow, false);
+    f.niri_state().do_action(
+        tiri_config::Action::FullscreenWindow,
+        false,
+        smithay::backend::input::InputTime::now(),
+    );
 
     let workspace = f
         .niri()

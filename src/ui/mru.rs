@@ -19,7 +19,8 @@ use smithay::input::keyboard::Keysym;
 use smithay::output::Output;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Size, Transform};
 use tiri_config::{
-    Action, Bind, Config, CornerRadius, Key, Modifiers, MruDirection, MruFilter, MruScope, Trigger,
+    Action, Bind, BoundAction, Config, CornerRadius, Key, Modifiers, MruDirection, MruFilter,
+    MruScope, Trigger,
 };
 
 use crate::animation::{Animation, Clock};
@@ -1546,7 +1547,7 @@ impl Inner {
 
         for (thumbnail, geo) in self.thumbnails_in_view_render() {
             let id = thumbnail.id;
-            let Some((_, mapped)) = niri.layout.windows().find(|(_, m)| m.id() == id) else {
+            let Some((mapped, _)) = niri.find_mapped_output_by_id(id) else {
                 error!("window in the MRU must be present in the layout");
                 continue;
             };
@@ -1792,8 +1793,9 @@ fn make_preset_opened_binds() -> Vec<Bind> {
                 // The modifier is filled dynamically.
                 modifiers: Modifiers::empty(),
             },
-            action,
+            action: BoundAction::Press(action),
             repeat: true,
+            pass_through: None,
             cooldown: None,
             allow_when_locked: false,
             allow_inhibiting: false,
@@ -1840,7 +1842,19 @@ fn make_dynamic_opened_binds(config: &Config) -> Vec<Bind> {
     let mut binds: HashMap<Trigger, Vec<Bind>> = HashMap::new();
 
     for bind in &config.binds.0 {
-        let action = match &bind.action {
+        let Some(press_action) = bind.press_action() else {
+            continue;
+        };
+
+        // The idea with dynamic binds is that their modifiers are ignored
+        // (set to whatever the user is currently holding). This idea does not
+        // make sense with order-independent generic-modifier-only binds.
+        // Effectively, they would trigger on every key press.
+        if bind.key.trigger.is_generic_modifier() {
+            continue;
+        }
+
+        let action = match press_action {
             Action::FocusColumnRight
             | Action::FocusColumnRightOrFirst
             | Action::FocusColumnOrMonitorRight
@@ -1865,7 +1879,7 @@ fn make_dynamic_opened_binds(config: &Config) -> Vec<Bind> {
         };
 
         binds.entry(bind.key.trigger).or_default().push(Bind {
-            action,
+            action: BoundAction::Press(action),
             ..bind.clone()
         });
     }
