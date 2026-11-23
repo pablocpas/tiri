@@ -1068,7 +1068,6 @@ impl<W: LayoutElement> Workspace<W> {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn add_tile(
         &mut self,
         mut tile: Tile<W>,
@@ -1560,7 +1559,12 @@ impl<W: LayoutElement> Workspace<W> {
         });
         toplevel.with_pending_state(|state| {
             if state.states.contains(xdg_toplevel::State::Fullscreen) {
-                state.size = Some(self.view_size.to_i32_round());
+                let size = self.view_size.to_i32_round();
+
+                // We ignore the window's requested min/max here, but still apply our own.
+                let size = rules.apply_max_size(size);
+                let size = rules.apply_min_size(size);
+                state.size = Some(size);
             } else if !is_floating {
                 // Like sway, let an ordinary tiled window choose the geometry it maps with.
                 // Mapped stores that geometry as the natural floating size before tiling sends

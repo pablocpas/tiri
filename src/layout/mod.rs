@@ -303,7 +303,6 @@ pub trait LayoutElement {
     }
 
     /// Renders the background effect behind the main surface of the element.
-    #[allow(clippy::too_many_arguments)]
     fn render_background_effect(
         &self,
         _ctx: RenderCtx<GlesRenderer>,
@@ -1256,7 +1255,6 @@ impl<W: LayoutElement> Layout<W> {
     /// Adds a new window to the layout.
     ///
     /// Returns an output that the window was added to, if there were any outputs.
-    #[allow(clippy::too_many_arguments)]
     pub fn add_window(
         &mut self,
         window: W,
@@ -5917,18 +5915,7 @@ impl<W: LayoutElement> Layout<W> {
         let win_id = move_.tile.window().id().clone();
         let ws_idx = match drop.insert_ws {
             InsertWorkspace::Existing(ws_id) => mon.idx_of_ws(ws_id).unwrap(),
-            InsertWorkspace::NewAt(ws_idx) => {
-                if mon.options.layout.empty_workspace_above_first && ws_idx == 0 {
-                    // Reuse the top empty workspace.
-                    0
-                } else if mon.workspaces.len() - 1 <= ws_idx {
-                    // Reuse the bottom empty workspace.
-                    mon.workspaces.len() - 1
-                } else {
-                    mon.add_workspace_at(ws_idx);
-                    ws_idx
-                }
-            }
+            InsertWorkspace::NewAt(ws_idx) => mon.add_or_reuse_empty_workspace_at(ws_idx),
         };
 
         let zoom = drop.zoom;

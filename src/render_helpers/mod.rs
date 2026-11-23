@@ -23,7 +23,7 @@ use smithay::utils::user_data::UserDataMap;
 use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Size, Transform};
 use smithay::wayland::shm;
 use solid_color::{SolidColorBuffer, SolidColorRenderElement};
-use tiri_config::BlockOutFrom;
+use tiri_config::{BlockOutFrom, BlockOutKind, BlockOutTarget};
 
 pub mod background_effect;
 pub mod blur;
@@ -125,11 +125,16 @@ impl RenderTarget {
     pub const COUNT: usize = 3;
 
     pub fn should_block_out(self, block_out_from: Option<BlockOutFrom>) -> bool {
-        match block_out_from {
+        match block_out_from.map(|rule| rule.target) {
             None => false,
-            Some(BlockOutFrom::Screencast) => self == RenderTarget::Screencast,
-            Some(BlockOutFrom::ScreenCapture) => self != RenderTarget::Output,
+            Some(BlockOutTarget::Screencast) => self == RenderTarget::Screencast,
+            Some(BlockOutTarget::ScreenCapture) => self != RenderTarget::Output,
         }
+    }
+
+    pub fn should_hide(self, block_out_from: Option<BlockOutFrom>) -> bool {
+        self.should_block_out(block_out_from)
+            && block_out_from.is_some_and(|rule| rule.kind == BlockOutKind::Hide)
     }
 }
 

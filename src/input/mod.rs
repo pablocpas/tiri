@@ -15,7 +15,7 @@ use smithay::backend::input::{
     TabletToolTipState, TouchEvent,
 };
 use smithay::backend::libinput::LibinputInputBackend;
-use smithay::desktop::Window;
+use smithay::desktop::{layer_map_for_output, Window};
 use smithay::input::dnd::DnDGrab;
 use smithay::input::keyboard::{keysyms, KeyboardSource, Keysym, Layout, ModifiersState};
 use smithay::input::pointer::{
@@ -36,10 +36,11 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, Transform, SERIAL_COUNTER};
 use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitor;
 use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
+use smithay::wayland::shell::wlr_layer::{self, Layer};
 use smithay::wayland::virtual_keyboard::VirtualKeyboardDevice;
 use tiri_config::{
-    Action, Bind, Binds, BoundAction, Config, Key, ModKey, Modifiers, MruDirection, SwitchBinds,
-    Trigger,
+    Action, Bind, Binds, BoundAction, Config, Key, ModKey, Modifiers, MruDirection, MruFilter,
+    MruScope, SwitchBinds, Trigger,
 };
 use tiri_ipc::{LayoutCycleTarget, LayoutSwitchTarget, SizeChange};
 use touch_overview_grab::TouchOverviewGrab;
@@ -61,12 +62,12 @@ use crate::layout::{
 #[cfg(feature = "profile-with-tracy")]
 use crate::perceptual_latency::LatencySource;
 use crate::tiri::{CastTarget, Niri, OutputDirection, PointerVisibility, State};
-use crate::window::Mapped;
 use crate::ui::mru::{WindowMru, WindowMruUi};
 use crate::ui::screenshot_ui::ScreenshotUi;
 use crate::utils::spawning::{spawn, spawn_sh};
-use crate::utils::{center, get_monotonic_time, CastSessionId, ResizeEdge};
+use crate::utils::{center, get_monotonic_time, with_toplevel_role, CastSessionId, ResizeEdge};
 use crate::window::mapped::MappedId;
+use crate::window::Mapped;
 
 pub mod backend_ext;
 pub mod click_grab;
@@ -178,6 +179,7 @@ fn action_refresh_impact(action: &Action) -> ActionRefreshImpact {
         Action::Quit(..)
         | Action::ChangeVt(..)
         | Action::Suspend
+        | Action::PowerKeySuspend
         | Action::ToggleDebugTint
         | Action::DebugToggleOpaqueRegions
         | Action::DebugToggleDamage
@@ -237,7 +239,7 @@ fn action_refresh_impact(action: &Action) -> ActionRefreshImpact {
         | Action::ScratchpadShow
         | Action::FocusWindow(..)
         | Action::FocusWindowInColumn(..)
-        | Action::FocusWindowPrevious
+        | Action::FocusWindowPrevious(..)
         | Action::FocusColumnLeft
         | Action::FocusColumnLeftUnderMouse
         | Action::FocusColumnRight
@@ -495,6 +497,25 @@ enum ShouldInterceptResult {
     InterceptAndHandle(Bind),
     /// Do not forward the event, and do nothing else.
     InterceptOnly,
+}
+
+impl ShouldInterceptResult {
+    pub fn should_forward(&self) -> bool {
+        match self {
+            ShouldInterceptResult::Forward | ShouldInterceptResult::ForwardAndHandle(_) => true,
+            ShouldInterceptResult::InterceptAndHandle(_) | ShouldInterceptResult::InterceptOnly => {
+                false
+            }
+        }
+    }
+
+    pub fn into_bind(self) -> Option<Bind> {
+        match self {
+            ShouldInterceptResult::ForwardAndHandle(bind)
+            | ShouldInterceptResult::InterceptAndHandle(bind) => Some(bind),
+            ShouldInterceptResult::Forward | ShouldInterceptResult::InterceptOnly => None,
+        }
+    }
 }
 
 impl State {
@@ -1070,10 +1091,16 @@ impl State {
                     )
                 };
 
-                if matches!(
-                    res,
-                    ShouldInterceptResult::Forward | ShouldInterceptResult::ForwardAndHandle(_)
-                ) {
+                if res.should_forward() {
+                    if pressed && this.handle_focus_on_type_in_overview(modified) {
+                        // Update keyboard focus right away so that input_forward() below
+                        // sends the key to this newly focused surface.
+                        //
+                        // In case of track-layout "window", this will also switch to the target
+                        // layout before forwarding the key.
+                        this.update_keyboard_focus();
+                    }
+
                     // Interaction with the active window, immediately update the active window's
                     // focus timestamp without waiting for a possible pending MRU lock-in delay.
                     this.niri.mru_apply_keyboard_commit();
@@ -1085,35 +1112,26 @@ impl State {
             return;
         };
 
-        // Forward the event to the client, unless the key was intercepted.
-        match &result {
-            ShouldInterceptResult::Forward | ShouldInterceptResult::ForwardAndHandle(_) => {
-                keyboard.input_forward(
-                    self,
-                    event.key_code(),
-                    event.state(),
-                    serial,
-                    time,
-                    mods_changed,
-                );
-            }
-            ShouldInterceptResult::InterceptAndHandle(_) | ShouldInterceptResult::InterceptOnly => {
-                if mods_changed {
-                    keyboard.advertise_modifier_state(self);
-                }
-            }
+        if result.should_forward() {
+            // Forward the key to client.
+            keyboard.input_forward(
+                self,
+                event.key_code(),
+                event.state(),
+                serial,
+                time,
+                mods_changed,
+            );
+        } else if mods_changed {
+            keyboard.advertise_modifier_state(self);
         }
 
         // Handle the bind, if the result came with one.
-        match result {
-            ShouldInterceptResult::ForwardAndHandle(bind)
-            | ShouldInterceptResult::InterceptAndHandle(bind) => {
-                if pressed && bind.repeat {
-                    self.start_key_repeat(bind.clone());
-                }
-                self.handle_bind(bind, pressed, time);
+        if let Some(bind) = result.into_bind() {
+            if pressed && bind.repeat {
+                self.start_key_repeat(bind.clone());
             }
-            ShouldInterceptResult::Forward | ShouldInterceptResult::InterceptOnly => {}
+            self.handle_bind(bind, pressed, time);
         }
     }
 
@@ -1290,6 +1308,14 @@ impl State {
                 self.release_held_inputs(time);
 
                 self.backend.suspend();
+            }
+            Action::PowerKeySuspend => {
+                // Don't let the key press that woke the system up put it right back to sleep.
+                if self.niri.should_ignore_power_key() {
+                    return;
+                }
+
+                self.do_action(Action::Suspend, allow_when_locked, time);
             }
             Action::PowerOffMonitors => {
                 self.niri.deactivate_monitors(&mut self.backend);
@@ -1586,16 +1612,33 @@ impl State {
             Action::FocusWindowInColumn(index) => {
                 self.focus_in_active_workspace(|layout| layout.focus_window_in_column(index));
             }
-            Action::FocusWindowPrevious => {
-                let current = self.niri.layout.focus().map(|win| win.id());
-                if let Some(window) = self
-                    .niri
-                    .layout
+            Action::FocusWindowPrevious(scope, filter) => {
+                let layout = &self.niri.layout;
+                let current = layout.focus();
+                let app_id =
+                    |win: &Mapped| with_toplevel_role(win.toplevel(), |role| role.app_id.clone());
+
+                let current_app_id = current
+                    .filter(|_| filter == MruFilter::AppId)
+                    .and_then(app_id);
+
+                if let Some(window) = layout
                     .windows()
-                    .map(|(_, win)| win)
-                    .filter(|win| Some(win.id()) != current)
-                    .max_by_key(|win| win.get_focus_timestamp())
-                    .map(|win| win.window.clone())
+                    .filter(|(_, win)| Some(win.id()) != current.map(|win| win.id()))
+                    .filter(|(mon, win)| match scope {
+                        MruScope::All => true,
+                        MruScope::Output => mon.map(|mon| mon.output()) == layout.active_output(),
+                        MruScope::Workspace => layout
+                            .active_workspace()
+                            .is_some_and(|ws| ws.has_window(&win.window)),
+                    })
+                    .filter(|(_, win)| {
+                        current_app_id
+                            .as_ref()
+                            .is_none_or(|current| app_id(win).as_ref() == Some(current))
+                    })
+                    .max_by_key(|(_, win)| win.get_focus_timestamp())
+                    .map(|(_, win)| win.window.clone())
                 {
                     // Commit current focus so repeated focus-window-previous works as expected.
                     self.niri.mru_apply_keyboard_commit();
@@ -3130,7 +3173,9 @@ impl State {
             }
         }
 
-        self.niri.handle_focus_follows_mouse(&under);
+        if !pointer.is_grabbed() {
+            self.niri.handle_focus_follows_mouse(pos, &under);
+        }
 
         self.niri.pointer_contents.clone_from(&under);
 
@@ -3233,7 +3278,10 @@ impl State {
 
         let under = self.niri.contents_under(pos);
 
-        self.niri.handle_focus_follows_mouse(&under);
+        if !pointer.is_grabbed() {
+            let prev_location = pointer.current_location();
+            self.niri.handle_focus_follows_mouse(prev_location, &under);
+        }
 
         self.niri.pointer_contents.clone_from(&under);
 
@@ -4194,6 +4242,15 @@ impl State {
         let tablet_seat = self.niri.seat.tablet_seat();
         let tool = tablet_seat.get_tool(&event.tool());
         if let Some(tool) = tool {
+            if !tool.is_grabbed() && self.niri.popup_grab.is_none() {
+                let prev_location = self.niri.tablet_cursor_location.unwrap_or_else(|| {
+                    // Do focus-follows-mouse when entering the tablet.
+                    let pointer = self.niri.seat.get_pointer().unwrap();
+                    pointer.current_location()
+                });
+                self.niri.handle_focus_follows_mouse(prev_location, &under);
+            }
+
             let time = event.time();
 
             let frame = tablet::tool::AxisFrame {
@@ -4409,6 +4466,15 @@ impl State {
 
             match event.state() {
                 ProximityState::In => {
+                    if !tool.is_grabbed() && self.niri.popup_grab.is_none() {
+                        let prev_location = self.niri.tablet_cursor_location.unwrap_or_else(|| {
+                            // Do focus-follows-mouse when entering the tablet.
+                            let pointer = self.niri.seat.get_pointer().unwrap();
+                            pointer.current_location()
+                        });
+                        self.niri.handle_focus_follows_mouse(prev_location, &under);
+                    }
+
                     let frame = tablet::tool::AxisFrame {
                         pressure: event.pressure_has_changed().then(|| event.pressure()),
                         distance: event.distance_has_changed().then(|| event.distance()),
@@ -4432,7 +4498,7 @@ impl State {
                         },
                     );
 
-                    // Is proximity in usually immediatelly followed by other events like button? If
+                    // Is proximity in usually immediately followed by other events like button? If
                     // so, then it might be worth delaying this frame() until the loop callback to
                     // batch all of them in.
                     tool.frame(self, time);
@@ -5100,6 +5166,68 @@ impl State {
 
         grab.is::<PickWindowGrab>() || grab.is::<PickColorGrab>() || Self::is_dnd_grab(grab)
     }
+
+    /// Updates focus according to the focus-on-type-in-overview layer rule.
+    ///
+    /// `keysym` is the modified keysym that just got pressed.
+    ///
+    /// Returns `true` if some surface got focused.
+    fn handle_focus_on_type_in_overview(&mut self, keysym: Option<Keysym>) -> bool {
+        /// Checks whether the key should trigger focus-on-type.
+        ///
+        /// This check notably excludes Compose and dead keys:
+        ///
+        /// - They are normally handled by the IME, and an IME cannot work with this focus-on-type
+        ///   implementation since it requires the surface to be focused.
+        /// - Among toolkits that can handle them without an IME, GTK has that disabled by default,
+        ///   and Qt has a bug where it drops the first Compose or dead key (the one that arrives
+        ///   right after wl_keyboard.enter).
+        /// - Dead keys are a bit annoying to check for as there's not a ready-made function for
+        ///   that in xkb.
+        /// - This only concerns the very first typed key, and it is very unlikely that the user
+        ///   wants to start their type to search with a dead key.
+        fn is_typed_keysym(keysym: Keysym) -> bool {
+            keysym.key_char().is_some_and(|c| !c.is_ascii_control())
+        }
+
+        if !self.niri.keyboard_focus.is_overview() {
+            return false;
+        }
+
+        if !keysym.is_some_and(is_typed_keysym) {
+            return false;
+        }
+
+        // Find the surface to focus.
+        //
+        // The focus is on the overview, so we know there are no exclusive or grabbing
+        // layer surfaces.
+        let Some(surface) = self.niri.layout.active_output().and_then(|output| {
+            let layers = layer_map_for_output(output);
+
+            // The order matches how update_keyboard_focus() generally works.
+            let overlay = layers.layers_on(Layer::Overlay).rev();
+            let top = layers.layers_on(Layer::Top).rev();
+            let surface = overlay.chain(top).find(|surface| {
+                if surface.cached_state().keyboard_interactivity
+                    != wlr_layer::KeyboardInteractivity::OnDemand
+                {
+                    return false;
+                }
+
+                self.niri
+                    .mapped_layer_surfaces
+                    .get(surface)
+                    .is_some_and(|mapped| mapped.rules().focus_on_type_in_overview)
+            });
+            surface.cloned()
+        }) else {
+            return false;
+        };
+
+        self.niri.layer_shell_on_demand_focus = Some(surface);
+        true
+    }
 }
 
 impl Niri {
@@ -5108,6 +5236,7 @@ impl Niri {
         retain_press_binds(&mut self.pending_mouse_release_binds);
         retain_press_binds(&mut self.pending_tablet_release_binds);
     }
+
 }
 
 fn retain_press_binds<K>(binds: &mut HashMap<K, Bind>) {
@@ -5155,7 +5284,6 @@ fn is_bind_on_cooldown(bind: &Bind, cooldown_timers: &HashMap<Key, RegistrationT
 ///
 /// A bind whose press action is rate-limited by its cooldown is skipped entirely:
 /// No action runs, and no release action is recorded.
-#[allow(clippy::too_many_arguments)]
 fn should_intercept_key<'a>(
     suppressed_keys: &mut HashSet<Keycode>,
     pending_release_binds: &mut HashMap<Keycode, Bind>,
@@ -5193,6 +5321,16 @@ fn should_intercept_key<'a>(
 
     // When inhibiting shortcuts, forward the key.
     if is_inhibiting_shortcuts && bind.allow_inhibiting {
+        return ShouldInterceptResult::Forward;
+    }
+
+    // If the bind is not allowed when locked, forward the key.
+    //
+    // This early return is not necessary to prevent the action from running because
+    // allow_when_locked is also checked in handle_bind() (this is required for key repeat).
+    // However, especially with the GlobalShortcuts portal, it's quite easy to bind single letter
+    // keys. This forward lets them work to type on the lock screen so the user isn't locked out.
+    if is_locked && !bind_allowed_when_locked(&bind, true) {
         return ShouldInterceptResult::Forward;
     }
 
@@ -5240,7 +5378,7 @@ fn find_bind<'a, I: Iterator<Item = &'a Bind> + Clone>(
             let vt = (modified - KEY_XF86Switch_VT_1 + 1) as u8;
             Some(Action::ChangeVt(vt))
         }
-        KEY_XF86PowerOff if !disable_power_key_handling => Some(Action::Suspend),
+        KEY_XF86PowerOff if !disable_power_key_handling => Some(Action::PowerKeySuspend),
         _ => None,
     };
 
@@ -5533,6 +5671,7 @@ fn allowed_when_locked(action: &Action) -> bool {
         action,
         Action::ChangeVt(_)
             | Action::Suspend
+            | Action::PowerKeySuspend
             | Action::PowerOffMonitors
             | Action::PowerOnMonitors
             | Action::SwitchLayout(_)
@@ -5580,6 +5719,7 @@ fn allowed_during_screenshot(action: &Action) -> bool {
         Action::Quit(_)
             | Action::ChangeVt(_)
             | Action::Suspend
+            | Action::PowerKeySuspend
             | Action::PowerOffMonitors
             | Action::PowerOnMonitors
             | Action::ToggleTouchpad
@@ -6446,11 +6586,11 @@ mod tests {
         let result = press_close_key(&mut state, &bindings, Modifiers::SUPER);
 
         // `handle_bind()` drops the press while locked, and nothing is recorded to undo.
-        assert_matches!(result, ShouldInterceptResult::InterceptAndHandle(_));
+        assert_matches!(result, ShouldInterceptResult::Forward);
         assert!(state.pending_release_binds.is_empty());
 
         let result = release_close_key(&mut state, &bindings, Modifiers::SUPER);
-        assert_matches!(result, ShouldInterceptResult::InterceptOnly);
+        assert_matches!(result, ShouldInterceptResult::Forward);
     }
 
     #[test]

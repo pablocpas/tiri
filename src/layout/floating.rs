@@ -2594,8 +2594,9 @@ impl<W: LayoutElement> FloatingSpace<W> {
             .rev()
             .filter(|_| layer.is_normal())
         {
-            let elem = closing.render(ctx.as_gles(), view_rect, scale);
-            elements.push(elem.into());
+            if let Some(elem) = closing.render(ctx.as_gles(), view_rect, scale) {
+                elements.push(elem.into());
+            }
         }
 
         let active = self.active_window_id(containers);

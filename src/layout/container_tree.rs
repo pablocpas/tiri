@@ -1281,8 +1281,9 @@ impl<W: LayoutElement> ContainerTree<W> {
         let view_rect = Rectangle::from_size(self.view_size());
 
         for closing in closing.iter().rev().filter(|_| layer.is_normal()) {
-            let elem = closing.render(ctx.as_gles(), view_rect, scale);
-            elements.push(ContainerTreeRenderElement::ClosingWindow(elem));
+            if let Some(elem) = closing.render(ctx.as_gles(), view_rect, scale) {
+                elements.push(ContainerTreeRenderElement::ClosingWindow(elem));
+            }
         }
 
         // Render container selection before regular tiling elements so it ends up

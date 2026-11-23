@@ -2,6 +2,7 @@ use std::cell::{Cell, OnceCell, RefCell};
 
 use proptest::prelude::*;
 use proptest_derive::Arbitrary;
+use smithay::desktop::layer_map_for_output;
 use smithay::output::{Mode, PhysicalProperties, Subpixel};
 use smithay::utils::{Logical, Point, Rectangle, Size};
 use tiri_config::utils::Flag;
@@ -496,6 +497,12 @@ enum Op {
         #[proptest(strategy = "prop::option::of(arbitrary_layout_part().prop_map(Box::new))")]
         layout_config: Option<Box<tiri_config::LayoutPart>>,
     },
+    SetOutputScale {
+        #[proptest(strategy = "1..=5usize")]
+        id: usize,
+        #[proptest(strategy = "arbitrary_scale()")]
+        scale: f64,
+    },
     RemoveOutput(#[proptest(strategy = "1..=5usize")] usize),
     FocusOutput(#[proptest(strategy = "1..=5usize")] usize),
     UpdateOutputLayoutConfig {
@@ -953,6 +960,24 @@ impl Op {
                     serial: None,
                 });
                 layout.add_output(output.clone(), layout_config.map(|x| *x));
+            }
+            Op::SetOutputScale { id, scale } => {
+                let name = format!("output{id}");
+                let Some(output) = layout.outputs().find(|o| o.name() == name).cloned() else {
+                    return;
+                };
+
+                output.change_current_state(
+                    None,
+                    None,
+                    Some(smithay::output::Scale::Fractional(scale)),
+                    None,
+                );
+
+                // A bit cursed but layout uses the layer map non exclusive area.
+                layer_map_for_output(&output).arrange();
+
+                layout.update_output_size(&output);
             }
             Op::RemoveOutput(id) => {
                 let name = format!("output{id}");

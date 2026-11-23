@@ -248,6 +248,8 @@ pub enum Action {
     Quit(#[knuffel(property(name = "skip-confirmation"), default)] bool),
     ChangeVt(#[knuffel(argument)] u8),
     Suspend,
+    #[knuffel(skip)]
+    PowerKeySuspend,
     PowerOffMonitors,
     PowerOnMonitors,
     ToggleDebugTint,
@@ -329,7 +331,10 @@ pub enum Action {
     #[knuffel(skip)]
     FocusWindow(u64),
     FocusWindowInColumn(#[knuffel(argument)] u8),
-    FocusWindowPrevious,
+    FocusWindowPrevious(
+        #[knuffel(property(name = "scope"), default)] MruScope,
+        #[knuffel(property(name = "filter"), default)] MruFilter,
+    ),
     FocusColumnLeft,
     #[knuffel(skip)]
     FocusColumnLeftUnderMouse,
@@ -715,7 +720,17 @@ impl From<tiri_ipc::Action> for Action {
             tiri_ipc::Action::Unmark { name } => Self::Unmark(name),
             tiri_ipc::Action::FocusWindow { id } => Self::FocusWindow(id),
             tiri_ipc::Action::FocusWindowInColumn { index } => Self::FocusWindowInColumn(index),
-            tiri_ipc::Action::FocusWindowPrevious {} => Self::FocusWindowPrevious,
+            tiri_ipc::Action::FocusWindowPrevious { scope, filter } => Self::FocusWindowPrevious(
+                match scope {
+                    None | Some(tiri_ipc::RecentWindowsScope::All) => MruScope::All,
+                    Some(tiri_ipc::RecentWindowsScope::Output) => MruScope::Output,
+                    Some(tiri_ipc::RecentWindowsScope::Workspace) => MruScope::Workspace,
+                },
+                match filter {
+                    None | Some(tiri_ipc::RecentWindowsFilter::All) => MruFilter::All,
+                    Some(tiri_ipc::RecentWindowsFilter::AppId) => MruFilter::AppId,
+                },
+            ),
             tiri_ipc::Action::FocusColumnLeft {} => Self::FocusColumnLeft,
             tiri_ipc::Action::FocusColumnRight {} => Self::FocusColumnRight,
             tiri_ipc::Action::FocusContainerLeft {} => Self::FocusContainerLeft,
