@@ -58,6 +58,8 @@ mod tree_store;
 pub(super) use floating_region::{floating_position_from_logical, scale_floating_position};
 use geometry::PendingLayout;
 pub(super) use resize::{InteractiveResizeState, ResizeTarget};
+pub(super) use tab_bar_model::{font_description_for_scale, measure_font_height_px};
+pub use tab_bar_model::tab_bar_row_height;
 
 // ============================================================================
 // Node identity

@@ -19,7 +19,10 @@ use super::workspace::{
     compute_working_area, OutputId, Workspace, WorkspaceAddWindowTarget, WorkspaceId,
     WorkspaceIdentity, WorkspaceLifetime, WorkspaceRenderElement,
 };
-use super::{compute_overview_zoom, ActivateWindow, HitType, LayoutElement, Options, ResizeHit};
+use super::{
+    compute_overview_zoom, external_resize_cursor_icon, ActivateWindow, HitType, LayoutElement,
+    Options, ResizeHit,
+};
 use crate::animation::{Animation, Clock};
 use crate::input::swipe_tracker::SwipeTracker;
 use crate::layout::RenderLayer;
@@ -35,7 +38,6 @@ use crate::utils::{
     output_size, round_logical_in_physical, round_logical_in_physical_max1, ResizeEdge,
 };
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::input::pointer::CursorIcon;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 
 /// Amount of touchpad movement to scroll the height of one workspace.
@@ -140,31 +142,7 @@ pub struct WorkspaceSwitchGesture {
     dnd_nonzero_start_time: Option<Duration>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum SplitIndicator {
-    LayoutBorder,
-    Center,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum InsertPosition {
-    /// Before every existing child of the workspace's tiling root.
-    RootStart,
-    Swap {
-        target: NodeKey,
-        direction: Direction,
-    },
-    Split {
-        target: NodeKey,
-        direction: Direction,
-        indicator: SplitIndicator,
-    },
-    SplitRoot {
-        direction: Direction,
-        indicator: SplitIndicator,
-    },
-    Floating,
-}
+pub(super) use super::container_tree::InsertPosition;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum InsertWorkspace {
@@ -189,35 +167,6 @@ struct InsertHintRenderLoc {
 pub(super) enum OverviewProgress {
     Animation(Animation),
     Value(f64),
-}
-
-fn external_resize_cursor_icon(edges: ResizeEdge) -> CursorIcon {
-    if edges.contains(ResizeEdge::TOP) && edges.contains(ResizeEdge::LEFT) {
-        return CursorIcon::NwResize;
-    }
-    if edges.contains(ResizeEdge::TOP) && edges.contains(ResizeEdge::RIGHT) {
-        return CursorIcon::NeResize;
-    }
-    if edges.contains(ResizeEdge::BOTTOM) && edges.contains(ResizeEdge::RIGHT) {
-        return CursorIcon::SeResize;
-    }
-    if edges.contains(ResizeEdge::BOTTOM) && edges.contains(ResizeEdge::LEFT) {
-        return CursorIcon::SwResize;
-    }
-    if edges.contains(ResizeEdge::LEFT) {
-        return CursorIcon::WResize;
-    }
-    if edges.contains(ResizeEdge::RIGHT) {
-        return CursorIcon::EResize;
-    }
-    if edges.contains(ResizeEdge::TOP) {
-        return CursorIcon::NResize;
-    }
-    if edges.contains(ResizeEdge::BOTTOM) {
-        return CursorIcon::SResize;
-    }
-
-    CursorIcon::Default
 }
 
 /// Where to put a newly added window.
@@ -1159,6 +1108,33 @@ impl<W: LayoutElement> Monitor<W> {
         }
     }
 
+    fn finish_added_tile(
+        &mut self,
+        mut workspace_idx: usize,
+        activate: bool,
+        allow_to_activate_workspace: bool,
+    ) {
+        let workspace = &mut self.workspaces[workspace_idx];
+        // After adding a new window, workspace becomes this output's own.
+        if !workspace.has_persistent_identity() {
+            workspace.original_output = OutputId::new(&self.output);
+        }
+
+        if workspace_idx == self.workspaces.len() - 1 {
+            // Insert a new empty workspace.
+            self.add_workspace_bottom();
+        }
+
+        if self.options.layout.empty_workspace_above_first && workspace_idx == 0 {
+            self.add_workspace_top();
+            workspace_idx += 1;
+        }
+
+        if allow_to_activate_workspace && activate {
+            self.activate_workspace(workspace_idx);
+        }
+    }
+
     pub fn add_tile_split(
         &mut self,
         workspace_idx: usize,
@@ -1168,37 +1144,10 @@ impl<W: LayoutElement> Monitor<W> {
         activate: bool,
         allow_to_activate_workspace: bool,
     ) -> bool {
-        let inserted = {
-            let workspace = &mut self.workspaces[workspace_idx];
-            let inserted = workspace.add_tile_split(target, direction, tile, activate);
-
-            // After adding a new window, workspace becomes this output's own.
-            if inserted && !workspace.has_persistent_identity() {
-                workspace.original_output = OutputId::new(&self.output);
-            }
-
-            inserted
-        };
-
-        if !inserted {
+        if !self.workspaces[workspace_idx].add_tile_split(target, direction, tile, activate) {
             return false;
         }
-
-        if workspace_idx == self.workspaces.len() - 1 {
-            // Insert a new empty workspace.
-            self.add_workspace_bottom();
-        }
-
-        let mut workspace_idx = workspace_idx;
-        if self.options.layout.empty_workspace_above_first && workspace_idx == 0 {
-            self.add_workspace_top();
-            workspace_idx += 1;
-        }
-
-        if allow_to_activate_workspace && activate {
-            self.activate_workspace(workspace_idx);
-        }
-
+        self.finish_added_tile(workspace_idx, activate, allow_to_activate_workspace);
         true
     }
 
@@ -1210,37 +1159,10 @@ impl<W: LayoutElement> Monitor<W> {
         activate: bool,
         allow_to_activate_workspace: bool,
     ) -> bool {
-        let inserted = {
-            let workspace = &mut self.workspaces[workspace_idx];
-            let inserted = workspace.add_tile_split_root(direction, tile, activate);
-
-            // After adding a new window, workspace becomes this output's own.
-            if inserted && !workspace.has_persistent_identity() {
-                workspace.original_output = OutputId::new(&self.output);
-            }
-
-            inserted
-        };
-
-        if !inserted {
+        if !self.workspaces[workspace_idx].add_tile_split_root(direction, tile, activate) {
             return false;
         }
-
-        if workspace_idx == self.workspaces.len() - 1 {
-            // Insert a new empty workspace.
-            self.add_workspace_bottom();
-        }
-
-        let mut workspace_idx = workspace_idx;
-        if self.options.layout.empty_workspace_above_first && workspace_idx == 0 {
-            self.add_workspace_top();
-            workspace_idx += 1;
-        }
-
-        if allow_to_activate_workspace && activate {
-            self.activate_workspace(workspace_idx);
-        }
-
+        self.finish_added_tile(workspace_idx, activate, allow_to_activate_workspace);
         true
     }
 

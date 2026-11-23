@@ -33,7 +33,6 @@ use super::container::{
 use super::focus_ring::{
     render_container_selection, FocusRingEdges, FocusRingIndicatorEdge, FocusRingRenderElement,
 };
-use super::monitor::{InsertPosition, SplitIndicator};
 use super::tile::{Tile, TileRenderElement};
 use super::{
     ConfigureIntent, InteractiveResizeData, LayoutCycleEntry, LayoutElement, Options, RemovedTile,
@@ -177,6 +176,32 @@ struct WindowStateContext<'a, W: LayoutElement> {
 /// A container becomes exclusive immediately because no client protocol state represents it.
 /// A leaf becomes visual only after its fullscreen configure commits. Windowed fullscreen is
 /// considered only when the workspace has no ordinary fullscreen authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum SplitIndicator {
+    LayoutBorder,
+    Center,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum InsertPosition {
+    /// Before every existing child of the workspace's tiling root.
+    RootStart,
+    Swap {
+        target: NodeKey,
+        direction: Direction,
+    },
+    Split {
+        target: NodeKey,
+        direction: Direction,
+        indicator: SplitIndicator,
+    },
+    SplitRoot {
+        direction: Direction,
+        indicator: SplitIndicator,
+    },
+    Floating,
+}
+
 struct FullscreenRenderState<I> {
     container: Option<NodeKey>,
     fullscreen_id: Option<I>,
@@ -2191,6 +2216,33 @@ impl<W: LayoutElement> ContainerTree<W> {
     }
 
     /// The leaf under `pos`, or the nearest one: its stable identity and on-screen rect.
+    fn visible_tile_render_pos(
+        &self,
+        info: &LeafLayoutInfo,
+        fullscreen: &FullscreenRenderState<W::Id>,
+        scale: Scale<f64>,
+    ) -> Option<(&Tile<W>, Point<f64, Logical>)> {
+        let tile = self.arena.get_tile(info.key)?;
+        let in_fullscreen_container = fullscreen
+            .container
+            .is_some_and(|scope| self.arena.is_descendant(info.key, scope));
+        let state =
+            fullscreen.tile_state(tile.window().id(), info.visible, in_fullscreen_container);
+        if !state.visible {
+            return None;
+        }
+
+        // Fullscreen-like tiles are rendered relative to the workspace origin.
+        let base_pos = if state.client_fullscreen {
+            Point::from((0.0, 0.0))
+        } else {
+            info.rect.loc
+        };
+        let mut tile_pos = base_pos + tile.render_offset();
+        tile_pos = tile_pos.to_physical_precise_round(scale).to_logical(scale);
+        Some((tile, tile_pos))
+    }
+
     fn closest_leaf_rect(&self, pos: Point<f64, Logical>) -> Option<LeafHit> {
         let scale = Scale::from(self.scale());
         let fullscreen = self.fullscreen_render_state();
@@ -2198,52 +2250,35 @@ impl<W: LayoutElement> ContainerTree<W> {
         let mut nearest: Option<(LeafHit, f64)> = None;
 
         for info in self.display_layouts() {
-            if let Some(tile) = self.arena.get_tile(info.key) {
-                let in_fullscreen_container = fullscreen
-                    .container
-                    .is_some_and(|scope| self.arena.is_descendant(info.key, scope));
-                let state = fullscreen.tile_state(
-                    tile.window().id(),
-                    info.visible,
-                    in_fullscreen_container,
-                );
-                if !state.visible {
-                    continue;
-                }
+            let Some((tile, tile_pos)) = self.visible_tile_render_pos(info, &fullscreen, scale)
+            else {
+                continue;
+            };
+            let tile_rect = Rectangle::new(tile_pos, tile.tile_size());
 
-                let base_pos = if state.client_fullscreen {
-                    Point::from((0.0, 0.0))
-                } else {
-                    info.rect.loc
-                };
-                let mut tile_pos = base_pos + tile.render_offset();
-                tile_pos = tile_pos.to_physical_precise_round(scale).to_logical(scale);
-                let tile_rect = Rectangle::new(tile_pos, tile.tile_size());
+            if tile_rect.contains(pos) {
+                return Some((info.key, tile_rect));
+            }
 
-                if tile_rect.contains(pos) {
-                    return Some((info.key, tile_rect));
-                }
+            let dx = if pos.x < tile_rect.loc.x {
+                tile_rect.loc.x - pos.x
+            } else if pos.x > tile_rect.loc.x + tile_rect.size.w {
+                pos.x - (tile_rect.loc.x + tile_rect.size.w)
+            } else {
+                0.0
+            };
+            let dy = if pos.y < tile_rect.loc.y {
+                tile_rect.loc.y - pos.y
+            } else if pos.y > tile_rect.loc.y + tile_rect.size.h {
+                pos.y - (tile_rect.loc.y + tile_rect.size.h)
+            } else {
+                0.0
+            };
+            let dist2 = dx * dx + dy * dy;
 
-                let dx = if pos.x < tile_rect.loc.x {
-                    tile_rect.loc.x - pos.x
-                } else if pos.x > tile_rect.loc.x + tile_rect.size.w {
-                    pos.x - (tile_rect.loc.x + tile_rect.size.w)
-                } else {
-                    0.0
-                };
-                let dy = if pos.y < tile_rect.loc.y {
-                    tile_rect.loc.y - pos.y
-                } else if pos.y > tile_rect.loc.y + tile_rect.size.h {
-                    pos.y - (tile_rect.loc.y + tile_rect.size.h)
-                } else {
-                    0.0
-                };
-                let dist2 = dx * dx + dy * dy;
-
-                let replace = nearest.as_ref().is_none_or(|(_, best)| dist2 < *best);
-                if replace {
-                    nearest = Some(((info.key, tile_rect), dist2));
-                }
+            let replace = nearest.as_ref().is_none_or(|(_, best)| dist2 < *best);
+            if replace {
+                nearest = Some(((info.key, tile_rect), dist2));
             }
         }
 
@@ -2479,32 +2514,13 @@ impl<W: LayoutElement> ContainerTree<W> {
         }
 
         for info in self.display_layouts().rev() {
-            // Use O(1) key lookup instead of O(depth) path lookup.
-            if let Some(tile) = self.arena.get_tile(info.key) {
-                let in_fullscreen_container = fullscreen
-                    .container
-                    .is_some_and(|scope| self.arena.is_descendant(info.key, scope));
-                let state = fullscreen.tile_state(
-                    tile.window().id(),
-                    info.visible,
-                    in_fullscreen_container,
-                );
-                if !state.visible {
-                    continue;
-                }
+            let Some((tile, tile_pos)) = self.visible_tile_render_pos(info, &fullscreen, scale)
+            else {
+                continue;
+            };
 
-                // Fullscreen-like tiles are rendered relative to the workspace origin.
-                let base_pos = if state.client_fullscreen {
-                    Point::from((0.0, 0.0))
-                } else {
-                    info.rect.loc
-                };
-                let mut tile_pos = base_pos + tile.render_offset();
-                tile_pos = tile_pos.to_physical_precise_round(scale).to_logical(scale);
-
-                if let Some(hit) = super::HitType::hit_tile(tile, tile_pos, pos) {
-                    return Some(hit);
-                }
+            if let Some(hit) = super::HitType::hit_tile(tile, tile_pos, pos) {
+                return Some(hit);
             }
         }
 

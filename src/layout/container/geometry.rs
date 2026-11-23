@@ -3,8 +3,9 @@ use std::collections::{HashMap, HashSet};
 use smithay::utils::{Logical, Point, Rectangle, Size};
 use smithay::wayland::compositor::{Blocker, BlockerState};
 
-use super::{ContainerArena, Layout, LayoutElement, LeafLayoutInfo, NodeData, NodeKey};
-use crate::layout::tab_bar::tab_bar_row_height;
+use super::{
+    tab_bar_row_height, ContainerArena, Layout, LayoutElement, LeafLayoutInfo, NodeData, NodeKey,
+};
 use crate::layout::tile::Tile;
 use crate::utils::transaction::{Transaction, TransactionBlocker};
 

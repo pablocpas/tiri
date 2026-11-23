@@ -17,7 +17,6 @@ use super::container::{
 use super::container_tree::{percent_from_size_change, ContainerTree, LeafFrameInfo, TileConfig};
 use super::focus_ring::{render_container_selection, FocusRingEdges, FocusRingRenderElement};
 use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
-use super::workspace::{InteractiveResize, ResolvedSize};
 use super::{
     resize_edges_for_point, ConfigureIntent, InteractiveResizeData, LayoutElement, RemovedTile,
     ResizeAxis, ResizeRequest, SizeFrac,
@@ -34,6 +33,25 @@ use crate::utils::{
     ensure_min_max_size_maybe_zero, ResizeEdge,
 };
 use crate::window::ResolvedWindowRules;
+
+/// Resolved width or height in logical pixels.
+#[derive(Debug, Clone, Copy)]
+pub enum ResolvedSize {
+    /// Size of the tile including borders.
+    Tile(f64),
+    /// Size of the window excluding borders.
+    Window(f64),
+}
+
+#[derive(Debug)]
+struct InteractiveResize<W: LayoutElement> {
+    pub window: W::Id,
+    pub original_window_size: Size<f64, Logical>,
+    pub original_window_pos: Option<Point<f64, Logical>>,
+    pub original_container_size: Size<f64, Logical>,
+    pub resize_container_edges: ResizeEdge,
+    pub data: InteractiveResizeData,
+}
 
 /// By how many logical pixels the directional move commands move floating windows.
 ///
@@ -2141,20 +2159,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         self.step_root_sibling(containers, idx, direction, true, allow_wrap)
     }
 
-    fn focus_in_stack_order(&mut self, containers: &mut ContainerTree<W>, delta: isize) -> bool {
-        if Self::root_count(containers) <= 1 {
-            return false;
-        }
-
-        let Some(idx) = self.active_container_idx(containers) else {
-            return false;
-        };
-        let len = Self::root_count(containers) as isize;
-        let target_idx = (idx as isize + delta).rem_euclid(len) as usize;
-        if target_idx == idx {
-            return false;
-        }
-
+    fn activate_branch_at(&mut self, containers: &mut ContainerTree<W>, target_idx: usize) -> bool {
         let root = Self::root(containers, target_idx);
         let Some(id) = containers
             .arena_mut()
@@ -2174,6 +2179,23 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         self.activate_window(containers, &id);
         true
+    }
+
+    fn focus_in_stack_order(&mut self, containers: &mut ContainerTree<W>, delta: isize) -> bool {
+        if Self::root_count(containers) <= 1 {
+            return false;
+        }
+
+        let Some(idx) = self.active_container_idx(containers) else {
+            return false;
+        };
+        let len = Self::root_count(containers) as isize;
+        let target_idx = (idx as isize + delta).rem_euclid(len) as usize;
+        if target_idx == idx {
+            return false;
+        }
+
+        self.activate_branch_at(containers, target_idx)
     }
 
     fn focus_in_stable_container_order(
@@ -2213,25 +2235,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return false;
         }
 
-        let root = Self::root(containers, target_idx);
-        let Some(id) = containers
-            .arena_mut()
-            .focused_window_in_branch(root)
-            .map(|win| win.id().clone())
-            .or_else(|| {
-                containers
-                    .arena_mut()
-                    .windows_in_branch(root)
-                    .into_iter()
-                    .next()
-                    .map(|win| win.id().clone())
-            })
-        else {
-            return false;
-        };
-
-        self.activate_window(containers, &id);
-        true
+        self.activate_branch_at(containers, target_idx)
     }
 
     fn should_cycle_top_level_stable_order(&self, containers: &ContainerTree<W>) -> bool {

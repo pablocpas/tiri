@@ -36,8 +36,8 @@ use std::mem;
 use std::rc::Rc;
 use std::time::Duration;
 
-use container_tree::RootTilingSubtree;
-use monitor::{InsertHint, InsertPosition, InsertWorkspace, MonitorAddWindowTarget};
+use container_tree::{InsertPosition, RootTilingSubtree};
+use monitor::{InsertHint, InsertWorkspace, MonitorAddWindowTarget};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::utils::RescaleRenderElement;
 use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
@@ -648,6 +648,43 @@ enum DndHoldTarget<WindowId> {
     Workspace(WorkspaceId),
 }
 
+pub(super) fn external_resize_cursor_icon(edges: crate::utils::ResizeEdge) -> CursorIcon {
+    use crate::utils::ResizeEdge;
+    if edges.contains(ResizeEdge::TOP) && edges.contains(ResizeEdge::LEFT) {
+        return CursorIcon::NwResize;
+    }
+    if edges.contains(ResizeEdge::TOP) && edges.contains(ResizeEdge::RIGHT) {
+        return CursorIcon::NeResize;
+    }
+    if edges.contains(ResizeEdge::BOTTOM) && edges.contains(ResizeEdge::RIGHT) {
+        return CursorIcon::SeResize;
+    }
+    if edges.contains(ResizeEdge::BOTTOM) && edges.contains(ResizeEdge::LEFT) {
+        return CursorIcon::SwResize;
+    }
+    if edges.contains(ResizeEdge::LEFT) {
+        return CursorIcon::WResize;
+    }
+    if edges.contains(ResizeEdge::RIGHT) {
+        return CursorIcon::EResize;
+    }
+    if edges.contains(ResizeEdge::TOP) {
+        return CursorIcon::NResize;
+    }
+    if edges.contains(ResizeEdge::BOTTOM) {
+        return CursorIcon::SResize;
+    }
+
+    CursorIcon::Default
+}
+
+struct InteractiveMoveDropTarget {
+    insert_ws: InsertWorkspace,
+    position: InsertPosition,
+    offset: Option<Point<f64, Logical>>,
+    zoom: f64,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct InteractiveResizeData {
     pub(self) edges: ResizeEdge,
@@ -801,6 +838,14 @@ impl<W: LayoutElement> InteractiveMoveState<W> {
         match self {
             InteractiveMoveState::MovingContainer(move_) => Some(move_),
             _ => None,
+        }
+    }
+
+    fn window_id(&self) -> &W::Id {
+        match self {
+            InteractiveMoveState::Starting { window_id, .. } => window_id,
+            InteractiveMoveState::Moving(move_) => move_.tile.window().id(),
+            InteractiveMoveState::MovingContainer(move_) => &move_.window_id,
         }
     }
 
@@ -2008,64 +2053,14 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn activate_window(&mut self, window: &W::Id) {
-        if self
-            .interactive_move
-            .as_ref()
-            .and_then(InteractiveMoveState::moving_window_id)
-            .is_some_and(|id| id == window)
-        {
-            return;
-        }
-
-        let mut changed_focus = false;
-        {
-            let MonitorSet::Normal {
-                monitors,
-                active_monitor_idx,
-                ..
-            } = &mut self.monitor_set
-            else {
-                return;
-            };
-
-            for (monitor_idx, mon) in monitors.iter_mut().enumerate() {
-                if mon.activate_sticky_window(window, true) {
-                    *active_monitor_idx = monitor_idx;
-                    changed_focus = true;
-                    break;
-                }
-            }
-
-            if !changed_focus {
-                'outer: for (monitor_idx, mon) in monitors.iter_mut().enumerate() {
-                    for (workspace_idx, ws) in mon.workspaces.iter_mut().enumerate() {
-                        if ws.activate_window(window) {
-                            mon.clear_sticky_focus();
-                            *active_monitor_idx = monitor_idx;
-
-                            // If currently in the middle of a vertical swipe between the target workspace
-                            // and some other, don't switch the workspace.
-                            match &mon.workspace_switch {
-                                Some(WorkspaceSwitch::Gesture(gesture))
-                                    if gesture.current_idx.floor() == workspace_idx as f64
-                                        || gesture.current_idx.ceil() == workspace_idx as f64 => {}
-                                _ => mon.switch_workspace(workspace_idx),
-                            }
-
-                            changed_focus = true;
-                            break 'outer;
-                        }
-                    }
-                }
-            }
-        }
-
-        if changed_focus {
-            self.seat_focus_record_active_chain();
-        }
+        self.activate_window_inner(window, true);
     }
 
     pub fn activate_window_without_raising(&mut self, window: &W::Id) {
+        self.activate_window_inner(window, false);
+    }
+
+    fn activate_window_inner(&mut self, window: &W::Id, raise: bool) {
         if self
             .interactive_move
             .as_ref()
@@ -2087,7 +2082,7 @@ impl<W: LayoutElement> Layout<W> {
             };
 
             for (monitor_idx, mon) in monitors.iter_mut().enumerate() {
-                if mon.activate_sticky_window(window, false) {
+                if mon.activate_sticky_window(window, raise) {
                     *active_monitor_idx = monitor_idx;
                     changed_focus = true;
                     break;
@@ -2097,12 +2092,17 @@ impl<W: LayoutElement> Layout<W> {
             if !changed_focus {
                 'outer: for (monitor_idx, mon) in monitors.iter_mut().enumerate() {
                     for (workspace_idx, ws) in mon.workspaces.iter_mut().enumerate() {
-                        if ws.activate_window_without_raising(window) {
+                        let activated = if raise {
+                            ws.activate_window(window)
+                        } else {
+                            ws.activate_window_without_raising(window)
+                        };
+                        if activated {
                             mon.clear_sticky_focus();
                             *active_monitor_idx = monitor_idx;
 
-                            // If currently in the middle of a vertical swipe between the target workspace
-                            // and some other, don't switch the workspace.
+                            // If currently in the middle of a vertical swipe between the target
+                            // workspace and some other, don't switch the workspace.
                             match &mon.workspace_switch {
                                 Some(WorkspaceSwitch::Gesture(gesture))
                                     if gesture.current_idx.floor() == workspace_idx as f64
@@ -3493,118 +3493,30 @@ impl<W: LayoutElement> Layout<W> {
     pub fn advance_animations(&mut self) {
         let _span = tracy_client::span!("Layout::advance_animations");
 
-        let mut dnd_scroll = None;
-        let mut is_dnd = false;
-        if let Some(dnd) = &self.dnd {
-            dnd_scroll = Some((dnd.output.clone(), dnd.pointer_pos_within_output, true));
-            is_dnd = true;
-        }
+        let mut dnd_scroll = self
+            .dnd
+            .as_ref()
+            .map(|dnd| (dnd.output.clone(), dnd.pointer_pos_within_output, true));
 
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             move_.tile.advance_animations();
-
             if dnd_scroll.is_none() {
                 dnd_scroll = Some((
                     move_.output.clone(),
                     move_.pointer_pos_within_output,
-                    !move_.is_floating,
+                    false,
                 ));
             }
         }
 
-        let is_overview_open = self.overview_open;
-
         // Scroll the view if needed.
-        if let Some((output, pos_within_output, _is_scrolling)) = dnd_scroll {
-            if let Some(mon) = self.monitor_for_output_mut(&output) {
-                let mut scrolled = false;
-
-                let zoom = mon.overview_zoom();
-                scrolled |= mon.dnd_scroll_gesture_scroll(pos_within_output, 1. / zoom);
-
-                if scrolled {
-                    // Don't trigger DnD hold while scrolling.
-                    if let Some(dnd) = &mut self.dnd {
-                        dnd.hold = None;
-                    }
-                } else if is_dnd {
-                    let target = mon
-                        .window_under(pos_within_output)
-                        .map(|(win, _)| DndHoldTarget::Window(win.id().clone()))
-                        .or_else(|| {
-                            mon.workspace_under_narrow(pos_within_output)
-                                .map(|ws| DndHoldTarget::Workspace(ws.id()))
-                        });
-
-                    let dnd = self.dnd.as_mut().unwrap();
-                    if let Some(target) = target {
-                        let now = self.clock.now_unadjusted();
-                        let start_time = if let Some(hold) = &mut dnd.hold {
-                            if hold.target != target {
-                                hold.start_time = now;
-                            }
-                            hold.target = target;
-                            hold.start_time
-                        } else {
-                            let hold = dnd.hold.insert(DndHold {
-                                start_time: now,
-                                target,
-                            });
-                            hold.start_time
-                        };
-
-                        // Delay copied from gnome-shell.
-                        let delay = Duration::from_millis(750);
-                        if delay <= now.saturating_sub(start_time) {
-                            let hold = dnd.hold.take().unwrap();
-
-                            // Synchronize workspace switch to overview close to get a monotonic
-                            // animation.
-                            let config = is_overview_open
-                                .then_some(self.options.animations.overview_open_close.0);
-
-                            if let Some(mon) = self.monitor_for_output_mut(&output) {
-                                let ws_idx = match hold.target {
-                                    DndHoldTarget::Window(id) => mon
-                                        .workspaces
-                                        .iter_mut()
-                                        .position(|ws| ws.activate_window(&id)),
-                                    DndHoldTarget::Workspace(id) => {
-                                        mon.workspaces.iter().position(|ws| ws.id() == id)
-                                    }
-                                };
-
-                                if let Some(ws_idx) = ws_idx {
-                                    mon.dnd_scroll_gesture_end();
-                                    mon.activate_workspace_with_anim_config(ws_idx, config);
-
-                                    self.focus_output(&output);
-
-                                    if is_overview_open {
-                                        self.close_overview();
-                                    }
-                                } else {
-                                    error!("DnD hold target disappeared before activation");
-                                }
-                            } else {
-                                error!("DnD hold output disappeared before activation");
-                            }
-                        }
-                    } else {
-                        // No target, reset the hold timer.
-                        dnd.hold = None;
-                    }
-                }
-            }
+        if let Some((output, pos_within_output, is_dnd)) = dnd_scroll {
+            self.advance_dnd_scroll_and_hold(&output, pos_within_output, is_dnd);
         }
 
         if let Some(OverviewProgress::Animation(anim)) = &mut self.overview_progress {
             if anim.is_done() {
-                if self.overview_open {
-                    self.overview_progress = Some(OverviewProgress::Open);
-                } else {
-                    self.overview_progress = None;
-                }
+                self.overview_progress = self.overview_open.then_some(OverviewProgress::Open);
             }
         }
 
@@ -3626,6 +3538,94 @@ impl<W: LayoutElement> Layout<W> {
         // A completed workspace-switch animation may have removed transient empty
         // workspaces. Keep the layout-wide scope history live at the same mutation boundary.
         self.seat_focus_prune();
+    }
+
+    fn advance_dnd_scroll_and_hold(
+        &mut self,
+        output: &Output,
+        pos_within_output: Point<f64, Logical>,
+        is_dnd: bool,
+    ) {
+        let Some(mon) = self.monitor_for_output_mut(output) else {
+            return;
+        };
+        let zoom = mon.overview_zoom();
+        if mon.dnd_scroll_gesture_scroll(pos_within_output, 1. / zoom) {
+            // Don't trigger DnD hold while scrolling.
+            if let Some(dnd) = &mut self.dnd {
+                dnd.hold = None;
+            }
+            return;
+        }
+        if !is_dnd {
+            return;
+        }
+
+        let target = mon
+            .window_under(pos_within_output)
+            .map(|(win, _)| DndHoldTarget::Window(win.id().clone()))
+            .or_else(|| {
+                mon.workspace_under_narrow(pos_within_output)
+                    .map(|ws| DndHoldTarget::Workspace(ws.id()))
+            });
+
+        let dnd = self.dnd.as_mut().unwrap();
+        let Some(target) = target else {
+            // No target, reset the hold timer.
+            dnd.hold = None;
+            return;
+        };
+
+        let now = self.clock.now_unadjusted();
+        let start_time = match &mut dnd.hold {
+            Some(hold) => {
+                if hold.target != target {
+                    hold.start_time = now;
+                }
+                hold.target = target;
+                hold.start_time
+            }
+            None => dnd.hold.insert(DndHold { start_time: now, target }).start_time,
+        };
+
+        // Delay copied from gnome-shell.
+        let delay = Duration::from_millis(750);
+        if delay <= now.saturating_sub(start_time) {
+            let hold = dnd.hold.take().unwrap();
+            self.trigger_dnd_hold(output, hold.target);
+        }
+    }
+
+    fn trigger_dnd_hold(&mut self, output: &Output, target: DndHoldTarget<W::Id>) {
+        let is_overview_open = self.overview_open;
+        // Synchronize workspace switch to overview close to get a monotonic animation.
+        let config = is_overview_open.then_some(self.options.animations.overview_open_close.0);
+
+        let Some(mon) = self.monitor_for_output_mut(output) else {
+            error!("DnD hold output disappeared before activation");
+            return;
+        };
+
+        let ws_idx = match target {
+            DndHoldTarget::Window(id) => mon
+                .workspaces
+                .iter_mut()
+                .position(|ws| ws.activate_window(&id)),
+            DndHoldTarget::Workspace(id) => mon.workspaces.iter().position(|ws| ws.id() == id),
+        };
+
+        let Some(ws_idx) = ws_idx else {
+            error!("DnD hold target disappeared before activation");
+            return;
+        };
+
+        mon.dnd_scroll_gesture_end();
+        mon.activate_workspace_with_anim_config(ws_idx, config);
+        self.focus_output(output);
+
+        if is_overview_open {
+            self.close_overview();
+        }
     }
 
     pub fn are_animations_ongoing(&self, output: Option<&Output>) -> bool {
@@ -4070,6 +4070,14 @@ impl<W: LayoutElement> Layout<W> {
             }
         }
 
+        self.mutate_window_floating(window, |ws| ws.toggle_window_floating(window));
+    }
+
+    fn mutate_window_floating(
+        &mut self,
+        window: Option<&W::Id>,
+        mutate: impl FnOnce(&mut Workspace<W>),
+    ) {
         let target_workspace_id = window.and_then(|id| {
             self.workspaces()
                 .find(|(_, _, ws)| ws.has_window(id))
@@ -4090,7 +4098,7 @@ impl<W: LayoutElement> Layout<W> {
         let Some(workspace) = workspace else {
             return;
         };
-        workspace.toggle_window_floating(window);
+        mutate(workspace);
         if target_window_was_workspace_focus {
             if let Some(window_id) = window {
                 workspace.activate_window(window_id);
@@ -4148,36 +4156,7 @@ impl<W: LayoutElement> Layout<W> {
             }
         }
 
-        let target_workspace_id = window.and_then(|id| {
-            self.workspaces()
-                .find(|(_, _, ws)| ws.has_window(id))
-                .map(|(_, _, ws)| ws.id())
-        });
-        let target_window_was_workspace_focus = match (target_workspace_id, window) {
-            (Some(workspace_id), Some(window_id)) => {
-                self.seat_focus_workspace_targets_window(workspace_id, window_id)
-            }
-            _ => false,
-        };
-        let workspace = if let Some(window) = window {
-            self.workspaces_mut().find(|ws| ws.has_window(window))
-        } else {
-            self.active_workspace_mut()
-        };
-
-        let Some(workspace) = workspace else {
-            return;
-        };
-        workspace.set_window_floating(window, floating);
-        if target_window_was_workspace_focus {
-            if let Some(window_id) = window {
-                workspace.activate_window(window_id);
-            }
-        }
-        self.seat_focus_after_mutation();
-        if let Some(workspace_id) = target_workspace_id {
-            self.seat_focus_record_workspace_chain(workspace_id);
-        }
+        self.mutate_window_floating(window, |ws| ws.set_window_floating(window, floating));
     }
 
     pub fn focus_floating(&mut self) {
@@ -5370,385 +5349,405 @@ impl<W: LayoutElement> Layout<W> {
         match state {
             InteractiveMoveState::Starting {
                 window_id,
-                mut pointer_delta,
+                pointer_delta,
                 pointer_ratio_within_window,
-            } => {
-                if window_id != *window {
-                    self.interactive_move = Some(InteractiveMoveState::Starting {
-                        window_id,
-                        pointer_delta,
-                        pointer_ratio_within_window,
-                    });
-                    return false;
-                }
-
-                let zoom = self.overview_zoom();
-                let delta = delta.downscale(zoom);
-
-                pointer_delta += delta;
-
-                let (cx, cy) = (pointer_delta.x, pointer_delta.y);
-                let sq_dist = cx * cx + cy * cy;
-
-                let factor = RubberBand {
-                    stiffness: 1.0,
-                    limit: 0.5,
-                }
-                .band(sq_dist / INTERACTIVE_MOVE_START_THRESHOLD);
-
-                let host = self.move_host(&window_id);
-                let sticky_monitor_idx = match host {
-                    MoveHost::Sticky(idx) => Some(idx),
-                    MoveHost::Workspace => None,
-                };
-
-                let (is_floating, workspace_config) = match host {
-                    MoveHost::Sticky(_) => (true, None),
-                    MoveHost::Workspace => {
-                        let Some(ws) = self
-                            .workspaces()
-                            .map(|(_, _, ws)| ws)
-                            .find(|ws| ws.has_window(&window_id))
-                        else {
-                            return false;
-                        };
-                        let workspace_config = ws.layout_config().cloned().map(|c| (ws.id(), c));
-                        (ws.is_floating(&window_id), workspace_config)
-                    }
-                };
-                let floating_grouped =
-                    is_floating && self.move_container_allows_splits(host, &window_id);
-                if !self.set_interactive_move_offset(
-                    host,
-                    &window_id,
-                    pointer_delta.upscale(factor),
-                ) {
-                    return false;
-                }
-
-                // Put it back to be able to easily return.
-                self.interactive_move = Some(InteractiveMoveState::Starting {
-                    window_id: window_id.clone(),
-                    pointer_delta,
-                    pointer_ratio_within_window,
-                });
-
-                if !is_floating && sq_dist < INTERACTIVE_MOVE_START_THRESHOLD {
-                    return true;
-                }
-
-                if floating_grouped {
-                    // The whole container moves, so the window itself stops rubber-banding.
-                    if !self.set_interactive_move_offset(host, &window_id, Point::from((0., 0.))) {
-                        self.interactive_move = None;
-                        return false;
-                    }
-                    // The Starting state was put back above, so bailing out here leaves the
-                    // drag exactly as it was.
-                    let Some(start_container_pos) = self.move_container_pos(host, &window_id)
-                    else {
-                        return false;
-                    };
-
-                    self.interactive_move = Some(InteractiveMoveState::MovingContainer(
-                        InteractiveMoveContainerData {
-                            window_id,
-                            output: output.clone(),
-                            pointer_pos_within_output,
-                            start_pointer_pos_within_output: pointer_pos_within_output,
-                            start_container_pos,
-                        },
-                    ));
-                    return true;
-                }
-
-                let output_config = self
-                    .monitors()
-                    .find(|mon| mon.output() == &output)
-                    .and_then(|mon| mon.layout_config().cloned());
-
-                // If the pointer is currently on the window's own output, then we can animate the
-                // window movement from its current (rubberbanded and possibly moved away) position
-                // to the pointer. Otherwise, we just teleport it as the layout code is not aware
-                // of monitor positions.
-                //
-                // FIXME: when and if the layout code knows about monitor positions, this will be
-                // potentially animatable.
-                let mut tile_pos = None;
-                if let Some((mon, (ws, ws_geo))) = self.monitors().find_map(|mon| {
-                    mon.workspaces_with_render_geo()
-                        .find(|(ws, _)| ws.has_window(window))
-                        .map(|rv| (mon, rv))
-                }) {
-                    if mon.output() == &output {
-                        let (_, tile_offset, _) = ws
-                            .tiles_with_render_positions()
-                            .find(|(tile, _, _)| tile.window().id() == window)
-                            .unwrap();
-
-                        let zoom = mon.overview_zoom();
-                        tile_pos = Some((ws_geo.loc + tile_offset.upscale(zoom), zoom));
-                    }
-                } else if let Some(mon_idx) = sticky_monitor_idx {
-                    let mon = self.monitors().nth(mon_idx).unwrap();
-                    if mon.output() == &output {
-                        if let Some(ws_geo) = mon.active_workspace_render_geo() {
-                            if let Some((_, tile_offset)) =
-                                mon.sticky_tile_with_render_position(window)
-                            {
-                                let zoom = mon.overview_zoom();
-                                tile_pos = Some((ws_geo.loc + tile_offset.upscale(zoom), zoom));
-                            }
-                        }
-                    }
-                }
-
-                // Clear it before calling remove_window() to avoid running interactive_move_end()
-                // in the middle of interactive_move_update() and the confusion that causes.
-                self.interactive_move = None;
-
-                let was_sticky = sticky_monitor_idx.is_some();
-
-                let (origin_workspace, swap_origin) = if let Some(mon_idx) = sticky_monitor_idx {
-                    let mon = self.monitors().nth(mon_idx).unwrap();
-                    (mon.active_workspace_ref().id(), None)
-                } else {
-                    // Unset fullscreen before removing the tile. This will restore its size
-                    // properly, and move it to floating if needed, so we don't have to deal with
-                    // that here.
-                    let ws = self
-                        .workspaces_mut()
-                        .find(|ws| ws.has_window(&window_id))
-                        .unwrap();
-                    ws.set_fullscreen(window, false);
-
-                    let origin_workspace = ws.id();
-                    let swap_origin = if is_floating {
-                        None
-                    } else {
-                        ws.tiling_insert_parent_info(&window_id)
-                    };
-                    (origin_workspace, swap_origin)
-                };
-                let RemovedTile {
-                    mut tile,
-                    is_floating,
-                } = self.remove_window(window, Transaction::new()).unwrap();
-
-                if was_sticky {
-                    tile.set_sticky(true);
-                }
-
-                tile.stop_move_animations();
-                tile.interactive_move_offset = Point::from((0., 0.));
-                tile.window().output_enter(&output);
-                tile.window().set_preferred_scale_transform(
-                    output.current_scale(),
-                    output.current_transform(),
-                );
-
-                Self::update_moving_tile_config(
-                    &self.options,
-                    &mut tile,
-                    &output,
-                    output_config.as_ref(),
-                    workspace_config.as_ref().map(|(_, c)| c),
-                );
-                if !tile.window().pending_sizing_mode().is_normal() {
-                    tile.request_tile_size(tile.tile_size(), !self.options.animations.off, None);
-                }
-
-                if !is_floating {
-                    // Animate to semitransparent.
-                    tile.animate_alpha(
-                        1.,
-                        INTERACTIVE_MOVE_ALPHA,
-                        self.options.animations.window_movement.0,
-                    );
-                    tile.hold_alpha_animation_after_done();
-                }
-
-                let mut data = InteractiveMoveData {
-                    tile,
+            } => self.interactive_move_update_starting(
+                window,
+                window_id,
+                pointer_delta,
+                pointer_ratio_within_window,
+                delta,
+                output,
+                pointer_pos_within_output,
+            ),
+            InteractiveMoveState::Moving(move_) => {
+                self.interactive_move_update_moving(window, move_, output, pointer_pos_within_output)
+            }
+            InteractiveMoveState::MovingContainer(move_) => self
+                .interactive_move_update_moving_container(
+                    window,
+                    move_,
                     output,
                     pointer_pos_within_output,
-                    is_floating,
-                    was_sticky,
-                    pointer_ratio_within_window,
-                    output_config,
-                    workspace_config,
-                    swap_origin,
-                    origin_workspace,
+                ),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn interactive_move_update_starting(
+        &mut self,
+        window: &W::Id,
+        window_id: W::Id,
+        mut pointer_delta: Point<f64, Logical>,
+        pointer_ratio_within_window: (f64, f64),
+        delta: Point<f64, Logical>,
+        output: Output,
+        pointer_pos_within_output: Point<f64, Logical>,
+    ) -> bool {
+        if window_id != *window {
+            self.interactive_move = Some(InteractiveMoveState::Starting {
+                window_id,
+                pointer_delta,
+                pointer_ratio_within_window,
+            });
+            return false;
+        }
+
+        let zoom = self.overview_zoom();
+        pointer_delta += delta.downscale(zoom);
+
+        let sq_dist = pointer_delta.x * pointer_delta.x + pointer_delta.y * pointer_delta.y;
+        let factor = RubberBand {
+            stiffness: 1.0,
+            limit: 0.5,
+        }
+        .band(sq_dist / INTERACTIVE_MOVE_START_THRESHOLD);
+
+        let host = self.move_host(&window_id);
+        let sticky_monitor_idx = match host {
+            MoveHost::Sticky(idx) => Some(idx),
+            MoveHost::Workspace => None,
+        };
+
+        let (is_floating, workspace_config) = match host {
+            MoveHost::Sticky(_) => (true, None),
+            MoveHost::Workspace => {
+                let Some(ws) = self
+                    .workspaces()
+                    .map(|(_, _, ws)| ws)
+                    .find(|ws| ws.has_window(&window_id))
+                else {
+                    return false;
                 };
-
-                if let Some((tile_pos, zoom)) = tile_pos {
-                    let new_tile_pos = data.tile_render_location(zoom);
-                    data.tile
-                        .animate_move_from((tile_pos - new_tile_pos).downscale(zoom));
-                }
-
-                self.interactive_move = Some(InteractiveMoveState::Moving(data));
+                let workspace_config = ws.layout_config().cloned().map(|c| (ws.id(), c));
+                (ws.is_floating(&window_id), workspace_config)
             }
-            InteractiveMoveState::Moving(mut move_) => {
-                if window != move_.tile.window().id() {
-                    self.interactive_move = Some(InteractiveMoveState::Moving(move_));
-                    return false;
-                }
+        };
+        let floating_grouped = is_floating && self.move_container_allows_splits(host, &window_id);
+        if !self.set_interactive_move_offset(host, &window_id, pointer_delta.upscale(factor)) {
+            return false;
+        }
 
-                let mut ws_id = None;
-                if let Some(mon) = self.monitor_for_output(&output) {
-                    let (insert_ws, _) = mon.insert_position(move_.pointer_pos_within_output);
-                    if let InsertWorkspace::Existing(id) = insert_ws {
-                        ws_id = Some(id);
-                    }
-                }
+        // Put it back to be able to easily return.
+        self.interactive_move = Some(InteractiveMoveState::Starting {
+            window_id: window_id.clone(),
+            pointer_delta,
+            pointer_ratio_within_window,
+        });
 
-                // If moved over a different workspace, reset the config override.
-                let mut update_config = false;
-                if let Some((id, _)) = &move_.workspace_config {
-                    if Some(*id) != ws_id {
-                        move_.workspace_config = None;
-                        update_config = true;
-                    }
-                }
+        if !is_floating && sq_dist < INTERACTIVE_MOVE_START_THRESHOLD {
+            return true;
+        }
 
-                if output != move_.output {
-                    move_.tile.window().output_leave(&move_.output);
-                    move_.tile.window().output_enter(&output);
-                    move_.tile.window().set_preferred_scale_transform(
-                        output.current_scale(),
-                        output.current_transform(),
-                    );
-                    move_.output = output.clone();
-                    self.focus_output(&output);
-
-                    move_.output_config = self
-                        .monitor_for_output(&output)
-                        .and_then(|mon| mon.layout_config().cloned());
-
-                    update_config = true;
-                }
-
-                if update_config {
-                    Self::update_moving_tile_config(
-                        &self.options,
-                        &mut move_.tile,
-                        &output,
-                        move_.output_config.as_ref(),
-                        move_.workspace_config.as_ref().map(|(_, c)| c),
-                    );
-                }
-
-                move_.pointer_pos_within_output = pointer_pos_within_output;
-
-                self.interactive_move = Some(InteractiveMoveState::Moving(move_));
+        if floating_grouped {
+            // The whole container moves, so the window itself stops rubber-banding.
+            if !self.set_interactive_move_offset(host, &window_id, Point::from((0., 0.))) {
+                self.interactive_move = None;
+                return false;
             }
-            InteractiveMoveState::MovingContainer(mut move_) => {
-                if window != &move_.window_id {
-                    self.interactive_move = Some(InteractiveMoveState::MovingContainer(move_));
-                    return false;
+            // The Starting state was put back above, so bailing out here leaves the drag as-is.
+            let Some(start_container_pos) = self.move_container_pos(host, &window_id) else {
+                return false;
+            };
+
+            self.interactive_move = Some(InteractiveMoveState::MovingContainer(
+                InteractiveMoveContainerData {
+                    window_id,
+                    output,
+                    pointer_pos_within_output,
+                    start_pointer_pos_within_output: pointer_pos_within_output,
+                    start_container_pos,
+                },
+            ));
+            return true;
+        }
+
+        self.begin_detaching_moving_tile(
+            window,
+            &window_id,
+            sticky_monitor_idx,
+            is_floating,
+            workspace_config,
+            pointer_ratio_within_window,
+            output,
+            pointer_pos_within_output,
+        );
+        true
+    }
+
+    fn moving_tile_start_pos(
+        &self,
+        window: &W::Id,
+        sticky_monitor_idx: Option<usize>,
+        output: &Output,
+    ) -> Option<(Point<f64, Logical>, f64)> {
+        // If the pointer is currently on the window's own output, animate from its current
+        // (rubberbanded) position to the pointer. Otherwise teleport it as the layout code is not
+        // aware of monitor positions.
+        if let Some((mon, (ws, ws_geo))) = self.monitors().find_map(|mon| {
+            mon.workspaces_with_render_geo()
+                .find(|(ws, _)| ws.has_window(window))
+                .map(|rv| (mon, rv))
+        }) {
+            if mon.output() == output {
+                let (_, tile_offset, _) = ws
+                    .tiles_with_render_positions()
+                    .find(|(tile, _, _)| tile.window().id() == window)
+                    .unwrap();
+                let zoom = mon.overview_zoom();
+                return Some((ws_geo.loc + tile_offset.upscale(zoom), zoom));
+            }
+        } else if let Some(mon_idx) = sticky_monitor_idx {
+            let mon = self.monitors().nth(mon_idx).unwrap();
+            if mon.output() == output {
+                if let (Some(ws_geo), Some((_, tile_offset))) = (
+                    mon.active_workspace_render_geo(),
+                    mon.sticky_tile_with_render_position(window),
+                ) {
+                    let zoom = mon.overview_zoom();
+                    return Some((ws_geo.loc + tile_offset.upscale(zoom), zoom));
                 }
+            }
+        }
+        None
+    }
 
-                if output != move_.output {
-                    self.interactive_move = Some(InteractiveMoveState::MovingContainer(move_));
-                    return false;
-                }
+    #[allow(clippy::too_many_arguments)]
+    fn begin_detaching_moving_tile(
+        &mut self,
+        window: &W::Id,
+        window_id: &W::Id,
+        sticky_monitor_idx: Option<usize>,
+        is_floating: bool,
+        workspace_config: Option<(WorkspaceId, LayoutPart)>,
+        pointer_ratio_within_window: (f64, f64),
+        output: Output,
+        pointer_pos_within_output: Point<f64, Logical>,
+    ) {
+        let output_config = self
+            .monitors()
+            .find(|mon| mon.output() == &output)
+            .and_then(|mon| mon.layout_config().cloned());
+        let tile_pos = self.moving_tile_start_pos(window, sticky_monitor_idx, &output);
 
-                move_.pointer_pos_within_output = pointer_pos_within_output;
+        // Clear it before calling remove_window() to avoid running interactive_move_end()
+        // in the middle of interactive_move_update() and the confusion that causes.
+        self.interactive_move = None;
 
-                let zoom = self.overview_zoom();
-                let delta = (move_.pointer_pos_within_output
-                    - move_.start_pointer_pos_within_output)
-                    .downscale(zoom);
-                let new_pos = move_.start_container_pos + delta;
+        let was_sticky = sticky_monitor_idx.is_some();
+        let (origin_workspace, swap_origin) = if let Some(mon_idx) = sticky_monitor_idx {
+            let mon = self.monitors().nth(mon_idx).unwrap();
+            (mon.active_workspace_ref().id(), None)
+        } else {
+            // Unset fullscreen before removing the tile. This will restore its size properly,
+            // and move it to floating if needed, so we don't have to deal with that here.
+            let ws = self
+                .workspaces_mut()
+                .find(|ws| ws.has_window(window_id))
+                .unwrap();
+            ws.set_fullscreen(window, false);
 
-                let moved_sticky = {
-                    if let Some(mon) = self
-                        .monitors_mut()
-                        .find(|mon| mon.has_sticky_window(&move_.window_id))
-                    {
-                        mon.move_sticky_container_for_window_to(&move_.window_id, new_pos);
-                        true
-                    } else {
-                        false
-                    }
-                };
+            let origin_workspace = ws.id();
+            let swap_origin = (!is_floating)
+                .then(|| ws.tiling_insert_parent_info(window_id))
+                .flatten();
+            (origin_workspace, swap_origin)
+        };
 
-                if !moved_sticky {
-                    if let Some(ws) = self
-                        .workspaces_mut()
-                        .find(|ws| ws.has_window(&move_.window_id))
-                    {
-                        ws.move_floating_container_for_window_to(&move_.window_id, new_pos);
-                    }
-                }
+        let RemovedTile {
+            mut tile,
+            is_floating,
+        } = self.remove_window(window, Transaction::new()).unwrap();
 
-                self.interactive_move = Some(InteractiveMoveState::MovingContainer(move_));
+        if was_sticky {
+            tile.set_sticky(true);
+        }
+
+        tile.stop_move_animations();
+        tile.interactive_move_offset = Point::from((0., 0.));
+        tile.window().output_enter(&output);
+        tile.window().set_preferred_scale_transform(
+            output.current_scale(),
+            output.current_transform(),
+        );
+
+        Self::update_moving_tile_config(
+            &self.options,
+            &mut tile,
+            &output,
+            output_config.as_ref(),
+            workspace_config.as_ref().map(|(_, c)| c),
+        );
+        if !tile.window().pending_sizing_mode().is_normal() {
+            tile.request_tile_size(tile.tile_size(), !self.options.animations.off, None);
+        }
+
+        if !is_floating {
+            // Animate to semitransparent.
+            tile.animate_alpha(
+                1.,
+                INTERACTIVE_MOVE_ALPHA,
+                self.options.animations.window_movement.0,
+            );
+            tile.hold_alpha_animation_after_done();
+        }
+
+        let mut data = InteractiveMoveData {
+            tile,
+            output,
+            pointer_pos_within_output,
+            is_floating,
+            was_sticky,
+            pointer_ratio_within_window,
+            output_config,
+            workspace_config,
+            swap_origin,
+            origin_workspace,
+        };
+
+        if let Some((tile_pos, zoom)) = tile_pos {
+            let new_tile_pos = data.tile_render_location(zoom);
+            data.tile
+                .animate_move_from((tile_pos - new_tile_pos).downscale(zoom));
+        }
+
+        self.interactive_move = Some(InteractiveMoveState::Moving(data));
+    }
+
+    fn interactive_move_update_moving(
+        &mut self,
+        window: &W::Id,
+        mut move_: InteractiveMoveData<W>,
+        output: Output,
+        pointer_pos_within_output: Point<f64, Logical>,
+    ) -> bool {
+        if window != move_.tile.window().id() {
+            self.interactive_move = Some(InteractiveMoveState::Moving(move_));
+            return false;
+        }
+
+        let ws_id = self.monitor_for_output(&output).and_then(|mon| {
+            match mon.insert_position(move_.pointer_pos_within_output).0 {
+                InsertWorkspace::Existing(id) => Some(id),
+                InsertWorkspace::NewAt(_) => None,
+            }
+        });
+
+        // If moved over a different workspace, reset the config override.
+        let mut update_config = false;
+        if move_
+            .workspace_config
+            .as_ref()
+            .is_some_and(|(id, _)| Some(*id) != ws_id)
+        {
+            move_.workspace_config = None;
+            update_config = true;
+        }
+
+        if output != move_.output {
+            move_.tile.window().output_leave(&move_.output);
+            move_.tile.window().output_enter(&output);
+            move_.tile.window().set_preferred_scale_transform(
+                output.current_scale(),
+                output.current_transform(),
+            );
+            move_.output = output.clone();
+            self.focus_output(&output);
+
+            move_.output_config = self
+                .monitor_for_output(&output)
+                .and_then(|mon| mon.layout_config().cloned());
+
+            update_config = true;
+        }
+
+        if update_config {
+            Self::update_moving_tile_config(
+                &self.options,
+                &mut move_.tile,
+                &output,
+                move_.output_config.as_ref(),
+                move_.workspace_config.as_ref().map(|(_, c)| c),
+            );
+        }
+
+        move_.pointer_pos_within_output = pointer_pos_within_output;
+        self.interactive_move = Some(InteractiveMoveState::Moving(move_));
+        true
+    }
+
+    fn interactive_move_update_moving_container(
+        &mut self,
+        window: &W::Id,
+        mut move_: InteractiveMoveContainerData<W>,
+        output: Output,
+        pointer_pos_within_output: Point<f64, Logical>,
+    ) -> bool {
+        if window != &move_.window_id || output != move_.output {
+            self.interactive_move = Some(InteractiveMoveState::MovingContainer(move_));
+            return false;
+        }
+
+        move_.pointer_pos_within_output = pointer_pos_within_output;
+
+        let zoom = self.overview_zoom();
+        let delta = (move_.pointer_pos_within_output - move_.start_pointer_pos_within_output)
+            .downscale(zoom);
+        let new_pos = move_.start_container_pos + delta;
+
+        let moved_sticky = if let Some(mon) = self
+            .monitors_mut()
+            .find(|mon| mon.has_sticky_window(&move_.window_id))
+        {
+            mon.move_sticky_container_for_window_to(&move_.window_id, new_pos);
+            true
+        } else {
+            false
+        };
+
+        if !moved_sticky {
+            if let Some(ws) = self
+                .workspaces_mut()
+                .find(|ws| ws.has_window(&move_.window_id))
+            {
+                ws.move_floating_container_for_window_to(&move_.window_id, new_pos);
             }
         }
 
+        self.interactive_move = Some(InteractiveMoveState::MovingContainer(move_));
         true
     }
 
     pub fn interactive_move_end(&mut self, window: &W::Id) {
         self.request_refresh();
-        let Some(move_) = &self.interactive_move else {
-            return;
-        };
-
-        let move_ = match move_ {
-            InteractiveMoveState::Starting { window_id, .. } => {
-                if window_id != window {
-                    return;
-                }
-
-                let Some(InteractiveMoveState::Starting { window_id, .. }) =
-                    self.interactive_move.take()
-                else {
-                    unreachable!()
-                };
-
-                for mon in self.monitors_mut() {
-                    mon.dnd_scroll_gesture_end();
-                }
-
-                self.reset_interactive_move_offset(&window_id, true);
-
-                return;
-            }
-            InteractiveMoveState::Moving(move_) => move_,
-            InteractiveMoveState::MovingContainer(move_) => {
-                if window != &move_.window_id {
-                    return;
-                }
-
-                let Some(InteractiveMoveState::MovingContainer(move_)) =
-                    self.interactive_move.take()
-                else {
-                    unreachable!()
-                };
-
-                for mon in self.monitors_mut() {
-                    mon.dnd_scroll_gesture_end();
-                }
-
-                self.reset_interactive_move_offset(&move_.window_id, false);
-
-                return;
-            }
-        };
-
-        if window != move_.tile.window().id() {
+        if self
+            .interactive_move
+            .as_ref()
+            .map(InteractiveMoveState::window_id)
+            != Some(window)
+        {
             return;
         }
 
-        let Some(InteractiveMoveState::Moving(mut move_)) = self.interactive_move.take() else {
-            unreachable!()
+        let Some(state) = self.interactive_move.take() else {
+            return;
         };
 
         for mon in self.monitors_mut() {
             mon.dnd_scroll_gesture_end();
         }
+
+        let mut move_ = match state {
+            InteractiveMoveState::Starting { window_id, .. } => {
+                self.reset_interactive_move_offset(&window_id, true);
+                return;
+            }
+            InteractiveMoveState::MovingContainer(move_) => {
+                self.reset_interactive_move_offset(&move_.window_id, false);
+                return;
+            }
+            InteractiveMoveState::Moving(move_) => move_,
+        };
 
         // Animate the tile back to opaque.
         if !move_.is_floating {
@@ -5768,225 +5767,12 @@ impl<W: LayoutElement> Layout<W> {
                 active_monitor_idx,
                 ..
             } => {
-                let (mon, insert_ws, position, offset, zoom) =
-                    if let Some(mon) = monitors.iter_mut().find(|mon| mon.output == move_.output) {
-                        let zoom = mon.overview_zoom();
-
-                        let (insert_ws, geo) = mon.insert_position(move_.pointer_pos_within_output);
-                        let (position, offset) = match insert_ws {
-                            InsertWorkspace::Existing(ws_id) => {
-                                let ws_idx = mon.idx_of_ws(ws_id).unwrap();
-
-                                let position = if move_.is_floating {
-                                    InsertPosition::Floating
-                                } else {
-                                    let pos_within_workspace =
-                                        (move_.pointer_pos_within_output - geo.loc).downscale(zoom);
-                                    let ws = &mut mon.workspaces[ws_idx];
-                                    ws.tiling_insert_position(pos_within_workspace)
-                                };
-
-                                (position, Some(geo.loc))
-                            }
-                            InsertWorkspace::NewAt(_) => {
-                                let position = if move_.is_floating {
-                                    InsertPosition::Floating
-                                } else {
-                                    InsertPosition::RootStart
-                                };
-
-                                (position, None)
-                            }
-                        };
-
-                        (mon, insert_ws, position, offset, zoom)
-                    } else {
-                        let mon = &mut monitors[*active_monitor_idx];
-                        let zoom = mon.overview_zoom();
-                        // No point in trying to use the pointer position on the wrong output.
-                        let ws = &mon.workspaces[0];
-                        let ws_geo = mon.workspaces_render_geo().next().unwrap();
-
-                        let position = if move_.is_floating {
-                            InsertPosition::Floating
-                        } else {
-                            ws.tiling_insert_position(Point::from((0., 0.)))
-                        };
-
-                        let insert_ws = InsertWorkspace::Existing(ws.id());
-                        (mon, insert_ws, position, Some(ws_geo.loc), zoom)
-                    };
-
-                if move_.was_sticky {
-                    let tile_render_loc = move_.tile_render_location(zoom);
-                    let mut tile = move_.tile;
-                    tile.set_sticky(true);
-                    tile.floating_pos = None;
-
-                    let ws_idx_for_pos = match insert_ws {
-                        InsertWorkspace::Existing(ws_id) => mon
-                            .workspaces
-                            .iter()
-                            .position(|ws| ws.id() == ws_id)
-                            .unwrap(),
-                        InsertWorkspace::NewAt(_) => mon.active_workspace_idx,
-                    };
-
-                    if let (InsertWorkspace::Existing(_), Some(offset)) = (insert_ws, offset) {
-                        let pos = (tile_render_loc - offset).downscale(zoom);
-                        let pos = mon.workspaces[ws_idx_for_pos].floating_logical_to_size_frac(pos);
-                        tile.floating_pos = Some(pos);
-                    }
-
-                    mon.add_sticky_tile(tile, true);
-                    return;
-                }
-
-                let win_id = move_.tile.window().id().clone();
-                let tile_render_loc = move_.tile_render_location(zoom);
-
-                let ws_idx = match insert_ws {
-                    InsertWorkspace::Existing(ws_id) => mon.idx_of_ws(ws_id).unwrap(),
-                    InsertWorkspace::NewAt(ws_idx) => {
-                        if mon.options.layout.empty_workspace_above_first && ws_idx == 0 {
-                            // Reuse the top empty workspace.
-                            0
-                        } else if mon.workspaces.len() - 1 <= ws_idx {
-                            // Reuse the bottom empty workspace.
-                            mon.workspaces.len() - 1
-                        } else {
-                            mon.add_workspace_at(ws_idx);
-                            ws_idx
-                        }
-                    }
-                };
-
-                match position {
-                    InsertPosition::RootStart => {
-                        let ws_id = mon.workspaces[ws_idx].id();
-                        mon.add_tile(
-                            move_.tile,
-                            MonitorAddWindowTarget::Workspace {
-                                id: ws_id,
-                                root_index: Some(0),
-                            },
-                            ActivateWindow::Yes,
-                            allow_to_activate_workspace,
-                            false,
-                            None,
-                        );
-                    }
-                    InsertPosition::Swap { target, direction } => {
-                        // Swapping is only possible back into the workspace the drag started
-                        // from, where the vacated slot is still known.
-                        let ws_id = mon.workspaces[ws_idx].id();
-                        let origin = (move_.origin_workspace == ws_id)
-                            .then(|| move_.swap_origin.clone())
-                            .flatten();
-
-                        let swap = match origin {
-                            Some(origin) => {
-                                mon.workspaces[ws_idx].tiling_swap_tile(target, move_.tile, &origin)
-                            }
-                            None => Err(move_.tile),
-                        };
-
-                        match swap {
-                            Ok(()) => {
-                                if allow_to_activate_workspace {
-                                    mon.workspaces[ws_idx].activate_window(&win_id);
-                                }
-                            }
-                            Err(tile) => {
-                                let _ = mon.add_tile_split(
-                                    ws_idx,
-                                    target,
-                                    direction,
-                                    tile,
-                                    true,
-                                    allow_to_activate_workspace,
-                                );
-                            }
-                        }
-                    }
-                    InsertPosition::Split {
-                        target, direction, ..
-                    } => {
-                        let _ = mon.add_tile_split(
-                            ws_idx,
-                            target,
-                            direction,
-                            move_.tile,
-                            true,
-                            allow_to_activate_workspace,
-                        );
-                    }
-                    InsertPosition::SplitRoot { direction, .. } => {
-                        let _ = mon.add_tile_split_root(
-                            ws_idx,
-                            direction,
-                            move_.tile,
-                            true,
-                            allow_to_activate_workspace,
-                        );
-                    }
-                    InsertPosition::Floating => {
-                        let mut tile = move_.tile;
-                        tile.floating_pos = None;
-
-                        match insert_ws {
-                            InsertWorkspace::Existing(_) => {
-                                if let Some(offset) = offset {
-                                    let pos = (tile_render_loc - offset).downscale(zoom);
-                                    let pos =
-                                        mon.workspaces[ws_idx].floating_logical_to_size_frac(pos);
-                                    tile.floating_pos = Some(pos);
-                                } else {
-                                    error!(
-                                        "offset unset for inserting a floating tile \
-                                         to existing workspace"
-                                    );
-                                }
-                            }
-                            InsertWorkspace::NewAt(_) => {
-                                // When putting a floating tile on a new workspace, we don't really
-                                // have a good pre-existing position.
-                            }
-                        }
-
-                        // Set the floating size so it takes into account any window resizing that
-                        // took place during the move.
-                        if let Some(size) = tile.window().expected_size() {
-                            tile.floating_window_size = Some(size);
-                        }
-
-                        let ws_id = mon.workspaces[ws_idx].id();
-                        mon.add_tile(
-                            tile,
-                            MonitorAddWindowTarget::Workspace {
-                                id: ws_id,
-                                root_index: None,
-                            },
-                            ActivateWindow::Yes,
-                            allow_to_activate_workspace,
-                            true,
-                            None,
-                        );
-                    }
-                }
-
-                // needed because empty_workspace_above_first could have modified the idx
-                if let Some((tile, tile_offset, ws_geo)) = mon
-                    .workspaces_with_render_geo_mut(false)
-                    .find_map(|(ws, geo)| {
-                        ws.tiles_with_render_positions_mut(false)
-                            .find(|(tile, _)| tile.window().id() == &win_id)
-                            .map(|(tile, tile_offset)| (tile, tile_offset, geo))
-                    })
-                {
-                    let new_tile_render_loc = ws_geo.loc + tile_offset.upscale(zoom);
-                    tile.animate_move_from((tile_render_loc - new_tile_render_loc).downscale(zoom));
-                }
+                Self::finish_interactive_move_on_monitor(
+                    monitors,
+                    *active_monitor_idx,
+                    move_,
+                    allow_to_activate_workspace,
+                );
             }
             MonitorSet::NoOutputs { workspaces, .. } => {
                 if workspaces.is_empty() {
@@ -5995,14 +5781,266 @@ impl<W: LayoutElement> Layout<W> {
                         self.options.clone(),
                     ));
                 }
-                let ws = &mut workspaces[0];
-
                 // No point in trying to use the pointer position without outputs.
-                ws.add_tile(
+                workspaces[0].add_tile(
                     move_.tile,
                     WorkspaceAddWindowTarget::Auto,
                     ActivateWindow::Yes,
                     move_.is_floating,
+                    None,
+                );
+            }
+        }
+    }
+
+    fn resolve_interactive_move_drop<'a>(
+        monitors: &'a mut [Monitor<W>],
+        active_monitor_idx: usize,
+        move_: &InteractiveMoveData<W>,
+    ) -> (&'a mut Monitor<W>, InteractiveMoveDropTarget) {
+        if let Some(mon_idx) = monitors.iter().position(|mon| mon.output == move_.output) {
+            let mon = &mut monitors[mon_idx];
+            let zoom = mon.overview_zoom();
+            let (insert_ws, geo) = mon.insert_position(move_.pointer_pos_within_output);
+            let (position, offset) = match insert_ws {
+                InsertWorkspace::Existing(ws_id) => {
+                    let ws_idx = mon.idx_of_ws(ws_id).unwrap();
+                    let position = if move_.is_floating {
+                        InsertPosition::Floating
+                    } else {
+                        let pos_within_workspace =
+                            (move_.pointer_pos_within_output - geo.loc).downscale(zoom);
+                        mon.workspaces[ws_idx].tiling_insert_position(pos_within_workspace)
+                    };
+                    (position, Some(geo.loc))
+                }
+                InsertWorkspace::NewAt(_) => {
+                    let position = if move_.is_floating {
+                        InsertPosition::Floating
+                    } else {
+                        InsertPosition::RootStart
+                    };
+                    (position, None)
+                }
+            };
+            (
+                mon,
+                InteractiveMoveDropTarget {
+                    insert_ws,
+                    position,
+                    offset,
+                    zoom,
+                },
+            )
+        } else {
+            let mon = &mut monitors[active_monitor_idx];
+            let zoom = mon.overview_zoom();
+            // No point in trying to use the pointer position on the wrong output.
+            let ws = &mon.workspaces[0];
+            let ws_geo = mon.workspaces_render_geo().next().unwrap();
+            let position = if move_.is_floating {
+                InsertPosition::Floating
+            } else {
+                ws.tiling_insert_position(Point::from((0., 0.)))
+            };
+            let insert_ws = InsertWorkspace::Existing(ws.id());
+            (
+                mon,
+                InteractiveMoveDropTarget {
+                    insert_ws,
+                    position,
+                    offset: Some(ws_geo.loc),
+                    zoom,
+                },
+            )
+        }
+    }
+
+    fn finish_interactive_move_on_monitor(
+        monitors: &mut [Monitor<W>],
+        active_monitor_idx: usize,
+        move_: InteractiveMoveData<W>,
+        allow_to_activate_workspace: bool,
+    ) {
+        let (mon, drop) = Self::resolve_interactive_move_drop(monitors, active_monitor_idx, &move_);
+        let tile_render_loc = move_.tile_render_location(drop.zoom);
+
+        if move_.was_sticky {
+            let mut tile = move_.tile;
+            tile.set_sticky(true);
+            tile.floating_pos = None;
+
+            let ws_idx_for_pos = match drop.insert_ws {
+                InsertWorkspace::Existing(ws_id) => mon
+                    .workspaces
+                    .iter()
+                    .position(|ws| ws.id() == ws_id)
+                    .unwrap(),
+                InsertWorkspace::NewAt(_) => mon.active_workspace_idx,
+            };
+
+            if let (InsertWorkspace::Existing(_), Some(offset)) = (drop.insert_ws, drop.offset) {
+                let pos = (tile_render_loc - offset).downscale(drop.zoom);
+                let pos = mon.workspaces[ws_idx_for_pos].floating_logical_to_size_frac(pos);
+                tile.floating_pos = Some(pos);
+            }
+
+            mon.add_sticky_tile(tile, true);
+            return;
+        }
+
+        let win_id = move_.tile.window().id().clone();
+        let ws_idx = match drop.insert_ws {
+            InsertWorkspace::Existing(ws_id) => mon.idx_of_ws(ws_id).unwrap(),
+            InsertWorkspace::NewAt(ws_idx) => {
+                if mon.options.layout.empty_workspace_above_first && ws_idx == 0 {
+                    // Reuse the top empty workspace.
+                    0
+                } else if mon.workspaces.len() - 1 <= ws_idx {
+                    // Reuse the bottom empty workspace.
+                    mon.workspaces.len() - 1
+                } else {
+                    mon.add_workspace_at(ws_idx);
+                    ws_idx
+                }
+            }
+        };
+
+        let zoom = drop.zoom;
+        Self::insert_dropped_tile_into_monitor(
+            mon,
+            ws_idx,
+            drop,
+            tile_render_loc,
+            move_,
+            &win_id,
+            allow_to_activate_workspace,
+        );
+
+        // needed because empty_workspace_above_first could have modified the idx
+        if let Some((tile, tile_offset, ws_geo)) = mon
+            .workspaces_with_render_geo_mut(false)
+            .find_map(|(ws, geo)| {
+                ws.tiles_with_render_positions_mut(false)
+                    .find(|(tile, _)| tile.window().id() == &win_id)
+                    .map(|(tile, tile_offset)| (tile, tile_offset, geo))
+            })
+        {
+            let new_tile_render_loc = ws_geo.loc + tile_offset.upscale(zoom);
+            tile.animate_move_from((tile_render_loc - new_tile_render_loc).downscale(zoom));
+        }
+    }
+
+    fn insert_dropped_tile_into_monitor(
+        mon: &mut Monitor<W>,
+        ws_idx: usize,
+        drop: InteractiveMoveDropTarget,
+        tile_render_loc: Point<f64, Logical>,
+        move_: InteractiveMoveData<W>,
+        win_id: &W::Id,
+        allow_to_activate_workspace: bool,
+    ) {
+        match drop.position {
+            InsertPosition::RootStart => {
+                let ws_id = mon.workspaces[ws_idx].id();
+                mon.add_tile(
+                    move_.tile,
+                    MonitorAddWindowTarget::Workspace {
+                        id: ws_id,
+                        root_index: Some(0),
+                    },
+                    ActivateWindow::Yes,
+                    allow_to_activate_workspace,
+                    false,
+                    None,
+                );
+            }
+            InsertPosition::Swap { target, direction } => {
+                // Swapping is only possible back into the workspace the drag started from, where
+                // the vacated slot is still known.
+                let ws_id = mon.workspaces[ws_idx].id();
+                let origin = (move_.origin_workspace == ws_id)
+                    .then(|| move_.swap_origin.clone())
+                    .flatten();
+
+                let swap = match origin {
+                    Some(origin) => {
+                        mon.workspaces[ws_idx].tiling_swap_tile(target, move_.tile, &origin)
+                    }
+                    None => Err(move_.tile),
+                };
+
+                match swap {
+                    Ok(()) => {
+                        if allow_to_activate_workspace {
+                            mon.workspaces[ws_idx].activate_window(win_id);
+                        }
+                    }
+                    Err(tile) => {
+                        let _ = mon.add_tile_split(
+                            ws_idx,
+                            target,
+                            direction,
+                            tile,
+                            true,
+                            allow_to_activate_workspace,
+                        );
+                    }
+                }
+            }
+            InsertPosition::Split {
+                target, direction, ..
+            } => {
+                let _ = mon.add_tile_split(
+                    ws_idx,
+                    target,
+                    direction,
+                    move_.tile,
+                    true,
+                    allow_to_activate_workspace,
+                );
+            }
+            InsertPosition::SplitRoot { direction, .. } => {
+                let _ = mon.add_tile_split_root(
+                    ws_idx,
+                    direction,
+                    move_.tile,
+                    true,
+                    allow_to_activate_workspace,
+                );
+            }
+            InsertPosition::Floating => {
+                let mut tile = move_.tile;
+                tile.floating_pos = None;
+
+                if let InsertWorkspace::Existing(_) = drop.insert_ws {
+                    if let Some(offset) = drop.offset {
+                        let pos = (tile_render_loc - offset).downscale(drop.zoom);
+                        let pos = mon.workspaces[ws_idx].floating_logical_to_size_frac(pos);
+                        tile.floating_pos = Some(pos);
+                    } else {
+                        error!(
+                            "offset unset for inserting a floating tile to existing workspace"
+                        );
+                    }
+                }
+
+                // Set the floating size so it takes into account any window resizing that took
+                // place during the move.
+                if let Some(size) = tile.window().expected_size() {
+                    tile.floating_window_size = Some(size);
+                }
+
+                let ws_id = mon.workspaces[ws_idx].id();
+                mon.add_tile(
+                    tile,
+                    MonitorAddWindowTarget::Workspace {
+                        id: ws_id,
+                        root_index: None,
+                    },
+                    ActivateWindow::Yes,
+                    allow_to_activate_workspace,
+                    true,
                     None,
                 );
             }

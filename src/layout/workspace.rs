@@ -4,7 +4,6 @@ use std::rc::Rc;
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::desktop::{layer_map_for_output, Window};
-use smithay::input::pointer::CursorIcon;
 use smithay::output::Output;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -26,7 +25,7 @@ use super::shadow::Shadow;
 use super::tile::{Tile, TileRenderSnapshot};
 use super::closing_window::ClosingWindow;
 use super::{
-    ActivateWindow, HitType, InsertPosition, InteractiveResizeData, LayoutCycleEntry,
+    external_resize_cursor_icon, ActivateWindow, HitType, InsertPosition, LayoutCycleEntry,
     LayoutElement, Options, RemovedTile, ResizeHit, ResizeRequest, SizeFrac,
 };
 use crate::animation::Clock;
@@ -232,25 +231,6 @@ niri_render_elements! {
     }
 }
 
-#[derive(Debug)]
-pub(super) struct InteractiveResize<W: LayoutElement> {
-    pub window: W::Id,
-    pub original_window_size: Size<f64, Logical>,
-    pub original_window_pos: Option<Point<f64, Logical>>,
-    pub original_container_size: Size<f64, Logical>,
-    pub resize_container_edges: ResizeEdge,
-    pub data: InteractiveResizeData,
-}
-
-/// Resolved width or height in logical pixels.
-#[derive(Debug, Clone, Copy)]
-pub enum ResolvedSize {
-    /// Size of the tile including borders.
-    Tile(f64),
-    /// Size of the window excluding borders.
-    Window(f64),
-}
-
 /// A resolved tiling-to-floating mutation.
 ///
 /// Resolution names the semantic thing sway moves. Execution is the only layer that touches
@@ -320,35 +300,6 @@ impl OutputId {
         let output_name = output.user_data().get::<OutputName>().unwrap();
         Self(output_name.format_make_model_serial_or_connector())
     }
-}
-
-fn external_resize_cursor_icon(edges: ResizeEdge) -> CursorIcon {
-    if edges.contains(ResizeEdge::TOP) && edges.contains(ResizeEdge::LEFT) {
-        return CursorIcon::NwResize;
-    }
-    if edges.contains(ResizeEdge::TOP) && edges.contains(ResizeEdge::RIGHT) {
-        return CursorIcon::NeResize;
-    }
-    if edges.contains(ResizeEdge::BOTTOM) && edges.contains(ResizeEdge::RIGHT) {
-        return CursorIcon::SeResize;
-    }
-    if edges.contains(ResizeEdge::BOTTOM) && edges.contains(ResizeEdge::LEFT) {
-        return CursorIcon::SwResize;
-    }
-    if edges.contains(ResizeEdge::LEFT) {
-        return CursorIcon::WResize;
-    }
-    if edges.contains(ResizeEdge::RIGHT) {
-        return CursorIcon::EResize;
-    }
-    if edges.contains(ResizeEdge::TOP) {
-        return CursorIcon::NResize;
-    }
-    if edges.contains(ResizeEdge::BOTTOM) {
-        return CursorIcon::SResize;
-    }
-
-    CursorIcon::Default
 }
 
 impl<W: LayoutElement> Workspace<W> {
@@ -1522,15 +1473,10 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn resolve_default_height(
         &self,
         default_height: Option<Option<PresetSize>>,
-        is_floating: bool,
+        _is_floating: bool,
     ) -> Option<PresetSize> {
-        match default_height {
-            Some(Some(height)) => Some(height),
-            Some(None) => None,
-            None if is_floating => None,
-            // We don't have a global default at the moment.
-            None => None,
-        }
+        // We don't have a global default at the moment.
+        default_height.flatten()
     }
 
     pub fn new_window_size(

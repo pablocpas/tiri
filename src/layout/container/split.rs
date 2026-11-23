@@ -172,10 +172,9 @@ impl<W: LayoutElement> ContainerArena<W> {
             return self.set_root_layout_from_command(layout);
         }
         match self.get_node(target) {
-            Some(NodeData::Workspace(_)) => false,
             Some(node) if node.is_view() => self.set_layout_of_parent_of(target, layout),
             Some(NodeData::Container(_)) => self.set_layout_for_container_target(target, layout),
-            None => false,
+            Some(NodeData::Workspace(_)) | None => false,
         }
     }
 
@@ -239,13 +238,12 @@ impl<W: LayoutElement> ContainerArena<W> {
             return None;
         }
         match self.get_node(target) {
-            Some(NodeData::Workspace(_)) => None,
             Some(node) if node.is_view() => {
                 // A branch-root leaf has no owning container, so it is its own target.
                 self.parent_of(target).or(Some(target))
             }
             Some(NodeData::Container(_)) => self.parent_of(target),
-            None => None,
+            Some(NodeData::Workspace(_)) | None => None,
         }
     }
 
@@ -455,10 +453,9 @@ impl<W: LayoutElement> ContainerArena<W> {
             self.split_workspace_container(layout)
         } else {
             match self.get_node(target) {
-                Some(NodeData::Workspace(_)) => false,
                 Some(node) if node.is_view() => self.split_leaf(target, layout),
                 Some(NodeData::Container(_)) => self.split_selected_container(target, layout),
-                None => false,
+                Some(NodeData::Workspace(_)) | None => false,
             }
         };
         if changed {

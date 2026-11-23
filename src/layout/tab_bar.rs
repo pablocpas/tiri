@@ -2,16 +2,19 @@ use std::borrow::Cow;
 
 use anyhow::{bail, Context, Result};
 use pangocairo::cairo::{self, ImageSurface};
-use pangocairo::pango::{self, Alignment, EllipsizeMode, FontDescription};
+use pangocairo::pango::{self, Alignment, EllipsizeMode};
 use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
 use smithay::reexports::gbm::Format as Fourcc;
 use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Size, Transform};
 use tiri_config::{Color, TabBar};
 
-use super::container::{Layout, TabBarInfo, TabBarTab};
+pub use super::container::tab_bar_row_height;
+use super::container::{
+    font_description_for_scale, measure_font_height_px, Layout, TabBarInfo, TabBarTab,
+};
 use crate::render_helpers::texture::TextureBuffer;
 use crate::render_helpers::RenderTarget;
-use crate::utils::{round_logical_in_physical_max1, to_physical_precise_round};
+use crate::utils::to_physical_precise_round;
 
 fn sanitize_title(title: &str) -> Cow<'_, str> {
     if title.chars().all(|ch| !ch.is_control()) {
@@ -37,69 +40,6 @@ fn sanitize_title(title: &str) -> Cow<'_, str> {
     } else {
         Cow::Owned(trimmed.to_string())
     }
-}
-
-fn font_description_for_scale(config: &TabBar, scale: f64) -> FontDescription {
-    let mut font = FontDescription::from_string(&config.font);
-    let base_size = font.size() as f64;
-    let size = if base_size > 0.0 {
-        base_size
-    } else {
-        let fallback_px = parse_font_size(&config.font).unwrap_or(12.0);
-        fallback_px * pango::SCALE as f64
-    };
-    let size = to_physical_precise_round::<f64>(scale, size).max(1.0);
-    font.set_absolute_size(size);
-    font
-}
-
-fn measure_font_height_px(font: &FontDescription) -> Option<i32> {
-    let surface = ImageSurface::create(cairo::Format::ARgb32, 1, 1).ok()?;
-    let cr = cairo::Context::new(&surface).ok()?;
-    let layout = pangocairo::functions::create_layout(&cr);
-    layout.context().set_round_glyph_positions(false);
-    layout.set_font_description(Some(font));
-    layout.set_text("Ag");
-    let (_w, h_px) = layout.pixel_size();
-    (h_px > 0).then_some(h_px)
-}
-
-pub fn tab_bar_row_height(config: &TabBar, scale: f64) -> f64 {
-    let mut height = config.height;
-    if height <= 0.0 {
-        let font = font_description_for_scale(config, scale);
-        if let Some(h_px) = measure_font_height_px(&font) {
-            let font_height = (h_px as f64) / scale;
-            height = font_height + config.padding_y * 2.0;
-        }
-        if height <= 0.0 {
-            let font_height = parse_font_size(&config.font).unwrap_or(12.0);
-            height = font_height + config.padding_y * 2.0;
-        }
-    }
-
-    round_logical_in_physical_max1(scale, height)
-}
-
-fn parse_font_size(font: &str) -> Option<f64> {
-    let mut last = None;
-    let mut buf = String::new();
-    for ch in font.chars() {
-        if ch.is_ascii_digit() || ch == '.' {
-            buf.push(ch);
-        } else if !buf.is_empty() {
-            if let Ok(val) = buf.parse::<f64>() {
-                last = Some(val);
-            }
-            buf.clear();
-        }
-    }
-    if !buf.is_empty() {
-        if let Ok(val) = buf.parse::<f64>() {
-            last = Some(val);
-        }
-    }
-    last
 }
 
 fn set_source_color(cr: &cairo::Context, color: Color) {

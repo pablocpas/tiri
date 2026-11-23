@@ -92,10 +92,9 @@ impl<W: LayoutElement> ContainerArena<W> {
             return None;
         }
         let preserve_selected_container = match self.get_node(target) {
-            Some(NodeData::Workspace(_)) => return None,
             Some(node) if node.is_view() => false,
             Some(NodeData::Container(_)) => true,
-            None => return None,
+            Some(NodeData::Workspace(_)) | None => return None,
         };
 
         // A branch's root has nowhere to go, and moving it is not one of these commands.

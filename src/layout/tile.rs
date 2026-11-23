@@ -406,6 +406,12 @@ impl<W: LayoutElement> Tile<W> {
         self.scale = scale;
         self.options = options;
 
+        self.apply_rule_decoration_configs();
+
+        self.window.update_config(self.options.blur);
+    }
+
+    fn apply_rule_decoration_configs(&mut self) {
         let round_max1 = |logical| round_logical_in_physical_max1(self.scale, logical);
 
         let rules = self.window.rules();
@@ -424,8 +430,26 @@ impl<W: LayoutElement> Tile<W> {
 
         let shadow_config = self.options.layout.shadow.merged_with(&rules.shadow);
         self.shadow.update_config(shadow_config);
+    }
 
-        self.window.update_config(self.options.blur);
+    fn tile_size_for_window_size(
+        &self,
+        size: Size<f64, Logical>,
+        sizing_mode: SizingMode,
+    ) -> Size<f64, Logical> {
+        let mut tile_size = size;
+        if sizing_mode.is_fullscreen() {
+            tile_size.w = f64::max(tile_size.w, self.view_size.w);
+            tile_size.h = f64::max(tile_size.h, self.view_size.h);
+        } else if sizing_mode.is_normal() && !self.border.is_off() {
+            let width = self.border.width();
+            tile_size.w += width * 2.;
+            tile_size.h += width * 2.;
+        }
+        if sizing_mode.is_normal() && self.tab_bar_offset > 0.0 {
+            tile_size.h += self.tab_bar_offset;
+        }
+        tile_size
     }
 
     pub(super) fn set_tab_bar_offset(&mut self, offset: f64) {
@@ -487,18 +511,8 @@ impl<W: LayoutElement> Tile<W> {
                 size.w = size_from.w + (size.w - size_from.w) * val;
                 size.h = size_from.h + (size.h - size_from.h) * val;
 
-                let mut tile_size = animate_from.size;
-                if prev_sizing_mode.is_fullscreen() {
-                    tile_size.w = f64::max(tile_size.w, self.view_size.w);
-                    tile_size.h = f64::max(tile_size.h, self.view_size.h);
-                } else if prev_sizing_mode.is_normal() && !self.border.is_off() {
-                    let width = self.border.width();
-                    tile_size.w += width * 2.;
-                    tile_size.h += width * 2.;
-                }
-                if prev_sizing_mode.is_normal() && self.tab_bar_offset > 0.0 {
-                    tile_size.h += self.tab_bar_offset;
-                }
+                let mut tile_size =
+                    self.tile_size_for_window_size(animate_from.size, prev_sizing_mode);
 
                 tile_size.w = tile_size_from.w + (tile_size.w - tile_size_from.w) * val;
                 tile_size.h = tile_size_from.h + (tile_size.h - tile_size_from.h) * val;
@@ -529,18 +543,7 @@ impl<W: LayoutElement> Tile<W> {
                 let size = animate_from.size;
 
                 // Compute like in tile_size().
-                let mut tile_size = size;
-                if prev_sizing_mode.is_fullscreen() {
-                    tile_size.w = f64::max(tile_size.w, self.view_size.w);
-                    tile_size.h = f64::max(tile_size.h, self.view_size.h);
-                } else if prev_sizing_mode.is_normal() && !self.border.is_off() {
-                    let width = self.border.width();
-                    tile_size.w += width * 2.;
-                    tile_size.h += width * 2.;
-                }
-                if prev_sizing_mode.is_normal() && self.tab_bar_offset > 0.0 {
-                    tile_size.h += self.tab_bar_offset;
-                }
+                let tile_size = self.tile_size_for_window_size(size, prev_sizing_mode);
 
                 let fullscreen_from = if prev_sizing_mode.is_fullscreen() {
                     1.
@@ -599,23 +602,7 @@ impl<W: LayoutElement> Tile<W> {
             }
         }
 
-        let round_max1 = |logical| round_logical_in_physical_max1(self.scale, logical);
-
-        let rules = self.window.rules();
-        let mut border_config = self.options.layout.border.merged_with(&rules.border);
-        border_config.width = round_max1(border_config.width);
-        self.border.update_config(border_config.into());
-
-        let mut focus_ring_config = self
-            .options
-            .layout
-            .focus_ring
-            .merged_with(&rules.focus_ring);
-        focus_ring_config.width = round_max1(focus_ring_config.width);
-        self.focus_ring.update_config(focus_ring_config);
-
-        let shadow_config = self.options.layout.shadow.merged_with(&rules.shadow);
-        self.shadow.update_config(shadow_config);
+        self.apply_rule_decoration_configs();
 
         let window_size = self.window_size();
         let radius = self
