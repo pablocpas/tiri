@@ -65,7 +65,6 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     /// Focus root child at index, descending to the first leaf.
     pub(in crate::layout) fn focus_root_child(&mut self, idx: usize) -> bool {
-        self.clear_focus_history();
         let root_key = self.root;
 
         match self.get_node(root_key) {
@@ -107,7 +106,6 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     /// Move a root child from one index to another
     pub(in crate::layout) fn move_root_child(&mut self, from: usize, to: usize) -> bool {
-        self.clear_focus_history();
         let root_key = self.root;
 
         let container = match self.get_container_mut(root_key) {
@@ -204,7 +202,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         child_idx: usize,
         leaf_idx: usize,
     ) -> bool {
-        self.clear_focus_history();
         if leaf_idx == 0 {
             return false;
         }

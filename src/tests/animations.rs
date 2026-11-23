@@ -100,7 +100,7 @@ fn set_up_two_in_column() -> (Fixture, ClientId, WlSurface, WlSurface) {
 
     // Consume into one column.
     f.niri().layout.focus_left();
-    f.niri().layout.consume_into_column();
+    f.niri().layout.consume_into_container();
     f.niri().layout.set_layout_mode(ContainerLayout::SplitV);
     f.double_roundtrip(id);
 

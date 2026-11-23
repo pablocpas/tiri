@@ -39,6 +39,11 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.get_tile(key).map(|tile| tile.window())
     }
 
+    pub(in crate::layout) fn focused_window_mut(&mut self) -> Option<&mut W> {
+        let key = self.focused_key()?;
+        self.get_tile_mut(key).map(|tile| tile.window_mut())
+    }
+
     /// Update view size and working area
     pub(in crate::layout) fn set_view_size(
         &mut self,
@@ -64,6 +69,11 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     /// Count total number of windows in tree
+    /// Whether this arena holds any window (tiled or floating), in `O(1)`.
+    pub(in crate::layout) fn has_any_windows(&self) -> bool {
+        self.nodes.window_count() > 0
+    }
+
     pub(in crate::layout) fn window_count(&self) -> usize {
         self.count_windows_in_node(self.root)
     }

@@ -802,7 +802,7 @@ fn horizontal_move_container_actions_reorder_children_inside_floating_wrapper() 
         .floating_container_pos(&1)
         .expect("floating group position");
 
-    layout.move_container_left();
+    layout.move_left();
 
     let workspace = layout.active_workspace().expect("active workspace");
     let order: Vec<_> = workspace
@@ -813,7 +813,7 @@ fn horizontal_move_container_actions_reorder_children_inside_floating_wrapper() 
     assert_eq!(order, [2, 1]);
     assert_eq!(workspace.floating_container_pos(&1), Some(before_pos));
 
-    layout.move_container_right();
+    layout.move_right();
 
     let workspace = layout.active_workspace().expect("active workspace");
     let order: Vec<_> = workspace

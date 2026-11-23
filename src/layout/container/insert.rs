@@ -2,6 +2,7 @@
 
 use super::ContainerArena;
 use super::ContainerData;
+#[cfg(test)]
 use super::DetachedNode;
 use super::Direction;
 use super::InsertParentInfo;
@@ -31,7 +32,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         tile: Tile<W>,
         focus: bool,
     ) {
-        self.clear_focus_history();
 
         // Before the tile exists, so the split never has to reason about an arena node that
         // is not attached to anything yet.
@@ -215,19 +215,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         children
             .into_iter()
             .find_map(|child_key| self.lone_split_child(child_key))
-    }
-
-    /// Insert a detached subtree into the tree, optionally focusing it afterwards.
-    pub(in crate::layout) fn insert_subtree_with_focus(
-        &mut self,
-        subtree: DetachedNode<W>,
-        focus: bool,
-    ) {
-        self.clear_focus_history();
-
-        let node_key = self.insert_subtree(subtree);
-        let root = self.root;
-        self.insert_key_as_focus_sibling(root, node_key, focus);
     }
 
     /// Put a new node where sway puts a new window: next to whatever was most recently
@@ -437,8 +424,7 @@ impl<W: LayoutElement> ContainerArena<W> {
         key: NodeKey,
         tile: Tile<W>,
     ) -> Option<Tile<W>> {
-        let existing = self.get_node_mut(key)?.as_tile_mut()?;
-        Some(std::mem::replace(existing, tile))
+        self.nodes.replace_tile(key, tile)
     }
 
     /// Whether `key` addresses a leaf (window) node.

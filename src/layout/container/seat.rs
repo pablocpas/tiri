@@ -139,14 +139,11 @@ impl SeatFocus {
         self.leaf = leaf;
     }
 
-    /// Take in nodes arriving from outside the tree, keeping the sequence they carried.
+    /// Take in nodes arriving from another workspace arena, keeping the sequence they carried.
     ///
-    /// Nothing is raised: arriving is not being focused. Nor is anything restored — a subtree
-    /// that left went to a different tree with a different arena, so the keys it had are gone
-    /// and its standing in this order with them. sway has no such loss because it has no such
-    /// journey: floating moves a container between two lists of one workspace and the node
-    /// stays the node. Until tiri's two trees are one, a floated window comes back as though
-    /// nobody had focused it.
+    /// Nothing is raised: arriving is not being focused. Within the same workspace, floating
+    /// and tiling share one arena so crossing between them preserves node keys and seat order
+    /// directly without going through this path.
     pub(super) fn restore_at(&mut self, rank: usize, keys: impl IntoIterator<Item = NodeKey>) {
         let mut at = rank.min(self.order.len());
         for key in keys {

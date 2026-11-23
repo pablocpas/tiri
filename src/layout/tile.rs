@@ -79,7 +79,6 @@ pub struct Tile<W: LayoutElement> {
     /// The black backdrop for fullscreen windows.
     fullscreen_backdrop: SolidColorBuffer,
 
-    /// Whether the tile should float upon unfullscreening.
     /// Whether this tile is in the scratchpad.
     pub(super) is_scratchpad: bool,
     /// Whether this tile is sticky (floating across workspaces on an output).
@@ -1073,8 +1072,18 @@ impl<W: LayoutElement> Tile<W> {
         self.is_sticky = sticky;
     }
 
+    pub(super) fn marks(&self) -> &[String] {
+        &self.marks
+    }
+
     pub(super) fn has_mark(&self, mark: &str) -> bool {
         self.marks.iter().any(|m| m == mark)
+    }
+
+    pub(super) fn add_mark(&mut self, mark: String) {
+        if !self.has_mark(&mark) {
+            self.marks.push(mark);
+        }
     }
 
     pub(super) fn remove_mark(&mut self, mark: &str) {
@@ -1085,15 +1094,6 @@ impl<W: LayoutElement> Tile<W> {
         self.marks.clear();
     }
 
-    /// Marks live on an attached container node. A detached view carries them in its tile
-    /// until another arena constructs that node again.
-    pub(super) fn take_marks(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.marks)
-    }
-
-    pub(super) fn replace_marks(&mut self, marks: Vec<String>) {
-        self.marks = marks;
-    }
     pub fn sizing_mode(&self) -> SizingMode {
         self.sizing_mode
     }

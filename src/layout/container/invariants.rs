@@ -15,7 +15,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             "workspace root must be a workspace node"
         );
         assert_eq!(
-            self.parents.get(root_key).copied().flatten(),
+            self.parent_of(root_key),
             None,
             "root parent must be None"
         );
@@ -60,8 +60,22 @@ impl<W: LayoutElement> ContainerArena<W> {
         self.verify_node(root_key, None, &mut visited, &mut leaves);
         // The floating groups have the workspace as semantic parent, but live in its separate
         // floating list rather than its tiled child list.
-        for floating_root in self.floating_roots().collect::<Vec<_>>() {
+        for floating_root in self.floating_roots() {
             self.verify_node(floating_root, Some(root_key), &mut visited, &mut leaves);
+        }
+
+        assert_eq!(
+            self.nodes.window_count(),
+            leaves.len(),
+            "NodeStore window_keys index must match live leaf count"
+        );
+        for &leaf_key in &leaves {
+            let tile = self.get_tile(leaf_key).expect("leaf must hold a tile");
+            assert_eq!(
+                self.nodes.window_key(tile.window().id()),
+                Some(leaf_key),
+                "NodeStore window_keys index must map each live window to its leaf key"
+            );
         }
 
         assert_eq!(
@@ -133,7 +147,7 @@ impl<W: LayoutElement> ContainerArena<W> {
             "container tree must not contain cycles"
         );
         assert_eq!(
-            self.parents.get(key).copied().flatten(),
+            self.parent_of(key),
             expected_parent,
             "node parent pointer must match parent child list"
         );
@@ -296,7 +310,7 @@ impl<W: LayoutElement> ContainerArena<W> {
                 "a floating root must point to an existing node"
             );
             assert_eq!(
-                self.parents.get(key).copied().flatten(),
+                self.parent_of(key),
                 Some(self.root),
                 "a floating root must have the workspace as semantic parent"
             );

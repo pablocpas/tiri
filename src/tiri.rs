@@ -233,6 +233,27 @@ bitflags! {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+    Previous,
+    Next,
+}
+
+impl From<crate::layout::Direction> for OutputDirection {
+    fn from(dir: crate::layout::Direction) -> Self {
+        match dir {
+            crate::layout::Direction::Left => Self::Left,
+            crate::layout::Direction::Right => Self::Right,
+            crate::layout::Direction::Up => Self::Up,
+            crate::layout::Direction::Down => Self::Down,
+        }
+    }
+}
+
 pub struct Niri {
     pub config: Rc<RefCell<Config>>,
 
@@ -3957,119 +3978,73 @@ impl Niri {
         self.global_space.output_under(pos).next().cloned()
     }
 
-    pub fn output_left_of(&self, current: &Output) -> Option<Output> {
-        let current_geo = self.global_space.output_geometry(current)?;
-        let extended_geo = Rectangle::new(
-            Point::from((i32::MIN / 2, current_geo.loc.y)),
-            Size::from((i32::MAX, current_geo.size.h)),
-        );
+    pub fn output_in_direction_of(
+        &self,
+        current: &Output,
+        direction: OutputDirection,
+    ) -> Option<Output> {
+        match direction {
+            OutputDirection::Previous => self
+                .sorted_outputs
+                .iter()
+                .rev()
+                .skip_while(|&output| output != current)
+                .nth(1)
+                .or(self.sorted_outputs.last())
+                .filter(|&output| output != current)
+                .cloned(),
+            OutputDirection::Next => self
+                .sorted_outputs
+                .iter()
+                .skip_while(|&output| output != current)
+                .nth(1)
+                .or(self.sorted_outputs.first())
+                .filter(|&output| output != current)
+                .cloned(),
+            OutputDirection::Left
+            | OutputDirection::Right
+            | OutputDirection::Up
+            | OutputDirection::Down => {
+                let current_geo = self.global_space.output_geometry(current)?;
+                let current_center = center(current_geo);
+                let extended_geo = match direction {
+                    OutputDirection::Left | OutputDirection::Right => Rectangle::new(
+                        Point::from((i32::MIN / 2, current_geo.loc.y)),
+                        Size::from((i32::MAX, current_geo.size.h)),
+                    ),
+                    OutputDirection::Up | OutputDirection::Down => Rectangle::new(
+                        Point::from((current_geo.loc.x, i32::MIN / 2)),
+                        Size::from((current_geo.size.w, i32::MAX)),
+                    ),
+                    OutputDirection::Previous | OutputDirection::Next => unreachable!(),
+                };
 
-        self.global_space
-            .outputs()
-            .map(|output| (output, self.global_space.output_geometry(output).unwrap()))
-            .filter(|(_, geo)| center(*geo).x < center(current_geo).x && geo.overlaps(extended_geo))
-            .min_by_key(|(_, geo)| center(current_geo).x - center(*geo).x)
-            .map(|(output, _)| output)
-            .cloned()
+                self.global_space
+                    .outputs()
+                    .map(|output| (output, self.global_space.output_geometry(output).unwrap()))
+                    .filter_map(|(output, geo)| {
+                        if !geo.overlaps(extended_geo) {
+                            return None;
+                        }
+                        let c = center(geo);
+                        let dist = match direction {
+                            OutputDirection::Left => current_center.x - c.x,
+                            OutputDirection::Right => c.x - current_center.x,
+                            OutputDirection::Up => current_center.y - c.y,
+                            OutputDirection::Down => c.y - current_center.y,
+                            OutputDirection::Previous | OutputDirection::Next => unreachable!(),
+                        };
+                        (dist > 0).then_some((output, dist))
+                    })
+                    .min_by_key(|(_, dist)| *dist)
+                    .map(|(output, _)| output.clone())
+            }
+        }
     }
 
-    pub fn output_right_of(&self, current: &Output) -> Option<Output> {
-        let current_geo = self.global_space.output_geometry(current)?;
-        let extended_geo = Rectangle::new(
-            Point::from((i32::MIN / 2, current_geo.loc.y)),
-            Size::from((i32::MAX, current_geo.size.h)),
-        );
-
-        self.global_space
-            .outputs()
-            .map(|output| (output, self.global_space.output_geometry(output).unwrap()))
-            .filter(|(_, geo)| center(*geo).x > center(current_geo).x && geo.overlaps(extended_geo))
-            .min_by_key(|(_, geo)| center(*geo).x - center(current_geo).x)
-            .map(|(output, _)| output)
-            .cloned()
-    }
-
-    pub fn output_up_of(&self, current: &Output) -> Option<Output> {
-        let current_geo = self.global_space.output_geometry(current)?;
-        let extended_geo = Rectangle::new(
-            Point::from((current_geo.loc.x, i32::MIN / 2)),
-            Size::from((current_geo.size.w, i32::MAX)),
-        );
-
-        self.global_space
-            .outputs()
-            .map(|output| (output, self.global_space.output_geometry(output).unwrap()))
-            .filter(|(_, geo)| center(*geo).y < center(current_geo).y && geo.overlaps(extended_geo))
-            .min_by_key(|(_, geo)| center(current_geo).y - center(*geo).y)
-            .map(|(output, _)| output)
-            .cloned()
-    }
-
-    pub fn output_down_of(&self, current: &Output) -> Option<Output> {
-        let current_geo = self.global_space.output_geometry(current)?;
-        let extended_geo = Rectangle::new(
-            Point::from((current_geo.loc.x, i32::MIN / 2)),
-            Size::from((current_geo.size.w, i32::MAX)),
-        );
-
-        self.global_space
-            .outputs()
-            .map(|output| (output, self.global_space.output_geometry(output).unwrap()))
-            .filter(|(_, geo)| center(*geo).y > center(current_geo).y && geo.overlaps(extended_geo))
-            .min_by_key(|(_, geo)| center(*geo).y - center(current_geo).y)
-            .map(|(output, _)| output)
-            .cloned()
-    }
-
-    pub fn output_previous_of(&self, current: &Output) -> Option<Output> {
-        self.sorted_outputs
-            .iter()
-            .rev()
-            .skip_while(|&output| output != current)
-            .nth(1)
-            .or(self.sorted_outputs.last())
-            .filter(|&output| output != current)
-            .cloned()
-    }
-
-    pub fn output_next_of(&self, current: &Output) -> Option<Output> {
-        self.sorted_outputs
-            .iter()
-            .skip_while(|&output| output != current)
-            .nth(1)
-            .or(self.sorted_outputs.first())
-            .filter(|&output| output != current)
-            .cloned()
-    }
-
-    pub fn output_left(&self) -> Option<Output> {
+    pub fn output_in_direction(&self, direction: OutputDirection) -> Option<Output> {
         let active = self.layout.active_output()?;
-        self.output_left_of(active)
-    }
-
-    pub fn output_right(&self) -> Option<Output> {
-        let active = self.layout.active_output()?;
-        self.output_right_of(active)
-    }
-
-    pub fn output_up(&self) -> Option<Output> {
-        let active = self.layout.active_output()?;
-        self.output_up_of(active)
-    }
-
-    pub fn output_down(&self) -> Option<Output> {
-        let active = self.layout.active_output()?;
-        self.output_down_of(active)
-    }
-
-    pub fn output_previous(&self) -> Option<Output> {
-        let active = self.layout.active_output()?;
-        self.output_previous_of(active)
-    }
-
-    pub fn output_next(&self) -> Option<Output> {
-        let active = self.layout.active_output()?;
-        self.output_next_of(active)
+        self.output_in_direction_of(active, direction)
     }
 
     pub fn find_workspace_id(

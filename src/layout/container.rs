@@ -278,24 +278,35 @@ impl<W: LayoutElement> NodeData<W> {
     }
 }
 
+/// Payload carried by a detached subtree node.
+///
+/// Mirrors [`ContainerPayload`]: a view travels with its tile (which owns its marks and
+/// sizing), while a split travels with its layout, children, marks, sizing and focus order.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
+enum DetachedPayload<W: LayoutElement> {
+    View(Tile<W>),
+    Split {
+        layout: Layout,
+        sizing: NodeSizing,
+        marks: Vec<String>,
+        children: Vec<DetachedNode<W>>,
+        focus_stack: Vec<NodeKey>,
+        user_created: bool,
+        prev_split_layout: Option<Layout>,
+    },
+}
+
 /// Detached subtree used to move container structures across trees.
 ///
-/// One type, the same way the arena has one: a node carries a tile or children, never both.
-/// Splitting this in two was what made a window in transit unable to say anything a container
-/// can say, so the two halves had to be kept in step by hand at both ends of every move.
+/// One type, the same way the arena has one: a node carries a tile or split metadata, never
+/// both. Splitting this in two was what made a window in transit unable to say anything a
+/// container can say, so the two halves had to be kept in step by hand at both ends of every
+/// move.
 #[derive(Debug)]
 pub struct DetachedNode<W: LayoutElement> {
     key: NodeKey,
-    sizing: NodeSizing,
-    layout: Layout,
-    /// Marks belong to the addressed node and travel with it across workspace arenas.
-    marks: Vec<String>,
-    /// The view this node *is*, when it is one. Mirrors `ContainerData::tile`.
-    tile: Option<Tile<W>>,
-    children: Vec<DetachedNode<W>>,
-    focus_stack: Vec<NodeKey>,
-    user_created: bool,
-    prev_split_layout: Option<Layout>,
+    payload: DetachedPayload<W>,
 }
 
 /// Fields shared by the workspace and real containers because both lay out child nodes.
@@ -313,20 +324,30 @@ pub struct WorkspaceData {
     common: LayoutParentData,
 }
 
+/// Discriminated payload of a container node: a view (`Tile`) or a split container.
+///
+/// A view node owns its `marks` and `NodeSizing` directly inside `Tile<W>` so they travel
+/// automatically when a tile is detached for scratchpad, interactive move, or workspace
+/// transfers, without duplicating storage or shuffling fields on attach/detach.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
+enum ContainerPayload<W: LayoutElement> {
+    View(Tile<W>),
+    Split {
+        /// i3/sway marks naming this split container.
+        marks: Vec<String>,
+        /// Fractions and resize reference spans belonging to this split container.
+        sizing: NodeSizing,
+        /// Preserve container even if it has a single child (explicit split).
+        user_created: bool,
+    },
+}
+
 /// Container data stored under a stable node identity.
 #[derive(Debug)]
 pub struct ContainerData<W: LayoutElement> {
     common: LayoutParentData,
-    /// i3/sway marks name the container node, whether it is a view or a split.
-    marks: Vec<String>,
-    /// The view this node *is*, when it is one. sway's `sway_container->view`.
-    ///
-    /// A node holding a tile never holds children, and vice versa.
-    tile: Option<Tile<W>>,
-    /// Preserve container even if it has a single child (explicit split).
-    user_created: bool,
-    /// The fractions and resize reference spans belonging to this node itself.
-    sizing: NodeSizing,
+    payload: ContainerPayload<W>,
 }
 
 /// Semantic provenance of one entry in the workspace's floating stack.
@@ -427,89 +448,131 @@ impl InactiveTilingReference {
 /// Container key, child index, available span, child count and rect of a window's container.
 pub(super) type ContainerMetrics = (NodeKey, usize, f64, usize, Rectangle<f64, Logical>);
 
-/// Workspace-local ownership of globally identified nodes.
+/// One node stored in [`NodeStore`] together with its parent link.
+///
+/// Storing the parent pointer alongside the node makes it impossible for a node to exist in the
+/// arena without a parent slot or for a removed node to leave a stale parent entry behind.
 #[derive(Debug)]
-struct NodeStore<W: LayoutElement>(HashMap<NodeKey, NodeData<W>>);
+struct NodeEntry<W: LayoutElement> {
+    parent: Option<NodeKey>,
+    data: NodeData<W>,
+}
+
+/// Workspace-local ownership of globally identified nodes, their parent links, and an
+/// encapsulated `W::Id -> NodeKey` index.
+///
+/// The `window_keys` index is private to this store and updated solely by [`Self::insert`],
+/// [`Self::remove`], and [`Self::replace_tile`], so `window_key` and `window_count` run in
+/// `O(1)` without ever exposing a second mutable authority to callers.
+#[derive(Debug)]
+struct NodeStore<W: LayoutElement> {
+    entries: HashMap<NodeKey, NodeEntry<W>>,
+    window_keys: HashMap<W::Id, NodeKey>,
+}
 
 impl<W: LayoutElement> NodeStore<W> {
     fn new() -> Self {
-        Self(HashMap::new())
+        Self {
+            entries: HashMap::new(),
+            window_keys: HashMap::new(),
+        }
     }
 
-    fn insert(&mut self, key: NodeKey, node: NodeData<W>) {
-        match self.0.entry(key) {
+    fn insert(&mut self, key: NodeKey, data: NodeData<W>) {
+        let window_id = data.as_tile().map(|tile| tile.window().id().clone());
+        match self.entries.entry(key) {
             Entry::Vacant(entry) => {
-                entry.insert(node);
+                entry.insert(NodeEntry { parent: None, data });
             }
             Entry::Occupied(_) => panic!("a node key cannot belong to the same workspace twice"),
+        }
+        if let Some(id) = window_id {
+            let prev = self.window_keys.insert(id, key);
+            assert!(
+                prev.is_none(),
+                "a window id cannot belong to the same workspace twice"
+            );
         }
     }
 
     fn get(&self, key: NodeKey) -> Option<&NodeData<W>> {
-        self.0.get(&key)
+        self.entries.get(&key).map(|entry| &entry.data)
     }
 
     fn get_mut(&mut self, key: NodeKey) -> Option<&mut NodeData<W>> {
-        self.0.get_mut(&key)
+        self.entries.get_mut(&key).map(|entry| &mut entry.data)
+    }
+
+    fn replace_tile(&mut self, key: NodeKey, tile: Tile<W>) -> Option<Tile<W>> {
+        let existing = self.entries.get_mut(&key)?.data.as_tile_mut()?;
+        let old_id = existing.window().id().clone();
+        let new_id = tile.window().id().clone();
+        let displaced = std::mem::replace(existing, tile);
+        if old_id != new_id {
+            self.window_keys.remove(&old_id);
+            let prev = self.window_keys.insert(new_id, key);
+            assert!(
+                prev.is_none(),
+                "a window id cannot belong to the same workspace twice"
+            );
+        }
+        Some(displaced)
+    }
+
+    fn window_key(&self, id: &W::Id) -> Option<NodeKey> {
+        self.window_keys.get(id).copied()
+    }
+
+    fn window_count(&self) -> usize {
+        self.window_keys.len()
+    }
+
+    fn parent(&self, key: NodeKey) -> Option<NodeKey> {
+        self.entries.get(&key).and_then(|entry| entry.parent)
+    }
+
+    fn set_parent(&mut self, key: NodeKey, parent: Option<NodeKey>) {
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.parent = parent;
+        }
     }
 
     fn remove(&mut self, key: NodeKey) -> Option<NodeData<W>> {
-        self.0.remove(&key)
+        let data = self.entries.remove(&key)?.data;
+        if let Some(tile) = data.as_tile() {
+            self.window_keys.remove(tile.window().id());
+        }
+        Some(data)
     }
 
     fn contains_key(&self, key: NodeKey) -> bool {
-        self.0.contains_key(&key)
+        self.entries.contains_key(&key)
     }
 
     fn len(&self) -> usize {
-        self.0.len()
+        self.entries.len()
     }
 
     fn keys(&self) -> impl Iterator<Item = NodeKey> + '_ {
-        self.0.keys().copied()
+        self.entries.keys().copied()
     }
 
     fn iter(&self) -> impl Iterator<Item = (NodeKey, &NodeData<W>)> + '_ {
-        self.0.iter().map(|(key, node)| (*key, node))
+        self.entries.iter().map(|(key, entry)| (*key, &entry.data))
     }
 
     fn iter_mut(&mut self) -> impl Iterator<Item = (NodeKey, &mut NodeData<W>)> + '_ {
-        self.0.iter_mut().map(|(key, node)| (*key, node))
-    }
-}
-
-#[derive(Debug)]
-struct ParentStore(HashMap<NodeKey, Option<NodeKey>>);
-
-impl ParentStore {
-    fn new() -> Self {
-        Self(HashMap::new())
-    }
-
-    fn insert(&mut self, key: NodeKey, parent: Option<NodeKey>) {
-        self.0.insert(key, parent);
-    }
-
-    fn get(&self, key: NodeKey) -> Option<&Option<NodeKey>> {
-        self.0.get(&key)
-    }
-
-    fn get_mut(&mut self, key: NodeKey) -> Option<&mut Option<NodeKey>> {
-        self.0.get_mut(&key)
-    }
-
-    fn remove(&mut self, key: NodeKey) -> Option<Option<NodeKey>> {
-        self.0.remove(&key)
+        self.entries
+            .iter_mut()
+            .map(|(key, entry)| (*key, &mut entry.data))
     }
 }
 
 /// Stable node arena and topology backing a workspace's shared container tree.
 #[derive(Debug)]
 pub(super) struct ContainerArena<W: LayoutElement> {
-    /// Nodes currently belonging to this workspace.
+    /// Nodes currently belonging to this workspace, each carrying its parent pointer.
     nodes: NodeStore<W>,
-    /// Parent pointer for each node (None for root)
-    parents: ParentStore,
     /// The workspace.
     ///
     /// Always present as a [`NodeData::Workspace`], empty tree included.
@@ -695,102 +758,129 @@ impl<W: LayoutElement> ContainerData<W> {
     pub(super) fn new(layout: Layout) -> Self {
         Self {
             common: LayoutParentData::new(layout),
-            marks: Vec::new(),
-            tile: None,
-            user_created: false,
-            sizing: NodeSizing::default(),
+            payload: ContainerPayload::Split {
+                marks: Vec::new(),
+                sizing: NodeSizing::default(),
+                user_created: false,
+            },
         }
     }
 
     /// Create the node a window *is*.
-    pub(super) fn new_view(mut tile: Tile<W>) -> Self {
-        let marks = tile.take_marks();
+    pub(super) fn new_view(tile: Tile<W>) -> Self {
         Self {
             common: LayoutParentData::new(Layout::SplitH),
-            marks,
-            tile: Some(tile),
-            user_created: false,
-            sizing: NodeSizing::default(),
+            payload: ContainerPayload::View(tile),
         }
     }
 
     pub(super) fn tile(&self) -> Option<&Tile<W>> {
-        self.tile.as_ref()
+        match &self.payload {
+            ContainerPayload::View(tile) => Some(tile),
+            ContainerPayload::Split { .. } => None,
+        }
     }
 
     pub(super) fn tile_mut(&mut self) -> Option<&mut Tile<W>> {
-        self.tile.as_mut()
+        match &mut self.payload {
+            ContainerPayload::View(tile) => Some(tile),
+            ContainerPayload::Split { .. } => None,
+        }
     }
 
     pub(super) fn is_view(&self) -> bool {
-        self.tile.is_some()
+        matches!(self.payload, ContainerPayload::View(_))
     }
 
-    pub(super) fn into_tile(mut self) -> Option<Tile<W>> {
-        let mut tile = self.tile.take()?;
-        tile.replace_marks(self.marks);
-        Some(tile)
-    }
-
-    /// Split a node into the parts needed by [`DetachedNode`].
-    fn into_detached_parts(self) -> (Option<Tile<W>>, Vec<String>) {
-        (self.tile, self.marks)
+    pub(super) fn into_tile(self) -> Option<Tile<W>> {
+        match self.payload {
+            ContainerPayload::View(tile) => Some(tile),
+            ContainerPayload::Split { .. } => None,
+        }
     }
 
     pub(super) fn marks(&self) -> &[String] {
-        &self.marks
+        match &self.payload {
+            ContainerPayload::View(tile) => tile.marks(),
+            ContainerPayload::Split { marks, .. } => marks,
+        }
     }
 
     pub(super) fn has_mark(&self, mark: &str) -> bool {
-        self.marks.iter().any(|candidate| candidate == mark)
+        match &self.payload {
+            ContainerPayload::View(tile) => tile.has_mark(mark),
+            ContainerPayload::Split { marks, .. } => marks.iter().any(|candidate| candidate == mark),
+        }
     }
 
     pub(super) fn add_mark(&mut self, mark: String) {
-        if !self.has_mark(&mark) {
-            self.marks.push(mark);
+        match &mut self.payload {
+            ContainerPayload::View(tile) => tile.add_mark(mark),
+            ContainerPayload::Split { marks, .. } => {
+                if !marks.iter().any(|candidate| candidate == &mark) {
+                    marks.push(mark);
+                }
+            }
         }
     }
 
     pub(super) fn remove_mark(&mut self, mark: &str) {
-        self.marks.retain(|candidate| candidate != mark);
+        match &mut self.payload {
+            ContainerPayload::View(tile) => tile.remove_mark(mark),
+            ContainerPayload::Split { marks, .. } => marks.retain(|candidate| candidate != mark),
+        }
     }
 
     pub(super) fn clear_marks(&mut self) {
-        self.marks.clear();
+        match &mut self.payload {
+            ContainerPayload::View(tile) => tile.clear_marks(),
+            ContainerPayload::Split { marks, .. } => marks.clear(),
+        }
     }
 
     /// Where this node's fractions live: on the tile when it is a view.
     pub(super) fn sizing(&self) -> &NodeSizing {
-        match &self.tile {
-            Some(tile) => tile.node_sizing(),
-            None => &self.sizing,
+        match &self.payload {
+            ContainerPayload::View(tile) => tile.node_sizing(),
+            ContainerPayload::Split { sizing, .. } => sizing,
         }
     }
 
     pub(super) fn sizing_mut(&mut self) -> &mut NodeSizing {
-        match &mut self.tile {
-            Some(tile) => tile.node_sizing_mut(),
-            None => &mut self.sizing,
+        match &mut self.payload {
+            ContainerPayload::View(tile) => tile.node_sizing_mut(),
+            ContainerPayload::Split { sizing, .. } => sizing,
         }
     }
 
     pub(super) fn set_layout_explicit(&mut self, layout: Layout) {
         self.set_layout(layout);
-        self.user_created = true;
+        self.mark_user_created();
     }
 
     pub(super) fn set_layout_explicit_from_command(&mut self, layout: Layout) {
         self.set_layout_from_command(layout);
-        self.user_created = true;
+        self.mark_user_created();
     }
 
     /// Whether this container is one the user asked for, rather than scaffolding.
     pub(super) fn is_user_container(&self) -> bool {
-        self.user_created
+        matches!(
+            self.payload,
+            ContainerPayload::Split {
+                user_created: true,
+                ..
+            }
+        )
     }
 
     pub(super) fn mark_user_created(&mut self) {
-        self.user_created = true;
+        match &mut self.payload {
+            ContainerPayload::Split { user_created, .. } => *user_created = true,
+            ContainerPayload::View(_) => {
+                debug_assert!(false, "only split containers can be marked user_created");
+            }
+        }
     }
 }
 
@@ -815,9 +905,9 @@ impl<W: LayoutElement> DerefMut for ContainerData<W> {
 impl<W: LayoutElement> DetachedNode<W> {
     /// Where this node's fractions live: on the tile when it is a view, as in the arena.
     pub(super) fn unset_root_fractions(&mut self) {
-        match &mut self.tile {
-            Some(tile) => tile.unset_node_fractions(),
-            None => self.sizing.unset_fractions(),
+        match &mut self.payload {
+            DetachedPayload::View(tile) => tile.unset_node_fractions(),
+            DetachedPayload::Split { sizing, .. } => sizing.unset_fractions(),
         }
     }
 
@@ -828,10 +918,10 @@ impl<W: LayoutElement> DetachedNode<W> {
     }
 
     fn collect_tiles<'a>(&'a self, tiles: &mut Vec<&'a Tile<W>>) {
-        match &self.tile {
-            Some(tile) => tiles.push(tile),
-            None => {
-                for child in &self.children {
+        match &self.payload {
+            DetachedPayload::View(tile) => tiles.push(tile),
+            DetachedPayload::Split { children, .. } => {
+                for child in children {
                     child.collect_tiles(tiles);
                 }
             }
@@ -852,19 +942,16 @@ impl<W: LayoutElement> ContainerArena<W> {
         options: Rc<Options>,
     ) -> Self {
         let mut nodes = NodeStore::new();
-        let mut parents = ParentStore::new();
         let root = NodeKey::next();
         nodes.insert(
             root,
             NodeData::Workspace(WorkspaceData::new(Layout::SplitH)),
         );
-        parents.insert(root, None);
         let mut seat = seat::SeatFocus::default();
         seat.register(root);
 
         Self {
             nodes,
-            parents,
             root,
             floating_roots: Vec::new(),
             next_floating_root_id: 1,

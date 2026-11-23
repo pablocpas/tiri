@@ -130,23 +130,11 @@ impl<W: LayoutElement> ContainerArena<W> {
         Some(path_rev)
     }
 
-    pub(super) fn clear_focus_history(&mut self) {
-        // Focus history is the seat's order, kept by SeatFocus.
-    }
-
-    /// Find a window by ID and return its node key.
+    /// Find a window by ID and return its node key in `O(1)`.
     ///
     /// Internal callers use the stable identity directly rather than materializing a path only
     /// to resolve it back into the key they actually wanted.
     pub(in crate::layout) fn window_key(&self, window_id: &W::Id) -> Option<NodeKey> {
-        self.nodes.iter().find_map(|(key, node)| match node {
-            node if node
-                .as_tile()
-                .is_some_and(|tile| tile.window().id() == window_id) =>
-            {
-                Some(key)
-            }
-            _ => None,
-        })
+        self.nodes.window_key(window_id)
     }
 }

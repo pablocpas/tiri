@@ -230,7 +230,6 @@ impl<W: LayoutElement> ContainerArena<W> {
             return false;
         };
 
-        self.clear_focus_history();
         self.focus_in_direction_from_until(selected_key, direction, true, descend, None)
     }
 
@@ -260,7 +259,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         allow_wrap: bool,
         descend: bool,
     ) -> bool {
-        self.clear_focus_history();
         let Some(selected_key) = self.selected_node_key() else {
             return false;
         };
@@ -274,7 +272,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         direction: Direction,
         allow_wrap: bool,
     ) -> bool {
-        self.clear_focus_history();
         let Some(start) = self.branch_position(branch_root) else {
             return false;
         };
@@ -474,7 +471,6 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     /// Focus window by its ID if present.
     pub(in crate::layout) fn focus_window_by_id(&mut self, window_id: &W::Id) -> bool {
-        self.clear_focus_history();
         let Some(key) = self.window_key(window_id) else {
             return false;
         };
@@ -484,7 +480,6 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     #[cfg(test)]
     pub(in crate::layout) fn focus_parent(&mut self) -> bool {
-        self.clear_focus_history();
         let Some(focused_key) = self.focused_key() else {
             return false;
         };
@@ -497,7 +492,6 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     #[cfg(test)]
     pub(in crate::layout) fn focus_child(&mut self) -> bool {
-        self.clear_focus_history();
         let Some(focused_key) = self.focused_key() else {
             return false;
         };

@@ -47,6 +47,25 @@ impl Config {
             });
         }
 
+        if self.layout.default_column_display != tiri_ipc::ColumnDisplay::Normal {
+            out.push(IgnoredOption {
+                path: "layout { default-column-display }",
+                reason: "it chooses whether a new scrolling column starts normal or tabbed. \
+                         Tiri uses an i3/sway container tree with no scrolling columns",
+            });
+        }
+
+        if self
+            .window_rules
+            .iter()
+            .any(|rule| rule.default_column_display.is_some())
+        {
+            out.push(IgnoredOption {
+                path: "window-rule { default-column-display }",
+                reason: "same scrolling-column display option, per window",
+            });
+        }
+
         if self
             .input
             .focus_follows_mouse
@@ -102,6 +121,7 @@ mod tests {
                 tab-indicator {
                     width 8
                 }
+                default-column-display "tabbed"
             }
             debug {
                 disable-transactions
@@ -117,7 +137,11 @@ mod tests {
             .collect();
         assert_eq!(
             paths,
-            ["layout { tab-indicator }", "debug { disable-transactions }"]
+            [
+                "layout { tab-indicator }",
+                "layout { default-column-display }",
+                "debug { disable-transactions }",
+            ]
         );
     }
 

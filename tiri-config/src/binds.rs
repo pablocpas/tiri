@@ -646,16 +646,22 @@ impl From<tiri_ipc::Action> for Action {
                 reference: WorkspaceReference::from(reference),
                 focus,
             },
-            tiri_ipc::Action::MoveColumnToWorkspaceDown { focus }
-            | tiri_ipc::Action::MoveContainerToWorkspaceDown { focus } => {
+            tiri_ipc::Action::MoveColumnToWorkspaceDown { focus } => {
+                Self::MoveColumnToWorkspaceDown(focus)
+            }
+            tiri_ipc::Action::MoveContainerToWorkspaceDown { focus } => {
                 Self::MoveContainerToWorkspaceDown(focus)
             }
-            tiri_ipc::Action::MoveColumnToWorkspaceUp { focus }
-            | tiri_ipc::Action::MoveContainerToWorkspaceUp { focus } => {
+            tiri_ipc::Action::MoveColumnToWorkspaceUp { focus } => {
+                Self::MoveColumnToWorkspaceUp(focus)
+            }
+            tiri_ipc::Action::MoveContainerToWorkspaceUp { focus } => {
                 Self::MoveContainerToWorkspaceUp(focus)
             }
-            tiri_ipc::Action::MoveColumnToWorkspace { reference, focus }
-            | tiri_ipc::Action::MoveContainerToWorkspace { reference, focus } => {
+            tiri_ipc::Action::MoveColumnToWorkspace { reference, focus } => {
+                Self::MoveColumnToWorkspace(WorkspaceReference::from(reference), focus)
+            }
+            tiri_ipc::Action::MoveContainerToWorkspace { reference, focus } => {
                 Self::MoveContainerToWorkspace(WorkspaceReference::from(reference), focus)
             }
             tiri_ipc::Action::MoveWorkspaceDown {} => Self::MoveWorkspaceDown,
@@ -695,22 +701,22 @@ impl From<tiri_ipc::Action> for Action {
                 id: Some(id),
                 output,
             } => Self::MoveWindowToMonitorById { id, output },
-            tiri_ipc::Action::MoveColumnToMonitorLeft {}
-            | tiri_ipc::Action::MoveContainerToMonitorLeft {} => Self::MoveContainerToMonitorLeft,
-            tiri_ipc::Action::MoveColumnToMonitorRight {}
-            | tiri_ipc::Action::MoveContainerToMonitorRight {} => Self::MoveContainerToMonitorRight,
-            tiri_ipc::Action::MoveColumnToMonitorDown {}
-            | tiri_ipc::Action::MoveContainerToMonitorDown {} => Self::MoveContainerToMonitorDown,
-            tiri_ipc::Action::MoveColumnToMonitorUp {}
-            | tiri_ipc::Action::MoveContainerToMonitorUp {} => Self::MoveContainerToMonitorUp,
-            tiri_ipc::Action::MoveColumnToMonitorPrevious {}
-            | tiri_ipc::Action::MoveContainerToMonitorPrevious {} => {
+            tiri_ipc::Action::MoveColumnToMonitorLeft {} => Self::MoveColumnToMonitorLeft,
+            tiri_ipc::Action::MoveContainerToMonitorLeft {} => Self::MoveContainerToMonitorLeft,
+            tiri_ipc::Action::MoveColumnToMonitorRight {} => Self::MoveColumnToMonitorRight,
+            tiri_ipc::Action::MoveContainerToMonitorRight {} => Self::MoveContainerToMonitorRight,
+            tiri_ipc::Action::MoveColumnToMonitorDown {} => Self::MoveColumnToMonitorDown,
+            tiri_ipc::Action::MoveContainerToMonitorDown {} => Self::MoveContainerToMonitorDown,
+            tiri_ipc::Action::MoveColumnToMonitorUp {} => Self::MoveColumnToMonitorUp,
+            tiri_ipc::Action::MoveContainerToMonitorUp {} => Self::MoveContainerToMonitorUp,
+            tiri_ipc::Action::MoveColumnToMonitorPrevious {} => Self::MoveColumnToMonitorPrevious,
+            tiri_ipc::Action::MoveContainerToMonitorPrevious {} => {
                 Self::MoveContainerToMonitorPrevious
             }
-            tiri_ipc::Action::MoveColumnToMonitorNext {}
-            | tiri_ipc::Action::MoveContainerToMonitorNext {} => Self::MoveContainerToMonitorNext,
-            tiri_ipc::Action::MoveColumnToMonitor { output }
-            | tiri_ipc::Action::MoveContainerToMonitor { output } => {
+            tiri_ipc::Action::MoveColumnToMonitorNext {} => Self::MoveColumnToMonitorNext,
+            tiri_ipc::Action::MoveContainerToMonitorNext {} => Self::MoveContainerToMonitorNext,
+            tiri_ipc::Action::MoveColumnToMonitor { output } => Self::MoveColumnToMonitor(output),
+            tiri_ipc::Action::MoveContainerToMonitor { output } => {
                 Self::MoveContainerToMonitor(output)
             }
             tiri_ipc::Action::ResizeGrowWidth {} => Self::ResizeGrowWidth,

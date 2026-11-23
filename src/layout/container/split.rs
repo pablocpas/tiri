@@ -27,7 +27,6 @@ impl<W: LayoutElement> ContainerArena<W> {
             return None;
         }
 
-        self.clear_focus_history();
         let branch_root = loop {
             let child_key = self
                 .get_container(container_key)
@@ -451,7 +450,6 @@ impl<W: LayoutElement> ContainerArena<W> {
 
     /// Split an explicit command target.
     pub(in crate::layout) fn split_target(&mut self, layout: Layout, target: NodeKey) -> bool {
-        self.clear_focus_history();
 
         let changed = if target == self.root {
             self.split_workspace_container(layout)
@@ -475,7 +473,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         branch_root: NodeKey,
         layout: Layout,
     ) -> bool {
-        self.clear_focus_history();
 
         let Some(container) = self.get_real_container_mut(branch_root) else {
             return false;
@@ -493,7 +490,6 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// tests asking the short question.
     #[cfg(test)]
     pub(in crate::layout) fn split_focused(&mut self, layout: Layout) -> bool {
-        self.clear_focus_history();
         if self.is_empty() {
             // Same rule as the workspace route: a split on an empty workspace only records
             // the orientation. The first window is a plain child of the workspace and gets

@@ -1192,18 +1192,18 @@ impl Op {
             }
             Op::FocusColumnLeft => layout.focus_left(),
             Op::FocusColumnRight => layout.focus_right(),
-            Op::FocusColumnFirst => layout.focus_column_first(),
-            Op::FocusColumnLast => layout.focus_column_last(),
-            Op::FocusColumnRightOrFirst => layout.focus_column_right_or_first(),
-            Op::FocusColumnLeftOrLast => layout.focus_column_left_or_last(),
-            Op::FocusColumn(index) => layout.focus_column(index),
+            Op::FocusColumnFirst => layout.focus_root_container_first(),
+            Op::FocusColumnLast => layout.focus_root_container_last(),
+            Op::FocusColumnRightOrFirst => layout.focus_root_container_right_or_first(),
+            Op::FocusColumnLeftOrLast => layout.focus_root_container_left_or_last(),
+            Op::FocusColumn(index) => layout.focus_root_container(index),
             Op::FocusWindowOrMonitorUp(id) => {
                 let name = format!("output{id}");
                 let Some(output) = layout.outputs().find(|o| o.name() == name).cloned() else {
                     return;
                 };
 
-                layout.focus_window_up_or_output(&output);
+                layout.focus_direction_or_output(Direction::Up, &output);
             }
             Op::FocusWindowOrMonitorDown(id) => {
                 let name = format!("output{id}");
@@ -1211,7 +1211,7 @@ impl Op {
                     return;
                 };
 
-                layout.focus_window_down_or_output(&output);
+                layout.focus_direction_or_output(Direction::Down, &output);
             }
             Op::FocusColumnOrMonitorLeft(id) => {
                 let name = format!("output{id}");
@@ -1219,7 +1219,7 @@ impl Op {
                     return;
                 };
 
-                layout.focus_container_left_or_output(&output);
+                layout.focus_direction_or_output(Direction::Left, &output);
             }
             Op::FocusColumnOrMonitorRight(id) => {
                 let name = format!("output{id}");
@@ -1227,14 +1227,22 @@ impl Op {
                     return;
                 };
 
-                layout.focus_container_right_or_output(&output);
+                layout.focus_direction_or_output(Direction::Right, &output);
             }
             Op::FocusWindowDown => layout.focus_down(),
             Op::FocusWindowUp => layout.focus_up(),
-            Op::FocusWindowDownOrColumnLeft => layout.focus_down_or_left(),
-            Op::FocusWindowDownOrColumnRight => layout.focus_down_or_right(),
-            Op::FocusWindowUpOrColumnLeft => layout.focus_up_or_left(),
-            Op::FocusWindowUpOrColumnRight => layout.focus_up_or_right(),
+            Op::FocusWindowDownOrColumnLeft => {
+                layout.focus_or_fallback(Direction::Down, Direction::Left)
+            }
+            Op::FocusWindowDownOrColumnRight => {
+                layout.focus_or_fallback(Direction::Down, Direction::Right)
+            }
+            Op::FocusWindowUpOrColumnLeft => {
+                layout.focus_or_fallback(Direction::Up, Direction::Left)
+            }
+            Op::FocusWindowUpOrColumnRight => {
+                layout.focus_or_fallback(Direction::Up, Direction::Right)
+            }
             Op::FocusWindowOrWorkspaceDown => layout.focus_window_or_workspace_down(),
             Op::FocusWindowOrWorkspaceUp => layout.focus_window_or_workspace_up(),
             Op::FocusWindow(id) => layout.activate_window(&id),
@@ -1245,15 +1253,15 @@ impl Op {
             Op::FocusWindowUpOrBottom => layout.focus_window_up_or_bottom(),
             Op::MoveColumnLeft => layout.move_left(),
             Op::MoveColumnRight => layout.move_right(),
-            Op::MoveColumnToFirst => layout.move_column_to_first(),
-            Op::MoveColumnToLast => layout.move_column_to_last(),
+            Op::MoveColumnToFirst => layout.move_root_container_to_first(),
+            Op::MoveColumnToLast => layout.move_root_container_to_last(),
             Op::MoveColumnLeftOrToMonitorLeft(id) => {
                 let name = format!("output{id}");
                 let Some(output) = layout.outputs().find(|o| o.name() == name).cloned() else {
                     return;
                 };
 
-                layout.move_column_left_or_to_output(&output);
+                layout.move_direction_or_to_output(Direction::Left, &output);
             }
             Op::MoveColumnRightOrToMonitorRight(id) => {
                 let name = format!("output{id}");
@@ -1261,9 +1269,9 @@ impl Op {
                     return;
                 };
 
-                layout.move_column_right_or_to_output(&output);
+                layout.move_direction_or_to_output(Direction::Right, &output);
             }
-            Op::MoveColumnToIndex(index) => layout.move_column_to_index(index),
+            Op::MoveColumnToIndex(index) => layout.move_root_container_to_index(index),
             Op::MoveWindowDown => layout.move_down(),
             Op::MoveWindowUp => layout.move_up(),
             Op::MoveWindowDownOrToWorkspaceDown => layout.move_down_or_to_workspace_down(),
@@ -1276,8 +1284,8 @@ impl Op {
                 let id = id.filter(|id| layout.has_window(id));
                 layout.consume_or_expel_window_right(id.as_ref());
             }
-            Op::ConsumeWindowIntoColumn => layout.consume_into_column(),
-            Op::ExpelWindowFromColumn => layout.expel_from_column(),
+            Op::ConsumeWindowIntoColumn => layout.consume_into_container(),
+            Op::ExpelWindowFromColumn => layout.expel_from_container(),
             Op::SwapWithWindow(id) => {
                 if layout.has_window(&id) {
                     layout.swap_window_with(&id);

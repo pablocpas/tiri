@@ -99,7 +99,9 @@ impl FloatingGeometry {
 
 impl<W: LayoutElement> ContainerArena<W> {
     /// Floating roots in render order, topmost first.
-    pub(in crate::layout) fn floating_roots(&self) -> impl Iterator<Item = NodeKey> + '_ {
+    pub(in crate::layout) fn floating_roots(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = NodeKey> + ExactSizeIterator + '_ {
         self.floating_roots.iter().map(|root| root.key)
     }
 

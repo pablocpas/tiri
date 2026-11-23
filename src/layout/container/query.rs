@@ -14,11 +14,28 @@ use super::ResizeReach;
 use crate::layout::tile::Tile;
 
 impl<W: LayoutElement> ContainerArena<W> {
+    fn visit_leaves<'a>(&'a self, node_key: NodeKey, visit: &mut impl FnMut(NodeKey, &'a Tile<W>)) {
+        match self.get_node(node_key) {
+            Some(node) if node.is_view() => {
+                let tile = node.as_tile().expect("a view holds a tile");
+                visit(node_key, tile);
+            }
+            Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => {
+                for &child_key in &self
+                    .get_container(node_key)
+                    .expect("layout parent")
+                    .children
+                {
+                    self.visit_leaves(child_key, visit);
+                }
+            }
+            None => {}
+        }
+    }
+
     /// Get all windows in the tree (depth-first traversal)
     pub(in crate::layout) fn all_windows(&self) -> Vec<&W> {
-        let mut windows = Vec::new();
-        self.collect_windows_from_node(self.root, &mut windows);
-        windows
+        self.windows_in_branch(self.root)
     }
 
     /// The windows of one branch — the tiled side, or one floating group.
@@ -28,46 +45,20 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// of the same tree, asking for "all" has to say all of what.
     pub(in crate::layout) fn windows_in_branch(&self, branch_root: NodeKey) -> Vec<&W> {
         let mut windows = Vec::new();
-        self.collect_windows_from_node(branch_root, &mut windows);
+        self.visit_leaves(branch_root, &mut |_, tile| windows.push(tile.window()));
         windows
     }
 
     /// The tiles of one branch.
     pub(in crate::layout) fn tiles_in_branch(&self, branch_root: NodeKey) -> Vec<&Tile<W>> {
         let mut tiles = Vec::new();
-        self.collect_tiles_from_node(branch_root, &mut tiles);
+        self.visit_leaves(branch_root, &mut |_, tile| tiles.push(tile));
         tiles
     }
 
     /// The leaves of one branch.
     pub(in crate::layout) fn leaf_keys_in_branch(&self, branch_root: NodeKey) -> Vec<NodeKey> {
-        let mut keys = Vec::new();
-        self.collect_leaf_keys(branch_root, &mut keys);
-        keys
-    }
-
-    /// Helper: collect all windows from a node
-    pub(super) fn collect_windows_from_node<'a>(
-        &'a self,
-        node_key: NodeKey,
-        windows: &mut Vec<&'a W>,
-    ) {
-        match self.get_node(node_key) {
-            Some(node) if node.is_view() => {
-                let tile = node.as_tile().expect("a view holds a tile");
-                windows.push(tile.window())
-            }
-            Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => {
-                for &child_key in &self
-                    .get_container(node_key)
-                    .expect("layout parent")
-                    .children
-                {
-                    self.collect_windows_from_node(child_key, windows);
-                }
-            }
-            None => {}
-        }
+        self.leaf_keys_under(branch_root)
     }
 
     /// All window IDs in the tree, depth-first.
@@ -79,103 +70,51 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Window IDs in the subtree rooted at `key`, depth-first.
     pub(in crate::layout) fn window_ids_under(&self, key: NodeKey) -> Vec<W::Id> {
         let mut ids = Vec::new();
-        self.collect_window_ids_from_node(key, &mut ids);
+        self.visit_leaves(key, &mut |_, tile| ids.push(tile.window().id().clone()));
         ids
-    }
-
-    pub(super) fn collect_window_ids_from_node(&self, node_key: NodeKey, ids: &mut Vec<W::Id>) {
-        match self.get_node(node_key) {
-            Some(node) if node.is_view() => {
-                let tile = node.as_tile().expect("a view holds a tile");
-                ids.push(tile.window().id().clone())
-            }
-            Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => {
-                for &child_key in &self
-                    .get_container(node_key)
-                    .expect("layout parent")
-                    .children
-                {
-                    self.collect_window_ids_from_node(child_key, ids);
-                }
-            }
-            None => {}
-        }
     }
 
     /// Get all tiles in the tree (depth-first traversal)
     pub(in crate::layout) fn all_tiles(&self) -> Vec<&Tile<W>> {
-        let mut tiles = Vec::new();
-        self.collect_tiles_from_node(self.root, &mut tiles);
-        tiles
+        self.tiles_in_branch(self.root)
     }
 
-    /// Helper: collect all tiles from a node
-    pub(super) fn collect_tiles_from_node<'a>(
-        &'a self,
-        node_key: NodeKey,
-        tiles: &mut Vec<&'a Tile<W>>,
-    ) {
-        match self.get_node(node_key) {
-            Some(node) if node.is_view() => {
-                let tile = node.as_tile().expect("a view holds a tile");
-                tiles.push(tile)
-            }
-            Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => {
-                for &child_key in &self
-                    .get_container(node_key)
-                    .expect("layout parent")
-                    .children
-                {
-                    self.collect_tiles_from_node(child_key, tiles);
-                }
-            }
-            None => {}
-        }
+    /// Every tile currently stored in this arena (tiled and floating), in arbitrary order.
+    ///
+    /// Use this when order does not matter (config reload, shader reload, animation ticks)
+    /// instead of collecting DFS keys and sorting mutable borrows.
+    pub(in crate::layout) fn every_tile(&self) -> impl Iterator<Item = &Tile<W>> + '_ {
+        self.nodes.iter().filter_map(|(_, node)| node.as_tile())
     }
 
-    /// Collect raw pointers to tiles (immutable) in depth-first order.
-    /// Leaf node keys in depth-first (visual) order.
-    /// Every leaf the tree holds, on both sides.
+    /// Mutable counterpart to [`Self::every_tile`].
+    pub(in crate::layout) fn every_tile_mut(&mut self) -> impl Iterator<Item = &mut Tile<W>> + '_ {
+        self.nodes
+            .iter_mut()
+            .filter_map(|(_, node)| node.as_tile_mut())
+    }
+
+    /// Every leaf the tree holds, on both sides, in depth-first (visual) order.
     ///
     /// Both, deliberately. This is what the transaction machinery compares its snapshot
     /// against, and a floating window that the comparison cannot see is a window whose
     /// configure gets computed from a tree that does not contain it.
     pub(in crate::layout) fn dfs_leaf_keys(&self) -> Vec<NodeKey> {
         let mut keys = Vec::new();
-        self.collect_leaf_keys(self.root, &mut keys);
-        for floating_root in self.floating_roots().collect::<Vec<_>>() {
-            self.collect_leaf_keys(floating_root, &mut keys);
+        self.visit_leaves(self.root, &mut |key, _| keys.push(key));
+        for floating_root in self.floating_roots() {
+            self.visit_leaves(floating_root, &mut |key, _| keys.push(key));
         }
         keys
     }
 
-    fn collect_leaf_keys(&self, node_key: NodeKey, out: &mut Vec<NodeKey>) {
-        match self.get_node(node_key) {
-            Some(node) if node.is_view() => out.push(node_key),
-            Some(NodeData::Workspace(_)) | Some(NodeData::Container(_)) => {
-                for &child_key in &self
-                    .get_container(node_key)
-                    .expect("layout parent")
-                    .children
-                {
-                    self.collect_leaf_keys(child_key, out);
-                }
-            }
-            None => {}
-        }
-    }
-
-    /// Whether any container in the tree uses `layout`.
-    ///
-    /// Tests use this instead of searching the debug dump for a layout name, which also
-    /// matches window titles and silently changes meaning with the dump's format.
-    #[cfg(test)]
     /// Whether some container inside the workspace carries `layout`.
     ///
     /// The workspace itself does not count. It always exists and always has a layout, so
     /// including it would answer "yes" to a question that is asking whether a *container was
     /// built* — which is what every caller wants to know. Its own layout is
     /// [`Self::workspace_layout`].
+    #[cfg(test)]
     pub(in crate::layout) fn contains_layout(&self, layout: Layout) -> bool {
         self.nodes.iter().any(|(key, node)| match node {
             NodeData::Container(container) if !container.is_view() => {
@@ -194,7 +133,7 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// Leaf node keys under `key`, in depth-first (visual) order.
     pub(in crate::layout) fn leaf_keys_under(&self, key: NodeKey) -> Vec<NodeKey> {
         let mut keys = Vec::new();
-        self.collect_leaf_keys(key, &mut keys);
+        self.visit_leaves(key, &mut |leaf_key, _| keys.push(leaf_key));
         keys
     }
 

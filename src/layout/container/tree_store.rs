@@ -88,15 +88,11 @@ impl<W: LayoutElement> ContainerArena<W> {
     }
 
     pub(super) fn set_parent(&mut self, child: NodeKey, parent: Option<NodeKey>) {
-        if let Some(entry) = self.parents.get_mut(child) {
-            *entry = parent;
-        } else {
-            self.parents.insert(child, parent);
-        }
+        self.nodes.set_parent(child, parent);
     }
 
     pub(in crate::layout) fn parent_of(&self, key: NodeKey) -> Option<NodeKey> {
-        self.parents.get(key).and_then(|parent| *parent)
+        self.nodes.parent(key)
     }
 
     pub(super) fn child_index(&self, parent_key: NodeKey, child_key: NodeKey) -> Option<usize> {
@@ -353,7 +349,6 @@ impl<W: LayoutElement> ContainerArena<W> {
             }
         }
         self.nodes.insert(key, node);
-        self.parents.insert(key, None);
         self.seat.register(key);
     }
 
@@ -369,7 +364,6 @@ impl<W: LayoutElement> ContainerArena<W> {
     /// sway/input/seat.c:261-324
     pub(super) fn remove_node_from_store(&mut self, key: NodeKey) -> Option<NodeData<W>> {
         let node = self.nodes.remove(key)?;
-        self.parents.remove(key);
         self.seat.unregister(key);
         if self.fullscreen_key == Some(key) {
             self.fullscreen_key = None;

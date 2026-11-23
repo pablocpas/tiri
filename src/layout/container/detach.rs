@@ -2,7 +2,9 @@
 
 use super::ContainerArena;
 use super::ContainerData;
+use super::ContainerPayload;
 use super::DetachedNode;
+use super::DetachedPayload;
 #[cfg(test)]
 use super::InsertParentInfo;
 use super::LayoutElement;
@@ -187,29 +189,29 @@ impl<W: LayoutElement> ContainerArena<W> {
             children.push(self.extract_subtree(child_key));
         }
 
-        let sizing = container.sizing;
-        let layout = container.layout;
-        let user_created = container.user_created;
-        let prev_split_layout = container.prev_split_layout;
-        let (tile, marks) = container.into_detached_parts();
-
-        // `sizing` is the split's own; a view's lives on its tile, here as in the arena.
-        let detached = DetachedNode {
-            key,
-            sizing,
-            layout,
-            marks,
-            user_created,
-            prev_split_layout,
-            tile,
-            children,
-            focus_stack,
+        let layout = container.common.layout;
+        let prev_split_layout = container.common.prev_split_layout;
+        let payload = match container.payload {
+            ContainerPayload::View(tile) => {
+                debug_assert_eq!(tile.node_key(), key);
+                DetachedPayload::View(tile)
+            }
+            ContainerPayload::Split {
+                marks,
+                sizing,
+                user_created,
+            } => DetachedPayload::Split {
+                layout,
+                sizing,
+                marks,
+                children,
+                focus_stack,
+                user_created,
+                prev_split_layout,
+            },
         };
-        debug_assert!(detached
-            .tile
-            .as_ref()
-            .is_none_or(|tile| tile.node_key() == key));
-        detached
+
+        DetachedNode { key, payload }
     }
 
     /// Insert a detached subtree into this tree, returning the new root key.
@@ -218,52 +220,65 @@ impl<W: LayoutElement> ContainerArena<W> {
         // crossing is what the whole detached representation exists for.
         let DetachedNode {
             key: container_key,
-            sizing,
-            layout,
-            marks,
-            tile,
-            children,
-            focus_stack,
-            user_created,
-            prev_split_layout,
+            payload,
         } = subtree;
-        let mut node = match tile {
-            Some(tile) => ContainerData::new_view(tile),
-            None => ContainerData::new(layout),
-        };
-        node.marks = marks;
-        self.insert_node_with_key(container_key, NodeData::Container(node));
 
-        let mut child_keys = Vec::new();
-        for child in children {
-            let child_key = self.insert_subtree(child);
-            self.set_parent(child_key, Some(container_key));
-            child_keys.push(child_key);
+        match payload {
+            DetachedPayload::View(tile) => {
+                self.insert_node_with_key(
+                    container_key,
+                    NodeData::Container(ContainerData::new_view(tile)),
+                );
+            }
+            DetachedPayload::Split {
+                layout,
+                sizing,
+                marks,
+                children,
+                focus_stack,
+                user_created,
+                prev_split_layout,
+            } => {
+                let mut node = ContainerData {
+                    common: super::LayoutParentData::new(layout),
+                    payload: ContainerPayload::Split {
+                        marks,
+                        sizing,
+                        user_created,
+                    },
+                };
+                node.common.prev_split_layout = prev_split_layout;
+                self.insert_node_with_key(container_key, NodeData::Container(node));
+
+                let mut child_keys = Vec::new();
+                for child in children {
+                    let child_key = self.insert_subtree(child);
+                    self.set_parent(child_key, Some(container_key));
+                    child_keys.push(child_key);
+                }
+
+                if let Some(node) = self.get_real_container_mut(container_key) {
+                    node.children = child_keys;
+                }
+
+                // Back into the seat's order, keeping the sequence the subtree carried.
+                // Appended rather than promoted: arriving is not being focused, and whatever
+                // focuses next will raise its own chain.
+                let restored: Vec<NodeKey> = focus_stack
+                    .iter()
+                    .filter_map(|key| {
+                        self.get_container(container_key)?
+                            .children()
+                            .contains(key)
+                            .then_some(*key)
+                    })
+                    .collect();
+                // Appended, not placed: the receiving workspace has its own inactive order.
+                // Layout's seat history decides whether the arriving view should be focused;
+                // the order inside this subtree only decides which child a descent reaches.
+                self.seat.restore_at(usize::MAX, restored);
+            }
         }
-
-        if let Some(node) = self.get_real_container_mut(container_key) {
-            node.children = child_keys;
-            node.sizing = sizing;
-            node.user_created = user_created;
-            node.prev_split_layout = prev_split_layout;
-        }
-
-        // Back into the seat's order, keeping the sequence the subtree carried.
-        // Appended rather than promoted: arriving is not being focused, and whatever
-        // focuses next will raise its own chain.
-        let restored: Vec<NodeKey> = focus_stack
-            .iter()
-            .filter_map(|key| {
-                self.get_container(container_key)?
-                    .children()
-                    .contains(key)
-                    .then_some(*key)
-            })
-            .collect();
-        // Appended, not placed: the receiving workspace has its own inactive order.
-        // Layout's seat history decides whether the arriving view should be focused;
-        // the order inside this subtree only decides which child a descent reaches.
-        self.seat.restore_at(usize::MAX, restored);
 
         container_key
     }

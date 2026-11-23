@@ -56,7 +56,6 @@ impl<W: LayoutElement> ContainerArena<W> {
         direction: Direction,
         target: NodeKey,
     ) -> bool {
-        self.clear_focus_history();
 
         let Some((node_key, preserve_selected_container)) = self.resolve_move_source(target) else {
             return false;

@@ -219,7 +219,7 @@ impl Layout {
             l.layout.start_open_animation_for_window(win.id());
         });
         rv.add_step(1000, |l| l.layout.toggle_fullscreen(&1));
-        rv.add_step(1300, |l| l.layout.focus_column_left_or_last());
+        rv.add_step(1300, |l| l.layout.focus_root_container_left_or_last());
 
         rv
     }

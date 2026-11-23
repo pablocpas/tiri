@@ -772,7 +772,7 @@ fn i3_124_move_container_right_moves_focused_leaf_out_of_nested_split() {
         },
     ]);
 
-    layout.move_container_right();
+    layout.move_right();
     layout.verify_invariants();
 
     let workspace = layout.active_workspace().expect("active workspace");

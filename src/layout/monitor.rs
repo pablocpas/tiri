@@ -1599,8 +1599,9 @@ impl<W: LayoutElement> Monitor<W> {
         }
     }
 
-    fn move_container_to_workspace_idx(&mut self, new_idx: usize, activate: bool) {
+    fn move_tiling_target_to_workspace_idx(&mut self, idx: usize, activate: bool, root_child: bool) {
         let source_workspace_idx = self.active_workspace_idx;
+        let new_idx = min(idx, self.workspaces.len() - 1);
         if new_idx == source_workspace_idx {
             return;
         }
@@ -1616,7 +1617,7 @@ impl<W: LayoutElement> Monitor<W> {
             return;
         }
 
-        let Some(mut subtree) = workspace.remove_active_tiling_subtree() else {
+        let Some(mut subtree) = workspace.remove_active_tiling_subtree(root_child) else {
             return;
         };
         subtree.prepare_for_workspace_move();
@@ -1624,56 +1625,23 @@ impl<W: LayoutElement> Monitor<W> {
         self.add_root_tiling_subtree(new_idx, subtree, activate);
     }
 
-    pub fn move_container_to_workspace_up(&mut self, activate: bool) {
+    pub fn move_tiling_target_to_workspace_up(&mut self, activate: bool, root_child: bool) {
         let new_idx = self.active_workspace_idx.saturating_sub(1);
-        self.move_container_to_workspace_idx(new_idx, activate);
+        self.move_tiling_target_to_workspace_idx(new_idx, activate, root_child);
     }
 
-    pub fn move_container_to_workspace_down(&mut self, activate: bool) {
+    pub fn move_tiling_target_to_workspace_down(&mut self, activate: bool, root_child: bool) {
         let new_idx = min(self.active_workspace_idx + 1, self.workspaces.len() - 1);
-        self.move_container_to_workspace_idx(new_idx, activate);
+        self.move_tiling_target_to_workspace_idx(new_idx, activate, root_child);
     }
 
-    pub fn move_container_to_workspace(&mut self, idx: usize, activate: bool) {
-        let new_idx = min(idx, self.workspaces.len() - 1);
-        self.move_container_to_workspace_idx(new_idx, activate);
-    }
-
-    pub fn move_column_to_workspace_up(&mut self, activate: bool) {
-        let new_idx = self.active_workspace_idx.saturating_sub(1);
-        self.move_column_to_workspace(new_idx, activate);
-    }
-
-    pub fn move_column_to_workspace_down(&mut self, activate: bool) {
-        let new_idx = min(self.active_workspace_idx + 1, self.workspaces.len() - 1);
-        self.move_column_to_workspace(new_idx, activate);
-    }
-
-    pub fn move_column_to_workspace(&mut self, idx: usize, activate: bool) {
-        let source_workspace_idx = self.active_workspace_idx;
-
-        let new_idx = min(idx, self.workspaces.len() - 1);
-        if new_idx == source_workspace_idx {
-            return;
-        }
-
-        let workspace = &mut self.workspaces[source_workspace_idx];
-        if workspace.floating_is_active() {
-            let activate = if activate {
-                ActivateWindow::Smart
-            } else {
-                ActivateWindow::No
-            };
-            self.move_to_workspace(None, idx, activate);
-            return;
-        }
-
-        let Some(mut subtree) = workspace.remove_active_root_tiling_subtree() else {
-            return;
-        };
-        subtree.prepare_for_workspace_move();
-
-        self.add_root_tiling_subtree(new_idx, subtree, activate);
+    pub fn move_tiling_target_to_workspace(
+        &mut self,
+        idx: usize,
+        activate: bool,
+        root_child: bool,
+    ) {
+        self.move_tiling_target_to_workspace_idx(idx, activate, root_child);
     }
 
     pub fn switch_workspace_up(&mut self) {
@@ -1779,8 +1747,8 @@ impl<W: LayoutElement> Monitor<W> {
             ws.advance_animations();
         }
 
-        self.sticky_floating
-            .advance_animations(&mut self.sticky_containers);
+        self.sticky_containers.advance_animations();
+        self.sticky_floating.advance_closing_animations();
     }
 
     pub(super) fn are_animations_ongoing(&self) -> bool {
@@ -1788,9 +1756,8 @@ impl<W: LayoutElement> Monitor<W> {
             .as_ref()
             .is_some_and(|s| s.is_animation_ongoing())
             || self.workspaces.iter().any(|ws| ws.are_animations_ongoing())
-            || self
-                .sticky_floating
-                .are_animations_ongoing(&self.sticky_containers)
+            || self.sticky_containers.are_animations_ongoing()
+            || self.sticky_floating.has_closing_windows()
     }
 
     pub fn are_transitions_ongoing(&self) -> bool {
@@ -1799,9 +1766,8 @@ impl<W: LayoutElement> Monitor<W> {
                 .workspaces
                 .iter()
                 .any(|ws| ws.are_transitions_ongoing())
-            || self
-                .sticky_floating
-                .are_transitions_ongoing(&self.sticky_containers)
+            || self.sticky_containers.are_transitions_ongoing()
+            || self.sticky_floating.has_closing_windows()
     }
 
     pub fn update_render_elements(&mut self, is_active: bool) {
@@ -1825,7 +1791,7 @@ impl<W: LayoutElement> Monitor<W> {
 
         let sticky_active = is_active && self.sticky_is_active;
         // The sticky container tree has no tiled side, so floating always holds its focus.
-        self.sticky_containers.set_active(sticky_active, true);
+        self.sticky_containers.set_active(sticky_active);
         let sticky_view_rect = Rectangle::from_size(self.view_size);
         self.sticky_floating.update_render_elements(
             &mut self.sticky_containers,
@@ -1953,13 +1919,6 @@ impl<W: LayoutElement> Monitor<W> {
             self.scale.fractional_scale(),
             options.clone(),
         );
-        self.sticky_floating.update_config(
-            &mut self.sticky_containers,
-            self.view_size,
-            self.working_area,
-            self.scale.fractional_scale(),
-            options.clone(),
-        );
 
         self.insert_hint_element
             .update_config(options.layout.insert_hint);
@@ -1984,8 +1943,7 @@ impl<W: LayoutElement> Monitor<W> {
             ws.update_shaders();
         }
 
-        self.sticky_floating
-            .update_shaders(&mut self.sticky_containers);
+        self.sticky_containers.update_shaders();
 
         self.insert_hint_element.update_shaders();
     }
@@ -2004,13 +1962,6 @@ impl<W: LayoutElement> Monitor<W> {
         }
 
         self.sticky_containers.update_config(
-            self.view_size,
-            self.working_area,
-            self.scale.fractional_scale(),
-            self.options.clone(),
-        );
-        self.sticky_floating.update_config(
-            &mut self.sticky_containers,
             self.view_size,
             self.working_area,
             self.scale.fractional_scale(),
